@@ -56,7 +56,9 @@ npx ts-node prisma/seed.ts
 ### 4. Run Development Servers
 ```bash
 # Terminal 1 — Backend (port 3001)
-cd backend && npm run start:dev
+cd backend
+rm -rf dist
+npm run start:dev
 
 # Terminal 2 — Frontend (port 5173)
 cd frontend && npm run dev
