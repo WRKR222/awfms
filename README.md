@@ -61,7 +61,9 @@ rm -rf dist
 npm run start:dev
 
 # Terminal 2 — Frontend (port 5173)
-cd frontend && npm run dev
+cd frontend
+npm install
+npm run dev
 ```
 
 Open http://localhost:5173 and login with any test account.
