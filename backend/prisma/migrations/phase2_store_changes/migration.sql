@@ -10,7 +10,6 @@
 --   [P4] store_stock_ins lpo_id FK uses ADD CONSTRAINT IF NOT EXISTS pattern
 -- ============================================================================
 
-BEGIN;
 
 -- ── 1. Enum value additions (ADD VALUE IF NOT EXISTS is already safe) ──────
 ALTER TYPE "HealthEventType"   ADD VALUE IF NOT EXISTS 'CULLING';
@@ -246,4 +245,4 @@ CREATE INDEX IF NOT EXISTS "construction_records_status_idx"
 CREATE INDEX IF NOT EXISTS "construction_records_start_date_idx"
     ON "construction_records"("start_date");
 
-COMMIT;
+
