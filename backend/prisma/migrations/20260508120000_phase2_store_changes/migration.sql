@@ -70,9 +70,9 @@ CREATE TABLE IF NOT EXISTS "store_items" (
   "reorder_level" NUMERIC(10,3) NOT NULL DEFAULT 0,
   "current_stock" NUMERIC(10,3) NOT NULL DEFAULT 0,
   "unit_cost_kes" NUMERIC(10,2) NOT NULL DEFAULT 0,
-  "supplier_id"   UUID,
+  "supplier_id"   TEXT,
   "is_active"     BOOLEAN       NOT NULL DEFAULT true,
-  "created_by_id" UUID          NOT NULL REFERENCES "users"("id"),
+  "created_by_id" TEXT          NOT NULL REFERENCES "users"("id"),
   "created_at"    TIMESTAMPTZ   NOT NULL DEFAULT now(),
   "updated_at"    TIMESTAMPTZ   NOT NULL DEFAULT now()
 );
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS "store_stock_ins" (
   "invoice_ref"    TEXT,
   "lpo_id"         UUID,                    -- FK added after LPO table below
   "notes"          TEXT,
-  "received_by_id" UUID          NOT NULL REFERENCES "users"("id"),
+  "received_by_id" TEXT          NOT NULL REFERENCES "users"("id"),
   "created_at"     TIMESTAMPTZ   NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS "store_stock_ins_item_date_idx"
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS "store_stock_outs" (
   "issued_to_batch_id"  UUID,
   "purpose"             TEXT,
   "notes"               TEXT,
-  "issued_by_id"        UUID          NOT NULL REFERENCES "users"("id"),
+  "issued_by_id"        TEXT          NOT NULL REFERENCES "users"("id"),
   "created_at"          TIMESTAMPTZ   NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS "store_stock_outs_item_date_idx"
@@ -128,8 +128,8 @@ CREATE TABLE IF NOT EXISTS "purchase_requests" (
   "urgency"        TEXT                   NOT NULL DEFAULT 'NORMAL',
   "notes"          TEXT,
   "review_notes"   TEXT,
-  "created_by_id"  UUID                   NOT NULL REFERENCES "users"("id"),
-  "reviewed_by_id" UUID                   REFERENCES "users"("id"),
+  "created_by_id"  TEXT                   NOT NULL REFERENCES "users"("id"),
+  "reviewed_by_id" TEXT                   REFERENCES "users"("id"),
   "reviewed_at"    TIMESTAMPTZ,
   "created_at"     TIMESTAMPTZ            NOT NULL DEFAULT now(),
   "updated_at"     TIMESTAMPTZ            NOT NULL DEFAULT now()
@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS "local_purchase_orders" (
   "id"                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   "lpo_number"          TEXT        NOT NULL UNIQUE,
   "purchase_request_id" UUID        UNIQUE REFERENCES "purchase_requests"("id"),
-  "supplier_id"         UUID,       -- FK added conditionally below
+  "supplier_id"         TEXT,       -- FK added conditionally below
   "supplier_name"       TEXT        NOT NULL,
   "lpo_date"            DATE        NOT NULL,
   "expected_delivery"   DATE,
@@ -164,9 +164,9 @@ CREATE TABLE IF NOT EXISTS "local_purchase_orders" (
   "vat_kes"             NUMERIC(12,2) NOT NULL DEFAULT 0,
   "total_kes"           NUMERIC(12,2) NOT NULL,
   "notes"               TEXT,
-  "approved_by_id"      UUID        REFERENCES "users"("id"),
+  "approved_by_id"      TEXT       REFERENCES "users"("id"),
   "approved_at"         TIMESTAMPTZ,
-  "created_by_id"       UUID        NOT NULL REFERENCES "users"("id"),
+  "created_by_id"       TEXT       NOT NULL REFERENCES "users"("id"),
   "created_at"          TIMESTAMPTZ NOT NULL DEFAULT now(),
   "updated_at"          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -199,9 +199,11 @@ CREATE TABLE IF NOT EXISTS "lpo_items" (
 
 -- [P4] Now wire lpo_id FK on store_stock_ins — safe because LPO table now exists
 ALTER TABLE "store_stock_ins"
-    DROP CONSTRAINT IF EXISTS "store_stock_ins_lpo_id_fkey",
-    ADD  CONSTRAINT "store_stock_ins_lpo_id_fkey"
-      FOREIGN KEY ("lpo_id") REFERENCES "local_purchase_orders"("id");
+DROP CONSTRAINT IF EXISTS "store_stock_ins_lpo_id_fkey";
+
+ALTER TABLE "store_stock_ins"
+ADD CONSTRAINT "store_stock_ins_lpo_id_fkey"
+FOREIGN KEY ("lpo_id") REFERENCES "local_purchase_orders"("id");
 
 -- ── 8. farm_employees ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS "farm_employees" (
