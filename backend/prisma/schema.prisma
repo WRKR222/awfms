@@ -41,6 +41,17 @@ model User {
   storeMedicationLogs                                                     StoreMedicationLog[]       @relation("StoreMedicationLoggedBy")
   store_vet_visit_logs                                                    store_vet_visit_logs[]
   storeWorkerAssignments                                                  StoreWorkerAssignment[]    @relation("StoreWorkerAssignmentLoggedBy")
+  storeItemsCreated                                                       StoreItem[]                @relation("StoreItemCreatedBy")
+  storeStockInsReceived                                                   StoreStockIn[]             @relation("StoreStockInReceivedBy")
+  storeStockOutsIssued                                                    StoreStockOut[]            @relation("StoreStockOutIssuedBy")
+  purchaseRequestsCreated                                                 PurchaseRequest[]          @relation("PurchaseRequestCreatedBy")
+  purchaseRequestsReviewed                                                PurchaseRequest[]          @relation("PurchaseRequestReviewedBy")
+  lposCreated                                                             LocalPurchaseOrder[]       @relation("LpoCreatedBy")
+  lposApproved                                                            LocalPurchaseOrder[]       @relation("LpoApprovedBy")
+  simpleStockRequestsCreated                                              SimpleStockRequest[]       @relation("SimpleStockRequestRequestedBy")
+  simpleStockRequestsFulfilled                                            SimpleStockRequest[]       @relation("SimpleStockRequestFulfilledBy")
+  eggCollectionSessionsEdited                                             EggCollectionSession[]     @relation("EggCollectionSessionEditedBy")
+  eggTallyVerificationsLastEdited                                         EggTallyVerification[]     @relation("EggTallyVerificationLastEditedBy")
 
   @@map("users")
 }
@@ -93,12 +104,13 @@ model House {
 }
 
 model Supplier {
-  id        String   @id @default(uuid())
+  id        String               @id @default(uuid())
   name      String
   contact   String?
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at")
+  isActive  Boolean              @default(true) @map("is_active")
+  createdAt DateTime             @default(now()) @map("created_at")
   batches   Batch[]
+  lpos      LocalPurchaseOrder[]
 
   @@map("suppliers")
 }
@@ -336,24 +348,26 @@ model EggCollectionSession {
   remarks            String?
   status             EntryStatus     @default(PENDING)
   returnReason       String?         @map("return_reason")
-  verified_by_id     String?
-  verified_at        DateTime?
-  store_signed_by_id String?
-  store_signed_at    DateTime?
+  deletedAt          DateTime?       @map("deleted_at")
+  editedAt           DateTime?       @map("edited_at")
+  editedById         String?         @map("edited_by_id")
   createdAt          DateTime        @default(now()) @map("created_at")
   updatedAt          DateTime        @updatedAt @map("updated_at")
   batch              Batch           @relation(fields: [batchId], references: [id])
-  storeIntakes       StoreEggIntake?
+  editedBy           User?           @relation("EggCollectionSessionEditedBy", fields: [editedById], references: [id])
+  storeIntakes       StoreEggIntake[]
+  tally              EggTallyVerification?
 
   @@unique([batchId, houseId, sessionDate, shift])
   @@index([houseId, sessionDate])
   @@index([status])
+  @@index([deletedAt])
   @@map("egg_collection_sessions")
 }
 
 model StoreEggIntake {
   id              String               @id @default(uuid())
-  sessionId       String               @unique @map("session_id")
+  sessionId       String               @map("session_id")
   houseId         String               @map("house_id")
   intakeDate      DateTime             @map("intake_date") @db.Date
   shift           String
@@ -412,8 +426,13 @@ model EggTallyVerification {
   expectedRevenueKes Decimal?  @map("expected_revenue_kes") @db.Decimal(12, 2)
   revenueSetById     String?   @map("revenue_set_by_id")
   revenueSetAt       DateTime? @map("revenue_set_at")
+  editCount          Int       @default(0) @map("edit_count")
+  lastEditedById     String?   @map("last_edited_by_id")
+  lastEditedAt       DateTime? @map("last_edited_at")
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @updatedAt @map("updated_at")
+  session            EggCollectionSession @relation(fields: [sessionId], references: [id])
+  lastEditedBy       User?     @relation("EggTallyVerificationLastEditedBy", fields: [lastEditedById], references: [id])
 
   @@index([verificationDate])
   @@index([sessionId])
@@ -440,12 +459,14 @@ model AdvanceBooking {
   salesOrderId       String?       @unique @map("sales_order_id")
   createdAt          DateTime      @default(now()) @map("created_at")
   updatedAt          DateTime      @updatedAt @map("updated_at")
+  deletedAt          DateTime?     @map("deleted_at")
   customer           Customer      @relation(fields: [customerId], references: [id])
   salesOrder         SalesOrder?   @relation(fields: [salesOrderId], references: [id])
 
   @@index([status])
   @@index([requestedDate])
   @@index([customerId])
+  @@index([deletedAt])
   @@map("advance_bookings")
 }
 
@@ -508,7 +529,8 @@ model SalesOrder {
   status                   OrderStatus                @default(PENDING)
   deliveryDate             DateTime?                  @map("delivery_date") @db.Date
   deliveryAddress          String?                    @map("delivery_address")
-  tier                     SalesTier
+  paymentMethod            PaymentMethod              @default(CASH) @map("payment_method")
+  deletedAt                DateTime?                  @map("deleted_at")
   subtotal                 Decimal                    @db.Decimal(12, 2)
   notes                    String?
   createdById              String                     @map("created_by_id")
@@ -1272,6 +1294,7 @@ enum NotificationType {
   STOCK_LOCKED_BOOKING
   BOOKING_CANCELLED
   PURCHASE_REQUEST_RAISED
+  PURCHASE_REQUEST
   LPO_SUBMITTED
   LPO_APPROVED
   EGG_BREAKAGE_ADJUSTMENT
@@ -1302,4 +1325,306 @@ enum EggGrade {
 enum SalesTier {
   TIER_1
   TIER_2
+}
+
+// ─── Phase 2 store inventory + cleanup additions ───────────────────────────
+
+enum PaymentMethod {
+  CASH
+  MPESA
+  BANK
+  CREDIT
+}
+
+enum StoreItemCategory {
+  MEDICATION
+  EQUIPMENT
+  FEED_SUPPLEMENT
+  PACKAGING
+  CLEANING
+  SAFETY
+  OTHER
+}
+
+enum StoreItemUnit {
+  KG
+  G
+  L
+  ML
+  PIECE
+  BOX
+  BAG
+  BOTTLE
+  SACHET
+  TRAY
+}
+
+enum PurchaseRequestStatus {
+  DRAFT
+  SUBMITTED
+  REVIEWED
+  LPO_RAISED
+  REJECTED
+}
+
+enum LPOStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  PARTIALLY_RECEIVED
+  FULLY_RECEIVED
+  CANCELLED
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  ON_LEAVE
+  TERMINATED
+}
+
+enum ConstructionType {
+  NEW_STRUCTURE
+  RENOVATION
+  REPAIR
+  MAINTENANCE
+  EXPANSION
+}
+
+enum SimpleStockRequestStatus {
+  PENDING
+  ISSUED
+  PARTIAL
+  REJECTED
+  CANCELLED
+}
+
+model StoreItem {
+  id            String              @id @default(uuid()) @db.Uuid
+  name          String
+  sku           String              @unique
+  category      StoreItemCategory
+  unit          StoreItemUnit
+  description   String?
+  reorderLevel  Decimal             @default(0) @map("reorder_level") @db.Decimal(10, 3)
+  currentStock  Decimal             @default(0) @map("current_stock") @db.Decimal(10, 3)
+  unitCostKes   Decimal             @default(0) @map("unit_cost_kes") @db.Decimal(10, 2)
+  supplierId    String?             @map("supplier_id")
+  isActive      Boolean             @default(true) @map("is_active")
+  createdById   String              @map("created_by_id")
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz()
+  createdBy     User                @relation("StoreItemCreatedBy", fields: [createdById], references: [id])
+  stockIns      StoreStockIn[]
+  stockOuts     StoreStockOut[]
+  prItems       PurchaseRequestItem[]
+  lpoItems      LpoItem[]
+  ssrItems      SimpleStockRequestItem[]
+
+  @@index([category])
+  @@index([isActive])
+  @@map("store_items")
+}
+
+model StoreStockIn {
+  id           String              @id @default(uuid()) @db.Uuid
+  storeItemId  String              @map("store_item_id") @db.Uuid
+  receivedDate DateTime            @map("received_date") @db.Date
+  quantityIn   Decimal             @map("quantity_in") @db.Decimal(10, 3)
+  unitCostKes  Decimal             @map("unit_cost_kes") @db.Decimal(10, 2)
+  totalCostKes Decimal             @map("total_cost_kes") @db.Decimal(12, 2)
+  supplierName String?             @map("supplier_name")
+  invoiceRef   String?             @map("invoice_ref")
+  lpoId        String?             @map("lpo_id") @db.Uuid
+  notes        String?
+  receivedById String              @map("received_by_id")
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz()
+  storeItem    StoreItem           @relation(fields: [storeItemId], references: [id])
+  lpo          LocalPurchaseOrder? @relation(fields: [lpoId], references: [id])
+  receivedBy   User                @relation("StoreStockInReceivedBy", fields: [receivedById], references: [id])
+
+  @@index([storeItemId, receivedDate])
+  @@index([receivedDate])
+  @@map("store_stock_ins")
+}
+
+model StoreStockOut {
+  id              String       @id @default(uuid()) @db.Uuid
+  storeItemId     String       @map("store_item_id") @db.Uuid
+  issuedDate      DateTime     @map("issued_date") @db.Date
+  quantityOut     Decimal      @map("quantity_out") @db.Decimal(10, 3)
+  unitCostKes     Decimal      @map("unit_cost_kes") @db.Decimal(10, 2)
+  totalCostKes    Decimal      @map("total_cost_kes") @db.Decimal(12, 2)
+  issuedToHouseId String?      @map("issued_to_house_id") @db.Uuid
+  issuedToBatchId String?      @map("issued_to_batch_id") @db.Uuid
+  purpose         String?
+  notes           String?
+  issuedById      String       @map("issued_by_id")
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz()
+  storeItem       StoreItem    @relation(fields: [storeItemId], references: [id])
+  issuedBy        User         @relation("StoreStockOutIssuedBy", fields: [issuedById], references: [id])
+  ssrItems        SimpleStockRequestItem[]
+
+  @@index([storeItemId, issuedDate])
+  @@index([issuedDate])
+  @@map("store_stock_outs")
+}
+
+model PurchaseRequest {
+  id           String                @id @default(uuid()) @db.Uuid
+  requestRef   String                @unique @map("request_ref")
+  requestDate  DateTime              @map("request_date") @db.Date
+  status       PurchaseRequestStatus @default(DRAFT)
+  urgency      String                @default("NORMAL")
+  notes        String?
+  reviewNotes  String?               @map("review_notes")
+  createdById  String                @map("created_by_id")
+  reviewedById String?               @map("reviewed_by_id")
+  reviewedAt   DateTime?             @map("reviewed_at") @db.Timestamptz()
+  createdAt    DateTime              @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt    DateTime              @updatedAt @map("updated_at") @db.Timestamptz()
+  createdBy    User                  @relation("PurchaseRequestCreatedBy", fields: [createdById], references: [id])
+  reviewedBy   User?                 @relation("PurchaseRequestReviewedBy", fields: [reviewedById], references: [id])
+  items        PurchaseRequestItem[]
+  lpo          LocalPurchaseOrder?
+
+  @@index([status])
+  @@index([requestDate])
+  @@map("purchase_requests")
+}
+
+model PurchaseRequestItem {
+  id                 String          @id @default(uuid()) @db.Uuid
+  purchaseRequestId  String          @map("purchase_request_id") @db.Uuid
+  storeItemId        String          @map("store_item_id") @db.Uuid
+  quantityRequested  Decimal         @map("quantity_requested") @db.Decimal(10, 3)
+  estimatedUnitCost  Decimal         @default(0) @map("estimated_unit_cost") @db.Decimal(10, 2)
+  reason             String?
+  purchaseRequest    PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade)
+  storeItem          StoreItem       @relation(fields: [storeItemId], references: [id])
+
+  @@map("purchase_request_items")
+}
+
+model LocalPurchaseOrder {
+  id                String           @id @default(uuid()) @db.Uuid
+  lpoNumber         String           @unique @map("lpo_number")
+  purchaseRequestId String?          @unique @map("purchase_request_id") @db.Uuid
+  supplierId        String?          @map("supplier_id")
+  supplierName      String           @map("supplier_name")
+  lpoDate           DateTime         @map("lpo_date") @db.Date
+  expectedDelivery  DateTime?        @map("expected_delivery") @db.Date
+  status            LPOStatus        @default(DRAFT)
+  subtotalKes       Decimal          @map("subtotal_kes") @db.Decimal(12, 2)
+  vatKes            Decimal          @default(0) @map("vat_kes") @db.Decimal(12, 2)
+  totalKes          Decimal          @map("total_kes") @db.Decimal(12, 2)
+  notes             String?
+  approvedById      String?          @map("approved_by_id")
+  approvedAt        DateTime?        @map("approved_at") @db.Timestamptz()
+  createdById       String           @map("created_by_id")
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz()
+  purchaseRequest   PurchaseRequest? @relation(fields: [purchaseRequestId], references: [id])
+  supplier          Supplier?        @relation(fields: [supplierId], references: [id])
+  approvedBy        User?            @relation("LpoApprovedBy", fields: [approvedById], references: [id])
+  createdBy         User             @relation("LpoCreatedBy", fields: [createdById], references: [id])
+  items             LpoItem[]
+  stockIns          StoreStockIn[]
+
+  @@index([status])
+  @@index([lpoDate])
+  @@map("local_purchase_orders")
+}
+
+model LpoItem {
+  id          String             @id @default(uuid()) @db.Uuid
+  lpoId       String             @map("lpo_id") @db.Uuid
+  storeItemId String             @map("store_item_id") @db.Uuid
+  description String?
+  quantity    Decimal            @db.Decimal(10, 3)
+  unitPrice   Decimal            @map("unit_price") @db.Decimal(10, 2)
+  subtotal    Decimal            @db.Decimal(12, 2)
+  lpo         LocalPurchaseOrder @relation(fields: [lpoId], references: [id], onDelete: Cascade)
+  storeItem   StoreItem          @relation(fields: [storeItemId], references: [id])
+
+  @@map("lpo_items")
+}
+
+model FarmEmployee {
+  id             String         @id @default(uuid()) @db.Uuid
+  fullName       String         @map("full_name")
+  nationalId     String?        @unique @map("national_id")
+  phone          String?
+  role           String
+  houseIds       String[]       @default([]) @map("house_ids")
+  salaryKes      Decimal        @default(0) @map("salary_kes") @db.Decimal(10, 2)
+  payPeriod      String         @default("MONTHLY") @map("pay_period")
+  hireDate       DateTime       @map("hire_date") @db.Date
+  terminatedDate DateTime?      @map("terminated_date") @db.Date
+  status         EmployeeStatus @default(ACTIVE)
+  notes          String?
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@index([status])
+  @@map("farm_employees")
+}
+
+model ConstructionRecord {
+  id               String           @id @default(uuid()) @db.Uuid
+  title            String
+  constructionType ConstructionType @map("construction_type")
+  location         String
+  startDate        DateTime         @map("start_date") @db.Date
+  endDate          DateTime?        @map("end_date") @db.Date
+  contractorName   String?          @map("contractor_name")
+  contractorPhone  String?          @map("contractor_phone")
+  budgetKes        Decimal          @default(0) @map("budget_kes") @db.Decimal(12, 2)
+  actualCostKes    Decimal          @default(0) @map("actual_cost_kes") @db.Decimal(12, 2)
+  status           String           @default("IN_PROGRESS")
+  description      String?
+  notes            String?
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt        DateTime         @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@index([status])
+  @@index([startDate])
+  @@map("construction_records")
+}
+
+model SimpleStockRequest {
+  id               String                    @id @default(cuid())
+  requestRef       String                    @unique @map("request_ref")
+  requestDate      DateTime                  @map("request_date") @db.Date
+  neededBy         DateTime?                 @map("needed_by") @db.Date
+  status           SimpleStockRequestStatus  @default(PENDING)
+  purpose          String?
+  notes            String?
+  requestedById    String                    @map("requested_by_id")
+  fulfilledById    String?                   @map("fulfilled_by_id")
+  fulfilledAt      DateTime?                 @map("fulfilled_at")
+  rejectionReason  String?                   @map("rejection_reason")
+  createdAt        DateTime                  @default(now()) @map("created_at")
+  updatedAt        DateTime                  @updatedAt @map("updated_at")
+  requestedBy      User                      @relation("SimpleStockRequestRequestedBy", fields: [requestedById], references: [id])
+  fulfilledBy      User?                     @relation("SimpleStockRequestFulfilledBy", fields: [fulfilledById], references: [id])
+  items            SimpleStockRequestItem[]
+
+  @@index([status])
+  @@index([requestDate])
+  @@map("simple_stock_requests")
+}
+
+model SimpleStockRequestItem {
+  id                String              @id @default(cuid())
+  requestId         String              @map("request_id")
+  storeItemId       String              @map("store_item_id") @db.Uuid
+  quantityRequested Decimal             @map("quantity_requested") @db.Decimal(10, 3)
+  quantityIssued    Decimal             @default(0) @map("quantity_issued") @db.Decimal(10, 3)
+  stockOutId        String?             @map("stock_out_id") @db.Uuid
+  notes             String?
+  request           SimpleStockRequest  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  storeItem         StoreItem           @relation(fields: [storeItemId], references: [id])
+  stockOut          StoreStockOut?      @relation(fields: [stockOutId], references: [id])
+
+  @@map("simple_stock_request_items")
 }

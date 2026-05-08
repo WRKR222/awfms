@@ -38,7 +38,7 @@ export class StoreService {
       throw new ConflictException('Tally locked — store intake can no longer be modified');
     }
 
-    const existing = await this.prisma.storeEggIntake.findUnique({ where: { sessionId: dto.sessionId } });
+    const existing = await this.prisma.storeEggIntake.findFirst({ where: { sessionId: dto.sessionId } });
     if (existing) throw new ConflictException('Store intake already logged for this collection session');
 
     let totalFullTrays = 0, totalLooseEggs = 0, totalWeightKg = 0;

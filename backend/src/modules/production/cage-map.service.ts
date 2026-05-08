@@ -25,14 +25,13 @@ export class CageMapService {
     const block = await this.prisma.farmBlock.findUnique({
       where: { code: blockCode },
       include: {
-        sections: {
-          orderBy: { sortOrder: 'asc' },
+        farm_sections: {
+          orderBy: { sort_order: 'asc' },
           include: {
-            rows: {
-              orderBy: { rowCode: 'asc' },
+            farm_rows: {
+              orderBy: { row_code: 'asc' },
               include: {
-                // Only the active assignment per row
-                assignments: { where: { isActive: true }, take: 1 } as any,
+                assignments: true,
               },
             },
           },
@@ -41,9 +40,9 @@ export class CageMapService {
     });
     if (!block) throw new NotFoundException(`Block ${blockCode} not found`);
 
-    const batchIds = (block as any).sections
-      .flatMap((s: any) => s.rows)
-      .flatMap((r: any) => (r.assignments?.[0] ? [r.assignments[0].batchId] : []));
+    const batchIds = (block as any).farm_sections
+      .flatMap((s: any) => s.farm_rows)
+      .flatMap((r: any) => (r.assignments ? [r.assignments.batchId] : []));
 
     const batches = batchIds.length
       ? await this.prisma.batch.findMany({
@@ -67,15 +66,15 @@ export class CageMapService {
 
     const batchMap = Object.fromEntries(batches.map(b => [b.id, b]));
 
-    const sections = (block as any).sections.map((section: any) => ({
+    const sections = (block as any).farm_sections.map((section: any) => ({
       code: section.code,
-      rows: section.rows.map((row: any) => {
-        const assignment = row.assignments?.[0];
+      rows: section.farm_rows.map((row: any) => {
+        const assignment = row.assignments;
         const batch = assignment ? batchMap[assignment.batchId] : null;
         const ageWeeks = batch ? dayjs().diff(dayjs(batch.dateOfHatch), 'week') : null;
         return {
-          rowCode: row.rowCode,
-          isActive: row.isActive,
+          rowCode: row.row_code,
+          isActive: row.is_active,
           batch: batch
             ? {
                 batchCode: batch.batchCode, strain: batch.strain, stage: batch.stage,
@@ -97,20 +96,16 @@ export class CageMapService {
     };
   }
 
-  // Soft-deactivate any current active assignment, then create a new active one.
+  // Replace any current assignment on this row with a new one.
   async assignBatchToRow(rowId: string, batchId: string, transferDate: string, notes: string | undefined, userId: string) {
     return this.prisma.$transaction(async (tx) => {
-      await tx.batchCageAssignment.updateMany({
-        where: { rowId, isActive: true },
-        data: { isActive: false, deactivatedAt: new Date(), deactivatedById: userId },
-      });
+      await tx.batchCageAssignment.deleteMany({ where: { rowId } });
       const result = await tx.batchCageAssignment.create({
         data: {
           rowId, batchId,
           transferDate: new Date(transferDate),
           notes: notes ?? null,
           assignedById: userId,
-          isActive: true,
         },
       });
       this.eventEmitter.emit(DASHBOARD_REFRESH_EVENT, { roles: ['MANAGER', 'OWNER'] });
@@ -121,10 +116,9 @@ export class CageMapService {
     });
   }
 
-  async removeAssignment(rowId: string, userId: string) {
-    const result = await this.prisma.batchCageAssignment.updateMany({
-      where: { rowId, isActive: true },
-      data: { isActive: false, deactivatedAt: new Date(), deactivatedById: userId },
+  async removeAssignment(rowId: string, _userId: string) {
+    const result = await this.prisma.batchCageAssignment.deleteMany({
+      where: { rowId },
     });
     this.eventEmitter.emit(DASHBOARD_REFRESH_EVENT, { roles: ['MANAGER', 'OWNER'] });
     return result;
