@@ -1,0 +1,198 @@
+name: AWFMS CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ─── Backend Tests ─────────────────────────────────────────────────────────
+  backend-test:
+    name: Backend — Lint + Unit Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: awfms_test
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: awfms_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://awfms_test:testpassword@localhost:5432/awfms_test
+
+      - name: Run database migrations
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://awfms_test:testpassword@localhost:5432/awfms_test
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run unit tests
+        run: npm test -- --forceExit
+        env:
+          DATABASE_URL: postgresql://awfms_test:testpassword@localhost:5432/awfms_test
+          JWT_SECRET: ci-test-secret-key-minimum-32-chars
+          JWT_REFRESH_SECRET: ci-test-refresh-secret-key-32-chars
+          NODE_ENV: test
+
+      - name: Build (TypeScript compile check)
+        run: npm run build
+        env:
+          DATABASE_URL: postgresql://awfms_test:testpassword@localhost:5432/awfms_test
+
+  # ─── Frontend Tests ─────────────────────────────────────────────────────────
+  frontend-test:
+    name: Frontend — Build + Lint
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_URL: /api/v1
+
+      - name: Check build output
+        run: |
+          ls -la dist/
+          test -f dist/index.html || (echo "❌ Build failed — dist/index.html missing" && exit 1)
+          echo "✓ Build output verified"
+
+  # ─── Business Logic Tests ───────────────────────────────────────────────────
+  business-logic-tests:
+    name: Business Logic Tests (Vitest)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run business logic tests
+        run: npx vitest run src/modules/__tests__/business-logic.spec.ts
+        env:
+          NODE_ENV: test
+
+  # ─── Deploy Backend to Railway ──────────────────────────────────────────────
+  deploy-backend:
+    name: Deploy Backend → Railway
+    needs: [backend-test, business-logic-tests]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy to Railway
+        run: railway up --service awfms-backend
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        working-directory: backend
+
+      - name: Run production migrations
+        run: railway run --service awfms-backend -- npm run db:migrate
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+  # ─── Deploy Frontend to Vercel ───────────────────────────────────────────────
+  deploy-frontend:
+    name: Deploy Frontend → Vercel
+    needs: [frontend-test]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Deploy to Vercel
+        run: vercel --prod --token ${{ secrets.VERCEL_TOKEN }} --yes
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        working-directory: frontend
+
+  # ─── Notify on failure ───────────────────────────────────────────────────────
+  notify-failure:
+    name: Notify on Pipeline Failure
+    needs: [backend-test, frontend-test, business-logic-tests]
+    runs-on: ubuntu-latest
+    if: failure()
+
+    steps:
+      - name: Log failure
+        run: |
+          echo "❌ AWFMS CI/CD pipeline failed on branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Author: ${{ github.actor }}"
+          # Add webhook/email notification here when needed

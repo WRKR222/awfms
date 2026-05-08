@@ -1,0 +1,22 @@
+node_modules/
+build/
+.env
+dist/
+*.log
+*.key
+*.pem
+.DS_Store
+Thumbs.db
+# Build output
+dist/
+
+# Mac OS
+.DS_Store
+backend/.DS_Store
+frontend/.DS_Store
+.env
+dist/
+node_modules/
+.DS_Store
+backend/.DS_Store
+frontend/.DS_Store

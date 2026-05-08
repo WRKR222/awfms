@@ -1,0 +1,266 @@
+/**
+ * AWFMS Permission Constants — CLEANED UP.
+ *
+ * Changes vs. previous version:
+ *   • Removed `supervisor` role bucket (role doesn't exist).
+ *   • Removed `AI_ALERTS_VIEW` from MANAGER (kept on OWNER only — spec).
+ *   • Added STOCK_REQUEST_* keys (new simple stock request flow).
+ *   • PURCHASE_REQUEST_CREATE granted to MANAGER, SALES, ACCOUNTANT, STORE
+ *     per spec — they all need ability to flag procurement needs.
+ *     (Distinct from SimpleStockRequest, which is fulfilled directly from
+ *     existing stock by Store.)
+ *   • TALLY_SIGN granted to MANAGER, SALES, STORE.
+ *   • LPO_APPROVE owner-only.
+ *   • CONSTRUCTION_LABOR_LOG store-only.
+ *   • VISITOR_NOTICE_APPROVE owner-only.
+ */
+
+export const PERMISSIONS = {
+  // ── AUTH ──────────────────────────────────────────────────────────────────
+  AUTH_PROFILE_VIEW:   'auth.profile.view',
+  AUTH_PROFILE_EDIT:   'auth.profile.edit',
+  AUTH_USERS_MANAGE:   'auth.users.manage',
+  AUTH_ROLES_MANAGE:   'auth.roles.manage',
+  AUTH_AUDIT_VIEW:     'auth.audit.view',
+
+  // ── FLOCK ─────────────────────────────────────────────────────────────────
+  FLOCK_VIEW:           'flock.view',
+  FLOCK_BATCH_CREATE:   'flock.batch.create',
+  FLOCK_BATCH_EDIT:     'flock.batch.edit',
+  FLOCK_BATCH_ASSIGN:   'flock.batch.assign',
+  FLOCK_CULL_LOG:       'flock.cull.log',
+  FLOCK_WEIGHT_LOG:     'flock.weight.log',
+  FLOCK_STAGE_PROGRESS: 'flock.stage.progress',
+  FLOCK_SLAUGHTER_SCHEDULE: 'flock.slaughter.schedule',
+  FLOCK_BATCH_CLOSE:    'flock.batch.close',
+  FLOCK_ARCHIVE_VIEW:   'flock.archive.view',
+
+  // ── FEED ──────────────────────────────────────────────────────────────────
+  FEED_STOCK_VIEW:      'feed.stock.view',
+  FEED_INTAKE_LOG:      'feed.intake.log',
+  FEED_INTAKE_APPROVE:  'feed.intake.approve',
+  FEED_DELIVERY_LOG:    'feed.delivery.log',
+  FEED_WASTAGE_LOG:     'feed.wastage.log',
+  FEED_LPO_RAISE:       'feed.lpo.raise',
+  FEED_FORECAST_VIEW:   'feed.forecast.view',
+  FEED_ALERT_RECEIVE:   'feed.alert.receive',
+  FEED_ALERT_CONFIGURE: 'feed.alert.configure',
+  FEED_SUPPLIER_VIEW:   'feed.supplier.view',
+  FEED_FCR_VIEW:        'feed.fcr.view',
+
+  // ── HEALTH ────────────────────────────────────────────────────────────────
+  HEALTH_CALENDAR_VIEW:       'health.calendar.view',
+  HEALTH_CALENDAR_EDIT:       'health.calendar.edit',
+  HEALTH_VACCINE_LOG:         'health.vaccine.log',
+  HEALTH_VACCINE_APPROVE:     'health.vaccine.approve',
+  HEALTH_OUTBREAK_LOG:        'health.outbreak.log',
+  HEALTH_OUTBREAK_COMPLETE:   'health.outbreak.complete',
+  HEALTH_VET_UPLOAD:          'health.vet.upload',
+  HEALTH_VET_VIEW:            'health.vet.view',
+  HEALTH_MEDICATION_LOG:      'health.medication.log',
+  HEALTH_QUARANTINE_FLAG:     'health.quarantine.flag',
+  HEALTH_QUARANTINE_RESOLVE:  'health.quarantine.resolve',
+  HEALTH_VISITOR_LOG:         'health.visitor.log',
+  HEALTH_VISITOR_VIEW:        'health.visitor.view',
+  HEALTH_AI_PATTERNS:         'health.ai.patterns',
+  HEALTH_ALERT_RECEIVE:       'health.alert.receive',
+  VISITOR_NOTICE_CREATE:      'visitor.notice.create',
+  VISITOR_NOTICE_APPROVE:     'visitor.notice.approve',
+
+  // ── PRODUCTION ────────────────────────────────────────────────────────────
+  PRODUCTION_EGGS_LOG:        'production.eggs.log',         // Lead Attendant submits
+  PRODUCTION_EGGS_APPROVE:    'production.eggs.approve',     // Manager same-evening verify
+  PRODUCTION_HENDAY_VIEW:     'production.henday.view',
+  PRODUCTION_WEIGHT_VIEW:     'production.weight.view',
+  PRODUCTION_BENCHMARKS_VIEW: 'production.benchmarks.view',
+  PRODUCTION_KIENYEJI_LOG:    'production.kienyeji.log',
+  PRODUCTION_SLAUGHTER_LOG:   'production.slaughter.log',
+  PRODUCTION_REPORT_GENERATE: 'production.report.generate',
+  TALLY_SIGN:                 'tally.sign',                  // PM, Sales, Store
+
+  // ── INVENTORY ─────────────────────────────────────────────────────────────
+  INVENTORY_VIEW:          'inventory.view',
+  INVENTORY_EGGS_UPDATE:   'inventory.eggs.update',
+  INVENTORY_MEAT_UPDATE:   'inventory.meat.update',
+  INVENTORY_SPOILAGE_LOG:  'inventory.spoilage.log',
+  INVENTORY_FIFO_OVERRIDE: 'inventory.fifo.override',
+  INVENTORY_TEMP_LOG:      'inventory.temp.log',
+  INVENTORY_PACKAGING_VIEW:'inventory.packaging.view',
+
+  // ── STORE PROCUREMENT ────────────────────────────────────────────────────
+  PURCHASE_REQUEST_CREATE: 'purchase_request.create',  // STORE
+  PURCHASE_REQUEST_REVIEW: 'purchase_request.review',  // ACCOUNTANT
+  LPO_MANAGE:              'lpo.manage',               // ACCOUNTANT
+  LPO_APPROVE:             'lpo.approve',              // OWNER
+  STOCK_REQUEST_CREATE:    'stock_request.create',     // MANAGER, SALES, ACCOUNTANT
+  STOCK_REQUEST_VIEW:      'stock_request.view',
+  STOCK_REQUEST_FULFILL:   'stock_request.fulfill',    // STORE
+  CONSTRUCTION_LABOR_LOG:  'construction.labor.log',   // STORE
+
+  // ── SALES ─────────────────────────────────────────────────────────────────
+  SALES_CUSTOMERS_VIEW:   'sales.customers.view',
+  SALES_CUSTOMERS_MANAGE: 'sales.customers.manage',
+  SALES_PURCHASE_LOG:     'sales.purchase.log',
+  SALES_ORDER_CREATE:     'sales.order.create',
+  SALES_ORDER_CONFIRM:    'sales.order.confirm',
+  SALES_DELIVERY_LOG:     'sales.delivery.log',
+  SALES_RETURNS_LOG:      'sales.returns.log',
+  SALES_AR_VIEW:          'sales.ar.view',
+  SALES_REVENUE_VIEW:     'sales.revenue.view',
+  SALES_AI_ADVISORY:      'sales.ai.advisory',
+
+  // ── INVOICING ─────────────────────────────────────────────────────────────
+  INVOICE_VIEW:           'invoice.view',
+  INVOICE_REGISTER_VIEW:  'invoice.register.view',
+  INVOICE_PAYMENT_LOG:    'invoice.payment.log',
+  INVOICE_PAYMENT_MARK:   'invoice.payment.mark',
+  INVOICE_ALERT_RECEIVE:  'invoice.alert.receive',
+  INVOICE_AR_DASHBOARD:   'invoice.ar.dashboard',
+  INVOICE_PRICING_EDIT:   'invoice.pricing.edit',
+
+  // ── FINANCE ───────────────────────────────────────────────────────────────
+  FINANCE_PRODUCTION_VIEW:    'finance.production.view',
+  FINANCE_EXPENSES_LOG:       'finance.expenses.log',
+  FINANCE_COST_REPORT:        'finance.cost.report',
+  FINANCE_PROFITABILITY_VIEW: 'finance.profitability.view',
+  FINANCE_STATEMENT_CREATE:   'finance.statement.create',
+  FINANCE_EXPORT_QB:          'finance.export.quickbooks',
+  FINANCE_QB_UPLOAD:          'finance.quickbooks.upload',
+  FINANCE_STATEMENTS_VIEW:    'finance.statements.view',
+
+  // ── AI (OWNER-only by spec) ──────────────────────────────────────────────
+  AI_FEED_ALERT:        'ai.feed.alert',
+  AI_MORTALITY_ALERT:   'ai.mortality.alert',
+  AI_SUGGESTIONS_VIEW:  'ai.suggestions.view',
+  AI_REPORT_GENERATE:   'ai.report.generate',
+  AI_DISEASE_VIEW:      'ai.disease.view',
+  AI_SLAUGHTER_VIEW:    'ai.slaughter.view',
+  AI_SEASONAL_VIEW:     'ai.seasonal.view',
+  AI_PRICEFLAG_VIEW:    'ai.priceflag.view',
+  AI_HISTORY_VIEW:      'ai.history.view',
+
+  // ── SETTINGS ──────────────────────────────────────────────────────────────
+  SETTINGS_HOUSES:        'settings.houses.configure',
+  SETTINGS_BATCHES:       'settings.batches.configure',
+  SETTINGS_ALERT:         'settings.alert.configure',
+  SETTINGS_NOTIFICATIONS: 'settings.notifications',
+  SETTINGS_USERS_MANAGE:  'settings.users.manage',
+  SETTINGS_AUDIT_VIEW:    'settings.audit.view',
+} as const;
+
+export type PermissionKey = typeof PERMISSIONS[keyof typeof PERMISSIONS];
+
+// ── Role-permission map ──────────────────────────────────────────────────────
+export const ROLE_PERMISSIONS: Record<string, PermissionKey[]> = {
+  attendant: [
+    PERMISSIONS.AUTH_PROFILE_VIEW, PERMISSIONS.AUTH_PROFILE_EDIT,
+    PERMISSIONS.FLOCK_VIEW, PERMISSIONS.FLOCK_CULL_LOG, PERMISSIONS.FLOCK_WEIGHT_LOG,
+    PERMISSIONS.FEED_STOCK_VIEW, PERMISSIONS.FEED_INTAKE_LOG, PERMISSIONS.FEED_WASTAGE_LOG,
+    PERMISSIONS.HEALTH_CALENDAR_VIEW, PERMISSIONS.HEALTH_VACCINE_LOG, PERMISSIONS.HEALTH_OUTBREAK_LOG,
+    PERMISSIONS.HEALTH_MEDICATION_LOG, PERMISSIONS.HEALTH_QUARANTINE_FLAG,
+    PERMISSIONS.PRODUCTION_EGGS_LOG, PERMISSIONS.PRODUCTION_WEIGHT_VIEW, PERMISSIONS.PRODUCTION_KIENYEJI_LOG,
+    PERMISSIONS.INVENTORY_TEMP_LOG, PERMISSIONS.INVENTORY_VIEW,
+    PERMISSIONS.SETTINGS_NOTIFICATIONS,
+  ],
+
+  manager: [
+    PERMISSIONS.AUTH_PROFILE_VIEW, PERMISSIONS.AUTH_PROFILE_EDIT, PERMISSIONS.AUTH_AUDIT_VIEW,
+    PERMISSIONS.FLOCK_VIEW, PERMISSIONS.FLOCK_BATCH_CREATE, PERMISSIONS.FLOCK_BATCH_EDIT,
+    PERMISSIONS.FLOCK_BATCH_ASSIGN, PERMISSIONS.FLOCK_CULL_LOG, PERMISSIONS.FLOCK_WEIGHT_LOG,
+    PERMISSIONS.FLOCK_STAGE_PROGRESS, PERMISSIONS.FLOCK_SLAUGHTER_SCHEDULE,
+    PERMISSIONS.FLOCK_BATCH_CLOSE, PERMISSIONS.FLOCK_ARCHIVE_VIEW,
+    PERMISSIONS.FEED_STOCK_VIEW, PERMISSIONS.FEED_INTAKE_LOG, PERMISSIONS.FEED_INTAKE_APPROVE,
+    PERMISSIONS.FEED_DELIVERY_LOG, PERMISSIONS.FEED_WASTAGE_LOG, PERMISSIONS.FEED_LPO_RAISE,
+    PERMISSIONS.FEED_FORECAST_VIEW, PERMISSIONS.FEED_ALERT_RECEIVE, PERMISSIONS.FEED_SUPPLIER_VIEW, PERMISSIONS.FEED_FCR_VIEW,
+    PERMISSIONS.HEALTH_CALENDAR_VIEW, PERMISSIONS.HEALTH_CALENDAR_EDIT,
+    PERMISSIONS.HEALTH_VACCINE_LOG, PERMISSIONS.HEALTH_VACCINE_APPROVE,
+    PERMISSIONS.HEALTH_OUTBREAK_LOG, PERMISSIONS.HEALTH_OUTBREAK_COMPLETE,
+    PERMISSIONS.HEALTH_VET_UPLOAD, PERMISSIONS.HEALTH_VET_VIEW,
+    PERMISSIONS.HEALTH_MEDICATION_LOG, PERMISSIONS.HEALTH_QUARANTINE_FLAG, PERMISSIONS.HEALTH_QUARANTINE_RESOLVE,
+    PERMISSIONS.HEALTH_VISITOR_LOG, PERMISSIONS.HEALTH_VISITOR_VIEW,
+    PERMISSIONS.HEALTH_AI_PATTERNS, PERMISSIONS.HEALTH_ALERT_RECEIVE,
+    PERMISSIONS.PRODUCTION_EGGS_LOG, PERMISSIONS.PRODUCTION_EGGS_APPROVE,
+    PERMISSIONS.PRODUCTION_HENDAY_VIEW, PERMISSIONS.PRODUCTION_WEIGHT_VIEW, PERMISSIONS.PRODUCTION_BENCHMARKS_VIEW,
+    PERMISSIONS.PRODUCTION_KIENYEJI_LOG, PERMISSIONS.PRODUCTION_SLAUGHTER_LOG, PERMISSIONS.PRODUCTION_REPORT_GENERATE,
+    PERMISSIONS.TALLY_SIGN,
+    PERMISSIONS.INVENTORY_VIEW, PERMISSIONS.INVENTORY_EGGS_UPDATE, PERMISSIONS.INVENTORY_MEAT_UPDATE,
+    PERMISSIONS.INVENTORY_SPOILAGE_LOG, PERMISSIONS.INVENTORY_FIFO_OVERRIDE,
+    PERMISSIONS.INVENTORY_TEMP_LOG, PERMISSIONS.INVENTORY_PACKAGING_VIEW,
+    PERMISSIONS.PURCHASE_REQUEST_CREATE,
+    PERMISSIONS.STOCK_REQUEST_CREATE, PERMISSIONS.STOCK_REQUEST_VIEW,
+    PERMISSIONS.SALES_CUSTOMERS_VIEW, PERMISSIONS.SALES_PURCHASE_LOG,
+    PERMISSIONS.SALES_ORDER_CREATE, PERMISSIONS.SALES_ORDER_CONFIRM, PERMISSIONS.SALES_DELIVERY_LOG,
+    PERMISSIONS.SALES_RETURNS_LOG, PERMISSIONS.SALES_AR_VIEW, PERMISSIONS.SALES_REVENUE_VIEW,
+    PERMISSIONS.INVOICE_VIEW, PERMISSIONS.INVOICE_AR_DASHBOARD,
+    PERMISSIONS.FINANCE_PRODUCTION_VIEW, PERMISSIONS.FINANCE_PROFITABILITY_VIEW,
+    PERMISSIONS.SETTINGS_NOTIFICATIONS, PERMISSIONS.SETTINGS_HOUSES, PERMISSIONS.SETTINGS_BATCHES,
+  ],
+
+  accountant: [
+    PERMISSIONS.AUTH_PROFILE_VIEW, PERMISSIONS.AUTH_PROFILE_EDIT,
+    PERMISSIONS.FLOCK_VIEW,
+    PERMISSIONS.FEED_STOCK_VIEW, PERMISSIONS.FEED_FCR_VIEW, PERMISSIONS.FEED_SUPPLIER_VIEW,
+    PERMISSIONS.PRODUCTION_HENDAY_VIEW, PERMISSIONS.PRODUCTION_WEIGHT_VIEW,
+    PERMISSIONS.INVENTORY_VIEW,
+    PERMISSIONS.PURCHASE_REQUEST_CREATE, PERMISSIONS.PURCHASE_REQUEST_REVIEW,
+    PERMISSIONS.LPO_MANAGE,
+    PERMISSIONS.STOCK_REQUEST_CREATE, PERMISSIONS.STOCK_REQUEST_VIEW,
+    PERMISSIONS.SALES_CUSTOMERS_VIEW, PERMISSIONS.SALES_CUSTOMERS_MANAGE,
+    PERMISSIONS.SALES_RETURNS_LOG, PERMISSIONS.SALES_AR_VIEW, PERMISSIONS.SALES_REVENUE_VIEW,
+    PERMISSIONS.INVOICE_VIEW, PERMISSIONS.INVOICE_REGISTER_VIEW, PERMISSIONS.INVOICE_PAYMENT_LOG,
+    PERMISSIONS.INVOICE_PAYMENT_MARK, PERMISSIONS.INVOICE_ALERT_RECEIVE, PERMISSIONS.INVOICE_AR_DASHBOARD,
+    PERMISSIONS.INVOICE_PRICING_EDIT,
+    PERMISSIONS.FINANCE_PRODUCTION_VIEW, PERMISSIONS.FINANCE_EXPENSES_LOG, PERMISSIONS.FINANCE_COST_REPORT,
+    PERMISSIONS.FINANCE_PROFITABILITY_VIEW, PERMISSIONS.FINANCE_STATEMENT_CREATE,
+    PERMISSIONS.FINANCE_EXPORT_QB, PERMISSIONS.FINANCE_QB_UPLOAD, PERMISSIONS.FINANCE_STATEMENTS_VIEW,
+    PERMISSIONS.SETTINGS_NOTIFICATIONS,
+  ],
+
+  sales: [
+    PERMISSIONS.AUTH_PROFILE_VIEW, PERMISSIONS.AUTH_PROFILE_EDIT,
+    PERMISSIONS.SALES_CUSTOMERS_VIEW, PERMISSIONS.SALES_CUSTOMERS_MANAGE,
+    PERMISSIONS.SALES_ORDER_CREATE, PERMISSIONS.SALES_ORDER_CONFIRM,
+    PERMISSIONS.SALES_DELIVERY_LOG, PERMISSIONS.SALES_RETURNS_LOG,
+    PERMISSIONS.SALES_AR_VIEW, PERMISSIONS.SALES_REVENUE_VIEW,
+    PERMISSIONS.INVOICE_VIEW, PERMISSIONS.INVOICE_PAYMENT_LOG,
+    PERMISSIONS.INVENTORY_VIEW,
+    PERMISSIONS.PRODUCTION_HENDAY_VIEW,
+    PERMISSIONS.TALLY_SIGN,
+    PERMISSIONS.PURCHASE_REQUEST_CREATE,
+    PERMISSIONS.STOCK_REQUEST_CREATE, PERMISSIONS.STOCK_REQUEST_VIEW,
+    PERMISSIONS.SETTINGS_NOTIFICATIONS,
+  ],
+
+  store: [
+    PERMISSIONS.AUTH_PROFILE_VIEW, PERMISSIONS.AUTH_PROFILE_EDIT,
+    PERMISSIONS.INVENTORY_VIEW, PERMISSIONS.INVENTORY_EGGS_UPDATE, PERMISSIONS.INVENTORY_TEMP_LOG,
+    PERMISSIONS.INVENTORY_PACKAGING_VIEW, PERMISSIONS.INVENTORY_SPOILAGE_LOG,
+    PERMISSIONS.PRODUCTION_HENDAY_VIEW,
+    PERMISSIONS.TALLY_SIGN,
+    PERMISSIONS.PURCHASE_REQUEST_CREATE,
+    PERMISSIONS.STOCK_REQUEST_VIEW, PERMISSIONS.STOCK_REQUEST_FULFILL,
+    PERMISSIONS.CONSTRUCTION_LABOR_LOG,
+    PERMISSIONS.SETTINGS_NOTIFICATIONS,
+  ],
+
+  owner: [
+    // Director / Owner — every permission, including LPO_APPROVE and VISITOR_NOTICE_APPROVE
+    ...Object.values(PERMISSIONS),
+  ],
+
+  security1: [
+    PERMISSIONS.HEALTH_VISITOR_LOG,
+    PERMISSIONS.HEALTH_VISITOR_VIEW,
+    PERMISSIONS.AUTH_PROFILE_VIEW,
+    PERMISSIONS.AUTH_PROFILE_EDIT,
+    PERMISSIONS.SETTINGS_NOTIFICATIONS,
+  ],
+
+  security2: [
+    PERMISSIONS.HEALTH_VISITOR_LOG,
+    PERMISSIONS.HEALTH_VISITOR_VIEW,
+    PERMISSIONS.AUTH_PROFILE_VIEW,
+    PERMISSIONS.AUTH_PROFILE_EDIT,
+    PERMISSIONS.SETTINGS_NOTIFICATIONS,
+  ],
+};

@@ -1,0 +1,165 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Default to dark mode */
+html {
+  color-scheme: dark;
+}
+
+html.light {
+  color-scheme: light;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Smooth theme transitions */
+*, *::before, *::after {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.15s ease;
+}
+
+/* Remove transition from interactive elements to keep snappy feel */
+button, a, input, select, textarea {
+  transition: background-color 0.15s ease, border-color 0.15s ease,
+              color 0.1s ease, box-shadow 0.15s ease, transform 0.1s ease;
+}
+
+/* Custom scrollbar for dark mode */
+.dark ::-webkit-scrollbar {
+  width: 6px;
+}
+.dark ::-webkit-scrollbar-track {
+  background: #111a14;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #1e3024;
+  border-radius: 3px;
+}
+
+/* Input number arrows hidden for cleaner look */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] { -moz-appearance: textfield; }
+
+/* ── Mobile-first responsive enhancements ───────────────────────────── */
+
+/* Ensure font is Poppins across all elements */
+* {
+  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* Better touch targets for mobile */
+@media (max-width: 768px) {
+  button, a[role="button"] {
+    min-height: 44px;
+  }
+  
+  /* Inputs more comfortable on mobile */
+  input, select, textarea {
+    font-size: 16px !important; /* Prevents iOS zoom on focus */
+  }
+  
+  /* Cards stack properly */
+  .mobile-card-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  
+  /* Full-width modals on mobile */
+  .modal-mobile-full {
+    width: 100% !important;
+    border-radius: 1.5rem 1.5rem 0 0 !important;
+    margin: 0 !important;
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    max-height: 92vh !important;
+  }
+}
+
+/* Safe area padding for iOS bottom bar */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  nav.mobile-bottom-nav {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Responsive table - allow horizontal scroll on mobile */
+.table-responsive {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Pull-to-refresh hint on mobile */
+@media (max-width: 768px) {
+  .page-container {
+    padding: 1rem;
+    padding-bottom: 5rem; /* account for bottom nav */
+  }
+}
+
+/* Compact cards on small screens */
+@media (max-width: 480px) {
+  .kpi-card-compact {
+    padding: 0.75rem !important;
+  }
+  
+  .kpi-card-compact .text-3xl {
+    font-size: 1.5rem !important;
+  }
+}
+
+/* Better form layout on mobile */
+@media (max-width: 640px) {
+  .form-grid-2 {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Sticky headers in modals */
+.modal-sticky-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Smooth bottom sheet animation */
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+.bottom-sheet {
+  animation: slideUp 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Touch-friendly radio/checkbox */
+@media (max-width: 768px) {
+  input[type="radio"] + div,
+  input[type="checkbox"] + div {
+    padding: 0.875rem;
+  }
+}
