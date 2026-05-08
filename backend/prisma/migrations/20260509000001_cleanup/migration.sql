@@ -88,10 +88,15 @@ ALTER TABLE "health_events"
       FOREIGN KEY ("vet_pdf_uploaded_by_id") REFERENCES "users"("id");
 
 -- ── 8. VisitorLog: proper FK back to users ────────────────────────────────
-ALTER TABLE "visitor_log"
-    DROP CONSTRAINT IF EXISTS "visitor_log_recorded_by_id_fkey",
-    ADD  CONSTRAINT "visitor_log_recorded_by_id_fkey"
-      FOREIGN KEY ("recorded_by_id") REFERENCES "users"("id");
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables
+             WHERE table_schema='public' AND table_name='visitor_log') THEN
+    ALTER TABLE "visitor_log"
+        DROP CONSTRAINT IF EXISTS "visitor_log_recorded_by_id_fkey",
+        ADD  CONSTRAINT "visitor_log_recorded_by_id_fkey"
+          FOREIGN KEY ("recorded_by_id") REFERENCES "users"("id");
+  END IF;
+END $$;
 
 -- ── 9. SimpleStockRequest (PM/Sales/Accountant → Store) ───────────────────
 DO $$ BEGIN
