@@ -7,7 +7,8 @@
 import axios, { AxiosInstance } from 'axios';
 import { useAuthStore } from '../stores/auth.store';
 
-const BASE_URL = '/api/v1';
+// FIX: was '/api/v1' (relative, hits Vercel) → now reads VITE_API_URL env var
+const BASE_URL = `${(import.meta.env.VITE_API_URL ?? 'http://localhost:3000').replace(/\/api\/v1\/?$/, '')}/api/v1`;
 
 export const api: AxiosInstance = axios.create({
   baseURL: BASE_URL,

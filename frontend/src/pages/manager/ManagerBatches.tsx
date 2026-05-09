@@ -408,7 +408,12 @@ function NewBatchModal({ onClose }: { onClose: () => void }) {
             </div>
             <div>
               <label className={lCls}>Bird Type *</label>
-              <input {...register('birdType', { required: 'Required' })} className={iCls} placeholder="e.g. Layer, Broiler, Kienyeji" />
+              {/* FIX: was free-text input — now dropdown with valid DB enum values */}
+              <select {...register('birdType', { required: 'Required' })} className={iCls}>
+                <option value="">Select bird type…</option>
+                <option value="LAYER_COMMERCIAL">Layer (Commercial) — high egg output</option>
+                <option value="KIENYEJI">Kienyeji — indigenous / dual-purpose</option>
+              </select>
               {errors.birdType && <p className="text-red-500 text-xs mt-1">{(errors.birdType as any).message}</p>}
             </div>
             <div>

@@ -30,7 +30,7 @@ export class FlockService {
       include: {
         house: { select: { id: true, name: true, code: true } },
         supplier: { select: { id: true, name: true } },
-        _count: { select: { flockEntries: true } },
+        // NOTE: flockEntries (_count) removed — flock_daily_entries table dropped by cleanup migration
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -42,7 +42,7 @@ export class FlockService {
       include: {
         house: true,
         supplier: true,
-        _count: { select: { flockEntries: true } },
+        // NOTE: flockEntries (_count) removed — flock_daily_entries table dropped by cleanup migration
       },
     });
     if (!batch) throw new NotFoundException('Batch not found');
@@ -97,6 +97,15 @@ export class FlockService {
         input.rowPlacements
           .map((r: any) => `${r.rowCode}=${r.birdCount}`)
           .join(', '),
+      );
+    }
+
+    // FIX: Validate birdType against the DB enum before hitting Prisma
+    const VALID_BIRD_TYPES = ['LAYER_COMMERCIAL', 'KIENYEJI'];
+    if (!VALID_BIRD_TYPES.includes(input.birdType)) {
+      throw new BadRequestException(
+        `Invalid birdType "${input.birdType}". Valid values: ${VALID_BIRD_TYPES.join(', ')}. ` +
+        'Please select a valid bird type from the form.'
       );
     }
 
