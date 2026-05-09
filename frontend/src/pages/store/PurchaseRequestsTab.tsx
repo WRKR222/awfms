@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { Plus, Trash2, Send, Eye, X } from 'lucide-react';
 import dayjs from 'dayjs';
-import { api } from '../../../lib/api/client';
+import { api } from '../../lib/api/client';
 import { fmtKES, useStoreItems, STATUS_BADGE, URGENCY_BADGE, type PurchaseRequest } from './_shared';
 
 type FormData = {

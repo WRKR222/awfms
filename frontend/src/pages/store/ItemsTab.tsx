@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { Plus, Search, AlertTriangle, Pencil } from 'lucide-react';
-import { api } from '../../../lib/api/client';
+import { api } from '../../lib/api/client';
 import { fmtKES, useStoreItems, type StoreItem } from './_shared';
 
 const CATEGORIES = ['FEED', 'MEDICATION', 'EQUIPMENT', 'CONSUMABLES', 'PACKAGING', 'OTHER'];

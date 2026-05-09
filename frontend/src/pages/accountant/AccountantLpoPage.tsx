@@ -18,7 +18,7 @@ import { api } from '../../lib/api/client';
 import {
   fmtKES, STATUS_BADGE, URGENCY_BADGE,
   type PurchaseRequest, type LPO,
-} from '../store/inventory/_shared';
+} from '../store/_shared';
 
 type Tab = 'requests' | 'lpos';
 

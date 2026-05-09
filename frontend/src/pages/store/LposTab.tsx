@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Eye, X } from 'lucide-react';
 import dayjs from 'dayjs';
-import { api } from '../../../lib/api/client';
+import { api } from '../../lib/api/client';
 import { fmtKES, STATUS_BADGE, type LPO } from './_shared';
 
 export function LposTab() {

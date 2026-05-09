@@ -1,6 +1,6 @@
 // src/pages/store/inventory/_shared.ts
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../../../lib/api/client';
+import { api } from '../../lib/api/client';
 
 export type StoreItem = {
   id: string;
