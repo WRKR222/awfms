@@ -78,7 +78,9 @@ export interface CreateLPODto {
   expectedDelivery?: string;
   notes?: string;
   items: Array<{
-    storeItemId: string;
+    // Manual LPOs allow free-typed items, so storeItemId is optional.
+    // When omitted, `description` carries the item name.
+    storeItemId?: string;
     description?: string;
     quantity: number;
     unitPrice: number;
@@ -224,7 +226,11 @@ export class StoreInventoryService {
             }
           : {}),
       },
-      include: { storeItem: { select: { name: true, unit: true, sku: true } } },
+      include: {
+        storeItem:  { select: { name: true, unit: true, sku: true } },
+        receivedBy: { select: { fullName: true } },
+        lpo:        { select: { lpoNumber: true } },
+      },
       orderBy: { receivedDate: 'desc' },
       take: 100,
     });
@@ -280,7 +286,10 @@ export class StoreInventoryService {
             }
           : {}),
       },
-      include: { storeItem: { select: { name: true, unit: true, sku: true } } },
+      include: {
+        storeItem: { select: { name: true, unit: true, sku: true } },
+        issuedBy:  { select: { fullName: true } },
+      },
       orderBy: { issuedDate: 'desc' },
       take: 100,
     });
@@ -432,7 +441,7 @@ export class StoreInventoryService {
         createdById:       user.id,
         items: {
           create: dto.items.map((item) => ({
-            storeItemId: item.storeItemId,
+            storeItemId: item.storeItemId ?? null,
             description: item.description ?? null,
             quantity:    item.quantity,
             unitPrice:   item.unitPrice,

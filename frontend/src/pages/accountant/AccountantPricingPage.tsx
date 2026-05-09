@@ -169,10 +169,10 @@ export function AccountantPricingPage() {
               )}
             </div>
 
-            {/* Brooder Starter Eggs */}
+            {/* Starter Eggs */}
             <div className="space-y-1">
-              <label className={labelCls}>Brooder Starter Eggs — KES / egg</label>
-              <span className={subLabelCls}>First eggs collected from chicks in the brooder</span>
+              <label className={labelCls}>Starter Eggs — KES / egg</label>
+              <span className={subLabelCls}>First eggs collected from chicks</span>
               <input
                 {...register('pricePerEggStarter', { required: true })}
                 type="number" min="0" step="0.01" inputMode="decimal"

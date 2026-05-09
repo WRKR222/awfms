@@ -204,8 +204,17 @@ export class AuthService {
         role: true,
         houseIds: true,
         createdAt: true,
+        isActive: true,        
+        lastLoginAt: true,
       },
       orderBy: [{ role: 'asc' }, { fullName: 'asc' }],
+    });
+  }
+  async updateUser(id: string, isActive: boolean) {
+    return this.prisma.user.update({
+      where: { id },
+      data: { isActive },
+      select: { id: true, fullName: true, isActive: true, role: true },
     });
   }
   private async generateTokens(userId: string, username: string, role: UserRole) {

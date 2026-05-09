@@ -5,8 +5,6 @@ import { StoreService } from './store.service';
 import { StoreController } from './store.controller';
 import { StoreInventoryService } from './store-inventory.service';
 import { StoreInventoryController } from './store-inventory.controller';
-import { StoreOperationsService } from './store-operations.service';
-import { StoreOperationsController } from './store-operations.controller';
 import { FarmHRService } from './farm-hr.service';
 import { FarmHRController } from './farm-hr.controller';
 import { TallyVerificationService } from './tally-verification.service';
@@ -19,7 +17,6 @@ import { StockRequestController } from './stock-request.controller';
   providers: [
     StoreService,
     StoreInventoryService,
-    StoreOperationsService,
     FarmHRService,
     TallyVerificationService,
     StockRequestService,
@@ -27,7 +24,6 @@ import { StockRequestController } from './stock-request.controller';
   controllers: [
     StoreController,
     StoreInventoryController,
-    StoreOperationsController,
     FarmHRController,
     TallyVerificationController,
     StockRequestController,

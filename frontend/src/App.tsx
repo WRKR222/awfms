@@ -17,9 +17,6 @@ import StoreLayout          from './pages/store/StoreLayout';
 // Attendant pages
 import { AttendantHome }    from './pages/attendant/AttendantHome';
 import { EggCollectionPage } from './pages/attendant/EggCollectionPage';
-import DailyFlockEntry      from './pages/attendant/DailyFlockEntry';
-import DailyFeedEntry       from './pages/attendant/DailyFeedEntry';
-import DailyProductionEntry from './pages/attendant/DailyProductionEntry';
 
 // Manager pages
 import { ManagerHome }      from './pages/manager/ManagerHome';
@@ -46,13 +43,13 @@ import { SalesOrders }      from './pages/sales/SalesOrders';
 import { AdvanceBookingsPage } from './pages/sales/AdvanceBookingsPage';
 import { ClientsPage }      from './pages/sales/ClientsPage';
 import SalesBreakagePage    from './pages/sales/SalesBreakagePage';
+import SalesDeliveryPage   from './pages/sales/SalesDeliveryPage';
 
 // Store pages
 import StoreHome            from './pages/store/StoreHome';
 import StoreEggIntake       from './pages/store/StoreEggIntake';
 import StoreFeedDistribution from './pages/store/StoreFeedDistribution';
-import StoreOperationsPage  from './pages/store/StoreOperationsPage';
-import StoreIssuancePage    from './pages/store/StoreIssuancePage';
+import StoreInventoryPage   from './pages/store/StoreInventoryPage';
 
 // Shared pages
 import TallyVerificationPage from './pages/shared/TallyVerificationPage';
@@ -152,9 +149,6 @@ function AppInner() {
         >
           <Route index                    element={<AttendantHome />} />
           <Route path="egg-collection"    element={<EggCollectionPage />} />
-          <Route path="flock"             element={<DailyFlockEntry />} />
-          <Route path="feed"              element={<DailyFeedEntry />} />
-          <Route path="production"        element={<DailyProductionEntry />} />
           <Route path="settings"          element={<SettingsPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
         </Route>
@@ -233,6 +227,7 @@ function AppInner() {
           <Route path="bookings"          element={<AdvanceBookingsPage />} />
           <Route path="clients"           element={<ClientsPage />} />
           <Route path="breakage"          element={<SalesBreakagePage />} />
+          <Route path="delivery"          element={<SalesDeliveryPage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="settings"          element={<SettingsPage />} />
@@ -250,8 +245,7 @@ function AppInner() {
           <Route index                    element={<StoreHome />} />
           <Route path="egg-intake"        element={<StoreEggIntake />} />
           <Route path="feed-distribution" element={<StoreFeedDistribution />} />
-          <Route path="operations"        element={<StoreOperationsPage />} />
-          <Route path="issuance"          element={<StoreIssuancePage />} />
+          <Route path="inventory"        element={<StoreInventoryPage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="settings"          element={<SettingsPage />} />

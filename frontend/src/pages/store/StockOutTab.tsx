@@ -73,16 +73,16 @@ export function StockOutTab() {
             <Field label="Quantity *">
               <input type="number" step="any" {...register('quantityOut', { required: true })} className="input" />
             </Field>
-            <Field label="Purpose">
-              <input {...register('purpose')} placeholder="e.g. Daily feeding" className="input" />
+            <Field label="Department / Project">
+              <input {...register('purpose')} placeholder="e.g. Production House, Block 2 Construction" className="input" />
             </Field>
-            <Field label="Issued to House">
+            <Field label="Recipient (House)">
               <select {...register('issuedToHouseId')} className="input">
                 <option value="">— None —</option>
                 {houses.map(h => <option key={h.id} value={h.id}>{h.name} ({h.code})</option>)}
               </select>
             </Field>
-            <Field label="Issued to Batch">
+            <Field label="Recipient (Batch)">
               <select {...register('issuedToBatchId')} className="input">
                 <option value="">— None —</option>
                 {filteredBatches.map(b => <option key={b.id} value={b.id}>{b.batchCode}</option>)}
@@ -114,7 +114,8 @@ export function StockOutTab() {
                   <th className="text-left px-4 py-2">Item</th>
                   <th className="text-right px-4 py-2">Qty</th>
                   <th className="text-right px-4 py-2">Total Cost</th>
-                  <th className="text-left px-4 py-2">Purpose</th>
+                  <th className="text-left px-4 py-2">Dept / Project</th>
+                  <th className="text-left px-4 py-2">Issuing Officer</th>
                 </tr>
               </thead>
               <tbody>
@@ -125,6 +126,7 @@ export function StockOutTab() {
                     <td className="px-4 py-2 text-right">{Number(r.quantityOut)} {r.storeItem?.unit}</td>
                     <td className="px-4 py-2 text-right">{fmtKES(r.totalCostKes)}</td>
                     <td className="px-4 py-2 text-gray-600">{r.purpose ?? '—'}</td>
+                    <td className="px-4 py-2 text-gray-600">{r.issuedBy?.fullName ?? '—'}</td>
                   </tr>
                 ))}
               </tbody>

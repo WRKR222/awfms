@@ -525,12 +525,16 @@ export function FeedRequestModal({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg"><X className="w-5 h-5 text-gray-500" /></button>
         </div>
         <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-4">
+          {/* changes.pdf — Production Manager: allow typing the feed type
+              instead of selecting from a fixed list. */}
           <div>
             <label className={lCls}>Feed Type *</label>
-            <select {...register('feedType', { required: 'Select feed type' })} className={iCls}>
-              <option value="">Select feed type...</option>
-              {(Object.entries(FEED_LABELS) as [FeedType, any][]).map(([val, cfg]) => <option key={val} value={val}>{cfg.label}</option>)}
-            </select>
+            <input
+              {...register('feedType', { required: 'Enter feed type' })}
+              className={iCls}
+              placeholder="e.g. Layer Mash, Chick Starter, Kienyeji Grower…"
+              autoComplete="off"
+            />
             {errors.feedType && <p className="text-red-500 text-xs mt-1">{(errors.feedType as any).message}</p>}
           </div>
           <div>

@@ -1,5 +1,5 @@
 import {
-  Controller, Post, Get, Body, UseGuards, HttpCode, HttpStatus, Param,
+  Controller, Post, Get, Body, UseGuards, HttpCode, HttpStatus, Param, Patch
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
@@ -97,4 +97,12 @@ export class AuthController {
   async getMe(@CurrentUser() user: any) {
     return user;
   }
+
+  @Patch('users/:id')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission(Permission.USERS_MANAGE)
+  @ApiBearerAuth()
+  async updateUser(@Param('id') id: string, @Body() body: { isActive: boolean }) {
+    return this.authService.updateUser(id, body.isActive);
+}
 }

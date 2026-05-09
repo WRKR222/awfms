@@ -10,6 +10,7 @@ import { Sidebar, SidebarBody, SidebarLink, SidebarLinkItem } from '../../compon
 import { motion } from 'framer-motion';
 import { FlockIcon } from '../../components/ui/icons';
 
+
 const navDefs = [
   { label: 'Dashboard',   icon: LayoutDashboard, to: '/owner',              end: true },
   { label: 'Analytics',   icon: TrendingUp,      to: '/owner/analytics' },

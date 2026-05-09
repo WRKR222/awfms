@@ -22,9 +22,26 @@ export class HealthService {
     diagnosis?: string;
     treatment?: string;
   }, recordedById: string) {
-    return this.prisma.healthEvent.create({
+    // changes.pdf — Production Manager → Events: these types were removed
+    // from the UI and must be rejected server-side as well.
+    const DISABLED = new Set(['DISEASE_OUTBREAK', 'INJURY', 'QUARANTINE_IMPOSED', 'QUARANTINE_LIFTED']);
+    if (DISABLED.has(dto.eventType as unknown as string)) {
+      throw new NotFoundException(`Event type "${dto.eventType}" is no longer supported.`);
+    }
+
+    const event = await this.prisma.healthEvent.create({
       data: { ...dto, eventDate: new Date(dto.eventDate), recordedById },
     });
+
+    // When a batch is sold or discarded, close it so it disappears from the
+    // production-house live map and any related batch data reflects accordingly.
+    if (dto.eventType === 'BATCH_SOLD' || dto.eventType === 'BATCH_DISCARDED') {
+      await this.prisma.batch.update({
+        where: { id: dto.batchId },
+        data: { isActive: false, closedAt: new Date() },
+      });
+    }
+    return event;
   }
 
   async getHealthEvents(batchId: string) {

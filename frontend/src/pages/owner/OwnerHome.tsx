@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import dayjs from 'dayjs';
 import { CageMap } from '../../components/shared/CageMap';
+import { BrooderCageMap } from '../../components/shared/BrooderCageMap';
 
 type Range = 'daily' | 'weekly' | 'monthly' | 'quarterly';
 
@@ -208,6 +209,7 @@ export function OwnerHome() {
 
       {/* Block 1 Cage Map — collapsible production section */}
       <CageMapPanel />
+      <BrooderMapPanel />
 
       {/* AI Intelligence Summary */}
       {(aiSummary || data?.latestAiSummary) && (() => {
@@ -262,6 +264,32 @@ function CageMapPanel() {
       {open && (
         <div style={{ background: '#060c08', padding: '16px 20px' }}>
           <CageMap blockCode="BLK1" compact={false} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BrooderMapPanel() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-2xl border border-gray-100 dark:border-dark-border overflow-hidden shadow-sm">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-white dark:bg-dark-card hover:bg-gray-50 dark:hover:bg-dark-border transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Map className="w-4 h-4 text-blue-500" />
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Brooder — Live Map</span>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 font-medium">
+            Live
+          </span>
+        </div>
+        <ChevronRight className={`w-4 h-4 text-gray-400 transition-transform ${open ? 'rotate-90' : ''}`} />
+      </button>
+      {open && (
+        <div style={{ background: '#060c08', padding: '16px 20px' }}>
+          <BrooderCageMap />
         </div>
       )}
     </div>

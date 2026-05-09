@@ -11,26 +11,22 @@ import {
 } from 'lucide-react';
 import dayjs from 'dayjs';
 
+// changes.pdf — Production Manager → Events:
+// Remove DISEASE_OUTBREAK, INJURY, QUARANTINE_IMPOSED, QUARANTINE_LIFTED.
+// When BATCH_SOLD or BATCH_DISCARDED is logged, the backend marks the batch
+// inactive and closedAt — that's what reflects on the production-house live map.
 const EVENT_TYPES = [
-  { value: 'DISEASE_OUTBREAK',   label: 'Disease Outbreak',   showDisease: true,  showWeight: false },
-  { value: 'INJURY',             label: 'Bird Injury',        showDisease: false, showWeight: false },
-  { value: 'CULLING',            label: 'Bird Culling',       showDisease: false, showWeight: false },
-  { value: 'QUARANTINE_IMPOSED', label: 'Quarantine Imposed', showDisease: false, showWeight: false },
-  { value: 'QUARANTINE_LIFTED',  label: 'Quarantine Lifted',  showDisease: false, showWeight: false },
-  { value: 'BATCH_SOLD',         label: 'Batch Sold',         showDisease: false, showWeight: false },
-  { value: 'BATCH_DISCARDED',    label: 'Batch Discarded',    showDisease: false, showWeight: false },
-  { value: 'BIRD_WEIGHING',      label: 'Bird Weighing',      showDisease: false, showWeight: true  },
+  { value: 'CULLING',         label: 'Bird Culling',    showDisease: false, showWeight: false },
+  { value: 'BATCH_SOLD',      label: 'Batch Sold',      showDisease: false, showWeight: false },
+  { value: 'BATCH_DISCARDED', label: 'Batch Discarded', showDisease: false, showWeight: false },
+  { value: 'BIRD_WEIGHING',   label: 'Bird Weighing',   showDisease: false, showWeight: true  },
 ];
 
 const EVENT_ICONS: Record<string, React.ElementType> = {
-  DISEASE_OUTBREAK:   Bug,
-  INJURY:             Stethoscope,
-  CULLING:            Scissors,
-  QUARANTINE_IMPOSED: ShieldOff,
-  QUARANTINE_LIFTED:  ShieldCheck,
-  BATCH_SOLD:         Package,
-  BATCH_DISCARDED:    Archive,
-  BIRD_WEIGHING:      Scale,
+  CULLING:         Scissors,
+  BATCH_SOLD:      Package,
+  BATCH_DISCARDED: Archive,
+  BIRD_WEIGHING:   Scale,
 };
 
 const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';

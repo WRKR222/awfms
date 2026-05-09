@@ -1,5 +1,59 @@
+// src/modules/production/production.dto.ts
+//
+// Lead Attendant egg-collection submission shape.
+// Aligned with frontend EggCollectionPage and Anza Whole Foods System Summary:
+//   • rowData uses brokenUnsellable / brokenSellable (renamed from emptyBroken /
+//     fullBroken) and includes starterEggs.
+//   • Session-level: feedKg + feedTypeName (production-house feed only),
+//     waterLiters + houseTempC, optional vaccines/supplements list.
 import { z } from 'zod';
 
+const RowDataEntrySchema = z.object({
+  rowCode: z.string().min(1),                  // e.g. "A1", "B2", "C1"
+  totalBirds: z.number().int().min(0),
+  totalEggs: z.number().int().min(0),
+  starterEggs: z.number().int().min(0).default(0),
+  brokenUnsellable: z.number().int().min(0).default(0), // contents intact, contaminated
+  brokenSellable:   z.number().int().min(0).default(0), // sellable as broken eggs
+  softShell: z.number().int().min(0).default(0),
+  deformed:  z.number().int().min(0).default(0),
+  weightKg:  z.number().min(0).default(0),
+  attendantName: z.string().default(''),
+});
+
+const SessionFeedSchema = z.object({
+  feedKg: z.number().positive('Feed kg must be greater than zero'),
+  feedTypeName: z.string().min(1, 'Feed type is required'),
+});
+
+const EnvironmentSchema = z.object({
+  waterLiters: z.number().positive('Water consumption (litres) is required'),
+  houseTempC:  z.number().positive('House temperature (°C) is required'),
+});
+
+const VaccineGivenSchema = z.object({
+  kind: z.enum(['VACCINE', 'SUPPLEMENT']),
+  name: z.string().min(1),
+  dosage: z.string().min(1),
+});
+
+export const CreateEggCollectionSessionSchema = z.object({
+  batchId: z.string().uuid(),
+  houseId: z.string().uuid(),
+  sessionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  shift: z.enum(['AM', 'PM']),
+  block: z.enum(['BLOCK1']).default('BLOCK1'),       // BLOCK2 disabled (under construction)
+  openingPop: z.number().int().min(0),
+  mortalities: z.number().int().min(0),
+  rowData: z.array(RowDataEntrySchema).min(1),
+  sessionFeed: SessionFeedSchema,                    // required — bundled w/ submission
+  environment: EnvironmentSchema,                    // required — bundled w/ submission
+  vaccinesGiven: z.array(VaccineGivenSchema).default([]),
+  remarks: z.string().optional(),
+});
+export type CreateEggCollectionSessionDto = z.infer<typeof CreateEggCollectionSessionSchema>;
+
+// ── Legacy production-entry DTO retained for migration parity with old clients ──
 export const CreateProductionEntrySchema = z.object({
   batchId: z.string().uuid(),
   entryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -23,9 +77,8 @@ export const CreateProductionEntrySchema = z.object({
   { message: 'Entry date cannot be in the future', path: ['entryDate'] },
 ).refine(
   data => {
-    // Grade totals must add up to totalWhole
     const gradeSum = data.gradeXl + data.gradeL + data.gradeM + data.gradeS + data.gradeReject;
-    return gradeSum === data.totalWhole || gradeSum === 0; // 0 = grades not yet filled
+    return gradeSum === data.totalWhole || gradeSum === 0;
   },
   { message: 'Grade totals must sum to total whole eggs', path: ['gradeXl'] },
 );

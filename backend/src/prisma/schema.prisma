@@ -94,6 +94,7 @@ enum SalesTier {
 enum OrderStatus {
   PENDING
   CONFIRMED
+  DELIVERING
   DELIVERED
   RETURNED
   CANCELLED
@@ -217,10 +218,6 @@ model User {
   brooderLogs             BrooderLog[]            @relation("BrooderLoggedBy")
 
   // Phase 4
-  storeMedicationLogs    StoreMedicationLog[]    @relation("StoreMedicationLoggedBy")
-  storeEquipmentLogs     StoreEquipmentLog[]     @relation("StoreEquipmentLoggedBy")
-  storeVetVisitLogs      StoreVetVisitLog[]      @relation("StoreVetVisitLoggedBy")
-  storeWorkerAssignments StoreWorkerAssignment[] @relation("StoreWorkerAssignmentLoggedBy")
   expenseCategories      ExpenseCategory[]       @relation("ExpenseCategoryCreatedBy")
   eggPriceSchedules      EggPriceSchedule[]      @relation("EggPriceScheduleSetBy")
 
@@ -229,8 +226,9 @@ model User {
   storeStockOuts     StoreStockOut[]     @relation("StoreStockOutIssuedBy")
   purchaseRequests   PurchaseRequest[]   @relation("PurchaseRequestCreatedBy")
   purchaseRequestReviews PurchaseRequest[] @relation("PurchaseRequestReviewedBy")
-  lposCreated        LocalPurchaseOrder[] @relation("LPOCreatedBy")
-  lposApproved       LocalPurchaseOrder[] @relation("LPOApprovedBy")
+  lposCreated           LocalPurchaseOrder[]      @relation("LPOCreatedBy")
+  lposApproved          LocalPurchaseOrder[]      @relation("LPOApprovedBy")
+  breakageAdjustments   EggBreakageAdjustment[]  @relation("BreakageAdjustmentReportedBy")
 
   @@map("users")
 }
@@ -282,7 +280,7 @@ model House {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   batches           Batch[]
-  workerAssignments StoreWorkerAssignment[]
+  
 
   @@map("houses")
 }
@@ -337,8 +335,7 @@ model Batch {
   vaccinationRecords    VaccinationRecord[]
   healthEvents          HealthEvent[]
   eggCollectionSessions EggCollectionSession[]
-  storeMedicationLogs   StoreMedicationLog[]
-
+  
   @@index([houseId])
   @@index([stage])
   @@index([isActive])
@@ -804,6 +801,9 @@ model SalesOrder {
   bankRef         String?     @map("bank_ref")
   createdById     String      @map("created_by_id")
   confirmedAt     DateTime?   @map("confirmed_at")
+  deliveryNotes   String?     @map("delivery_notes")
+  deliveredAt     DateTime?   @map("delivered_at")
+  deliveredById   String?     @map("delivered_by_id")
   createdAt       DateTime    @default(now()) @map("created_at")
   updatedAt       DateTime    @updatedAt @map("updated_at")
 
@@ -1010,86 +1010,6 @@ model DeliveryLog {
 }
 
 // ─── STORE OPERATIONS ────────────────────────────────────────────────────────
-
-model StoreMedicationLog {
-  id             String   @id @default(uuid())
-  batchId        String   @map("batch_id")
-  houseId        String   @map("house_id")
-  logDate        DateTime @map("log_date") @db.Date
-  medicationName String   @map("medication_name")
-  dosage         String?
-  quantityUnits  String?  @map("quantity_units")
-  costKes        Decimal  @default(0) @map("cost_kes") @db.Decimal(12, 2)
-  notes          String?
-  loggedById     String   @map("logged_by_id")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-
-  batch    Batch @relation(fields: [batchId], references: [id])
-  loggedBy User  @relation("StoreMedicationLoggedBy", fields: [loggedById], references: [id])
-
-  @@index([batchId, logDate])
-  @@index([logDate])
-  @@map("store_medication_logs")
-}
-
-model StoreEquipmentLog {
-  id            String   @id @default(uuid())
-  logDate       DateTime @map("log_date") @db.Date
-  equipmentName String   @map("equipment_name")
-  eventType     String   @map("event_type")
-  description   String?
-  costKes       Decimal  @default(0) @map("cost_kes") @db.Decimal(12, 2)
-  vendorName    String?  @map("vendor_name")
-  notes         String?
-  loggedById    String   @map("logged_by_id")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  loggedBy User @relation("StoreEquipmentLoggedBy", fields: [loggedById], references: [id])
-
-  @@index([logDate])
-  @@map("store_equipment_logs")
-}
-
-model StoreVetVisitLog {
-  id          String   @id @default(uuid())
-  visitDate   DateTime @map("visit_date") @db.Date
-  vetName     String   @map("vet_name")
-  purpose     String
-  batchesSeen String[] @map("batches_seen")
-  findings    String?
-  costKes     Decimal  @default(0) @map("cost_kes") @db.Decimal(12, 2)
-  notes       String?
-  loggedById  String   @map("logged_by_id")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-
-  loggedBy User @relation("StoreVetVisitLoggedBy", fields: [loggedById], references: [id])
-
-  @@index([visitDate])
-  @@map("store_vet_visit_logs")
-}
-
-model StoreWorkerAssignment {
-  id            String   @id @default(uuid())
-  weekStartDate DateTime @map("week_start_date") @db.Date
-  workerName    String   @map("worker_name")
-  houseId       String   @map("house_id")
-  roleTitle     String?  @map("role_title")
-  salaryKes     Decimal  @default(0) @map("salary_kes") @db.Decimal(12, 2)
-  notes         String?
-  loggedById    String   @map("logged_by_id")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  house    House @relation(fields: [houseId], references: [id])
-  loggedBy User  @relation("StoreWorkerAssignmentLoggedBy", fields: [loggedById], references: [id])
-
-  @@index([weekStartDate])
-  @@index([houseId])
-  @@map("store_worker_assignments")
-}
 
 // ─── FINANCE: CUSTOM EXPENSE CATEGORIES ──────────────────────────────────────
 
@@ -1404,39 +1324,46 @@ model LocalPurchaseOrder {
 model LPOItem {
   id          String  @id @default(uuid())
   lpoId       String  @map("lpo_id")
-  storeItemId String  @map("store_item_id")
+  storeItemId String?  @map("store_item_id")
   description String?
   quantity    Decimal @db.Decimal(10, 3)
   unitPrice   Decimal @map("unit_price") @db.Decimal(10, 2)
   subtotal    Decimal @db.Decimal(12, 2)
 
   lpo       LocalPurchaseOrder @relation(fields: [lpoId], references: [id], onDelete: Cascade)
-  storeItem StoreItem          @relation(fields: [storeItemId], references: [id])
+  storeItem StoreItem?          @relation(fields: [storeItemId], references: [id])
 
   @@map("lpo_items")
 }
 
 // ─── PHASE 2: FARM EMPLOYEES ──────────────────────────────────────────────────
 
+
 model FarmEmployee {
-  id             String         @id @default(uuid())
-  fullName       String         @map("full_name")
-  nationalId     String?        @unique @map("national_id")
-  phone          String?
-  role           String         // e.g. "Attendant", "Driver", "Cleaner"
-  houseIds       String[]       @map("house_ids") // assigned houses
-  salaryKes      Decimal        @default(0) @map("salary_kes") @db.Decimal(10, 2)
-  payPeriod      String         @default("MONTHLY") @map("pay_period") // WEEKLY | MONTHLY
-  hireDate       DateTime       @map("hire_date") @db.Date
-  terminatedDate DateTime?      @map("terminated_date") @db.Date
-  status         EmployeeStatus @default(ACTIVE)
-  notes          String?
-  createdAt      DateTime       @default(now()) @map("created_at")
-  updatedAt      DateTime       @updatedAt @map("updated_at")
+  id                String         @id @default(uuid())
+  fullName          String         @map("full_name")
+  nationalId        String?        @unique @map("national_id")
+  phone             String?
+  email             String?
+  role              String
+  assignment        String?
+  houseIds          String[]       @map("house_ids")
+  salaryKes         Decimal        @default(0) @map("salary_kes") @db.Decimal(10, 2)
+  payPeriod         String         @default("MONTHLY") @map("pay_period")
+  hireDate          DateTime       @map("hire_date") @db.Date
+  terminatedDate    DateTime?      @map("terminated_date") @db.Date
+  status            EmployeeStatus @default(ACTIVE)
+  nextOfKinName     String?        @map("next_of_kin_name")
+  nextOfKinPhone    String?        @map("next_of_kin_phone")
+  nextOfKinRelation String?        @map("next_of_kin_relation")
+  notes             String?
+  createdAt         DateTime       @default(now()) @map("created_at")
+  updatedAt         DateTime       @updatedAt @map("updated_at")
 
   @@index([status])
   @@map("farm_employees")
 }
+
 
 // ─── PHASE 2: CONSTRUCTION RECORDS ───────────────────────────────────────────
 
@@ -1460,4 +1387,42 @@ model ConstructionRecord {
   @@index([status])
   @@index([startDate])
   @@map("construction_records")
+}
+
+// ─── Egg Breakage Adjustment (Sales role) ─────────────────────────────────────
+
+model EggBreakageAdjustment {
+  id             String   @id @default(uuid())
+  adjustmentRef  String   @unique @map("adjustment_ref")
+  adjustmentDate DateTime @map("adjustment_date") @db.Date
+
+  // NON_CONSUMABLE = broken unsellable | CONSUMABLE = broken sellable
+  adjustmentType String   @map("adjustment_type")
+
+  // Quantities at time of adjustment (snapshot from tally / stock)
+  quantityStandardBefore      Int @map("quantity_standard_before")
+  quantityStarterBefore       Int @map("quantity_starter_before")
+  quantityNonConsumableBefore Int @map("quantity_non_consumable_before")
+  quantityConsumableBefore    Int @map("quantity_consumable_before")
+
+  // New corrected quantities (entered by Sales)
+  newNonConsumable Int @map("new_non_consumable")
+  newConsumable    Int @map("new_consumable")
+
+  // Auto-calculated diff
+  quantityDiff Int @map("quantity_diff")
+
+  // Optional: reference tally session this is based on
+  tallySessionId String? @map("tally_session_id")
+
+  notes        String?
+  reportedById String  @map("reported_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  reportedBy User @relation("BreakageAdjustmentReportedBy", fields: [reportedById], references: [id])
+
+  @@index([adjustmentDate])
+  @@index([adjustmentType])
+  @@map("egg_breakage_adjustments")
 }

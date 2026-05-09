@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { SalesService } from './sales.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -24,7 +24,7 @@ export class SalesController {
   @Post('customers')
   @RequirePermission(Permission.SALES_CUSTOMER_MANAGE)
   @ApiOperation({ summary: 'Create a new customer' })
-  createCustomer(@Body() body: any, @CurrentUser() user: any) {
+  createCustomer(@Body() body: any) {
     return this.salesService.createCustomer(body);
   }
 
@@ -54,5 +54,40 @@ export class SalesController {
   @ApiOperation({ summary: 'Confirm a sales order and generate invoice' })
   confirmOrder(@Param('id') id: string, @CurrentUser() user: any) {
     return this.salesService.confirmOrder(id, user.id);
+  }
+
+  // ── Delivery tracking ────────────────────────────────────────────────────
+  @Patch('orders/:id/deliver')
+  @RequirePermission(Permission.SALES_ORDER_MANAGE)
+  @ApiOperation({ summary: 'Mark a DELIVERING order as DELIVERED' })
+  markDelivered(
+    @Param('id') id: string,
+    @Body('notes') notes: string,
+    @Request() req: any,
+  ) {
+    return this.salesService.markOrderDelivered(id, notes, req.user);
+  }
+
+  // ── Egg Breakage Adjustments ─────────────────────────────────────────────
+  @Get('breakage-adjustments')
+  @RequirePermission(Permission.SALES_VIEW)
+  @ApiOperation({ summary: 'List all egg breakage adjustments' })
+  listBreakage(@CurrentUser() user: any) {
+    return this.salesService.listBreakageAdjustments(user.id);
+  }
+
+  @Post('breakage-adjustments')
+  @RequirePermission(Permission.SALES_ORDER_CREATE)
+  @ApiOperation({ summary: 'Submit an egg breakage adjustment' })
+  createBreakage(@Body() body: any, @CurrentUser() user: any) {
+    return this.salesService.createBreakageAdjustment(body, user);
+  }
+
+  // ── Sales stock summary ──────────────────────────────────────────────────
+  @Get('stock')
+  @RequirePermission(Permission.SALES_VIEW)
+  @ApiOperation({ summary: 'Get current egg stock summary for Sales' })
+  getStock() {
+    return this.salesService.getSalesStock();
   }
 }

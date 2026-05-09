@@ -16,7 +16,7 @@ import {
 import dayjs from 'dayjs';
 import { api } from '../../lib/api/client';
 import {
-  fmtKES, useStoreItems, STATUS_BADGE, URGENCY_BADGE,
+  fmtKES, STATUS_BADGE, URGENCY_BADGE,
   type PurchaseRequest, type LPO,
 } from '../store/inventory/_shared';
 
@@ -233,7 +233,7 @@ function GenerateLpoModal({ pr, onClose, onDone }: {
     expectedDelivery?: string;
     vatPercent: number;
     notes?: string;
-    items: Array<{ storeItemId: string; description?: string; quantity: number; unitPrice: number }>;
+    items: Array<{ storeItemId?: string; description?: string; quantity: number; unitPrice: number }>;
   };
   const { register, control, handleSubmit, watch } = useForm<Form>({
     defaultValues: {
@@ -299,12 +299,20 @@ function GenerateLpoModal({ pr, onClose, onDone }: {
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Items</h4>
             <button type="button"
-              onClick={() => append({ storeItemId: '', quantity: 1, unitPrice: 0 })}
+              onClick={() => append({ description: '', quantity: 1, unitPrice: 0 })}
               className="text-xs flex items-center gap-1 text-brand-green hover:underline">
               <Plus className="w-3 h-3" /> Add line
             </button>
           </div>
           <div className="space-y-2">
+            {/* Column labels (consistent with Supplier/Date field labels above) */}
+            <div className="grid grid-cols-12 gap-2 text-xs text-gray-500 px-1">
+              <div className="col-span-12 md:col-span-5">Item *</div>
+              <div className="col-span-4 md:col-span-2">Quantity *</div>
+              <div className="col-span-4 md:col-span-2">Unit Price (KES) *</div>
+              <div className="col-span-3 md:col-span-2 text-right">Subtotal</div>
+              <div className="col-span-1" />
+            </div>
             {fields.map((f, idx) => (
               <div key={f.id} className="grid grid-cols-12 gap-2 items-start">
                 <input type="hidden" {...register(`items.${idx}.storeItemId` as const)} />
@@ -313,11 +321,11 @@ function GenerateLpoModal({ pr, onClose, onDone }: {
                     {...register(`items.${idx}.description` as const)} className="input" />
                 </div>
                 <div className="col-span-4 md:col-span-2">
-                  <input type="number" step="any" placeholder="Qty"
+                  <input type="number" step="any" placeholder="e.g. 10"
                     {...register(`items.${idx}.quantity` as const, { required: true })} className="input" />
                 </div>
                 <div className="col-span-4 md:col-span-2">
-                  <input type="number" step="any" placeholder="Unit price"
+                  <input type="number" step="any" placeholder="e.g. 1500.00"
                     {...register(`items.${idx}.unitPrice` as const, { required: true })} className="input" />
                 </div>
                 <div className="col-span-3 md:col-span-2 text-right pt-2 text-xs text-gray-500">
@@ -468,15 +476,14 @@ function ManualLpoModal({ onClose, onDone }: { onClose: () => void; onDone: () =
     expectedDelivery?: string;
     vatPercent: number;
     notes?: string;
-    items: Array<{ storeItemId: string; description?: string; quantity: number; unitPrice: number }>;
+    items: Array<{ itemName: string; quantity: number; unitPrice: number }>;
   };
-  const { data: items = [] } = useStoreItems(true);
   const { register, control, handleSubmit, watch } = useForm<Form>({
     defaultValues: {
       supplierName: '',
       lpoDate: dayjs().format('YYYY-MM-DD'),
       vatPercent: 16,
-      items: [{ storeItemId: '', quantity: 1, unitPrice: 0 }],
+      items: [{ itemName: '', quantity: 1, unitPrice: 0 }],
     },
   });
   const { fields, append, remove } = useFieldArray({ control, name: 'items' });
@@ -497,8 +504,9 @@ function ManualLpoModal({ onClose, onDone }: { onClose: () => void; onDone: () =
       vatPercent: Number(data.vatPercent ?? 0),
       notes: data.notes || undefined,
       items: data.items.map(i => ({
-        storeItemId: i.storeItemId,
-        description: i.description || undefined,
+        // Manual LPO: free-typed item — backend stores name in `description`
+        // and leaves storeItemId null (see prisma migration shipped with this pack).
+        description: i.itemName,
         quantity: Number(i.quantity),
         unitPrice: Number(i.unitPrice),
       })),
@@ -528,26 +536,36 @@ function ManualLpoModal({ onClose, onDone }: { onClose: () => void; onDone: () =
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Items</h4>
             <button type="button"
-              onClick={() => append({ storeItemId: '', quantity: 1, unitPrice: 0 })}
+              onClick={() => append({ itemName: '', quantity: 1, unitPrice: 0 })}
               className="text-xs flex items-center gap-1 text-brand-green hover:underline">
               <Plus className="w-3 h-3" /> Add line
             </button>
           </div>
           <div className="space-y-2">
+            {/* Column labels — consistent with the Field labels (Supplier, LPO Date, …) above */}
+            <div className="grid grid-cols-12 gap-2 text-xs text-gray-500 px-1">
+              <div className="col-span-12 md:col-span-5">Item *</div>
+              <div className="col-span-4 md:col-span-2">Quantity *</div>
+              <div className="col-span-4 md:col-span-2">Unit Price (KES) *</div>
+              <div className="col-span-3 md:col-span-2 text-right">Subtotal</div>
+              <div className="col-span-1" />
+            </div>
             {fields.map((f, idx) => (
               <div key={f.id} className="grid grid-cols-12 gap-2 items-start">
                 <div className="col-span-12 md:col-span-5">
-                  <select {...register(`items.${idx}.storeItemId` as const, { required: true })} className="input">
-                    <option value="">Select item…</option>
-                    {items.map(i => <option key={i.id} value={i.id}>{i.sku} — {i.name}</option>)}
-                  </select>
+                  <input
+                    type="text"
+                    placeholder="Type item name (e.g. Layers Mash 70kg)"
+                    {...register(`items.${idx}.itemName` as const, { required: true })}
+                    className="input"
+                  />
                 </div>
                 <div className="col-span-4 md:col-span-2">
-                  <input type="number" step="any" placeholder="Qty"
+                  <input type="number" step="any" placeholder="e.g. 10"
                     {...register(`items.${idx}.quantity` as const, { required: true })} className="input" />
                 </div>
                 <div className="col-span-4 md:col-span-2">
-                  <input type="number" step="any" placeholder="Unit price"
+                  <input type="number" step="any" placeholder="e.g. 1500.00"
                     {...register(`items.${idx}.unitPrice` as const, { required: true })} className="input" />
                 </div>
                 <div className="col-span-3 md:col-span-2 text-right pt-2 text-xs text-gray-500">

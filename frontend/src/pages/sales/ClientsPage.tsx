@@ -280,7 +280,7 @@ export function ClientsPage() {
   const creditCount = (customers as any[]).filter((c: any) => c.creditDays > 0).length;
 
   return (
-    <div className="p-4 md:p-6 max-w-3xl mx-auto">
+    <div className="p-4 md:p-8 space-y-5 max-w-5xl mx-auto">
       {/* Header */}
       <div className="flex items-start justify-between mb-5">
         <div>

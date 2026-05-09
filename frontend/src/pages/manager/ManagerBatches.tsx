@@ -268,33 +268,110 @@ function BatchCard({ batch }: { batch: any }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 // ── New Batch Modal ─────────────────────────────────────────────────────────
-const BIRD_TYPES = ['LAYER_COMMERCIAL','LAYER_KIENYEJI','BROILER','KIENYEJI','CHICK'];
-const STAGES = ['BROODING','GROWER','PRODUCTION'];
+//
+// Per `changes.pdf` (Production Manager) + Anza Whole Foods Summary:
+//   • All fields are typed (free text) EXCEPT:
+//       - "Assign To" (Brooder vs Production House)  — select
+//       - "Vaccinated on arrival"                    — checkbox
+//   • If assigned to the Production House, the manager must record the number
+//     of birds placed in each row of each unit (Unit A: A1/A2, B: B1/B2, C: C1/C2).
+//     Block 2 is under construction and is not selectable.
+//   • Required typed fields: batchCode, batchAge, supplierName, birdType,
+//     birdBreed, quantityReceived, dayOfHatch, houseId, weight (kg).
+//   • `vaccinesGiven` is required only when "Vaccinated on arrival" is ticked.
+//   • Notes are optional.
+
 const BATCH_LOCATIONS = [
-  { value: 'BROODER',          label: 'Brooder (0–18 weeks)' },
-  { value: 'PRODUCTION_HOUSE', label: 'Production House (18+ weeks)' },
+  { value: 'BROODER',          label: 'Brooder' },
+  { value: 'PRODUCTION_HOUSE', label: 'Production House (Block 1)' },
 ];
+
+// Production-house unit/row layout — Block 1 only. Block 2 is under construction.
+const PRODUCTION_HOUSE_UNITS: { unit: 'A' | 'B' | 'C'; rows: string[] }[] = [
+  { unit: 'A', rows: ['A1', 'A2'] },
+  { unit: 'B', rows: ['B1', 'B2'] },
+  { unit: 'C', rows: ['C1', 'C2'] },
+];
+
+type RowPlacementMap = Record<string, string>; // rowCode -> bird count (kept as string for input handling)
+
+function emptyRowPlacements(): RowPlacementMap {
+  return PRODUCTION_HOUSE_UNITS.flatMap(u => u.rows).reduce((acc, r) => {
+    acc[r] = '';
+    return acc;
+  }, {} as RowPlacementMap);
+}
 
 function NewBatchModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const { register, handleSubmit, watch, formState: { errors } } = useForm({
     defaultValues: {
-      batchCode: '', birdType: 'LAYER_COMMERCIAL', stage: 'BROODING',
-      location: 'BROODER', quantityReceived: '',
-      dateOfHatch: dayjs().format('YYYY-MM-DD'),
-      supplierName: '', vaccinatedOnArrival: false, vaccinesGiven: '',
-      houseId: '', notes: '',
-    }
+      batchCode: '',
+      batchAge: '',
+      supplierName: '',
+      birdType: '',
+      birdBreed: '',
+      location: 'BROODER',
+      quantityReceived: '',
+      dayOfHatch: dayjs().format('YYYY-MM-DD'),
+      houseId: '',
+      weightKg: '',
+      vaccinatedOnArrival: false,
+      vaccinesGiven: '',
+      notes: '',
+    },
   });
 
+  const location           = watch('location');
   const vaccinatedOnArrival = watch('vaccinatedOnArrival');
+  const quantityReceived   = Number(watch('quantityReceived') || 0);
+
+  // Per-row bird placements (only used when Assign To = Production House)
+  const [rowPlacements, setRowPlacements] = useState<RowPlacementMap>(emptyRowPlacements);
+  const [placementError, setPlacementError] = useState<string | null>(null);
+
+  const placedTotal = Object.values(rowPlacements)
+    .reduce((sum, v) => sum + (Number(v) || 0), 0);
 
   const create = useMutation({
-    mutationFn: (data: any) => api.post('/flock/batches', {
-      ...data, quantityReceived: Number(data.quantityReceived), isActive: true,
-    }).then(r => r.data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['batches'] }); onClose(); }
+    mutationFn: (data: any) => {
+      const payload: any = {
+        batchCode: data.batchCode,
+        batchAge: data.batchAge,
+        supplierName: data.supplierName,
+        birdType: data.birdType,
+        birdBreed: data.birdBreed,
+        location: data.location,
+        quantityReceived: Number(data.quantityReceived),
+        dateOfHatch: data.dayOfHatch,
+        houseId: data.houseId,
+        arrivalWeightKg: Number(data.weightKg),
+        vaccinatedOnArrival: !!data.vaccinatedOnArrival,
+        vaccinesGiven: data.vaccinatedOnArrival ? data.vaccinesGiven : undefined,
+        notes: data.notes || undefined,
+        isActive: true,
+      };
+      if (data.location === 'PRODUCTION_HOUSE') {
+        payload.rowPlacements = Object.entries(rowPlacements)
+          .map(([rowCode, count]) => ({ rowCode, birdCount: Number(count) || 0 }));
+      }
+      return api.post('/flock/batches', payload).then(r => r.data);
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['batches'] }); onClose(); },
   });
+
+  const onSubmit = (data: any) => {
+    setPlacementError(null);
+    if (data.location === 'PRODUCTION_HOUSE') {
+      if (placedTotal !== Number(data.quantityReceived)) {
+        setPlacementError(
+          `Birds placed across rows (${placedTotal}) must equal Quantity Received (${data.quantityReceived || 0}).`,
+        );
+        return;
+      }
+    }
+    create.mutate(data);
+  };
 
   const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
   const lCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1';
@@ -309,22 +386,65 @@ function NewBatchModal({ onClose }: { onClose: () => void }) {
           </div>
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
         </div>
-        <form onSubmit={handleSubmit(d => create.mutate(d))} className="p-5 space-y-4">
+
+        <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-4">
+
+          {/* Identification ─────────────────────────────────────────────── */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div><label className={lCls}>Batch Code *</label><input {...register('batchCode', { required: 'Required' })} className={iCls} placeholder="e.g. BLK1-2024-A" />{errors.batchCode && <p className="text-red-500 text-xs mt-1">{(errors.batchCode as any).message}</p>}</div>
-            <div><label className={lCls}>Supplier Name</label><input {...register('supplierName')} className={iCls} placeholder="e.g. Kenchic Limited" /></div>
-            <div><label className={lCls}>Bird Type *</label><select {...register('birdType', { required: true })} className={iCls}>{BIRD_TYPES.map(bt => <option key={bt} value={bt}>{bt.replace(/_/g,' ')}</option>)}</select></div>
+            <div>
+              <label className={lCls}>Batch Code *</label>
+              <input {...register('batchCode', { required: 'Required' })} className={iCls} placeholder="e.g. BLK1-2024-A" />
+              {errors.batchCode && <p className="text-red-500 text-xs mt-1">{(errors.batchCode as any).message}</p>}
+            </div>
+            <div>
+              <label className={lCls}>Batch Age *</label>
+              <input {...register('batchAge', { required: 'Required' })} className={iCls} placeholder="e.g. 1 day, 4 weeks" />
+              {errors.batchAge && <p className="text-red-500 text-xs mt-1">{(errors.batchAge as any).message}</p>}
+            </div>
+            <div>
+              <label className={lCls}>Supplier Name *</label>
+              <input {...register('supplierName', { required: 'Required' })} className={iCls} placeholder="e.g. Kenchic Limited" />
+              {errors.supplierName && <p className="text-red-500 text-xs mt-1">{(errors.supplierName as any).message}</p>}
+            </div>
+            <div>
+              <label className={lCls}>Bird Type *</label>
+              <input {...register('birdType', { required: 'Required' })} className={iCls} placeholder="e.g. Layer, Broiler, Kienyeji" />
+              {errors.birdType && <p className="text-red-500 text-xs mt-1">{(errors.birdType as any).message}</p>}
+            </div>
+            <div>
+              <label className={lCls}>Bird Breed *</label>
+              <input {...register('birdBreed', { required: 'Required' })} className={iCls} placeholder="e.g. Isa Brown, Lohmann, Kuroiler" />
+              {errors.birdBreed && <p className="text-red-500 text-xs mt-1">{(errors.birdBreed as any).message}</p>}
+            </div>
             <div>
               <label className={lCls}>Assign To *</label>
               <select {...register('location', { required: true })} className={iCls}>
                 {BATCH_LOCATIONS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
               </select>
+              <p className="text-[10px] text-gray-400 mt-1">Block 2 is under construction.</p>
             </div>
-            <div><label className={lCls}>Stage *</label><select {...register('stage', { required: true })} className={iCls}>{STAGES.map(s => <option key={s} value={s}>{s}</option>)}</select></div>
-            <div><label className={lCls}>Quantity Received *</label><input {...register('quantityReceived', { required: 'Required', min: 1 })} type="number" min="1" className={iCls} placeholder="e.g. 5000" />{errors.quantityReceived && <p className="text-red-500 text-xs mt-1">{(errors.quantityReceived as any).message}</p>}</div>
-            <div><label className={lCls}>Date of Hatch *</label><input {...register('dateOfHatch', { required: true })} type="date" className={iCls} /></div>
-            <div><label className={lCls}>House ID</label><input {...register('houseId')} className={iCls} placeholder="e.g. house_001" /></div>
+            <div>
+              <label className={lCls}>Quantity Received *</label>
+              <input {...register('quantityReceived', { required: 'Required', min: 1 })} type="number" min="1" className={iCls} placeholder="e.g. 5000" />
+              {errors.quantityReceived && <p className="text-red-500 text-xs mt-1">{(errors.quantityReceived as any).message}</p>}
+            </div>
+            <div>
+              <label className={lCls}>Day of Hatch *</label>
+              <input {...register('dayOfHatch', { required: true })} type="date" className={iCls} />
+            </div>
+            <div>
+              <label className={lCls}>House ID *</label>
+              <input {...register('houseId', { required: 'Required' })} className={iCls} placeholder="e.g. BROODER-01 or BLK1-A" />
+              {errors.houseId && <p className="text-red-500 text-xs mt-1">{(errors.houseId as any).message}</p>}
+            </div>
+            <div>
+              <label className={lCls}>Weight on Arrival (kg / bird) *</label>
+              <input {...register('weightKg', { required: 'Required', min: 0 })} type="number" step="0.001" min="0" className={iCls} placeholder="e.g. 0.045" />
+              {errors.weightKg && <p className="text-red-500 text-xs mt-1">{(errors.weightKg as any).message}</p>}
+            </div>
           </div>
+
+          {/* Vaccination on arrival ───────────────────────────────────────── */}
           <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 space-y-3">
             <label className="flex items-center gap-2 cursor-pointer">
               <input {...register('vaccinatedOnArrival')} type="checkbox" className="w-4 h-4 accent-brand-green" />
@@ -332,16 +452,77 @@ function NewBatchModal({ onClose }: { onClose: () => void }) {
             </label>
             {vaccinatedOnArrival && (
               <div>
-                <label className={lCls}>Vaccines Given</label>
-                <input {...register('vaccinesGiven')} className={iCls} placeholder="e.g. Marek’s Disease, Newcastle ND1, IB..." />
+                <label className={lCls}>Vaccines Given *</label>
+                <input
+                  {...register('vaccinesGiven', { required: vaccinatedOnArrival ? 'List the vaccines given' : false })}
+                  className={iCls}
+                  placeholder="e.g. Marek’s Disease, Newcastle ND1, IB…"
+                />
+                {errors.vaccinesGiven && <p className="text-red-500 text-xs mt-1">{(errors.vaccinesGiven as any).message}</p>}
               </div>
             )}
           </div>
-          <div><label className={lCls}>Notes</label><textarea {...register('notes')} rows={2} className={iCls} placeholder="Optional notes..." /></div>
+
+          {/* Production-house row placements ──────────────────────────────── */}
+          {location === 'PRODUCTION_HOUSE' && (
+            <div className="bg-brand-green/5 dark:bg-brand-green/10 border border-brand-green/30 rounded-xl p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                  Birds Placed Per Row (Block 1)
+                </p>
+                <p className={`text-xs font-semibold ${
+                  placedTotal === quantityReceived && quantityReceived > 0
+                    ? 'text-brand-green'
+                    : 'text-gray-500'
+                }`}>
+                  {placedTotal} / {quantityReceived || 0}
+                </p>
+              </div>
+              {PRODUCTION_HOUSE_UNITS.map(({ unit, rows }) => (
+                <div key={unit}>
+                  <p className="text-[11px] uppercase tracking-wide font-bold text-gray-500 dark:text-gray-400 mb-1.5">
+                    Unit {unit}
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {rows.map(rowCode => (
+                      <div key={rowCode}>
+                        <label className={lCls}>Row {rowCode}</label>
+                        <input
+                          type="number"
+                          min={0}
+                          inputMode="numeric"
+                          value={rowPlacements[rowCode]}
+                          onChange={e => setRowPlacements(p => ({ ...p, [rowCode]: e.target.value }))}
+                          className={iCls}
+                          placeholder="0"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {placementError && (
+                <p className="text-red-500 text-xs">{placementError}</p>
+              )}
+              <p className="text-[10px] text-gray-400">
+                The sum of birds placed across all rows must equal the Quantity Received.
+              </p>
+            </div>
+          )}
+
+          {/* Notes ─────────────────────────────────────────────────────── */}
+          <div>
+            <label className={lCls}>Notes (optional)</label>
+            <textarea {...register('notes')} rows={2} className={iCls} placeholder="Optional notes…" />
+          </div>
+
           {create.isError && <p className="text-red-500 text-sm">Failed to create batch. Please try again.</p>}
+
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-3 font-semibold">Cancel</button>
-            <button type="submit" disabled={create.isPending} className="flex-1 bg-brand-green text-white rounded-xl py-3 font-semibold disabled:opacity-60">{create.isPending ? 'Creating...' : 'Create Batch'}</button>
+            <button type="submit" disabled={create.isPending} className="flex-1 bg-brand-green text-white rounded-xl py-3 font-semibold disabled:opacity-60">
+              {create.isPending ? 'Creating…' : 'Create Batch'}
+            </button>
           </div>
         </form>
       </div>

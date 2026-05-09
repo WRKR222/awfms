@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OrderStatus, PaymentMethod } from '@prisma/client';
+import { RequestUser } from '../../auth/types/request-user.type';
 import dayjs from 'dayjs';
 import { FinanceService } from '../finance/finance.service';
 
@@ -88,7 +89,7 @@ export class SalesService {
   async getSummary(days = 30) {
     const from = dayjs().subtract(days, 'day').toDate();
     const orders = await this.prisma.salesOrder.findMany({
-      where: { deletedAt: null, orderDate: { gte: from }, status: { not: 'CANCELLED' } },
+      where: { deletedAt: null, orderDate: { gte: from }, status: { not: 'CANCELLED' as OrderStatus } },
       include: { items: true },
     });
     const totalRevenue = orders.reduce((s, o) => s + Number(o.subtotal), 0);
@@ -102,10 +103,121 @@ export class SalesService {
   async confirmOrder(orderId: string, userId: string) {
     const order = await this.prisma.salesOrder.update({
       where: { id: orderId },
-      data: { status: 'CONFIRMED', confirmedAt: new Date() },
+      data: { status: 'CONFIRMED' as OrderStatus, confirmedAt: new Date() },
       include: { customer: true, items: true },
     });
     await this.financeService.generateInvoiceForOrder(orderId, userId);
     return order;
+  }
+
+  // ── Delivery ────────────────────────────────────────────────────────────────
+
+  async markOrderDelivered(id: string, notes: string, user: RequestUser) {
+    const order = await this.prisma.salesOrder.findUnique({ where: { id } });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.status !== ('DELIVERING' as OrderStatus)) {
+      throw new BadRequestException('Only DELIVERING orders can be marked as delivered');
+    }
+    return this.prisma.salesOrder.update({
+      where: { id },
+      data: {
+        status: 'DELIVERED' as OrderStatus,
+        deliveryNotes: notes ?? null,
+        deliveredAt: new Date(),
+        deliveredById: user.id,
+      },
+    });
+  }
+
+  // ── Breakage Adjustments ────────────────────────────────────────────────────
+
+  async listBreakageAdjustments(userId?: string) {
+    return this.prisma.eggBreakageAdjustment.findMany({
+      include: {
+        reportedBy: { select: { fullName: true } },
+      },
+      orderBy: { adjustmentDate: 'desc' },
+      take: 100,
+    });
+  }
+
+  async createBreakageAdjustment(dto: {
+    adjustmentDate: string;
+    adjustmentType: string;
+    tallySessionId?: string;
+    quantityStandardBefore: number;
+    quantityStarterBefore: number;
+    quantityNonConsumableBefore: number;
+    quantityConsumableBefore: number;
+    newNonConsumable: number;
+    newConsumable: number;
+    notes?: string;
+  }, user: RequestUser) {
+    const count = await this.prisma.eggBreakageAdjustment.count();
+    const adjustmentRef = `BA-${dayjs().format('YYYYMMDD')}-${String(count + 1).padStart(4, '0')}`;
+
+    const quantityDiff =
+      (dto.newNonConsumable - dto.quantityNonConsumableBefore) +
+      (dto.newConsumable    - dto.quantityConsumableBefore);
+
+    return this.prisma.eggBreakageAdjustment.create({
+      data: {
+        adjustmentRef,
+        adjustmentDate:              new Date(dto.adjustmentDate),
+        adjustmentType:              dto.adjustmentType,
+        tallySessionId:              dto.tallySessionId ?? null,
+        quantityStandardBefore:      dto.quantityStandardBefore,
+        quantityStarterBefore:       dto.quantityStarterBefore,
+        quantityNonConsumableBefore: dto.quantityNonConsumableBefore,
+        quantityConsumableBefore:    dto.quantityConsumableBefore,
+        newNonConsumable:            dto.newNonConsumable,
+        newConsumable:               dto.newConsumable,
+        quantityDiff,
+        notes:                       dto.notes ?? null,
+        reportedById:                user.id,
+      },
+      include: { reportedBy: { select: { fullName: true } } },
+    });
+  }
+
+  // ── Sales Stock ────────────────────────────────────────────────────────────
+  // Returns a best-effort egg stock snapshot from the latest locked tally
+  async getSalesStock() {
+    const latestTally = await this.prisma.eggTallyVerification.findFirst({
+      where: { isLocked: true },
+      orderBy: { verificationDate: 'desc' },
+      include: {
+        session: {
+          select: {
+            totalGoodEggs: true,
+            totalBrokenEggs: true,
+            totalStarterEggs: true,
+          },
+        },
+      },
+    });
+
+    if (!latestTally) {
+      return {
+        standardEggs:      0,
+        starterEggs:       0,
+        nonConsumableEggs: 0,
+        consumableEggs:    0,
+        lastVerifiedDate:  null,
+      };
+    }
+
+    // Count breakage adjustments to get current consumable/non-consumable
+    const latestAdj = await this.prisma.eggBreakageAdjustment.findFirst({
+      orderBy: { adjustmentDate: 'desc' },
+    });
+
+    return {
+      standardEggs:      latestTally.finalGoodEggs      ?? latestTally.session?.totalGoodEggs    ?? 0,
+      starterEggs:       latestTally.session?.totalStarterEggs ?? 0,
+      nonConsumableEggs: latestAdj?.newNonConsumable ?? latestTally.session?.totalBrokenEggs ?? 0,
+      consumableEggs:    latestAdj?.newConsumable    ?? 0,
+      lastVerifiedDate:  latestTally.verificationDate,
+    };
   }
 }

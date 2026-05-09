@@ -1,8 +1,12 @@
+// src/pages/attendant/AttendantLayout.tsx
+//
+// Lead Attendant layout — Flock and Feed nav links removed; everything flows
+// through the single Egg Collection page now (per changes.pdf).
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { Outlet, useNavigate } from 'react-router-dom';
 import { Egg, Bell, LogOut, Settings } from 'lucide-react';
-import { HomeIcon, FlockIcon, FeedIcon } from '../../components/ui/icons';
+import { HomeIcon, FlockIcon } from '../../components/ui/icons';
 import { Sidebar, SidebarBody, SidebarLink, SidebarLinkItem } from '../../components/ui/sidebar';
 import { motion } from 'framer-motion';
 import { useAuthStore } from '../../stores/auth.store';
@@ -18,12 +22,6 @@ export function AttendantLayout() {
   const { t } = useTranslation();
   useLoginNotifications();
 
-  const bottomNav = [
-    { to: '/attendant',                label: t('nav.home'),      icon: HomeIcon,  end: true },
-    { to: '/attendant/flock',          label: t('nav.flock'),     icon: FlockIcon },
-    { to: '/attendant/feed',           label: t('nav.feed'),      icon: FeedIcon },
-    { to: '/attendant/egg-collection', label: t('nav.eggs'),      icon: Egg },
-  ];
   const navigate = useNavigate();
   const { unreadCount, fetchNotifications } = useNotificationsStore();
   const [open, setOpen] = useState(false);
@@ -35,12 +33,9 @@ export function AttendantLayout() {
   }, [fetchNotifications]);
 
   const sidebarLinks: SidebarLinkItem[] = [
-    { to: '/attendant',                  label: t('nav.home'),      icon: <HomeIcon className="w-5 h-5" />, end: true },
-    { to: '/attendant/flock',            label: t('nav.flock'),     icon: <FlockIcon className="w-5 h-5" /> },
-    { to: '/attendant/feed',             label: t('nav.feed'),      icon: <FeedIcon className="w-5 h-5" /> },
-    { to: '/attendant/egg-collection',   label: t('nav.eggs'),      icon: <Egg className="w-5 h-5" /> },
-
-    { to: '/attendant/settings',         label: t('nav.settings'),  icon: <Settings className="w-5 h-5" /> },
+    { to: '/attendant',                  label: t('nav.home'),     icon: <HomeIcon className="w-5 h-5" />, end: true },
+    { to: '/attendant/egg-collection',   label: t('nav.eggs'),     icon: <Egg className="w-5 h-5" /> },
+    { to: '/attendant/settings',         label: t('nav.settings'), icon: <Settings className="w-5 h-5" /> },
     {
       to: '/attendant/notifications',
       label: t('nav.alerts'),
@@ -107,10 +102,13 @@ export function AttendantLayout() {
       {/* ── MAIN CONTENT — App.tsx owns routing, Outlet renders child pages ── */}
       <div className="flex-1 flex flex-col min-w-0">
         <header className="md:hidden flex items-center justify-between px-4 py-3 bg-brand-green text-white sticky top-0 z-10">
-          <div className="flex items-center gap-3 min-w-0"><MobileSidebar links={sidebarLinks} user={user ?? undefined} roleLabel={"Lead Attendant"} onLogout={logout} /><div className="min-w-0">
-            <p className="text-xs opacity-75">Lead Attendant</p>
-            <p className="font-semibold text-sm">{user?.fullName}</p>
-          </div></div>
+          <div className="flex items-center gap-3 min-w-0">
+            <MobileSidebar links={sidebarLinks} user={user ?? undefined} roleLabel={'Lead Attendant'} onLogout={logout} />
+            <div className="min-w-0">
+              <p className="text-xs opacity-75">Lead Attendant</p>
+              <p className="font-semibold text-sm">{user?.fullName}</p>
+            </div>
+          </div>
           <button onClick={() => navigate('/attendant/notifications')} className="relative p-1">
             <Bell className="w-5 h-5" />
             {unreadCount > 0 && (

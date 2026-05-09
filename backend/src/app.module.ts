@@ -8,6 +8,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AuthModule }     from './auth/auth.module';
 import { PrismaModule }   from './common/prisma/prisma.module';
 import { NotificationsModule } from './common/notifications/notifications.module';
+import { FlockModule }    from './modules/flock/flock.module';
 import { FeedModule }     from './modules/feed/feed.module';
 import { HealthModule }   from './modules/health/health.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
@@ -23,24 +24,16 @@ import { VisitorsModule } from './modules/visitors/visitors.module';
 
 @Module({
   imports: [
-    // Config — loads .env
     ConfigModule.forRoot({ isGlobal: true }),
-
-    // Rate limiting — 100 requests per minute per IP
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
-
-    // Cron jobs (AI alerts, overdue invoice checks)
     ScheduleModule.forRoot(),
-
-    // Internal event bus (decouples WS emission from services)
     EventEmitterModule.forRoot({ wildcard: false, delimiter: '.', global: true }),
 
-    // Core infrastructure
     PrismaModule,
     NotificationsModule,
 
-    // Feature modules
     AuthModule,
+    FlockModule,      // batches, daily entries, culling — required by Production Manager
     FeedModule,
     HealthModule,
     SalesModule,
@@ -50,10 +43,10 @@ import { VisitorsModule } from './modules/visitors/visitors.module';
     PricingModule,
     BookingsModule,
     DeliveryModule,
-    FinanceModule,    // Phase 4 — invoices, AR, expenses, overdue cron
-    AiModule,         // Phase 6 — AI reports, feed alerts, mortality alerts
-    EventsModule,     // Phase 6 PW-02 — WebSocket gateway
-    VisitorsModule,    // Phase 5 — security gate check-in/out
+    FinanceModule,
+    AiModule,
+    EventsModule,
+    VisitorsModule,
   ],
 })
 export class AppModule {}

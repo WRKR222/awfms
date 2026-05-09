@@ -11,9 +11,12 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 dayjs.extend(relativeTime);
 
 // ── Biosecurity checks for walk-in visitor log entry ─────────────────────────
+// changes.pdf — Production Manager → Visitors: add a "PPE" check using the
+// same checkbox-on-the-left layout as the other biosecurity items.
 const BIOSECURITY_CHECKS = [
   { id: 'footbath_used',    label: 'Footbath used at entry' },
   { id: 'hands_sanitised',  label: 'Hands sanitised' },
+  { id: 'ppe_worn',         label: 'PPE (mask, gloves, head cover) worn' },
   { id: 'overalls_worn',    label: 'Farm overalls worn' },
   { id: 'boots_changed',    label: 'Dedicated farm boots used' },
   { id: 'no_other_farms',   label: 'Confirmed no other farm visits in last 72h' },

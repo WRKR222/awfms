@@ -14,6 +14,7 @@ type FormData = {
   unitCostKes: number;
   supplierName?: string;
   invoiceRef?: string;
+  lpoId?: string;
   notes?: string;
 };
 
@@ -35,6 +36,7 @@ export function StockInTab() {
       ...data,
       quantityIn: Number(data.quantityIn),
       unitCostKes: Number(data.unitCostKes),
+      lpoId: data.lpoId || undefined,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['store-stock-in'] });
@@ -105,6 +107,7 @@ export function StockInTab() {
                   <th className="text-right px-4 py-2">Total</th>
                   <th className="text-left px-4 py-2">Supplier</th>
                   <th className="text-left px-4 py-2">Invoice</th>
+                  <th className="text-left px-4 py-2">Receiving Officer</th>
                 </tr>
               </thead>
               <tbody>
@@ -117,6 +120,7 @@ export function StockInTab() {
                     <td className="px-4 py-2 text-right font-semibold">{fmtKES(r.totalCostKes)}</td>
                     <td className="px-4 py-2 text-gray-600">{r.supplierName ?? '—'}</td>
                     <td className="px-4 py-2 text-gray-600">{r.invoiceRef ?? '—'}</td>
+                    <td className="px-4 py-2 text-gray-600">{r.receivedBy?.fullName ?? '—'}</td>
                   </tr>
                 ))}
               </tbody>
