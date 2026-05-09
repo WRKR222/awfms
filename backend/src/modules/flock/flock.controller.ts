@@ -78,4 +78,20 @@ export class FlockController {
   logCulling(@Body() body: any, @CurrentUser() user: any) {
     return this.svc.logCulling(body, user.id);
   }
+
+  // ── Brooder logs ──────────────────────────────────────────────────────────
+  @Get('brooder-logs')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  listBrooderLogs(
+    @Query('batchId') batchId: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.svc.listBrooderLogs(batchId, limit ? Number(limit) : 50);
+  }
+
+  @Post('brooder-logs')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  createBrooderLog(@Body() body: any, @CurrentUser() user: any) {
+    return this.svc.createBrooderLog(body, user.id);
+  }
 }

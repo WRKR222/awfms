@@ -30,7 +30,7 @@ export class FlockService {
       include: {
         house: { select: { id: true, name: true, code: true } },
         supplier: { select: { id: true, name: true } },
-        // NOTE: flockEntries (_count) removed — flock_daily_entries table dropped by cleanup migration
+        _count: { select: { flockEntries: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -42,7 +42,7 @@ export class FlockService {
       include: {
         house: true,
         supplier: true,
-        // NOTE: flockEntries (_count) removed — flock_daily_entries table dropped by cleanup migration
+        _count: { select: { flockEntries: true } },
       },
     });
     if (!batch) throw new NotFoundException('Batch not found');
@@ -97,15 +97,6 @@ export class FlockService {
         input.rowPlacements
           .map((r: any) => `${r.rowCode}=${r.birdCount}`)
           .join(', '),
-      );
-    }
-
-    // FIX: Validate birdType against the DB enum before hitting Prisma
-    const VALID_BIRD_TYPES = ['LAYER_COMMERCIAL', 'KIENYEJI'];
-    if (!VALID_BIRD_TYPES.includes(input.birdType)) {
-      throw new BadRequestException(
-        `Invalid birdType "${input.birdType}". Valid values: ${VALID_BIRD_TYPES.join(', ')}. ` +
-        'Please select a valid bird type from the form.'
       );
     }
 
@@ -221,7 +212,9 @@ export class FlockService {
     if (!Number.isFinite(count) || count < 1) {
       throw new BadRequestException('cullingCount must be a positive number');
     }
-    if (!input?.reason) throw new BadRequestException('reason is required');
+    // FIX: frontend sends cullingReason; backend expected reason — accept both
+    const reason = input.reason ?? input.cullingReason;
+    if (!reason) throw new BadRequestException('reason is required');
 
     const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
@@ -239,7 +232,7 @@ export class FlockService {
           openingCount: batch.currentBirdCount,
           mortalityCount: 0,
           cullingCount: count,
-          cullingReason: String(input.reason),
+          cullingReason: String(reason),
           closingCount: batch.currentBirdCount - count,
           status: EntryStatus.APPROVED,
           submittedById: userId,
@@ -296,6 +289,50 @@ export class FlockService {
         capacity: 10000,
         birdType,
         description: 'Auto-created when registering the first batch',
+      },
+    });
+  }
+
+  // ── Brooder logs ──────────────────────────────────────────────────────────
+
+  async listBrooderLogs(batchId: string, limit = 50) {
+    if (!batchId) return [];
+    return this.prisma.brooderLog.findMany({
+      where: { batchId },
+      orderBy: { logDate: 'desc' },
+      take: limit,
+      include: {
+        loggedBy: { select: { id: true, fullName: true } },
+      },
+    });
+  }
+
+  async createBrooderLog(input: any, userId: string) {
+    if (!input?.batchId) throw new BadRequestException('batchId is required');
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const mortality = Number(input.mortalityCount ?? 0);
+    if (mortality > 0) {
+      await this.prisma.batch.update({
+        where: { id: batch.id },
+        data: { currentBirdCount: { decrement: mortality } },
+      });
+    }
+
+    return this.prisma.brooderLog.create({
+      data: {
+        batchId: batch.id,
+        logDate: input.logDate ? new Date(input.logDate) : new Date(),
+        waterConsumptionL: input.waterConsumptionL != null ? Number(input.waterConsumptionL) : null,
+        temperature: input.temperature != null ? Number(input.temperature) : null,
+        lightingOk: input.lightingOk ?? true,
+        mortalityCount: mortality,
+        vaccineGiven: input.vaccineGiven ?? null,
+        supplement: input.supplement ?? null,
+        notes: input.notes ?? null,
+        loggedById: userId,
       },
     });
   }

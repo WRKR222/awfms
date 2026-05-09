@@ -44,7 +44,7 @@ function usePendingTallies() {
   return useQuery({
     queryKey: ['tally-pending'],
     queryFn: async () => {
-      const res = await api.get('/tally/pending');
+      const res = await api.get('/tally-verifications/pending');
       return res.data as TallySession[];
     },
     refetchInterval: 30_000,

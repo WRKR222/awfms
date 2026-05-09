@@ -19,7 +19,8 @@ function usePendingBadge() {
   return useQuery({
     queryKey: ['verify-badge'],
     queryFn: async () => {
-      const res = await api.get('/tally/pending');
+      // FIX: was '/tally/pending' — backend controller is 'tally-verifications'
+      const res = await api.get('/tally-verifications/pending');
       return (res.data as any[]).length ?? 0;
     },
     refetchInterval: 60_000,
