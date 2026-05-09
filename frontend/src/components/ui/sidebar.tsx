@@ -55,7 +55,7 @@ export const Sidebar = ({
   children,
   open,
   setOpen,
-  animate,
+  animate = true,
 }: {
   children: React.ReactNode;
   open?: boolean;

@@ -7,7 +7,7 @@ import { api } from '../../lib/api/client';
 import { useBatches } from '../../hooks/useFlock';
 import {
   AlertTriangle, Plus, CheckCircle, Trash2, Scale, ShieldOff,
-  ShieldCheck, Scissors, Bug, Bandage, Package, Archive,
+  ShieldCheck, Scissors, Bug, Stethoscope, Package, Archive,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 
@@ -24,7 +24,7 @@ const EVENT_TYPES = [
 
 const EVENT_ICONS: Record<string, React.ElementType> = {
   DISEASE_OUTBREAK:   Bug,
-  INJURY:             Bandage,
+  INJURY:             Stethoscope,
   CULLING:            Scissors,
   QUARANTINE_IMPOSED: ShieldOff,
   QUARANTINE_LIFTED:  ShieldCheck,
