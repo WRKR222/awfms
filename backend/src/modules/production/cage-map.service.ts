@@ -26,10 +26,12 @@ export class CageMapService {
       where: { code: blockCode },
       include: {
         farm_sections: {
-          orderBy: { sort_order: 'asc' },
+          // FIX: was sort_order (DB column name) — Prisma uses camelCase field name
+          orderBy: { sortOrder: 'asc' },
           include: {
             farm_rows: {
-              orderBy: { row_code: 'asc' },
+              // FIX: was row_code (DB column name) — Prisma uses camelCase field name
+              orderBy: { rowCode: 'asc' },
               include: {
                 assignments: true,
               },

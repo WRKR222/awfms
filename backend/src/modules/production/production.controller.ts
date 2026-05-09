@@ -8,7 +8,10 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RequirePermissionGuard } from '../../common/guards/require-permission.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
-import { ProductionService, CreateEggCollectionDto } from './production.service';
+// FIX: CreateEggCollectionDto does not exist — correct name is CreateEggCollectionSessionDto
+//      and it lives in './production.dto', not './production.service'
+import { ProductionService } from './production.service';
+import type { CreateEggCollectionSessionDto } from './production.dto';
 
 @ApiTags('production')
 @ApiBearerAuth()
@@ -20,7 +23,7 @@ export class ProductionController {
   // ── Egg Collection Sessions ───────────────────────────────────────────
   @Post('sessions')
   @RequirePermission(Permission.PRODUCTION_ENTRY_CREATE)
-  create(@Body() dto: CreateEggCollectionDto, @Request() req: any) {
+  create(@Body() dto: CreateEggCollectionSessionDto, @Request() req: any) {
     return this.svc.createEggCollection(dto, req.user);
   }
 
