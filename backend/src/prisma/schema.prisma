@@ -1,3 +1,25 @@
+// backend/prisma/schema.prisma
+// ── CORRECTED VERSION ─────────────────────────────────────────────────────────
+// Changes vs original:
+//   [1] Removed enum SalesTier (dropped by 20260509000001_cleanup migration)
+//   [2] Removed enum EggGrade  (dropped by 20260509000001_cleanup migration)
+//   [3] Added  enum PaymentMethod (added by cleanup migration)
+//   [4] Added enum values: HealthEventType +BATCH_SOLD,BATCH_DISCARDED,BIRD_WEIGHING
+//   [5] Added enum value:  VaccinationRoute +OTHER
+//   [6] Added enum values: NotificationType +PURCHASE_REQUEST_RAISED,EGG_BREAKAGE_ADJUSTMENT
+//   [7] Removed model EggPriceTier (depends on dropped SalesTier; table dropped)
+//   [8] SalesOrder: removed tier field, added paymentMethod + deletedAt
+//   [9] AdvanceBooking: added deletedAt
+//  [10] EggCollectionSession: removed 4 old signed columns, added 13 new fields
+//       + tally relation + editedBy relation
+//  [11] EggTallyVerification: added editCount, lastEditedById, lastEditedAt
+//       + session relation back to EggCollectionSession
+//  [12] User: added 3 new back-relations
+//  [13] StoreItem: added simpleStockRequestItems back-relation
+//  [14] StoreStockOut: added simpleStockRequestItem back-relation
+//  [15] Added 6 new models: FarmBlock, FarmSection, FarmRow,
+//       BatchCageAssignment, SimpleStockRequest, SimpleStockRequestItem
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -21,8 +43,8 @@ enum UserRole {
 }
 
 enum BatchStage {
-  BROODING // 0-6 weeks
-  GROWER   // 6-18 weeks
+  BROODING   // 0-6 weeks
+  GROWER     // 6-18 weeks
   PRODUCTION // 18+ weeks
   CLOSED
 }
@@ -49,14 +71,6 @@ enum EntryStatus {
   RETURNED
 }
 
-enum EggGrade {
-  SMALL
-  MEDIUM
-  LARGE
-  EXTRA_LARGE
-  REJECT
-}
-
 enum FeedType {
   CHICK_MASH
   GROWER_MASH
@@ -66,6 +80,7 @@ enum FeedType {
   KIENYEJI_FINISHER
 }
 
+// [4] Added BATCH_SOLD, BATCH_DISCARDED, BIRD_WEIGHING
 enum HealthEventType {
   DISEASE_OUTBREAK
   INJURY
@@ -76,20 +91,22 @@ enum HealthEventType {
   CULLING
   BIRD_SOLD
   WEIGHING
+  BATCH_SOLD
+  BATCH_DISCARDED
+  BIRD_WEIGHING
 }
 
+// [5] Added OTHER
 enum VaccinationRoute {
   DRINKING_WATER
   EYE_DROP
   INJECTION
   SPRAY
   WING_WEB
+  OTHER
 }
 
-enum SalesTier {
-  TIER_1 // 1-10 trays
-  TIER_2 // 11+ trays
-}
+// [1] SalesTier REMOVED (dropped by cleanup migration)
 
 enum OrderStatus {
   PENDING
@@ -114,6 +131,7 @@ enum BookingStatus {
   CANCELLED
 }
 
+// [6] Added PURCHASE_REQUEST_RAISED, EGG_BREAKAGE_ADJUSTMENT
 enum NotificationType {
   FEED_LOW_STOCK
   MORTALITY_ANOMALY
@@ -129,9 +147,11 @@ enum NotificationType {
   PURCHASE_REQUEST
   LPO_SUBMITTED
   LPO_APPROVED
+  PURCHASE_REQUEST_RAISED
+  EGG_BREAKAGE_ADJUSTMENT
 }
 
-// ─── NEW PHASE 2 ENUMS ────────────────────────────────────────────────────
+// ─── PHASE 2 ENUMS ────────────────────────────────────────────────────────
 
 enum StoreItemCategory {
   MEDICATION
@@ -187,6 +207,16 @@ enum ConstructionType {
   EXPANSION
 }
 
+// [3] NEW: PaymentMethod enum (added by cleanup migration)
+enum PaymentMethod {
+  CASH
+  MPESA
+  BANK
+  CREDIT
+}
+
+// [2] EggGrade REMOVED (dropped by cleanup migration)
+
 // ─── AUTHENTICATION & RBAC ─────────────────────────────────────────────────
 
 model User {
@@ -221,14 +251,19 @@ model User {
   expenseCategories      ExpenseCategory[]       @relation("ExpenseCategoryCreatedBy")
   eggPriceSchedules      EggPriceSchedule[]      @relation("EggPriceScheduleSetBy")
 
-  // Phase 2 new
-  storeStockIns      StoreStockIn[]      @relation("StoreStockInReceivedBy")
-  storeStockOuts     StoreStockOut[]     @relation("StoreStockOutIssuedBy")
-  purchaseRequests   PurchaseRequest[]   @relation("PurchaseRequestCreatedBy")
-  purchaseRequestReviews PurchaseRequest[] @relation("PurchaseRequestReviewedBy")
-  lposCreated           LocalPurchaseOrder[]      @relation("LPOCreatedBy")
-  lposApproved          LocalPurchaseOrder[]      @relation("LPOApprovedBy")
-  breakageAdjustments   EggBreakageAdjustment[]  @relation("BreakageAdjustmentReportedBy")
+  // Phase 2 store
+  storeStockIns              StoreStockIn[]      @relation("StoreStockInReceivedBy")
+  storeStockOuts             StoreStockOut[]     @relation("StoreStockOutIssuedBy")
+  purchaseRequests           PurchaseRequest[]   @relation("PurchaseRequestCreatedBy")
+  purchaseRequestReviews     PurchaseRequest[]   @relation("PurchaseRequestReviewedBy")
+  lposCreated                LocalPurchaseOrder[] @relation("LPOCreatedBy")
+  lposApproved               LocalPurchaseOrder[] @relation("LPOApprovedBy")
+  breakageAdjustments        EggBreakageAdjustment[] @relation("BreakageAdjustmentReportedBy")
+
+  // [12] NEW back-relations
+  editedSessions             EggCollectionSession[]  @relation("EggSessionEditedBy")
+  simpleStockRequestsCreated  SimpleStockRequest[]   @relation("SimpleStockRequestCreatedBy")
+  simpleStockRequestsFulfilled SimpleStockRequest[]  @relation("SimpleStockRequestFulfilledBy")
 
   @@map("users")
 }
@@ -279,8 +314,7 @@ model House {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  batches           Batch[]
-  
+  batches Batch[]
 
   @@map("houses")
 }
@@ -335,7 +369,7 @@ model Batch {
   vaccinationRecords    VaccinationRecord[]
   healthEvents          HealthEvent[]
   eggCollectionSessions EggCollectionSession[]
-  
+
   @@index([houseId])
   @@index([stage])
   @@index([isActive])
@@ -586,7 +620,11 @@ model ProductionEntry {
   @@map("production_entries")
 }
 
-// ─── PHASE 3: EGG COLLECTION SESSION ────────────────────────────────────────
+// ─── PHASE 3: EGG COLLECTION SESSION ─────────────────────────────────────────
+// [10] UPDATED: removed verifiedById/verifiedAt/storeSignedById/storeSignedAt
+//              added deletedAt, editedAt, editedById, block, totalStarterEggs,
+//              totalBrokenUnsellable, totalBrokenSellable, feedKg, feedTypeName,
+//              waterLiters, houseTempC, vaccinesGiven, tally relation, editedBy relation
 
 model EggCollectionSession {
   id            String      @id @default(uuid())
@@ -601,36 +639,50 @@ model EggCollectionSession {
   closingStock  Int         @map("closing_stock")
   rowData       Json        @map("row_data")
 
-  totalFullTrays  Int       @map("total_full_trays")
-  totalLooseEggs  Int       @map("total_loose_eggs")
-  totalBrokenEggs Int       @default(0) @map("total_broken_eggs")
-  totalSoftShell  Int       @default(0) @map("total_soft_shell")
-  totalDeformed   Int       @default(0) @map("total_deformed")
-  totalWeightKg   Decimal   @map("total_weight_kg") @db.Decimal(8, 2)
-  totalGoodEggs   Int       @map("total_good_eggs")
-  henDayPercent   Decimal?  @map("hen_day_percent") @db.Decimal(5, 2)
+  totalFullTrays        Int       @map("total_full_trays")
+  totalLooseEggs        Int       @map("total_loose_eggs")
+  totalBrokenEggs       Int       @default(0) @map("total_broken_eggs")
+  totalSoftShell        Int       @default(0) @map("total_soft_shell")
+  totalDeformed         Int       @default(0) @map("total_deformed")
+  totalWeightKg         Decimal   @map("total_weight_kg") @db.Decimal(8, 2)
+  totalGoodEggs         Int       @map("total_good_eggs")
+  henDayPercent         Decimal?  @map("hen_day_percent") @db.Decimal(5, 2)
+
+  // New fields from lead_attendant_alignment migration
+  block                 String    @default("BLOCK1")
+  totalStarterEggs      Int       @default(0) @map("total_starter_eggs")
+  totalBrokenUnsellable Int       @default(0) @map("total_broken_unsellable")
+  totalBrokenSellable   Int       @default(0) @map("total_broken_sellable")
+  feedKg                Decimal?  @map("feed_kg") @db.Decimal(8, 2)
+  feedTypeName          String?   @map("feed_type_name")
+  waterLiters           Decimal?  @map("water_liters") @db.Decimal(8, 2)
+  houseTempC            Decimal?  @map("house_temp_c") @db.Decimal(5, 2)
+  vaccinesGiven         Json?     @map("vaccines_given")
 
   vaccineGiven  String?     @map("vaccine_given")
   dailyFeedKg   Decimal?    @map("daily_feed_kg") @db.Decimal(8, 2)
   remarks       String?
 
-  status         EntryStatus @default(PENDING)
-  returnReason   String?     @map("return_reason")
-  verifiedById   String?     @map("verified_by_id")
-  verifiedAt     DateTime?   @map("verified_at")
+  status        EntryStatus @default(PENDING)
+  returnReason  String?     @map("return_reason")
 
-  storeSignedById String?    @map("store_signed_by_id")
-  storeSignedAt   DateTime?  @map("store_signed_at")
+  // New fields from cleanup migration (replaces old verified/storeSigned cols)
+  deletedAt     DateTime?   @map("deleted_at")
+  editedAt      DateTime?   @map("edited_at")
+  editedById    String?     @map("edited_by_id")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  batch        Batch            @relation(fields: [batchId], references: [id])
+  batch        Batch                @relation(fields: [batchId], references: [id])
   storeIntakes StoreEggIntake[]
+  tally        EggTallyVerification?
+  editedBy     User?                @relation("EggSessionEditedBy", fields: [editedById], references: [id])
 
   @@unique([batchId, houseId, sessionDate, shift])
   @@index([houseId, sessionDate])
   @@index([status])
+  @@index([deletedAt])
   @@map("egg_collection_sessions")
 }
 
@@ -685,6 +737,7 @@ model DailyEggPrice {
 }
 
 // ─── PHASE 3: ADVANCE BOOKING ────────────────────────────────────────────────
+// [9] Added deletedAt
 
 model AdvanceBooking {
   id                 String        @id @default(uuid())
@@ -704,6 +757,7 @@ model AdvanceBooking {
   notes              String?
   cancellationReason String?       @map("cancellation_reason")
   salesOrderId       String?       @unique @map("sales_order_id")
+  deletedAt          DateTime?     @map("deleted_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -714,6 +768,7 @@ model AdvanceBooking {
   @@index([status])
   @@index([requestedDate])
   @@index([customerId])
+  @@index([deletedAt])
   @@map("advance_bookings")
 }
 
@@ -772,40 +827,33 @@ model Customer {
   @@map("customers")
 }
 
-model EggPriceTier {
-  id            String    @id @default(uuid())
-  tier          SalesTier
-  minTrays      Int       @map("min_trays")
-  maxTrays      Int?      @map("max_trays")
-  pricePerTray  Decimal   @map("price_per_tray") @db.Decimal(10, 2)
-  isActive      Boolean   @default(true) @map("is_active")
-  effectiveFrom DateTime  @map("effective_from") @db.Date
-  effectiveTo   DateTime? @map("effective_to") @db.Date
-  createdAt     DateTime  @default(now()) @map("created_at")
+// [7] EggPriceTier model REMOVED (table dropped by cleanup migration along with SalesTier enum)
 
-  @@map("egg_price_tiers")
-}
+// ─── SALES ORDER ──────────────────────────────────────────────────────────
+// [8] Removed: tier SalesTier
+//     Added:   paymentMethod PaymentMethod, deletedAt
 
 model SalesOrder {
-  id              String      @id @default(uuid())
-  orderNumber     String      @unique @map("order_number")
-  customerId      String      @map("customer_id")
-  orderDate       DateTime    @map("order_date") @db.Date
-  status          OrderStatus @default(PENDING)
-  deliveryDate    DateTime?   @map("delivery_date") @db.Date
-  deliveryAddress String?     @map("delivery_address")
-  tier            SalesTier
-  subtotal        Decimal     @db.Decimal(12, 2)
+  id              String        @id @default(uuid())
+  orderNumber     String        @unique @map("order_number")
+  customerId      String        @map("customer_id")
+  orderDate       DateTime      @map("order_date") @db.Date
+  status          OrderStatus   @default(PENDING)
+  deliveryDate    DateTime?     @map("delivery_date") @db.Date
+  deliveryAddress String?       @map("delivery_address")
+  paymentMethod   PaymentMethod @default(CASH) @map("payment_method")
+  subtotal        Decimal       @db.Decimal(12, 2)
   notes           String?
-  mpesaRef        String?     @map("mpesa_ref")
-  bankRef         String?     @map("bank_ref")
-  createdById     String      @map("created_by_id")
-  confirmedAt     DateTime?   @map("confirmed_at")
-  deliveryNotes   String?     @map("delivery_notes")
-  deliveredAt     DateTime?   @map("delivered_at")
-  deliveredById   String?     @map("delivered_by_id")
-  createdAt       DateTime    @default(now()) @map("created_at")
-  updatedAt       DateTime    @updatedAt @map("updated_at")
+  mpesaRef        String?       @map("mpesa_ref")
+  bankRef         String?       @map("bank_ref")
+  createdById     String        @map("created_by_id")
+  confirmedAt     DateTime?     @map("confirmed_at")
+  deliveryNotes   String?       @map("delivery_notes")
+  deliveredAt     DateTime?     @map("delivered_at")
+  deliveredById   String?       @map("delivered_by_id")
+  deletedAt       DateTime?     @map("deleted_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
 
   customer       Customer         @relation(fields: [customerId], references: [id])
   items          SalesOrderItem[]
@@ -816,6 +864,7 @@ model SalesOrder {
   @@index([customerId])
   @@index([status])
   @@index([orderDate])
+  @@index([deletedAt])
   @@map("sales_orders")
 }
 
@@ -1009,8 +1058,6 @@ model DeliveryLog {
   @@map("delivery_logs")
 }
 
-// ─── STORE OPERATIONS ────────────────────────────────────────────────────────
-
 // ─── FINANCE: CUSTOM EXPENSE CATEGORIES ──────────────────────────────────────
 
 model ExpenseCategory {
@@ -1046,6 +1093,7 @@ model EggPriceSchedule {
 }
 
 // ─── EGG TALLY VERIFICATION ──────────────────────────────────────────────────
+// [11] Added: editCount, lastEditedById, lastEditedAt, session relation
 
 model EggTallyVerification {
   id               String    @id @default(uuid())
@@ -1074,8 +1122,15 @@ model EggTallyVerification {
   revenueSetById     String?   @map("revenue_set_by_id")
   revenueSetAt       DateTime? @map("revenue_set_at")
 
+  // New fields from cleanup migration
+  editCount      Int       @default(0) @map("edit_count")
+  lastEditedById String?   @map("last_edited_by_id")
+  lastEditedAt   DateTime? @map("last_edited_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+
+  session EggCollectionSession @relation(fields: [sessionId], references: [id])
 
   @@index([sessionId])
   @@index([verificationDate])
@@ -1178,12 +1233,12 @@ model BrooderLog {
 
 /// Master catalogue of items stocked in the store
 model StoreItem {
-  id          String             @id @default(uuid())
-  name        String
-  sku         String             @unique
-  category    StoreItemCategory
-  unit        StoreItemUnit
-  description String?
+  id           String            @id @default(uuid())
+  name         String
+  sku          String            @unique
+  category     StoreItemCategory
+  unit         StoreItemUnit
+  description  String?
   reorderLevel Decimal           @default(0) @map("reorder_level") @db.Decimal(10, 3)
   currentStock Decimal           @default(0) @map("current_stock") @db.Decimal(10, 3)
   unitCostKes  Decimal           @default(0) @map("unit_cost_kes") @db.Decimal(10, 2)
@@ -1193,10 +1248,12 @@ model StoreItem {
   createdAt    DateTime          @default(now()) @map("created_at")
   updatedAt    DateTime          @updatedAt @map("updated_at")
 
-  stockIns        StoreStockIn[]
-  stockOuts       StoreStockOut[]
+  stockIns             StoreStockIn[]
+  stockOuts            StoreStockOut[]
   purchaseRequestItems PurchaseRequestItem[]
-  lpoItems        LPOItem[]
+  lpoItems             LPOItem[]
+  // [13] NEW back-relation
+  simpleStockRequestItems SimpleStockRequestItem[]
 
   @@index([category])
   @@index([isActive])
@@ -1205,22 +1262,22 @@ model StoreItem {
 
 /// Goods received into store (from purchase / delivery)
 model StoreStockIn {
-  id            String   @id @default(uuid())
-  storeItemId   String   @map("store_item_id")
-  receivedDate  DateTime @map("received_date") @db.Date
-  quantityIn    Decimal  @map("quantity_in") @db.Decimal(10, 3)
-  unitCostKes   Decimal  @map("unit_cost_kes") @db.Decimal(10, 2)
-  totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
-  supplierName  String?  @map("supplier_name")
-  invoiceRef    String?  @map("invoice_ref")
-  lpoId         String?  @map("lpo_id")
-  notes         String?
-  receivedById  String   @map("received_by_id")
-  createdAt     DateTime @default(now()) @map("created_at")
+  id           String   @id @default(uuid())
+  storeItemId  String   @map("store_item_id")
+  receivedDate DateTime @map("received_date") @db.Date
+  quantityIn   Decimal  @map("quantity_in") @db.Decimal(10, 3)
+  unitCostKes  Decimal  @map("unit_cost_kes") @db.Decimal(10, 2)
+  totalCostKes Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
+  supplierName String?  @map("supplier_name")
+  invoiceRef   String?  @map("invoice_ref")
+  lpoId        String?  @map("lpo_id")
+  notes        String?
+  receivedById String   @map("received_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
 
-  storeItem     StoreItem           @relation(fields: [storeItemId], references: [id])
-  receivedBy    User                @relation("StoreStockInReceivedBy", fields: [receivedById], references: [id])
-  lpo           LocalPurchaseOrder? @relation(fields: [lpoId], references: [id])
+  storeItem  StoreItem           @relation(fields: [storeItemId], references: [id])
+  receivedBy User                @relation("StoreStockInReceivedBy", fields: [receivedById], references: [id])
+  lpo        LocalPurchaseOrder? @relation(fields: [lpoId], references: [id])
 
   @@index([storeItemId, receivedDate])
   @@index([receivedDate])
@@ -1229,21 +1286,23 @@ model StoreStockIn {
 
 /// Items issued out of store (to houses/batches)
 model StoreStockOut {
-  id            String   @id @default(uuid())
-  storeItemId   String   @map("store_item_id")
-  issuedDate    DateTime @map("issued_date") @db.Date
-  quantityOut   Decimal  @map("quantity_out") @db.Decimal(10, 3)
-  unitCostKes   Decimal  @map("unit_cost_kes") @db.Decimal(10, 2)
-  totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
-  issuedToHouseId String? @map("issued_to_house_id")
-  issuedToBatchId String? @map("issued_to_batch_id")
-  purpose       String?
-  notes         String?
-  issuedById    String   @map("issued_by_id")
-  createdAt     DateTime @default(now()) @map("created_at")
+  id              String   @id @default(uuid())
+  storeItemId     String   @map("store_item_id")
+  issuedDate      DateTime @map("issued_date") @db.Date
+  quantityOut     Decimal  @map("quantity_out") @db.Decimal(10, 3)
+  unitCostKes     Decimal  @map("unit_cost_kes") @db.Decimal(10, 2)
+  totalCostKes    Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
+  issuedToHouseId String?  @map("issued_to_house_id")
+  issuedToBatchId String?  @map("issued_to_batch_id")
+  purpose         String?
+  notes           String?
+  issuedById      String   @map("issued_by_id")
+  createdAt       DateTime @default(now()) @map("created_at")
 
   storeItem  StoreItem @relation(fields: [storeItemId], references: [id])
   issuedBy   User      @relation("StoreStockOutIssuedBy", fields: [issuedById], references: [id])
+  // [14] NEW back-relation
+  simpleStockRequestItem SimpleStockRequestItem?
 
   @@index([storeItemId, issuedDate])
   @@index([issuedDate])
@@ -1252,23 +1311,23 @@ model StoreStockOut {
 
 /// Purchase request raised by Store, reviewed by Accountant
 model PurchaseRequest {
-  id            String                @id @default(uuid())
-  requestRef    String                @unique @map("request_ref")
-  requestDate   DateTime              @map("request_date") @db.Date
-  status        PurchaseRequestStatus @default(DRAFT)
-  urgency       String                @default("NORMAL") // LOW | NORMAL | URGENT
-  notes         String?
-  reviewNotes   String?               @map("review_notes")
-  createdById   String                @map("created_by_id")
-  reviewedById  String?               @map("reviewed_by_id")
-  reviewedAt    DateTime?             @map("reviewed_at")
-  createdAt     DateTime              @default(now()) @map("created_at")
-  updatedAt     DateTime              @updatedAt @map("updated_at")
+  id           String                @id @default(uuid())
+  requestRef   String                @unique @map("request_ref")
+  requestDate  DateTime              @map("request_date") @db.Date
+  status       PurchaseRequestStatus @default(DRAFT)
+  urgency      String                @default("NORMAL")
+  notes        String?
+  reviewNotes  String?               @map("review_notes")
+  createdById  String                @map("created_by_id")
+  reviewedById String?               @map("reviewed_by_id")
+  reviewedAt   DateTime?             @map("reviewed_at")
+  createdAt    DateTime              @default(now()) @map("created_at")
+  updatedAt    DateTime              @updatedAt @map("updated_at")
 
-  createdBy    User                  @relation("PurchaseRequestCreatedBy", fields: [createdById], references: [id])
-  reviewedBy   User?                 @relation("PurchaseRequestReviewedBy", fields: [reviewedById], references: [id])
-  items        PurchaseRequestItem[]
-  lpo          LocalPurchaseOrder?
+  createdBy  User                  @relation("PurchaseRequestCreatedBy", fields: [createdById], references: [id])
+  reviewedBy User?                 @relation("PurchaseRequestReviewedBy", fields: [reviewedById], references: [id])
+  items      PurchaseRequestItem[]
+  lpo        LocalPurchaseOrder?
 
   @@index([status])
   @@index([requestDate])
@@ -1291,23 +1350,23 @@ model PurchaseRequestItem {
 
 /// Local Purchase Order raised by Accountant after reviewing a PurchaseRequest
 model LocalPurchaseOrder {
-  id               String    @id @default(uuid())
-  lpoNumber        String    @unique @map("lpo_number")
-  purchaseRequestId String?  @unique @map("purchase_request_id")
-  supplierId       String?   @map("supplier_id")
-  supplierName     String    @map("supplier_name")
-  lpoDate          DateTime  @map("lpo_date") @db.Date
-  expectedDelivery DateTime? @map("expected_delivery") @db.Date
-  status           LPOStatus @default(DRAFT)
-  subtotalKes      Decimal   @map("subtotal_kes") @db.Decimal(12, 2)
-  vatKes           Decimal   @default(0) @map("vat_kes") @db.Decimal(12, 2)
-  totalKes         Decimal   @map("total_kes") @db.Decimal(12, 2)
-  notes            String?
-  approvedById     String?   @map("approved_by_id")
-  approvedAt       DateTime? @map("approved_at")
-  createdById      String    @map("created_by_id")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  id                String    @id @default(uuid())
+  lpoNumber         String    @unique @map("lpo_number")
+  purchaseRequestId String?   @unique @map("purchase_request_id")
+  supplierId        String?   @map("supplier_id")
+  supplierName      String    @map("supplier_name")
+  lpoDate           DateTime  @map("lpo_date") @db.Date
+  expectedDelivery  DateTime? @map("expected_delivery") @db.Date
+  status            LPOStatus @default(DRAFT)
+  subtotalKes       Decimal   @map("subtotal_kes") @db.Decimal(12, 2)
+  vatKes            Decimal   @default(0) @map("vat_kes") @db.Decimal(12, 2)
+  totalKes          Decimal   @map("total_kes") @db.Decimal(12, 2)
+  notes             String?
+  approvedById      String?   @map("approved_by_id")
+  approvedAt        DateTime? @map("approved_at")
+  createdById       String    @map("created_by_id")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   purchaseRequest PurchaseRequest? @relation(fields: [purchaseRequestId], references: [id])
   supplier        Supplier?        @relation(fields: [supplierId], references: [id])
@@ -1324,20 +1383,19 @@ model LocalPurchaseOrder {
 model LPOItem {
   id          String  @id @default(uuid())
   lpoId       String  @map("lpo_id")
-  storeItemId String?  @map("store_item_id")
+  storeItemId String? @map("store_item_id")
   description String?
   quantity    Decimal @db.Decimal(10, 3)
   unitPrice   Decimal @map("unit_price") @db.Decimal(10, 2)
   subtotal    Decimal @db.Decimal(12, 2)
 
   lpo       LocalPurchaseOrder @relation(fields: [lpoId], references: [id], onDelete: Cascade)
-  storeItem StoreItem?          @relation(fields: [storeItemId], references: [id])
+  storeItem StoreItem?         @relation(fields: [storeItemId], references: [id])
 
   @@map("lpo_items")
 }
 
 // ─── PHASE 2: FARM EMPLOYEES ──────────────────────────────────────────────────
-
 
 model FarmEmployee {
   id                String         @id @default(uuid())
@@ -1364,21 +1422,20 @@ model FarmEmployee {
   @@map("farm_employees")
 }
 
-
 // ─── PHASE 2: CONSTRUCTION RECORDS ───────────────────────────────────────────
 
 model ConstructionRecord {
   id               String           @id @default(uuid())
   title            String
   constructionType ConstructionType @map("construction_type")
-  location         String           // house code / general farm area
+  location         String
   startDate        DateTime         @map("start_date") @db.Date
   endDate          DateTime?        @map("end_date") @db.Date
   contractorName   String?          @map("contractor_name")
   contractorPhone  String?          @map("contractor_phone")
   budgetKes        Decimal          @default(0) @map("budget_kes") @db.Decimal(12, 2)
   actualCostKes    Decimal          @default(0) @map("actual_cost_kes") @db.Decimal(12, 2)
-  status           String           @default("IN_PROGRESS") // PLANNED | IN_PROGRESS | COMPLETED | ON_HOLD
+  status           String           @default("IN_PROGRESS")
   description      String?
   notes            String?
   createdAt        DateTime         @default(now()) @map("created_at")
@@ -1389,40 +1446,133 @@ model ConstructionRecord {
   @@map("construction_records")
 }
 
-// ─── Egg Breakage Adjustment (Sales role) ─────────────────────────────────────
+// ─── EGG BREAKAGE ADJUSTMENT ─────────────────────────────────────────────────
 
 model EggBreakageAdjustment {
   id             String   @id @default(uuid())
   adjustmentRef  String   @unique @map("adjustment_ref")
   adjustmentDate DateTime @map("adjustment_date") @db.Date
-
-  // NON_CONSUMABLE = broken unsellable | CONSUMABLE = broken sellable
   adjustmentType String   @map("adjustment_type")
 
-  // Quantities at time of adjustment (snapshot from tally / stock)
   quantityStandardBefore      Int @map("quantity_standard_before")
   quantityStarterBefore       Int @map("quantity_starter_before")
   quantityNonConsumableBefore Int @map("quantity_non_consumable_before")
   quantityConsumableBefore    Int @map("quantity_consumable_before")
 
-  // New corrected quantities (entered by Sales)
   newNonConsumable Int @map("new_non_consumable")
   newConsumable    Int @map("new_consumable")
+  quantityDiff     Int @map("quantity_diff")
 
-  // Auto-calculated diff
-  quantityDiff Int @map("quantity_diff")
-
-  // Optional: reference tally session this is based on
   tallySessionId String? @map("tally_session_id")
-
-  notes        String?
-  reportedById String  @map("reported_by_id")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  notes          String?
+  reportedById   String  @map("reported_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   reportedBy User @relation("BreakageAdjustmentReportedBy", fields: [reportedById], references: [id])
 
   @@index([adjustmentDate])
   @@index([adjustmentType])
   @@map("egg_breakage_adjustments")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [15] NEW MODELS — Phase 7 Addendum B + Cleanup Migration
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── CAGE MAP ────────────────────────────────────────────────────────────────
+
+model FarmBlock {
+  id                  String      @id @default(cuid())
+  code                String      @unique
+  name                String
+  isActive            Boolean     @default(true) @map("is_active")
+  isUnderConstruction Boolean     @default(false) @map("is_under_construction")
+  createdAt           DateTime    @default(now()) @map("created_at")
+
+  farm_sections FarmSection[]
+
+  @@map("farm_blocks")
+}
+
+model FarmSection {
+  id        String  @id @default(cuid())
+  blockId   String  @map("block_id")
+  code      String
+  sortOrder Int     @default(0) @map("sort_order")
+
+  block     FarmBlock @relation(fields: [blockId], references: [id])
+  farm_rows FarmRow[]
+
+  @@unique([blockId, code])
+  @@map("farm_sections")
+}
+
+model FarmRow {
+  id        String  @id @default(cuid())
+  sectionId String  @map("section_id")
+  rowCode   String  @map("row_code")
+  isActive  Boolean @default(true) @map("is_active")
+
+  section     FarmSection          @relation(fields: [sectionId], references: [id])
+  assignments BatchCageAssignment?
+
+  @@unique([sectionId, rowCode])
+  @@map("farm_rows")
+}
+
+model BatchCageAssignment {
+  id           String   @id @default(cuid())
+  rowId        String   @unique @map("row_id")
+  batchId      String   @map("batch_id")
+  transferDate DateTime @map("transfer_date") @db.Date
+  notes        String?
+  assignedById String   @map("assigned_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  row FarmRow @relation(fields: [rowId], references: [id])
+
+  @@map("batch_cage_assignments")
+}
+
+// ─── SIMPLE STOCK REQUEST ─────────────────────────────────────────────────────
+
+model SimpleStockRequest {
+  id            String    @id @default(cuid())
+  requestRef    String    @unique @map("request_ref")
+  requestDate   DateTime  @map("request_date") @db.Date
+  neededBy      DateTime? @map("needed_by") @db.Date
+  purpose       String?
+  notes         String?
+  status        String    @default("PENDING")
+  requestedById String    @map("requested_by_id")
+  fulfilledById String?   @map("fulfilled_by_id")
+  fulfilledAt   DateTime? @map("fulfilled_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  requestedBy User                     @relation("SimpleStockRequestCreatedBy", fields: [requestedById], references: [id])
+  fulfilledBy User?                    @relation("SimpleStockRequestFulfilledBy", fields: [fulfilledById], references: [id])
+  items       SimpleStockRequestItem[]
+
+  @@index([status])
+  @@index([requestDate])
+  @@map("simple_stock_requests")
+}
+
+model SimpleStockRequestItem {
+  id                   String   @id @default(cuid())
+  simpleStockRequestId String   @map("simple_stock_request_id")
+  storeItemId          String   @map("store_item_id")
+  quantityRequested    Decimal  @map("quantity_requested") @db.Decimal(10, 3)
+  quantityIssued       Decimal? @map("quantity_issued") @db.Decimal(10, 3)
+  notes                String?
+  stockOutId           String?  @unique @map("stock_out_id")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  simpleStockRequest SimpleStockRequest @relation(fields: [simpleStockRequestId], references: [id], onDelete: Cascade)
+  storeItem          StoreItem          @relation(fields: [storeItemId], references: [id])
+  stockOut           StoreStockOut?     @relation(fields: [stockOutId], references: [id])
+
+  @@map("simple_stock_request_items")
 }
