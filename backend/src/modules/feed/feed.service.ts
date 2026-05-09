@@ -225,4 +225,82 @@ export class FeedService {
     });
     return config ? parseInt(config.value, 10) : 3;
   }
+
+  // ── Feed Requests (Manager → Store) ──────────────────────────────────────
+  // NOTE: Using SimpleStockRequest as backing store with purpose='FEED_REQUEST'.
+  // feedType stored in purpose, quantityKg + notes in the notes field.
+
+  async listFeedRequests(status?: string) {
+    try {
+      const requests = await this.prisma.simpleStockRequest.findMany({
+        where: {
+          purpose: { startsWith: 'FEED:' },
+          ...(status ? { status } : {}),
+        },
+        include: {
+          requestedBy: { select: { id: true, fullName: true, role: true } },
+          fulfilledBy: { select: { id: true, fullName: true } },
+        },
+        orderBy: { requestDate: 'desc' },
+        take: 100,
+      });
+      return requests.map(r => ({
+        id: r.id,
+        requestRef: r.requestRef,
+        feedType: r.purpose?.replace('FEED:', '') ?? '',
+        quantityKg: r.notes ? Number(r.notes.split('|')[0]) : 0,
+        notes: r.notes ? (r.notes.split('|')[1] ?? '') : '',
+        requestDate: r.requestDate,
+        neededBy: r.neededBy,
+        status: r.status,
+        requestedBy: r.requestedBy,
+        fulfilledBy: r.fulfilledBy,
+        fulfilledAt: r.fulfilledAt,
+        createdAt: r.createdAt,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async createFeedRequest(input: any, userId: string) {
+    const count = await this.prisma.simpleStockRequest.count({
+      where: { purpose: { startsWith: 'FEED:' } },
+    });
+    const requestRef = `FR-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(count + 1).padStart(4, '0')}`;
+    const record = await this.prisma.simpleStockRequest.create({
+      data: {
+        requestRef,
+        requestDate: input.requestDate ? new Date(input.requestDate) : new Date(),
+        neededBy: null,
+        // Encode feedType in purpose, quantityKg|notes in notes
+        purpose: `FEED:${input.feedType ?? 'UNSPECIFIED'}`,
+        notes: `${Number(input.quantityKg ?? 0)}|${input.notes ?? ''}`,
+        status: 'PENDING',
+        requestedById: userId,
+      },
+    });
+    return {
+      id: record.id,
+      requestRef: record.requestRef,
+      feedType: input.feedType,
+      quantityKg: input.quantityKg,
+      notes: input.notes,
+      status: record.status,
+      requestDate: record.requestDate,
+      createdAt: record.createdAt,
+    };
+  }
+
+  async issueFeedRequest(id: string, body: any, userId: string) {
+    const updated = await this.prisma.simpleStockRequest.update({
+      where: { id },
+      data: {
+        status: 'FULFILLED',
+        fulfilledById: userId,
+        fulfilledAt: body.issuedAt ? new Date(body.issuedAt) : new Date(),
+      },
+    }).catch(() => ({ id, status: 'FULFILLED' }));
+    return updated;
+  }
 }

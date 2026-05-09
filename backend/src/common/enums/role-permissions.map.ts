@@ -22,6 +22,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.INVOICE_VIEW, Permission.AI_ALERTS_VIEW,
     Permission.BOOKINGS_VIEW, Permission.BOOKINGS_MANAGE,
     Permission.HR_VIEW,
+    // Tally sign-off — Production Manager is a primary signer
+    Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
   ],
   [UserRole.ACCOUNTANT]: [
     Permission.FLOCK_VIEW, Permission.FEED_VIEW, Permission.FEED_STOCK_VIEW,
@@ -50,6 +52,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.BOOKINGS_MANAGE,
     Permission.BREAKAGE_LOG,
     Permission.BREAKAGE_VIEW,
+    // Tally sign-off — Sales signs the egg tally
+    Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
   ],
   [UserRole.STORE]: [
     Permission.FEED_VIEW,
@@ -65,6 +69,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.SALES_DELIVERY_LOG,
     // Phase 2: Store creates purchase requests
     Permission.PURCHASE_REQUEST_CREATE,
+    // Tally sign-off — Store signs the egg tally
+    Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
   ],
   [UserRole.SECURITY1]: [
     Permission.VISITOR_LOG_VIEW,

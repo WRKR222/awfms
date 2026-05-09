@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { FeedService } from './feed.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -41,5 +41,31 @@ export class FeedController {
   @ApiOperation({ summary: 'Get current feed stock levels with days-remaining projection' })
   getCurrentStock(@Query('feedType') feedType?: FeedType) {
     return this.feedService.getCurrentStock(feedType);
+  }
+
+  // ── Feed Requests (Manager → Store) ──────────────────────────────────────
+  @Get('requests')
+  @RequirePermission(Permission.FEED_STOCK_VIEW)
+  @ApiOperation({ summary: 'List feed requests' })
+  listFeedRequests(@Query('status') status?: string) {
+    return this.feedService.listFeedRequests(status);
+  }
+
+  @Post('requests')
+  @RequirePermission(Permission.FEED_INTAKE_LOG)
+  @ApiOperation({ summary: 'Create a feed request from Manager to Store' })
+  createFeedRequest(@Body() body: any, @CurrentUser() user: any) {
+    return this.feedService.createFeedRequest(body, user.id);
+  }
+
+  @Patch('requests/:id/issue')
+  @RequirePermission(Permission.FEED_APPROVE)
+  @ApiOperation({ summary: 'Issue / fulfill a feed request (Store)' })
+  issueFeedRequest(
+    @Param('id') id: string,
+    @Body() body: any,
+    @CurrentUser() user: any,
+  ) {
+    return this.feedService.issueFeedRequest(id, body, user.id);
   }
 }
