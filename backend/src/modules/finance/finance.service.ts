@@ -1,10 +1,11 @@
-// src/modules/finance/finance.service.ts
+// backend/src/modules/finance/finance.service.ts
+// Fixes: GAP-02 (categoryId FK bug), GAP-03 (add getAccountantSummary), GAP-07 (show all invoice statuses)
 import {
   Injectable, NotFoundException, BadRequestException, Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { InvoiceStatus, UserRole } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
 import dayjs from 'dayjs';
@@ -13,8 +14,23 @@ import dayjs from 'dayjs';
 
 export interface CreateInvoiceFromOrderDto {
   salesOrderId: string;
-  dueDate?: string;    // ISO date string — defaults to creditDays from customer
+  dueDate?: string;
   notes?: string;
+}
+
+export interface CreateManualInvoiceDto {
+  customerId: string;
+  invoiceDate: string;
+  dueDate: string;
+  shipDate?: string;
+  notes?: string;
+  vatPercent?: number;
+  items: Array<{
+    description: string;
+    quantity: number;
+    unitMeasure?: string;
+    unitPrice: number;
+  }>;
 }
 
 export interface LogPaymentDto {
@@ -32,7 +48,7 @@ export interface CreateExpenseCategoryDto {
 }
 
 export interface LogExpenseDto {
-  category: string;          // category name (must exist)
+  category: string;     // category name (must exist)
   description: string;
   amount: number;
   expenseDate: string;
@@ -52,73 +68,87 @@ export class FinanceService {
     private readonly notifications: NotificationsService,
   ) {}
 
+  // ── GAP-03: Accountant Summary ────────────────────────────────────────────
+
+  async getAccountantSummary() {
+    const now = dayjs();
+    const monthStart = now.startOf('month').toDate();
+
+    const [paidThisMonth, totalInvoices, todayPrice] = await Promise.all([
+      this.prisma.invoicePayment.aggregate({
+        where: { paymentDate: { gte: monthStart } },
+        _sum: { amount: true },
+      }),
+      this.prisma.invoice.count(),
+      this.prisma.dailyEggPrice.findUnique({
+        where: { priceDate: now.startOf('day').toDate() },
+      }),
+    ]);
+
+    const pendingPRCount = await this.prisma.purchaseRequest.count({
+      where: { status: 'SUBMITTED' },
+    });
+
+    return {
+      paidThisMonth: Number(paidThisMonth._sum.amount ?? 0),
+      totalInvoices,
+      pendingPriceSet: !todayPrice,
+      pendingPRCount,
+    };
+  }
+
   // ── Invoice Generation ────────────────────────────────────────────────────
 
-  /** Auto-generates an invoice from a confirmed SalesOrder.
-   *  Called by SalesService when order status moves to CONFIRMED.
-   */
   async generateInvoiceForOrder(salesOrderId: string, createdById: string): Promise<any> {
     const order = await this.prisma.salesOrder.findUnique({
       where: { id: salesOrderId },
-      include: {
-        customer: true,
-        items: true,
-      },
+      include: { customer: true, items: true },
     });
     if (!order) throw new NotFoundException('Sales order not found');
 
-    // Avoid duplicate invoice
-    const existing = await this.prisma.invoice.findFirst({
-      where: { salesOrderId },
-    });
+    const existing = await this.prisma.invoice.findFirst({ where: { salesOrderId } });
     if (existing) return existing;
 
-    // Sequential invoice number: INV-YYYYMM-XXXX
     const count = await this.prisma.invoice.count();
     const invoiceNumber = `INV-${dayjs().format('YYYYMM')}-${String(count + 1).padStart(4, '0')}`;
-
     const invoiceDate = dayjs().toDate();
     const dueDate = order.customer.creditDays > 0
       ? dayjs().add(order.customer.creditDays, 'day').toDate()
-      : dayjs().toDate(); // cash on delivery
-
+      : dayjs().toDate();
     const totalAmount = Number(order.subtotal);
 
     const invoice = await this.prisma.invoice.create({
       data: {
         invoiceNumber,
         salesOrderId,
-        customerId: order.customerId,
-        invoiceDate: dayjs(invoiceDate).startOf('day').toDate(),
-        dueDate: dayjs(dueDate).startOf('day').toDate(),
-        subtotal: order.subtotal,
-        taxAmount: 0,
+        customerId:   order.customerId,
+        invoiceDate:  dayjs(invoiceDate).startOf('day').toDate(),
+        dueDate:      dayjs(dueDate).startOf('day').toDate(),
+        subtotal:     order.subtotal,
+        taxAmount:    0,
         totalAmount,
-        paidAmount: 0,
-        balanceDue: totalAmount,
-        status: InvoiceStatus.UNPAID,
+        paidAmount:   0,
+        balanceDue:   totalAmount,
+        status:       InvoiceStatus.UNPAID,
         createdById,
-        notes: order.notes ?? null,
+        notes:        order.notes ?? null,
       },
     });
 
-    // Create linked AR entry
     await this.prisma.arEntry.create({
       data: {
-        invoiceId: invoice.id,
-        customerId: order.customerId,
+        invoiceId:      invoice.id,
+        customerId:     order.customerId,
         originalAmount: totalAmount,
         currentBalance: totalAmount,
-        dueDate: invoice.dueDate,
+        dueDate:        invoice.dueDate,
       },
     });
 
-    // Notify accountant
     await this.notifications.notifyRole(
-      UserRole.ACCOUNTANT,
-      'SYSTEM' as any,
+      UserRole.ACCOUNTANT, 'SYSTEM' as any,
       `Invoice ${invoiceNumber} Generated`,
-      `Invoice ${invoiceNumber} for ${order.customer.name} — KES ${totalAmount.toLocaleString()} — due ${dayjs(dueDate).format('D MMM YYYY')}.`,
+      `Invoice ${invoiceNumber} for ${order.customer.name} — KES ${totalAmount.toLocaleString()} due ${dayjs(dueDate).format('D MMM YYYY')}.`,
       { entityId: invoice.id, entityType: 'Invoice' },
     );
 
@@ -130,12 +160,12 @@ export class FinanceService {
   async getInvoices(status?: InvoiceStatus, customerId?: string) {
     return this.prisma.invoice.findMany({
       where: {
-        ...(status ? { status } : {}),
+        ...(status     ? { status }     : {}),
         ...(customerId ? { customerId } : {}),
       },
       include: {
-        customer: { select: { id: true, name: true, phone: true } },
-        payments: { orderBy: { paymentDate: 'desc' } },
+        customer:   { select: { id: true, name: true, phone: true } },
+        payments:   { orderBy: { paymentDate: 'desc' } },
         salesOrder: { select: { orderNumber: true, items: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -147,10 +177,10 @@ export class FinanceService {
     const inv = await this.prisma.invoice.findUnique({
       where: { id },
       include: {
-        customer: true,
+        customer:   true,
         salesOrder: { include: { items: true } },
-        payments: { orderBy: { paymentDate: 'asc' } },
-        arEntry: true,
+        payments:   { orderBy: { paymentDate: 'asc' } },
+        arEntry:    true,
       },
     });
     if (!inv) throw new NotFoundException('Invoice not found');
@@ -165,46 +195,35 @@ export class FinanceService {
       include: { customer: true, arEntry: true },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    if (invoice.status === InvoiceStatus.PAID) {
+    if (invoice.status === InvoiceStatus.PAID)
       throw new BadRequestException('Invoice is already fully paid');
-    }
 
     const paymentAmount = Number(dto.amount);
     const newPaidAmount = Number(invoice.paidAmount) + paymentAmount;
     const newBalanceDue = Number(invoice.totalAmount) - newPaidAmount;
-
-    if (newBalanceDue < -0.01) {
+    if (newBalanceDue < -0.01)
       throw new BadRequestException('Payment amount exceeds invoice balance');
-    }
 
     const newStatus: InvoiceStatus = newBalanceDue <= 0.01
-      ? InvoiceStatus.PAID
-      : InvoiceStatus.PARTIAL;
+      ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL;
 
-    // Log the payment
     const payment = await this.prisma.invoicePayment.create({
       data: {
-        invoiceId: dto.invoiceId,
-        paymentDate: new Date(dto.paymentDate),
-        amount: paymentAmount,
+        invoiceId:     dto.invoiceId,
+        paymentDate:   new Date(dto.paymentDate),
+        amount:        paymentAmount,
         paymentMethod: dto.paymentMethod,
-        reference: dto.reference ?? null,
-        notes: dto.notes ?? null,
-        recordedById: user.id,
+        reference:     dto.reference ?? null,
+        notes:         dto.notes ?? null,
+        recordedById:  user.id,
       },
     });
 
-    // Update invoice
     await this.prisma.invoice.update({
       where: { id: dto.invoiceId },
-      data: {
-        paidAmount: newPaidAmount,
-        balanceDue: Math.max(0, newBalanceDue),
-        status: newStatus,
-      },
+      data: { paidAmount: newPaidAmount, balanceDue: Math.max(0, newBalanceDue), status: newStatus },
     });
 
-    // Update AR entry
     if (invoice.arEntry) {
       await this.prisma.arEntry.update({
         where: { id: invoice.arEntry.id },
@@ -212,13 +231,11 @@ export class FinanceService {
       });
     }
 
-    // Notify owner if fully paid
     if (newStatus === InvoiceStatus.PAID) {
       await this.notifications.notifyRole(
-        UserRole.OWNER,
-        'SYSTEM' as any,
+        UserRole.OWNER, 'SYSTEM' as any,
         `Invoice ${invoice.invoiceNumber} Paid`,
-        `Full payment received from ${invoice.customer.name} — KES ${Number(invoice.totalAmount).toLocaleString()}.`,
+        `Full payment from ${invoice.customer.name} — KES ${Number(invoice.totalAmount).toLocaleString()}.`,
         { entityId: invoice.id, entityType: 'Invoice' },
       );
     }
@@ -233,28 +250,20 @@ export class FinanceService {
       this.prisma.arEntry.findMany({ select: { currentBalance: true } }),
       this.prisma.invoice.count({ where: { status: InvoiceStatus.OVERDUE } }),
       this.prisma.invoice.aggregate({
-        where: { status: InvoiceStatus.OVERDUE },
-        _sum: { balanceDue: true },
+        where: { status: InvoiceStatus.OVERDUE }, _sum: { balanceDue: true },
       }),
       this.prisma.invoicePayment.aggregate({
-        where: {
-          paymentDate: { gte: dayjs().startOf('month').toDate() },
-        },
+        where: { paymentDate: { gte: dayjs().startOf('month').toDate() } },
         _sum: { amount: true },
       }),
     ]);
-
-    const totalOutstanding = arEntries.reduce((s, e) => s + Number(e.currentBalance), 0);
-
     return {
-      totalOutstanding,
+      totalOutstanding: arEntries.reduce((s, e) => s + Number(e.currentBalance), 0),
       overdueCount,
-      overdueAmount: Number(overdueAmount._sum.balanceDue ?? 0),
-      paidThisMonth: Number(paidThisMonth._sum.amount ?? 0),
+      overdueAmount:   Number(overdueAmount._sum.balanceDue ?? 0),
+      paidThisMonth:   Number(paidThisMonth._sum.amount ?? 0),
     };
   }
-
-  // ── Customer AR Detail ────────────────────────────────────────────────────
 
   async getCustomerArDetail(customerId: string) {
     const invoices = await this.prisma.invoice.findMany({
@@ -262,34 +271,25 @@ export class FinanceService {
       include: { payments: true },
       orderBy: { dueDate: 'asc' },
     });
-    const totalBalance = invoices.reduce((s, i) => s + Number(i.balanceDue), 0);
-    return { customerId, invoices, totalBalance };
+    return { customerId, invoices, totalBalance: invoices.reduce((s, i) => s + Number(i.balanceDue), 0) };
   }
 
-  // ── Expense Categories (custom, accountant-defined) ───────────────────────
+  // ── Expense Categories ────────────────────────────────────────────────────
 
   async getExpenseCategories() {
     return this.prisma.expenseCategory.findMany({
-      where: { isActive: true },
-      orderBy: { name: 'asc' },
+      where: { isActive: true }, orderBy: { name: 'asc' },
     });
   }
 
   async createExpenseCategory(dto: CreateExpenseCategoryDto, user: RequestUser) {
     return this.prisma.expenseCategory.create({
-      data: {
-        name: dto.name.trim(),
-        description: dto.description ?? null,
-        createdById: user.id,
-      },
+      data: { name: dto.name.trim(), description: dto.description ?? null, createdById: user.id },
     });
   }
 
   async deactivateExpenseCategory(id: string) {
-    return this.prisma.expenseCategory.update({
-      where: { id },
-      data: { isActive: false },
-    });
+    return this.prisma.expenseCategory.update({ where: { id }, data: { isActive: false } });
   }
 
   // ── Expense Logging ───────────────────────────────────────────────────────
@@ -301,13 +301,13 @@ export class FinanceService {
 
     return this.prisma.expenseLog.create({
       data: {
-        categoryId: dto.category,
+        categoryId:  cat.id,                   // ← GAP-02 FIX: was dto.category (name), must be UUID
         description: dto.description,
-        amount: dto.amount,
+        amount:      dto.amount,
         expenseDate: new Date(dto.expenseDate),
-        batchId: dto.batchId ?? null,
-        vendorName: dto.vendorName ?? null,
-        receiptRef: dto.receiptRef ?? null,
+        batchId:     dto.batchId    ?? null,
+        vendorName:  dto.vendorName ?? null,
+        receiptRef:  dto.receiptRef ?? null,
         recordedById: user.id,
       },
     });
@@ -316,14 +316,18 @@ export class FinanceService {
   async getExpenses(from?: string, to?: string, category?: string, batchId?: string) {
     return this.prisma.expenseLog.findMany({
       where: {
-        ...(category ? { category } : {}),
-        ...(batchId ? { batchId } : {}),
+        // GAP-02 FIX: filter by category name through relation, not non-existent 'category' field
+        ...(category ? { expenseCategory: { name: category } } : {}),
+        ...(batchId  ? { batchId }                             : {}),
         ...(from || to ? {
           expenseDate: {
             ...(from ? { gte: new Date(from) } : {}),
             ...(to   ? { lte: new Date(to)   } : {}),
           },
         } : {}),
+      },
+      include: {
+        expenseCategory: { select: { name: true } },
       },
       orderBy: { expenseDate: 'desc' },
       take: 500,
@@ -332,18 +336,16 @@ export class FinanceService {
 
   async getExpenseSummaryByCategory(from: string, to: string) {
     const expenses = await this.prisma.expenseLog.findMany({
-      where: {
-        expenseDate: { gte: new Date(from), lte: new Date(to) },
-      },
-      select: { categoryId: true, amount: true },
+      where: { expenseDate: { gte: new Date(from), lte: new Date(to) } },
+      select: { categoryId: true, amount: true, expenseCategory: { select: { name: true } } },
     });
 
     const grouped: Record<string, number> = {};
     for (const e of expenses) {
-      grouped[e.categoryId] = (grouped[e.categoryId] ?? 0) + Number(e.amount);
+      const key = (e as any).expenseCategory?.name ?? e.categoryId;
+      grouped[key] = (grouped[key] ?? 0) + Number(e.amount);
     }
     const total = Object.values(grouped).reduce((s, v) => s + v, 0);
-
     return {
       period: { from, to },
       byCategory: Object.entries(grouped)
@@ -358,98 +360,71 @@ export class FinanceService {
   async getOwnerFinanceDashboard(range: 'daily' | 'weekly' | 'monthly' | 'quarterly') {
     const now = dayjs();
     let from: dayjs.Dayjs;
-
     switch (range) {
-      case 'daily':   from = now.startOf('day'); break;
-      case 'weekly':  from = now.startOf('week'); break;
-      case 'monthly': from = now.startOf('month'); break;
-      case 'quarterly':
+      case 'daily':     from = now.startOf('day'); break;
+      case 'weekly':    from = now.startOf('week'); break;
+      case 'monthly':   from = now.startOf('month'); break;
+      case 'quarterly': {
         const qMonth = Math.floor(now.month() / 3) * 3;
-        from = now.month(qMonth).startOf('month');
-        break;
+        from = now.month(qMonth).startOf('month'); break;
+      }
     }
 
-    const [revenue, expenses, arSummary, topCustomers, overdueInvoices] = await Promise.all([
-      // Revenue: sum of payments received in period
+    const [revenue, expenses, arSummary, overdueInvoices] = await Promise.all([
       this.prisma.invoicePayment.aggregate({
-        where: { paymentDate: { gte: from.toDate() } },
-        _sum: { amount: true },
+        where: { paymentDate: { gte: from.toDate() } }, _sum: { amount: true },
       }),
-      // Expenses: sum logged in period
       this.prisma.expenseLog.aggregate({
-        where: { expenseDate: { gte: from.toDate() } },
-        _sum: { amount: true },
+        where: { expenseDate: { gte: from.toDate() } }, _sum: { amount: true },
       }),
       this.getArSummary(),
-      // Top customers by revenue in period
-      this.prisma.invoicePayment.groupBy({
-        by: ['invoiceId'],
-        where: { paymentDate: { gte: from.toDate() } },
-        _sum: { amount: true },
-      }),
-      // Overdue invoices list
       this.prisma.invoice.findMany({
         where: { status: InvoiceStatus.OVERDUE },
         include: { customer: { select: { name: true } } },
-        orderBy: { dueDate: 'asc' },
-        take: 5,
+        orderBy: { dueDate: 'asc' }, take: 5,
       }),
     ]);
 
-    const revenueKes = Number(revenue._sum.amount ?? 0);
-    const expensesKes = Number(expenses._sum.amount ?? 0);
-    const grossProfit = revenueKes - expensesKes;
+    const revenueKes   = Number(revenue._sum.amount  ?? 0);
+    const expensesKes  = Number(expenses._sum.amount ?? 0);
+    const grossProfit  = revenueKes - expensesKes;
     const grossMarginPct = revenueKes > 0 ? (grossProfit / revenueKes) * 100 : 0;
 
     return {
-      range,
-      periodFrom: from.format('YYYY-MM-DD'),
-      revenueKes,
-      expensesKes,
-      grossProfit,
+      range, periodFrom: from.format('YYYY-MM-DD'),
+      revenueKes, expensesKes, grossProfit,
       grossMarginPct: Math.round(grossMarginPct * 10) / 10,
-      arSummary,
-      overdueInvoices,
+      arSummary, overdueInvoices,
     };
   }
 
   // ── Overdue Invoice Cron ─────────────────────────────────────────────────
-  // Runs nightly at 01:00 — marks UNPAID/PARTIAL invoices past due date as OVERDUE
 
-  @Cron('0 1 * * *')  // 1 AM every day
+  @Cron('0 1 * * *')
   async markOverdueInvoices() {
     this.logger.log('Running overdue invoice check...');
     const now = dayjs().startOf('day').toDate();
-
     const overdueNow = await this.prisma.invoice.findMany({
-      where: {
-        dueDate: { lt: now },
-        status: { in: [InvoiceStatus.UNPAID, InvoiceStatus.PARTIAL] },
-      },
+      where: { dueDate: { lt: now }, status: { in: [InvoiceStatus.UNPAID, InvoiceStatus.PARTIAL] } },
       include: { customer: { select: { name: true } } },
     });
-
     if (overdueNow.length === 0) return;
 
     await this.prisma.invoice.updateMany({
       where: { id: { in: overdueNow.map(i => i.id) } },
       data: { status: InvoiceStatus.OVERDUE },
     });
-
-    // Also update AR entries
     await this.prisma.arEntry.updateMany({
       where: { invoiceId: { in: overdueNow.map(i => i.id) } },
       data: { updatedAt: new Date() },
     });
 
-    // Notify accountant + owner
     const message = `${overdueNow.length} invoice${overdueNow.length > 1 ? 's' : ''} marked overdue: ${
       overdueNow.slice(0, 3).map(i => i.customer.name).join(', ')
     }${overdueNow.length > 3 ? ` + ${overdueNow.length - 3} more` : ''}.`;
 
     await this.notifications.notifyRole(UserRole.ACCOUNTANT, 'OVERDUE_INVOICE', 'Overdue Invoices', message);
     await this.notifications.notifyRole(UserRole.OWNER, 'OVERDUE_INVOICE', 'Overdue Invoices', message);
-
     this.logger.log(`Marked ${overdueNow.length} invoices as OVERDUE`);
   }
 }

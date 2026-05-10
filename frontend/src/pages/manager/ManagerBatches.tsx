@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
-import { Bird, Calendar, Home, Info, ChevronRight, Plus, CheckCircle, Clock, XCircle, TrendingUp, Hash, Layers, X } from 'lucide-react';
+import { Bird, Calendar, Home, Info, ChevronRight, Plus, CheckCircle, Clock, XCircle, TrendingUp, Hash, Layers, X, AlertTriangle } from 'lucide-react';
 import { useBatches } from '../../hooks/useFlock';
 import { api } from '../../lib/api/client';
 import dayjs from 'dayjs';
@@ -49,6 +49,18 @@ const STAGE_CONFIG = {
     dot: 'bg-gray-400',
     tip: 'Batch is closed — all birds have been culled or sold. Historical data is preserved.',
   },
+  SOLD: {
+    label: 'Sold',
+    color: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400',
+    dot: 'bg-emerald-500',
+    tip: 'Batch sold. Historical egg + feed data preserved for analytics comparison.',
+  },
+  DISCARDED: {
+    label: 'Discarded',
+    color: 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400',
+    dot: 'bg-red-400',
+    tip: 'Batch discarded (culled for non-commercial reasons). Historical data preserved.',
+  },
 };
 
 // ── Bird type config ──────────────────────────────────────────────────────────
@@ -62,72 +74,8 @@ const BIRD_TYPE_LABELS: Record<string, { label: string; tip: string }> = {
 
 // ── Batch card ────────────────────────────────────────────────────────────────
 
-// ── Culling Modal ─────────────────────────────────────────────────────────────
-function CullingModal({ batch, onClose }: { batch: any; onClose: () => void }) {
-  const qc = useQueryClient();
-  const { register, handleSubmit, formState: { errors } } = useForm({
-    defaultValues: { cullingCount: '', cullingReason: '', cullingDate: dayjs().format('YYYY-MM-DD'), notes: '' }
-  });
-  const submit = useMutation({
-    mutationFn: (data: any) => api.post('/flock/culling', { ...data, batchId: batch.id, cullingCount: Number(data.cullingCount) }).then(r => r.data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['batches'] }); onClose(); }
-  });
-  const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500';
-  const lCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1';
-  return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
-      <div className="bg-white dark:bg-dark-card w-full md:max-w-md rounded-t-3xl md:rounded-2xl shadow-2xl">
-        <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-dark-border">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-red-500 rounded-xl flex items-center justify-center"><XCircle className="w-4 h-4 text-white" /></div>
-            <div><p className="font-bold text-gray-800 dark:text-gray-100">Log Culling</p><p className="text-xs text-gray-400">{batch.batchCode} · A reason is required</p></div>
-          </div>
-          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg"><X className="w-5 h-5 text-gray-500" /></button>
-        </div>
-        <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={lCls}>Birds Culled *</label>
-              <input {...register('cullingCount', { required: 'Required', min: { value: 1, message: 'Must be at least 1' } })} type="number" min="1" className={`${iCls} text-center text-xl font-bold`} placeholder="0" />
-              {errors.cullingCount && <p className="text-red-500 text-xs mt-1">{(errors.cullingCount as any).message}</p>}
-            </div>
-            <div>
-              <label className={lCls}>Date *</label>
-              <input {...register('cullingDate', { required: true })} type="date" className={iCls} />
-            </div>
-          </div>
-          <div>
-            <label className={lCls}>Reason for Culling * <span className="text-red-500">(mandatory)</span></label>
-            <select {...register('cullingReason', { required: 'A reason must be provided' })} className={iCls}>
-              <option value="">Select reason...</option>
-              <option value="DISEASE">Disease / Illness</option>
-              <option value="INJURY">Injury</option>
-              <option value="POOR_PERFORMANCE">Poor Performance / Low Productivity</option>
-              <option value="OLD_AGE">End of Productive Life</option>
-              <option value="CANNIBALISM">Cannibalism / Aggression</option>
-              <option value="DEFORMITY">Deformity / Abnormality</option>
-              <option value="ECONOMIC">Economic Decision</option>
-              <option value="OTHER">Other (specify in notes)</option>
-            </select>
-            {errors.cullingReason && <p className="text-red-500 text-xs mt-1">{(errors.cullingReason as any).message}</p>}
-          </div>
-          <div>
-            <label className={lCls}>Additional Notes</label>
-            <textarea {...register('notes')} rows={2} className={`${iCls} resize-none`} placeholder="Describe condition, symptoms, or any other details..." />
-          </div>
-          {submit.isError && <p className="text-red-500 text-sm">Failed to log culling. Please try again.</p>}
-          <div className="flex gap-3 pt-1">
-            <button type="button" onClick={onClose} className="flex-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-3 font-semibold text-sm">Cancel</button>
-            <button type="submit" disabled={submit.isPending} className="flex-1 bg-red-500 text-white rounded-xl py-3 font-semibold text-sm disabled:opacity-60">{submit.isPending ? 'Logging...' : 'Log Culling'}</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
 function BatchCard({ batch }: { batch: any }) {
-  const [showCulling, setShowCulling] = useState(false);
+  // Log Culling removed — culling is a Farm Event handled in Farm Events page (/manager/culling)
   const stage = STAGE_CONFIG[batch.stage as keyof typeof STAGE_CONFIG] ?? STAGE_CONFIG.BROODING;
   const birdType = BIRD_TYPE_LABELS[batch.birdType] ?? { label: batch.birdType, tip: '' };
   const ageDays = dayjs().diff(dayjs(batch.dateOfHatch), 'day');
@@ -254,13 +202,13 @@ function BatchCard({ batch }: { batch: any }) {
       </div>
       {batch.isActive && (
         <button
-          onClick={() => setShowCulling(true)}
-          className="w-full mt-1 border border-red-200 dark:border-red-800 text-red-500 dark:text-red-400 rounded-xl py-2 text-xs font-semibold hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors flex items-center justify-center gap-1.5"
+          onClick={() => navigate('/manager/culling')}
+          className="w-full mt-1 border border-amber-200 dark:border-amber-800 text-amber-600 dark:text-amber-400 rounded-xl py-2 text-xs font-semibold hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors flex items-center justify-center gap-1.5"
         >
-          <XCircle className="w-3.5 h-3.5" /> Log Culling
+          <AlertTriangle className="w-3.5 h-3.5" /> Log Farm Event
         </button>
       )}
-      {showCulling && <CullingModal batch={batch} onClose={() => setShowCulling(false)} />}
+      {/* Culling, BATCH_SOLD, BATCH_DISCARDED and all farm events are managed on the Farm Events page */}
     </div>
   );
 }

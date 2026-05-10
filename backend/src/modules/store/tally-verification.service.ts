@@ -115,7 +115,7 @@ export class TallyVerificationService {
         await tx.notification.create({
           data: {
             userId: t.id,
-            type: 'TALLY_EDITED' as any,
+            type: 'EGG_TALLY_TRIGGERED' as any,
             title: 'Tally edited — re-sign required',
             message: 'Production Manager edited the tally. Please review and re-sign.',
             entityId: sessionId,
@@ -183,9 +183,12 @@ export class TallyVerificationService {
         data: {
           isLocked: true,
           lockedAt: now,
-          finalGoodEggs:  session.totalGoodEggs,
-          finalFullTrays: session.totalFullTrays,
-          finalLooseEggs: session.totalLooseEggs,
+          finalGoodEggs:       session.totalGoodEggs,
+          finalFullTrays:      session.totalFullTrays,
+          finalLooseEggs:      session.totalLooseEggs,
+          // FIX-04: store per-category finals at lock time for complete audit trail
+          finalStarterEggs:    (session as any).totalStarterEggs    ?? 0,
+          finalBrokenSellable: (session as any).totalBrokenSellable ?? 0,
           expectedRevenueKes: expectedRevenueKes ?? undefined,
           revenueSetById: expectedRevenueKes != null ? user.id : null,
           revenueSetAt:   expectedRevenueKes != null ? now : null,
@@ -212,4 +215,92 @@ export class TallyVerificationService {
       return locked;
     });
   }
+  /** Accountant / Owner sets the expected morning revenue after the tally is locked. */
+  async setRevenue(
+    sessionId: string,
+    expectedRevenueKes: number,
+    user: RequestUser,
+  ) {
+    if (!['ACCOUNTANT', 'OWNER'].includes(user.role)) {
+      throw new ForbiddenException('Only Accountant or Owner may set expected revenue');
+    }
+
+    if (!Number.isFinite(expectedRevenueKes) || expectedRevenueKes < 0) {
+      throw new BadRequestException('expectedRevenueKes must be a non-negative number');
+    }
+
+    const tally = await this.prisma.eggTallyVerification.findUnique({
+      where: { sessionId },
+    });
+    if (!tally) throw new NotFoundException('Tally not found');
+    if (!tally.isLocked) {
+      throw new BadRequestException(
+        'Revenue can only be set after the tally is locked by all three parties',
+      );
+    }
+
+    return this.prisma.eggTallyVerification.update({
+      where: { sessionId },
+      data: {
+        expectedRevenueKes,
+        revenueSetById: user.id,
+        revenueSetAt:   new Date(),
+      },
+    });
+  }
+
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIX-02: Return locked tally egg counts per category for a given date.
+  // Called by GET /tally-verifications/totals?date=YYYY-MM-DD
+  //
+  // Egg category → DailyEggPrice field mapping:
+  //   standardEggs   (totalGoodEggs)        ↔  pricePerEgg
+  //   starterEggs    (totalStarterEggs)      ↔  pricePerEggStarter
+  //   brokenSellable (totalBrokenSellable)   ↔  pricePerEggBroken
+  // ─────────────────────────────────────────────────────────────────────────
+  async getTallyTotalsForDate(date: string) {
+    const targetDate = new Date(date);
+    targetDate.setHours(0, 0, 0, 0);
+
+    // Most recently locked tally for this date or earlier
+    const tally = await this.prisma.eggTallyVerification.findFirst({
+      where: {
+        isLocked: true,
+        session: { sessionDate: { lte: targetDate } },
+      },
+      include: {
+        session: {
+          select: {
+            sessionDate:         true,
+            shift:               true,
+            totalGoodEggs:       true,
+            totalStarterEggs:    true,
+            totalBrokenSellable: true,
+            totalFullTrays:      true,
+            totalLooseEggs:      true,
+          },
+        },
+      },
+      orderBy: { lockedAt: 'desc' },
+    });
+
+    if (!tally?.session) return null;
+
+    const s = tally.session;
+    return {
+      sessionDate:        s.sessionDate,
+      isLocked:           true,
+      // Standard names used by sales.service getSalesStock()
+      standardEggs:       s.totalGoodEggs,
+      starterEggs:        (s as any).totalStarterEggs    ?? 0,
+      brokenSellableEggs: (s as any).totalBrokenSellable ?? 0,
+      // Aliases used by AccountantPricingPage
+      productionEggs:     s.totalGoodEggs,
+      fullBrokenEggs:     (s as any).totalBrokenSellable ?? 0,
+      totalFullTrays:     s.totalFullTrays,
+      totalLooseEggs:     s.totalLooseEggs,
+    };
+  }
+
 }

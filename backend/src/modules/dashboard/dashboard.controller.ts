@@ -51,6 +51,11 @@ export class DashboardController {
       where: { status: EntryStatus.PENDING },
     });
 
+    // ── Pending LPO approvals (Director Activity Diagram: "Review Pending Approvals")
+    const pendingLpoCount = await this.prisma.localPurchaseOrder.count({
+      where: { status: 'PENDING' },
+    }).catch(() => 0);  // graceful fallback if LPO model not yet migrated
+
     // ── Egg production for period ────────────────────────────────────────
     const eggSessions = await this.prisma.eggCollectionSession.findMany({
       where: {
@@ -152,6 +157,7 @@ export class DashboardController {
       totalBirds,
       activeBatchCount: activeBatches.length,
       pendingVerifications: pendingEntries,
+      pendingApprovals: pendingLpoCount,  // LPOs awaiting Director sign-off
 
       // Eggs
       periodEggs,
@@ -201,6 +207,7 @@ export class DashboardController {
   async analyticsData(
     @Query('range') range: string = '30d',
     @Query('batchId') batchId?: string,
+    @Query('includeHistory') includeHistoryParam?: string,
     @CurrentUser() user?: any,
   ) {
     // Determine date range
@@ -298,9 +305,15 @@ export class DashboardController {
     }
     const feedTrend = Object.entries(feedByDate).map(([date, types]) => ({ date, ...types }));
 
-    // ── Batch comparison (bar) ───────────────────────────────────────────
+    // ── Batch comparison (bar) ─────────────────────────────────────────
+    // When includeHistory=true, show ALL batches (active + historical/closed/sold/discarded).
+    // This enables Manager and Director to compare performance across batch lifecycles.
+    const includeHistory = includeHistoryParam === 'true';
     const batches = await this.prisma.batch.findMany({
-      where: { isActive: true, deletedAt: null },
+      where: {
+        deletedAt: null,
+        ...(includeHistory ? {} : { isActive: true }),
+      },
       select: {
         id: true, batchCode: true, currentBirdCount: true,
         eggCollectionSessions: {

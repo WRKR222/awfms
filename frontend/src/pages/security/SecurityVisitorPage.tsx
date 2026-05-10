@@ -27,12 +27,20 @@ export default function SecurityVisitorPage({ role }: SecurityVisitorPageProps) 
     refetchInterval: 30_000,
   });
 
+  const [gateError, setGateError] = useState<string | null>(null);
+
   const logEntry = useMutation({
     mutationFn: ({ visitorId, action }: { visitorId: string; action: 'CHECK_IN' | 'CHECK_OUT' }) =>
       api.post('/visitors/gate-log', { visitorId, gate: gateKey, action, timestamp: new Date().toISOString() }),
     onSuccess: () => {
+      setGateError(null);
       qc.invalidateQueries({ queryKey: ['approved-visitors', gateKey] });
       qc.invalidateQueries({ queryKey: ['gate-log', gateKey] });
+    },
+    // FIX: Gate ordering violations surface as user-visible errors
+    // E.g. Security2 can't check in visitor before Security1 has checked them in
+    onError: (err: any) => {
+      setGateError(err?.response?.data?.message ?? 'Gate action failed. Check access requirements.');
     },
   });
 
@@ -63,7 +71,7 @@ export default function SecurityVisitorPage({ role }: SecurityVisitorPageProps) 
   const inside   = filtered.filter((v: any) => visitorStatus(v.id) === 'INSIDE');
   const departed = filtered.filter((v: any) => visitorStatus(v.id) === 'DEPARTED');
 
-  const inputCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
+  // inputCls removed (was defined but never used)
 
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-2xl mx-auto">
@@ -75,6 +83,15 @@ export default function SecurityVisitorPage({ role }: SecurityVisitorPageProps) 
           <p className="text-xs text-gray-400 mt-0.5">Approved visitors for selected date</p>
         </div>
       </div>
+
+      {/* FIX: Gate ordering / action error feedback */}
+      {gateError && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-2xl px-4 py-3 text-sm text-red-700 dark:text-red-400 flex items-center gap-2">
+          <span className="flex-shrink-0">⚠️</span>
+          <span>{gateError}</span>
+          <button onClick={() => setGateError(null)} className="ml-auto text-red-400 hover:text-red-600 text-xs">✕</button>
+        </div>
+      )}
 
       {/* Date + Search */}
       <div className="flex gap-2">

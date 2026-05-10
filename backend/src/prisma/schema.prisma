@@ -46,7 +46,9 @@ enum BatchStage {
   BROODING   // 0-6 weeks
   GROWER     // 6-18 weeks
   PRODUCTION // 18+ weeks
-  CLOSED
+  SOLD       // batch sold — all birds removed
+  DISCARDED  // batch discarded/culled out
+  CLOSED     // administratively closed
 }
 
 enum BirdType {
@@ -353,6 +355,8 @@ model Batch {
   notes                String?
   isActive             Boolean    @default(true) @map("is_active")
   closedAt             DateTime?  @map("closed_at")
+  soldAt               DateTime?  @map("sold_at")
+  discardedAt          DateTime?  @map("discarded_at")
   createdById          String     @map("created_by_id")
   createdAt            DateTime   @default(now()) @map("created_at")
   updatedAt            DateTime   @updatedAt @map("updated_at")
@@ -1525,6 +1529,7 @@ model BatchCageAssignment {
   id           String   @id @default(cuid())
   rowId        String   @unique @map("row_id")
   batchId      String   @map("batch_id")
+  birdCount    Int      @default(0) @map("bird_count")
   transferDate DateTime @map("transfer_date") @db.Date
   notes        String?
   assignedById String   @map("assigned_by_id")

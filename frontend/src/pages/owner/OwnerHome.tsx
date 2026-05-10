@@ -21,6 +21,7 @@ interface DashData {
   totalBirds: number;
   activeBatchCount: number;
   pendingVerifications: number;
+  pendingApprovals: number;   // FIX: LPOs awaiting Director approval
   periodEggs: number;
   periodTrays: number;
   avgHdp: number;
@@ -72,7 +73,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 import { useOwnerRealtime } from '../../hooks/useRealtime';
 
-export function OwnerHome() {
+export default function OwnerHome() {
   const { user } = useAuthStore();
   const navigate = useNavigate();
   const [range, setRange] = useState<Range>('weekly');
@@ -163,6 +164,7 @@ export function OwnerHome() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <KpiCard icon={<TrendingUp className="w-5 h-5" />} label="Mortality" value={data?.periodMortality?.toLocaleString() ?? '—'} sub={`${data?.periodCulling ?? 0} culled`} alert={(data?.periodMortality ?? 0) > 20} loading={isLoading} />
         <KpiCard icon={<Lock className="w-5 h-5" />} label="Pending Verifications" value={data?.pendingVerifications?.toLocaleString() ?? '—'} sub="flock entries" alert={(data?.pendingVerifications ?? 0) > 5} loading={isLoading} />
+        <KpiCard icon={<Lock className="w-5 h-5" />} label="Pending Approvals" value={data?.pendingApprovals?.toLocaleString() ?? '—'} sub="LPOs to approve" alert={(data?.pendingApprovals ?? 0) > 0} loading={isLoading} />
         <div className="col-span-2 bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
           <p className="text-xs text-gray-500 mb-2 font-semibold">Feed Status</p>
           {(data?.feedAlertsCount ?? 0) === 0 ? (

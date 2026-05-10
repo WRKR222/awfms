@@ -90,8 +90,9 @@ export class FlockService {
     if (vaccinationOnArrival && input.vaccinesGiven) {
       notesParts.push(`Vaccines on arrival: ${input.vaccinesGiven}`);
     }
+    // FIX H1: Row placements stored in notes AND BatchCageAssignment records created.
+    // Per PM Sequence Diagram – Register Batch: assignHouse() → allocateBirds()
     if (Array.isArray(input.rowPlacements) && input.rowPlacements.length) {
-      // Production-house row placements per changes.pdf — Block 1 only.
       notesParts.push(
         'Row placements: ' +
         input.rowPlacements
@@ -101,31 +102,71 @@ export class FlockService {
     }
 
     try {
-      return await this.prisma.batch.create({
-        data: {
-          batchCode: String(input.batchCode).trim(),
-          supplierId: supplier.id,
-          houseId: house.id,
-          birdType: input.birdType as BirdType,
-          strain: input.strain ?? String(input.birdType).replace(/_/g, ' '),
-          quantityReceived: quantity,
-          currentBirdCount: quantity - Number(input.mortalityOnArrival ?? 0),
-          dateOfHatch,
-          dateReceived,
-          stage,
-          location,
-          vaccinationOnArrival,
-          mortalityOnArrival: Number(input.mortalityOnArrival ?? 0),
-          transportConditions: input.transportConditions ?? null,
-          notes: notesParts.length ? notesParts.join('\n') : null,
-          isActive: input.isActive ?? true,
-          createdById: userId,
-        },
-        include: {
-          house: { select: { id: true, name: true, code: true } },
-          supplier: { select: { id: true, name: true } },
-        },
+      // Transaction: batch creation + cage assignments are atomic
+      const result = await this.prisma.$transaction(async (tx) => {
+        const batch = await tx.batch.create({
+          data: {
+            batchCode: String(input.batchCode).trim(),
+            supplierId: supplier.id,
+            houseId: house.id,
+            birdType: input.birdType as BirdType,
+            strain: input.strain ?? String(input.birdType).replace(/_/g, ' '),
+            quantityReceived: quantity,
+            currentBirdCount: quantity - Number(input.mortalityOnArrival ?? 0),
+            dateOfHatch,
+            dateReceived,
+            stage,
+            location,
+            vaccinationOnArrival,
+            mortalityOnArrival: Number(input.mortalityOnArrival ?? 0),
+            transportConditions: input.transportConditions ?? null,
+            notes: notesParts.length ? notesParts.join('\n') : null,
+            isActive: input.isActive ?? true,
+            createdById: userId,
+          },
+          include: {
+            house: { select: { id: true, name: true, code: true } },
+            supplier: { select: { id: true, name: true } },
+          },
+        });
+
+        // Create cage assignments for direct production-house registration.
+        // FarmRow field: rowCode (NOT code) — schema: @@unique([sectionId, rowCode]).
+        // BatchCageAssignment required fields: transferDate + assignedById (non-nullable).
+        // Uses upsert (consistent with BatchLifecycleService.updateBatchStage).
+        if (stage === BatchStage.PRODUCTION && Array.isArray(input.rowPlacements) && input.rowPlacements.length) {
+          const rowCodes: string[] = input.rowPlacements.map((r: any) => String(r.rowCode));
+          const rows = await tx.farmRow.findMany({
+            where: { rowCode: { in: rowCodes } },
+            select: { id: true, rowCode: true },
+          });
+          const rowIdByCode = Object.fromEntries(rows.map(r => [r.rowCode, r.id]));
+
+          for (const placement of input.rowPlacements) {
+            const rowId = rowIdByCode[placement.rowCode];
+            if (!rowId) continue; // gracefully skip unknown rowCodes
+            await tx.batchCageAssignment.upsert({
+              where: { rowId },
+              create: {
+                rowId,
+                batchId:      batch.id,
+                birdCount:    Number(placement.birdCount) || 0,
+                transferDate: new Date(),
+                assignedById: userId,
+              },
+              update: {
+                batchId:      batch.id,
+                birdCount:    Number(placement.birdCount) || 0,
+                transferDate: new Date(),
+                assignedById: userId,
+              },
+            });
+          }
+        }
+
+        return batch;
       });
+      return result;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         throw new BadRequestException('A batch with this code already exists');

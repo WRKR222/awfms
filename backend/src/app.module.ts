@@ -21,6 +21,7 @@ import { FinanceModule }  from './modules/finance/finance.module';
 import { AiModule }       from './modules/ai/ai.module';
 import { EventsModule }   from './modules/events/events.module';
 import { VisitorsModule } from './modules/visitors/visitors.module';
+import { DataUploadModule } from './modules/data-upload/data-upload.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { VisitorsModule } from './modules/visitors/visitors.module';
     AiModule,
     EventsModule,
     VisitorsModule,
+    DataUploadModule,    // Director historical data upload
   ],
 })
 export class AppModule {}

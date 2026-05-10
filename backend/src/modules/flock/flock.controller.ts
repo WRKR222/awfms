@@ -8,6 +8,8 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { BatchLifecycleService } from './batch-lifecycle.service';
+import { BatchStage } from '@prisma/client';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { FlockService } from './flock.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -21,7 +23,10 @@ import { Permission } from '../../common/enums/permissions.enum';
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller('flock')
 export class FlockController {
-  constructor(private readonly svc: FlockService) {}
+  constructor(
+    private readonly svc: FlockService,
+    private readonly lifecycle: BatchLifecycleService,
+  ) {}
 
   // ── Batches ────────────────────────────────────────────────────────────────
   @Get('batches')
@@ -70,6 +75,19 @@ export class FlockController {
     @CurrentUser() user: any,
   ) {
     return this.svc.verifyEntry(id, body, user.id);
+  }
+
+  // ── Batch stage transfer (Brooder → Production House) ─────────────────────
+  @Patch('batches/:id/stage')
+  @RequirePermission(Permission.FLOCK_BATCH_MANAGE)
+  @ApiOperation({ summary: 'Transfer batch to a new stage (e.g. BROODING → PRODUCTION)' })
+  transferBatch(
+    @Param('id') id: string,
+    @Body('stage') stage: BatchStage,
+    @Body('rowPlacements') rowPlacements: Array<{ rowId: string; birdCount: number }>,
+    @CurrentUser() user: any,
+  ) {
+    return this.lifecycle.updateBatchStage(id, stage, user, rowPlacements);
   }
 
   // ── Culling ────────────────────────────────────────────────────────────────

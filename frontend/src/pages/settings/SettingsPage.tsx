@@ -364,6 +364,9 @@ export function SettingsPage() {
   const { user } = useAuthStore();
   const { t } = useTranslation();
   const isAdmin = user?.role === 'OWNER' || user?.role === 'MANAGER';
+  // FIX: OWNER has dedicated User Management page — don't show admin reset section here.
+  // MANAGER still sees it since they have no separate user management page.
+  const showAdminSection = user?.role === 'MANAGER';
   const [successMsg, setSuccessMsg] = useState('');
   const [langSaved, setLangSaved] = useState(false);
   const [currentLang, setCurrentLang] = useState<LangCode>(getCurrentLanguage());
@@ -513,8 +516,20 @@ export function SettingsPage() {
       {/* Admin-only section */}
       {isAdmin && (
         <>
-          {/* Admin Reset UI */}
-          <AdminResetSection />
+          {/* OWNER: link to dedicated User Management page (avoids duplication) */}
+          {user?.role === 'OWNER' && (
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-2xl p-5 flex items-center justify-between">
+              <div>
+                <p className="font-semibold text-blue-800 dark:text-blue-300 text-sm">User &amp; Access Management</p>
+                <p className="text-xs text-blue-600 dark:text-blue-400 mt-0.5">Enable/disable roles, reset passwords and view audit logs</p>
+              </div>
+              <a href="/owner/users" className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 dark:text-blue-400 bg-white dark:bg-dark-card border border-blue-200 dark:border-blue-700 px-3 py-2 rounded-xl hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors">
+                Open User Management →
+              </a>
+            </div>
+          )}
+          {/* MANAGER: admin reset section shown here */}
+          {showAdminSection && <AdminResetSection />}
 
           {/* Password Reset Log */}
           <div className="bg-white dark:bg-dark-card border border-gray-200 dark:border-dark-border rounded-2xl p-6">

@@ -91,7 +91,7 @@ export class HealthController {
   }
 
   @Patch('visitors/advance/:id/status')
-  @RequirePermission(Permission.HEALTH_EVENT_LOG)  // Manager/Owner only action
+  @RequirePermission(Permission.VISITOR_NOTICE_APPROVE)  // FIX H2: Director/Owner only — PM must not approve own visitor requests
   updateAdvanceStatus(
     @Param('id') id: string,
     @Body() body: { status: 'APPROVED' | 'REJECTED'; directorNote?: string },

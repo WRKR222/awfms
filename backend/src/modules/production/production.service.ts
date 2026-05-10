@@ -167,17 +167,17 @@ export class ProductionService {
       });
     }
 
-    if (dto.shift === 'PM') {
-      await this._fireVerificationNotifications(session, batch);
-      await this.prisma.eggTallyVerification.upsert({
-        where: { sessionId: session.id },
-        update: {},
-        create: { sessionId: session.id, verificationDate: session.sessionDate },
-      });
-    } else {
-      // AM verification still required immediately by the Production Manager.
-      await this._fireVerificationNotifications(session, batch);
-    }
+    // FIX H1: Create EggTallyVerification for BOTH AM and PM sessions.
+    // Spec: "it should not be editable after submission and should be
+    //        immediately verified by the production manager" — applies to both shifts.
+    // AM sessions now appear in the PM's VerificationQueue "Egg Collection Sessions"
+    // tab alongside PM sessions, enabling the PM to verify them from the UI.
+    await this._fireVerificationNotifications(session, batch);
+    await this.prisma.eggTallyVerification.upsert({
+      where: { sessionId: session.id },
+      update: {},
+      create: { sessionId: session.id, verificationDate: session.sessionDate },
+    });
 
     return session;
   }

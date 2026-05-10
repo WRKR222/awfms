@@ -8,6 +8,7 @@ import { useBatches } from '../../hooks/useFlock';
 import {
   AlertTriangle, Plus, CheckCircle, Trash2, Scale, ShieldOff,
   ShieldCheck, Scissors, Bug, Stethoscope, Package, Archive,
+  Activity, Syringe, ClipboardList,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 
@@ -15,18 +16,34 @@ import dayjs from 'dayjs';
 // Remove DISEASE_OUTBREAK, INJURY, QUARANTINE_IMPOSED, QUARANTINE_LIFTED.
 // When BATCH_SOLD or BATCH_DISCARDED is logged, the backend marks the batch
 // inactive and closedAt — that's what reflects on the production-house live map.
+// Farm Events — unified per PM Activity Diagram.
+// Merged from HealthBiosecurity.tsx. HealthBiosecurity now shows Vaccinations only.
 const EVENT_TYPES = [
-  { value: 'CULLING',         label: 'Bird Culling',    showDisease: false, showWeight: false },
-  { value: 'BATCH_SOLD',      label: 'Batch Sold',      showDisease: false, showWeight: false },
-  { value: 'BATCH_DISCARDED', label: 'Batch Discarded', showDisease: false, showWeight: false },
-  { value: 'BIRD_WEIGHING',   label: 'Bird Weighing',   showDisease: false, showWeight: true  },
+  // ── Health events ──────────────────────────────────────────────────────────
+  { value: 'DISEASE_OUTBREAK',    label: 'Disease Outbreak',    showDisease: true,  showWeight: false },
+  { value: 'INJURY',              label: 'Bird Injury',         showDisease: false, showWeight: false },
+  { value: 'ROUTINE_CHECKUP',     label: 'Routine Checkup',     showDisease: false, showWeight: false },
+  { value: 'MEDICATION',          label: 'Medication',          showDisease: false, showWeight: false },
+  { value: 'QUARANTINE_IMPOSED',  label: 'Quarantine Imposed',  showDisease: false, showWeight: false },
+  { value: 'QUARANTINE_LIFTED',   label: 'Quarantine Lifted',   showDisease: false, showWeight: false },
+  // ── Batch / physical events ────────────────────────────────────────────────
+  { value: 'CULLING',             label: 'Bird Culling',        showDisease: false, showWeight: false },
+  { value: 'BATCH_SOLD',          label: 'Batch Sold',          showDisease: false, showWeight: false },
+  { value: 'BATCH_DISCARDED',     label: 'Batch Discarded',     showDisease: false, showWeight: false },
+  { value: 'BIRD_WEIGHING',       label: 'Bird Weighing',       showDisease: false, showWeight: true  },
 ];
 
 const EVENT_ICONS: Record<string, React.ElementType> = {
-  CULLING:         Scissors,
-  BATCH_SOLD:      Package,
-  BATCH_DISCARDED: Archive,
-  BIRD_WEIGHING:   Scale,
+  DISEASE_OUTBREAK:   Bug,
+  INJURY:             Activity,
+  ROUTINE_CHECKUP:    ClipboardList,
+  MEDICATION:         Syringe,
+  QUARANTINE_IMPOSED: ShieldOff,
+  QUARANTINE_LIFTED:  ShieldCheck,
+  CULLING:            Scissors,
+  BATCH_SOLD:         Package,
+  BATCH_DISCARDED:    Archive,
+  BIRD_WEIGHING:      Scale,
 };
 
 const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';

@@ -35,19 +35,43 @@ export default function SecurityHome({ role }: SecurityHomeProps) {
     refetchInterval: 30_000,
   });
 
+  const [gateError, setGateError] = useState<string | null>(null);
+
   const logEntry = useMutation({
     mutationFn: ({ visitorId, action }: { visitorId: string; action: 'CHECK_IN' | 'CHECK_OUT' }) =>
       api.post('/visitors/gate-log', { visitorId, gate: gateKey, action, timestamp: new Date().toISOString() }),
     onSuccess: () => {
+      setGateError(null);
       qc.invalidateQueries({ queryKey: ['approved-visitors', gateKey] });
       qc.invalidateQueries({ queryKey: ['gate-log', gateKey] });
     },
+    // FIX: Gate ordering violations (e.g. Farm Gate before Main Gate) now surface as user-visible errors
+    onError: (err: any) => {
+      setGateError(err?.response?.data?.message ?? 'Action failed. Please check gate access requirements.');
+    },
   });
 
+  // FIX: Use proper date comparison instead of fragile string comparison.
+  // For each visitor, find their LATEST log entry. If it is CHECK_IN they are inside.
+  const visitorLatestAction = new Map<string, string>();
+  for (const entry of (todayLog as any[])) {
+    const existing = visitorLatestAction.get(entry.visitorId);
+    if (!existing) {
+      visitorLatestAction.set(entry.visitorId, entry.action);
+    } else {
+      // Compare as dates to find the more recent entry
+      const existingEntry = (todayLog as any[]).find(
+        (e: any) => e.visitorId === entry.visitorId && e.action === existing
+      );
+      if (existingEntry && new Date(entry.timestamp) > new Date(existingEntry.timestamp)) {
+        visitorLatestAction.set(entry.visitorId, entry.action);
+      }
+    }
+  }
   const checkedInIds = new Set(
-    todayLog
-      .filter((e: any) => e.action === 'CHECK_IN' && !todayLog.some((o: any) => o.visitorId === e.visitorId && o.action === 'CHECK_OUT' && o.timestamp > e.timestamp))
-      .map((e: any) => e.visitorId)
+    Array.from(visitorLatestAction.entries())
+      .filter(([_, action]) => action === 'CHECK_IN')
+      .map(([id]) => id)
   );
 
   const pending = approvedVisitors.filter((v: any) => !checkedInIds.has(v.id));
@@ -62,6 +86,15 @@ export default function SecurityHome({ role }: SecurityHomeProps) {
         <p className="text-xl md:text-2xl font-bold mt-1">{greeting}, {firstName}! 👋</p>
         <p className="text-sm opacity-75 mt-0.5">{gate} Security Post</p>
       </div>
+
+      {/* FIX: Gate ordering error feedback (e.g. FARM_GATE before MAIN_GATE) */}
+      {gateError && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-2xl px-4 py-3 text-sm text-red-700 dark:text-red-400 flex items-center gap-2">
+          <span className="flex-shrink-0">⚠️</span>
+          <span>{gateError}</span>
+          <button onClick={() => setGateError(null)} className="ml-auto text-red-400 hover:text-red-600 text-xs">✕</button>
+        </div>
+      )}
 
       {/* Quick stats */}
       <div className="grid grid-cols-3 gap-3">

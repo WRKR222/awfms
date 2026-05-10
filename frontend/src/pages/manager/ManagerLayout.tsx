@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import {
   LayoutDashboard, Package, Wheat, ClipboardCheck, FileCheck, Bell, LogOut,
-  Users, BarChart2, Heart, ClipboardList, Flame, Settings,
+  Users, BarChart2, Heart, ClipboardList, Flame, Settings, AlertTriangle, Syringe,
 } from 'lucide-react';
 import { useLoginNotifications } from '../../hooks/useLoginNotifications';
 import { LoginNotificationModal } from '../../components/shared/LoginNotificationModal';
@@ -66,7 +66,8 @@ export function ManagerLayout() {
         </span>
       ),
     },
-    { to: '/manager/health',            label: 'Health',        icon: <Heart className="w-5 h-5" /> },
+    { to: '/manager/health',            label: 'Vaccinations',  icon: <Syringe className="w-5 h-5" /> },
+    { to: '/manager/culling',           label: 'Farm Events',   icon: <AlertTriangle className="w-5 h-5" /> },
     { to: '/manager/health-checklist',  label: 'Checklist',     icon: <ClipboardList className="w-5 h-5" /> },
     { to: '/manager/visitors',          label: 'Visitors',      icon: <Users className="w-5 h-5" /> },
     { to: '/manager/analytics',         label: 'Analytics',     icon: <BarChart2 className="w-5 h-5" /> },

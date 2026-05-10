@@ -1,34 +1,55 @@
-// src/pages/store/inventory/StockOutTab.tsx
+// frontend/src/pages/store/StockOutTab.tsx
+// Fixes GAP-04 (add issuedToName field) + GAP-09 (show balance after / c/d)
+//
+// IMPORTANT — DB migration required for issuedToName persistence:
+//   Run store_role_improvements.sql first (adds issued_to_name column).
+//   Until migration runs, issuedToName is sent but silently ignored by backend.
+//   Update StockOutDto in store-inventory.service.ts to accept issuedToName.
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useForm } from 'react-hook-form';
-import { Plus } from 'lucide-react';
+import { useForm, useWatch } from 'react-hook-form';
+import { Plus, AlertTriangle } from 'lucide-react';
 import dayjs from 'dayjs';
 import { api } from '../../lib/api/client';
 import { fmtKES, useStoreItems, useHouses, useBatches } from './_shared';
 
 type FormData = {
-  storeItemId: string;
-  issuedDate: string;
-  quantityOut: number;
+  storeItemId:     string;
+  issuedDate:      string;
+  quantityOut:     number;
+  issuedToName?:   string;   // GAP-04: person name receiving stock
   issuedToHouseId?: string;
   issuedToBatchId?: string;
-  purpose?: string;
-  notes?: string;
+  purpose?:        string;
+  notes?:          string;
 };
 
 export function StockOutTab() {
   const qc = useQueryClient();
-  const { data: items = [] } = useStoreItems(true);
-  const { data: houses = [] } = useHouses();
+  const { data: items   = [] } = useStoreItems(true);
+  const { data: houses  = [] } = useHouses();
   const { data: batches = [] } = useBatches();
   const [showForm, setShowForm] = useState(false);
-  const { register, handleSubmit, reset, watch } = useForm<FormData>({
+
+  const { register, handleSubmit, reset, control } = useForm<FormData>({
     defaultValues: { issuedDate: dayjs().format('YYYY-MM-DD') },
   });
 
-  const selectedHouse = watch('issuedToHouseId');
-  const filteredBatches = selectedHouse ? batches.filter(b => b.houseId === selectedHouse) : batches;
+  const watchedItemId  = useWatch({ control, name: 'storeItemId' });
+  const watchedQtyOut  = useWatch({ control, name: 'quantityOut' });
+  const watchedHouseId = useWatch({ control, name: 'issuedToHouseId' });
+  const selectedItem   = items.find(i => i.id === watchedItemId);
+  const filteredBatches = watchedHouseId
+    ? batches.filter(b => b.houseId === watchedHouseId)
+    : batches;
+
+  // Balance after issuance (c/d preview)
+  const balanceAfter = selectedItem
+    ? Math.max(0, Number(selectedItem.currentStock) - Number(watchedQtyOut || 0))
+    : null;
+  const willGoLow = selectedItem && balanceAfter !== null
+    ? balanceAfter <= Number(selectedItem.reorderLevel)
+    : false;
 
   const { data: list = [], isLoading } = useQuery({
     queryKey: ['store-stock-out'],
@@ -38,13 +59,15 @@ export function StockOutTab() {
   const create = useMutation({
     mutationFn: (data: FormData) => api.post('/store/inventory/stock-out', {
       ...data,
-      quantityOut: Number(data.quantityOut),
-      issuedToHouseId: data.issuedToHouseId || undefined,
-      issuedToBatchId: data.issuedToBatchId || undefined,
+      quantityOut:     Number(data.quantityOut),
+      issuedToHouseId: data.issuedToHouseId  || undefined,
+      issuedToBatchId: data.issuedToBatchId  || undefined,
+      issuedToName:    data.issuedToName     || undefined,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['store-stock-out'] });
       qc.invalidateQueries({ queryKey: ['store-items'] });
+      qc.invalidateQueries({ queryKey: ['store-items-low'] });
       reset({ issuedDate: dayjs().format('YYYY-MM-DD') });
       setShowForm(false);
     },
@@ -60,19 +83,60 @@ export function StockOutTab() {
       {showForm && (
         <form onSubmit={handleSubmit(d => create.mutate(d))}
           className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border space-y-3">
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Field label="Item *">
               <select {...register('storeItemId', { required: true })} className="input">
                 <option value="">Select item…</option>
-                {items.map(i => <option key={i.id} value={i.id}>{i.sku} — {i.name} (stock: {Number(i.currentStock)} {i.unit})</option>)}
+                {items.map(i => (
+                  <option key={i.id} value={i.id}>
+                    {i.sku} — {i.name} (stock: {Number(i.currentStock)} {i.unit})
+                  </option>
+                ))}
               </select>
             </Field>
+
+            {/* c/d preview panel — shows balance after issuance */}
+            {selectedItem && (
+              <div className={`flex items-start gap-2 border rounded-xl px-3 py-2 text-xs ${
+                willGoLow
+                  ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700'
+                  : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700'
+              }`}>
+                <AlertTriangle className={`w-4 h-4 flex-shrink-0 mt-0.5 ${willGoLow ? 'text-amber-500' : 'text-blue-400'}`} />
+                <div>
+                  <p className={`font-semibold ${willGoLow ? 'text-amber-700 dark:text-amber-300' : 'text-blue-700 dark:text-blue-300'}`}>
+                    Current: {Number(selectedItem.currentStock)} {selectedItem.unit}
+                    {balanceAfter !== null && Number(watchedQtyOut) > 0 && (
+                      <> → Balance c/d: <strong>{balanceAfter} {selectedItem.unit}</strong></>
+                    )}
+                  </p>
+                  {willGoLow && (
+                    <p className="text-amber-600 dark:text-amber-400 mt-0.5">
+                      ⚠ This will bring stock below reorder level ({Number(selectedItem.reorderLevel)} {selectedItem.unit}).
+                      Consider raising a Purchase Request after issuing.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
             <Field label="Issued Date *">
               <input type="date" {...register('issuedDate', { required: true })} className="input" />
             </Field>
             <Field label="Quantity *">
-              <input type="number" step="any" {...register('quantityOut', { required: true })} className="input" />
+              <input type="number" step="any" min="0.001" {...register('quantityOut', { required: true })} className="input" />
             </Field>
+
+            {/* GAP-04: Issued To (person name) */}
+            <Field label="Issued To (Name) *">
+              <input
+                {...register('issuedToName', { required: true })}
+                className="input"
+                placeholder="Name of person receiving stock"
+              />
+            </Field>
+
             <Field label="Department / Project">
               <input {...register('purpose')} placeholder="e.g. Production House, Block 2 Construction" className="input" />
             </Field>
@@ -94,11 +158,12 @@ export function StockOutTab() {
               </Field>
             </div>
           </div>
+
           <button type="submit" disabled={create.isPending}
             className="bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
             Issue Stock Out
           </button>
-          {create.isError && <p className="text-xs text-red-600">Failed to issue. Check stock levels.</p>}
+          {create.isError && <p className="text-xs text-red-600">Failed to issue. Check stock levels and required fields.</p>}
         </form>
       )}
 
@@ -112,19 +177,23 @@ export function StockOutTab() {
                 <tr>
                   <th className="text-left px-4 py-2">Date</th>
                   <th className="text-left px-4 py-2">Item</th>
-                  <th className="text-right px-4 py-2">Qty</th>
+                  <th className="text-right px-4 py-2">Qty Out</th>
                   <th className="text-right px-4 py-2">Total Cost</th>
+                  <th className="text-left px-4 py-2">Issued To</th>
                   <th className="text-left px-4 py-2">Dept / Project</th>
                   <th className="text-left px-4 py-2">Issuing Officer</th>
                 </tr>
               </thead>
               <tbody>
                 {list.map(r => (
-                  <tr key={r.id} className="border-t border-gray-100 dark:border-dark-border">
-                    <td className="px-4 py-2">{dayjs(r.issuedDate).format('YYYY-MM-DD')}</td>
-                    <td className="px-4 py-2 font-medium">{r.storeItem?.name} <span className="text-gray-400 text-xs">{r.storeItem?.sku}</span></td>
+                  <tr key={r.id} className="border-t border-gray-100 dark:border-dark-border hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                    <td className="px-4 py-2 whitespace-nowrap">{dayjs(r.issuedDate).format('DD/MM/YYYY')}</td>
+                    <td className="px-4 py-2 font-medium">
+                      {r.storeItem?.name} <span className="text-gray-400 text-xs">{r.storeItem?.sku}</span>
+                    </td>
                     <td className="px-4 py-2 text-right">{Number(r.quantityOut)} {r.storeItem?.unit}</td>
                     <td className="px-4 py-2 text-right">{fmtKES(r.totalCostKes)}</td>
+                    <td className="px-4 py-2 text-gray-600">{r.issuedToName ?? '—'}</td>
                     <td className="px-4 py-2 text-gray-600">{r.purpose ?? '—'}</td>
                     <td className="px-4 py-2 text-gray-600">{r.issuedBy?.fullName ?? '—'}</td>
                   </tr>

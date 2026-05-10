@@ -22,24 +22,41 @@ export class HealthService {
     diagnosis?: string;
     treatment?: string;
   }, recordedById: string) {
-    // changes.pdf — Production Manager → Events: these types were removed
-    // from the UI and must be rejected server-side as well.
-    const DISABLED = new Set(['DISEASE_OUTBREAK', 'INJURY', 'QUARANTINE_IMPOSED', 'QUARANTINE_LIFTED']);
-    if (DISABLED.has(dto.eventType as unknown as string)) {
-      throw new NotFoundException(`Event type "${dto.eventType}" is no longer supported.`);
-    }
-
+    // FIX C2: Re-enabled event types per PM Activity Diagram – Farm Event Recording
+    // and system specification. DISEASE_OUTBREAK, INJURY, QUARANTINE_IMPOSED,
+    // QUARANTINE_LIFTED are all valid PM farm events.
     const event = await this.prisma.healthEvent.create({
       data: { ...dto, eventDate: new Date(dto.eventDate), recordedById },
     });
 
-    // When a batch is sold or discarded, close it so it disappears from the
-    // production-house live map and any related batch data reflects accordingly.
-    if (dto.eventType === 'BATCH_SOLD' || dto.eventType === 'BATCH_DISCARDED') {
+    // When a batch is sold or discarded, update its stage explicitly so the
+    // BatchStage enum is correct (SOLD vs DISCARDED — not just CLOSED).
+    if (dto.eventType === 'BATCH_SOLD') {
       await this.prisma.batch.update({
         where: { id: dto.batchId },
-        data: { isActive: false, closedAt: new Date() },
+        data: { isActive: false, stage: 'SOLD' as any, soldAt: new Date() },
       });
+      // ── Notify Director (OWNER) — batch sold ─────────────────────────────
+      const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId }, select: { batchCode: true } });
+      await this.notifications.notifyRole(
+        UserRole.OWNER, NotificationType.SYSTEM,
+        'Batch Sold',
+        `Batch ${batch?.batchCode ?? dto.batchId} has been marked as SOLD by the Production Manager on ${dayjs(dto.eventDate).format('D MMM YYYY')}.${dto.notes ? ' Notes: ' + dto.notes : ''}`,
+        { entityId: event.id, entityType: 'HealthEvent' },
+      ).catch(() => { /* best-effort */ });
+    } else if (dto.eventType === 'BATCH_DISCARDED') {
+      await this.prisma.batch.update({
+        where: { id: dto.batchId },
+        data: { isActive: false, stage: 'DISCARDED' as any, discardedAt: new Date() },
+      });
+      // ── Notify Director (OWNER) — batch discarded ─────────────────────────
+      const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId }, select: { batchCode: true } });
+      await this.notifications.notifyRole(
+        UserRole.OWNER, NotificationType.SYSTEM,
+        'Batch Discarded',
+        `Batch ${batch?.batchCode ?? dto.batchId} has been DISCARDED by the Production Manager on ${dayjs(dto.eventDate).format('D MMM YYYY')}.${dto.notes ? ' Notes: ' + dto.notes : ''}`,
+        { entityId: event.id, entityType: 'HealthEvent' },
+      ).catch(() => { /* best-effort */ });
     }
     return event;
   }

@@ -88,13 +88,13 @@ function TallyCard({ tally }: { tally: TallySession }) {
       const body: any = {};
       if (correctedTrays !== '') body.correctedFullTrays = Number(correctedTrays);
       if (correctedLoose  !== '') body.correctedLooseEggs = Number(correctedLoose);
-      return api.patch(`/tally/${tally.id}/signoff`, body);
+      return api.post(`/tally-verifications/${tally.sessionId}/sign`, body);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tally-pending'] }),
   });
 
   const setRevenue = useMutation({
-    mutationFn: () => api.patch(`/tally/${tally.id}/revenue`, { expectedRevenueKes: Number(expectedRevenue) }),
+    mutationFn: () => api.patch(`/tally-verifications/${tally.sessionId}/revenue`, { expectedRevenueKes: Number(expectedRevenue) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tally-pending'] }),
   });
 

@@ -248,7 +248,7 @@ export function AnalyticsDashboard({ role }: Props) {
       {/* ── Batch comparison bar chart (AN-02) ─────────────────────────────── */}
       <ChartSection title="Batch Comparison — Eggs Produced">
         {batchComparison.length === 0 ? (
-          <p className="text-xs text-gray-400 text-center py-8">No active batches</p>
+          <p className="text-xs text-gray-400 text-center py-8">{includeHistory ? "No batch data" : "No active batches — enable \"Include Historical Batches\" to compare past batches"}</p>
         ) : (
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={batchComparison} layout="vertical" margin={{ top: 5, right: 20, left: 60, bottom: 5 }}>

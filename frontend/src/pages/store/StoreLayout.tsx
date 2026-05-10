@@ -5,17 +5,21 @@ import { useNotificationsStore } from '../../stores/notifications.store';
 import { useLoginNotifications } from '../../hooks/useLoginNotifications';
 import { LoginNotificationModal } from '../../components/shared/LoginNotificationModal';
 import { MobileSidebar } from '../../components/shared/MobileSidebar';
-import { Home, Egg, Truck, LogOut, Bell, Settings, Package } from 'lucide-react';
+import { Home, Egg, Truck, LogOut, Bell, Settings, Package, ClipboardList, Users, CheckSquare, UserCheck } from 'lucide-react';
 import { Sidebar, SidebarBody, SidebarLink, SidebarLinkItem } from '../../components/ui/sidebar';
 import { motion } from 'framer-motion';
 import { FlockIcon } from '../../components/ui/icons';
 
 const navDefs = [
-  { label: 'Home',        icon: Home,    to: '/store',                    end: true },
-  { label: 'Egg Intake',  icon: Egg,     to: '/store/egg-intake' },
-  { label: 'Feed Dist.',  icon: Truck,   to: '/store/feed-distribution' },
-  { label: 'Inventory',   icon: Package, to: '/store/inventory' },
-  { label: 'Settings',    icon: Settings,to: '/store/settings' },
+  { label: 'Home',           icon: Home,          to: '/store',                    end: true },
+  { label: 'Egg Intake',     icon: Egg,           to: '/store/egg-intake' },
+  { label: 'Feed Dist.',     icon: Truck,         to: '/store/feed-distribution' },
+  { label: 'Inventory',      icon: Package,       to: '/store/inventory' },
+  { label: 'Tally Sign-off', icon: CheckSquare,   to: '/store/tally' },
+  { label: 'Purchase Req.',  icon: ClipboardList, to: '/store/purchase-requests' },
+  { label: 'HR Records',     icon: Users,         to: '/store/hr' },
+  { label: 'Visitors',       icon: UserCheck,     to: '/store/visitors' },   // GAP-06
+  { label: 'Settings',       icon: Settings,      to: '/store/settings' },
 ];
 
 export default function StoreLayout() {

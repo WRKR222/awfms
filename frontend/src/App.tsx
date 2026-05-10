@@ -1,4 +1,5 @@
 // src/App.tsx
+
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React, { useEffect } from 'react';
@@ -32,6 +33,8 @@ import { AccountantFinancePage } from './pages/accountant/AccountantFinancePage'
 import { AccountantLpoPage } from './pages/accountant/AccountantLpoPage';
 
 // Owner pages
+import OwnerVisitorPage from './pages/owner/OwnerVisitorPage';
+import OwnerUsersPage   from './pages/owner/OwnerUsersPage';
 import { OwnerHome }             from './pages/owner/OwnerHome';
 import { AiReportsPage }         from './pages/owner/AiReportsPage';
 import { DataUploadPage }        from './pages/owner/DataUploadPage';
@@ -50,6 +53,9 @@ import StoreHome            from './pages/store/StoreHome';
 import StoreEggIntake       from './pages/store/StoreEggIntake';
 import StoreFeedDistribution from './pages/store/StoreFeedDistribution';
 import StoreInventoryPage   from './pages/store/StoreInventoryPage';
+import StoreHRPage          from './pages/store/StoreHRPage';          // GAP-01
+import StorePRPage          from './pages/store/StorePRPage';          // GAP-02
+import StoreVisitorsPage    from './pages/store/StoreVisitorsPage';    // GAP-06
 
 // Shared pages
 import TallyVerificationPage from './pages/shared/TallyVerificationPage';
@@ -210,6 +216,8 @@ function AppInner() {
           <Route path="data-upload"       element={<DataUploadPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="sales-orders"       element={<OwnerSalesOrdersPage />} />
+          <Route path="visitors"          element={<OwnerVisitorPage />} />
+          <Route path="users"             element={<OwnerUsersPage />} />
           <Route path="settings"          element={<SettingsPage />} />
         </Route>
 
@@ -245,8 +253,11 @@ function AppInner() {
           <Route index                    element={<StoreHome />} />
           <Route path="egg-intake"        element={<StoreEggIntake />} />
           <Route path="feed-distribution" element={<StoreFeedDistribution />} />
-          <Route path="inventory"        element={<StoreInventoryPage />} />
+          <Route path="inventory"         element={<StoreInventoryPage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
+          <Route path="hr"                element={<StoreHRPage />} />           {/* GAP-01 */}
+          <Route path="purchase-requests" element={<StorePRPage />} />           {/* GAP-02 */}
+          <Route path="visitors"          element={<StoreVisitorsPage />} />     {/* GAP-06 */}
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="settings"          element={<SettingsPage />} />
         </Route>
@@ -283,6 +294,7 @@ function AppInner() {
           <Route index                element={<Security1Home />} />
           <Route path="visitors"      element={<Security1VisitorPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="settings"      element={<SettingsPage />} />
         </Route>
 
         {/* ── Security 2 — Farm Gate ──────────────────────────────────── */}
@@ -297,6 +309,7 @@ function AppInner() {
           <Route index                element={<Security2Home />} />
           <Route path="visitors"      element={<Security2VisitorPage />} />
           <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="settings"      element={<SettingsPage />} />
         </Route>
 
         <Route path="/"  element={<RoleRedirect />} />

@@ -47,6 +47,7 @@ export interface StockOutDto {
   storeItemId: string;
   issuedDate: string;
   quantityOut: number;
+  issuedToName?: string;       // GAP-04: person name who receives the stock
   issuedToHouseId?: string;
   issuedToBatchId?: string;
   purpose?: string;
@@ -78,8 +79,6 @@ export interface CreateLPODto {
   expectedDelivery?: string;
   notes?: string;
   items: Array<{
-    // Manual LPOs allow free-typed items, so storeItemId is optional.
-    // When omitted, `description` carries the item name.
     storeItemId?: string;
     description?: string;
     quantity: number;
@@ -249,26 +248,71 @@ export class StoreInventoryService {
 
     const totalCostKes = dto.quantityOut * Number(item.unitCostKes);
 
-    const [stockOut] = await this.prisma.$transaction([
-      this.prisma.storeStockOut.create({
+    // Use interactive transaction so we can capture the updated item (GAP-05)
+    const { stockOut, updatedItem } = await this.prisma.$transaction(async (tx) => {
+      const so = await tx.storeStockOut.create({
         data: {
-          storeItemId:       dto.storeItemId,
-          issuedDate:        new Date(dto.issuedDate),
-          quantityOut:       dto.quantityOut,
-          unitCostKes:       item.unitCostKes,
+          storeItemId:     dto.storeItemId,
+          issuedDate:      new Date(dto.issuedDate),
+          quantityOut:     dto.quantityOut,
+          unitCostKes:     item.unitCostKes,
           totalCostKes,
-          issuedToHouseId:   dto.issuedToHouseId ?? null,
-          issuedToBatchId:   dto.issuedToBatchId ?? null,
-          purpose:           dto.purpose ?? null,
-          notes:             dto.notes ?? null,
-          issuedById:        user.id,
+          issuedToName:    dto.issuedToName ?? null,    // GAP-04
+          issuedToHouseId: dto.issuedToHouseId ?? null,
+          issuedToBatchId: dto.issuedToBatchId ?? null,
+          purpose:         dto.purpose ?? null,
+          notes:           dto.notes ?? null,
+          issuedById:      user.id,
         },
-      }),
-      this.prisma.storeItem.update({
+      });
+
+      const ui = await tx.storeItem.update({
         where: { id: dto.storeItemId },
         data: { currentStock: { decrement: dto.quantityOut } },
-      }),
-    ]);
+      });
+
+      return { stockOut: so, updatedItem: ui };
+    });
+
+    // ── GAP-05: Reorder-level alert ──────────────────────────────────────────
+    // After the decrement, if the item is now at or below its reorder level,
+    // create an in-app REORDER_ALERT notification for all active Store users
+    // so they are prompted to raise a Purchase Request.
+    if (Number(updatedItem.currentStock) <= Number(updatedItem.reorderLevel)) {
+      const storeUsers = await this.prisma.user.findMany({
+        where: { role: 'STORE', isActive: true },
+        select: { id: true },
+      });
+
+      for (const u of storeUsers) {
+        // De-duplicate: skip if an unread alert already exists for this item
+        const existing = await this.prisma.notification.findFirst({
+          where: {
+            userId:     u.id,
+            entityId:   dto.storeItemId,
+            entityType: 'StoreItem',
+            type:       'REORDER_ALERT' as any,
+            isRead:     false,
+          },
+        });
+        if (!existing) {
+          await this.prisma.notification.create({
+            data: {
+              userId:     u.id,
+              type:       'REORDER_ALERT' as any,
+              title:      `Low stock alert: ${item.name}`,
+              message:
+                `${item.name} (${item.sku}) is now at ${updatedItem.currentStock} ${item.unit}, ` +
+                `at or below the reorder level of ${updatedItem.reorderLevel} ${item.unit}. ` +
+                `Please raise a Purchase Request.`,
+              entityId:   dto.storeItemId,
+              entityType: 'StoreItem',
+            },
+          });
+        }
+      }
+    }
+    // ── END GAP-05 ──────────────────────────────────────────────────────────
 
     return stockOut;
   }
@@ -414,7 +458,6 @@ export class StoreInventoryService {
     const vatKes      = subtotalKes * (vatPercent / 100);
     const totalKes    = subtotalKes + vatKes;
 
-    // If linked to a purchase request, mark it as LPO_RAISED
     if (dto.purchaseRequestId) {
       const pr = await this.prisma.purchaseRequest.findUnique({
         where: { id: dto.purchaseRequestId },
@@ -455,7 +498,6 @@ export class StoreInventoryService {
       },
     });
 
-    // Mark purchase request as LPO_RAISED
     if (dto.purchaseRequestId) {
       await this.prisma.purchaseRequest.update({
         where: { id: dto.purchaseRequestId },
@@ -476,7 +518,6 @@ export class StoreInventoryService {
       data: { status: 'SUBMITTED' },
     });
 
-    // Notify Owner
     const owners = await this.prisma.user.findMany({
       where: { role: 'OWNER', isActive: true },
       select: { id: true },
@@ -507,7 +548,6 @@ export class StoreInventoryService {
       data: { status: 'APPROVED', approvedById: user.id, approvedAt: new Date() },
     });
 
-    // Notify Accountant & Store
     const notifyRoles = ['ACCOUNTANT', 'STORE'] as const;
     for (const role of notifyRoles) {
       const users = await this.prisma.user.findMany({

@@ -1,6 +1,8 @@
-// src/modules/finance/finance.controller.ts
+// backend/src/modules/finance/finance.controller.ts
+// Fixes: GAP-03 (add GET /finance/summary), GAP-04 (add POST /finance/import placeholder),
+//        GAP-07 (all invoice statuses accessible)
 import {
-  Controller, Get, Post, Patch, Delete,
+  Controller, Get, Post, Patch,
   Body, Param, Query, UseGuards, Request, Res,
 } from '@nestjs/common';
 import { Response } from 'express';
@@ -29,6 +31,14 @@ export class FinanceController {
     private readonly exportSvc: FinanceExportService,
   ) {}
 
+  // ── GAP-03: Accountant Summary ─────────────────────────────────────────────
+
+  @Get('summary')
+  @RequirePermission(Permission.FINANCE_VIEW)
+  getAccountantSummary() {
+    return this.svc.getAccountantSummary();
+  }
+
   // ── Excel Export ──────────────────────────────────────────────────────────
 
   @Get('export/excel')
@@ -46,6 +56,27 @@ export class FinanceController {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
+  }
+
+  // ── GAP-04: Excel Import ─────────────────────────────────────────────────
+  // NOTE: Full implementation requires @nestjs/multer + file parsing.
+  // This stub returns a clear error until the parser is wired up.
+  // To complete: npm install @nestjs/multer multer xlsx
+  // Then add @UseInterceptors(FileInterceptor('file')) and parse the xlsx.
+
+  @Post('import')
+  @RequirePermission(Permission.FINANCE_EXPORT)
+  async importExcel(
+    @Query('type') type: string,
+    @Request() req: any,
+  ) {
+    // Placeholder — returns 501 until full multer implementation is added
+    return {
+      success: false,
+      message: 'Excel import endpoint registered. Full multipart/file parsing not yet implemented. ' +
+               'Install @nestjs/multer and wire FileInterceptor to complete.',
+      type,
+    };
   }
 
   // ── Invoices ──────────────────────────────────────────────────────────────
@@ -134,10 +165,7 @@ export class FinanceController {
 
   @Get('expenses/summary')
   @RequirePermission(Permission.FINANCE_REPORT_VIEW)
-  getExpenseSummary(
-    @Query('from') from: string,
-    @Query('to') to: string,
-  ) {
+  getExpenseSummary(@Query('from') from: string, @Query('to') to: string) {
     return this.svc.getExpenseSummaryByCategory(from, to);
   }
 

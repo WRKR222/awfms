@@ -1,11 +1,20 @@
+/**
+ * AWFMS API Client (lib/api/client.ts)
+ *
+ * Set in Vercel Environment Variables:
+ *   VITE_API_URL = https://anza-whole-foods-poultry-management.up.railway.app
+ *
+ * This matches lib/api.ts — both use the same BASE_URL derivation.
+ */
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '../../stores/auth.store';
 
-const BASE_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:3000').replace(/\/api\/v1\/?$/, '');
+// Strip trailing slash if present, then append /api/v1
+const BASE_URL = `${(import.meta.env.VITE_API_URL ?? 'http://localhost:3000').replace(/\/$/, '')}/api/v1`;
 
 export const apiClient = axios.create({
-  baseURL: `${BASE_URL}/api/v1`,
-  withCredentials: true, // Send cookies (refresh token httpOnly cookie)
+  baseURL: BASE_URL,
+  withCredentials: true,
   timeout: 30_000,
   headers: { 'Content-Type': 'application/json' },
 });
@@ -41,7 +50,6 @@ apiClient.interceptors.response.use(
 
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (isRefreshing) {
-        // Queue this request while refresh is in progress
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
         }).then((token) => {
@@ -54,11 +62,14 @@ apiClient.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        const { data } = await apiClient.post('/auth/refresh');
-        const newToken = data.accessToken;
-        useAuthStore.getState().updateToken(newToken);
-        originalRequest.headers.Authorization = `Bearer ${newToken}`;
-        processQueue(null, newToken);
+        const { refreshToken, setTokens, logout } = useAuthStore.getState();
+        if (!refreshToken) { logout(); return Promise.reject(error); }
+
+        const res = await axios.post(`${BASE_URL}/auth/refresh`, { refreshToken });
+        const { accessToken, refreshToken: newRefresh } = res.data;
+        setTokens(accessToken, newRefresh);
+        originalRequest.headers.Authorization = `Bearer ${accessToken}`;
+        processQueue(null, accessToken);
         return apiClient(originalRequest);
       } catch (refreshError) {
         processQueue(refreshError as Error);

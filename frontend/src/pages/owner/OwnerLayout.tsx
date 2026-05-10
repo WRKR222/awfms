@@ -1,13 +1,24 @@
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { useState, useEffect } from 'react';
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { Outlet, useNavigate } from 'react-router-dom';
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { useAuthStore } from '../../stores/auth.store';
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { useNotificationsStore } from '../../stores/notifications.store';
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { useLoginNotifications } from '../../hooks/useLoginNotifications';
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { LoginNotificationModal } from '../../components/shared/LoginNotificationModal';
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { MobileSidebar } from '../../components/shared/MobileSidebar';
-import { LayoutDashboard, Bell, LogOut, TrendingUp, Brain, Upload, Settings } from 'lucide-react';
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
+import { LayoutDashboard, Bell, LogOut, TrendingUp, Brain, Upload, Settings, UserCheck, Shield } from 'lucide-react';
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { Sidebar, SidebarBody, SidebarLink, SidebarLinkItem } from '../../components/ui/sidebar';
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { motion } from 'framer-motion';
+// OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { FlockIcon } from '../../components/ui/icons';
 
 
@@ -16,6 +27,8 @@ const navDefs = [
   { label: 'Analytics',   icon: TrendingUp,      to: '/owner/analytics' },
   { label: 'AI Reports',  icon: Brain,           to: '/owner/reports' },
   { label: 'Data Upload', icon: Upload,          to: '/owner/data-upload' },
+  { label: 'Visitors',       icon: UserCheck, to: '/owner/visitors' },
+  { label: 'User Mgmt',      icon: Shield,    to: '/owner/users' },
   { label: 'Settings',    icon: Settings,        to: '/owner/settings' },
 ];
 

@@ -3,12 +3,32 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RequestUser } from '../../auth/types/request-user.type';
+import dayjs from 'dayjs';
+
+// Egg item types — matches SalesOrderItem.itemType values (no grade field used)
+export type EggItemType =
+  | 'STANDARD_EGGS'
+  | 'STARTER_EGGS'
+  | 'CONSUMABLE_BROKEN_EGGS';
+
+const VALID_EGG_TYPES: EggItemType[] = [
+  'STANDARD_EGGS', 'STARTER_EGGS', 'CONSUMABLE_BROKEN_EGGS',
+];
+
+const EGG_TYPE_LABELS: Record<EggItemType, string> = {
+  STANDARD_EGGS:          'Standard Eggs',
+  STARTER_EGGS:           'Starter Eggs',
+  CONSUMABLE_BROKEN_EGGS: 'Consumable Broken Eggs',
+};
 
 export interface CreateBookingDto {
   customerId: string;
-  requestedDate: string;
+  eggType: EggItemType;        // Which egg category is being booked
+  requestedDate: string;       // YYYY-MM-DD
   quantityTrays: number;
-  pricePerEggKes: number;
+  requiresDelivery?: boolean;
+  deliveryAddress?: string;
+  deliveryDate?: string;       // YYYY-MM-DD
   notes?: string;
 }
 
@@ -21,57 +41,84 @@ export class BookingsService {
   constructor(private readonly prisma: PrismaService) {}
 
   private async generateRef(): Promise<string> {
-    const year = new Date().getFullYear();
+    const year  = new Date().getFullYear();
     const count = await this.prisma.advanceBooking.count();
     return `BK-${year}-${String(count + 1).padStart(3, '0')}`;
   }
 
   async createBooking(dto: CreateBookingDto, user: RequestUser) {
-    const customer = await this.prisma.customer.findUnique({
-      where: { id: dto.customerId },
-    });
+    const customer = await this.prisma.customer.findUnique({ where: { id: dto.customerId } });
     if (!customer) throw new NotFoundException('Customer not found');
 
-    const quantityEggs = dto.quantityTrays * 30;
-    const estimatedTotal = quantityEggs * dto.pricePerEggKes;
-    const bookingRef = await this.generateRef();
+    if (!VALID_EGG_TYPES.includes(dto.eggType)) {
+      throw new BadRequestException(
+        `Invalid egg type "${dto.eggType}". Must be STANDARD_EGGS, STARTER_EGGS, or CONSUMABLE_BROKEN_EGGS`,
+      );
+    }
+    if (dto.requiresDelivery && !dto.deliveryAddress?.trim()) {
+      throw new BadRequestException('Delivery address is required when delivery is requested');
+    }
+
+    // Fetch today's pricing for price estimate (0 if no pricing today)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: today } });
+
+    let pricePerEggKes = 0;
+    if (pricing) {
+      if      (dto.eggType === 'STANDARD_EGGS')          pricePerEggKes = Number(pricing.pricePerEgg);
+      else if (dto.eggType === 'STARTER_EGGS')           pricePerEggKes = Number(pricing.pricePerEggStarter ?? pricing.pricePerEgg);
+      else if (dto.eggType === 'CONSUMABLE_BROKEN_EGGS') pricePerEggKes = Number(pricing.pricePerEggBroken  ?? pricing.pricePerEgg);
+    }
+
+    const quantityEggs   = dto.quantityTrays * 30;
+    const estimatedTotal = quantityEggs * pricePerEggKes;
+    const bookingRef     = await this.generateRef();
+    const eggTypeLabel   = EGG_TYPE_LABELS[dto.eggType];
+
+    // Store egg type + delivery info in notes (schema has no dedicated eggType column yet)
+    const noteParts = [
+      `Egg Type: ${eggTypeLabel}`,
+      dto.requiresDelivery ? `Delivery required to: ${dto.deliveryAddress}` : null,
+      dto.deliveryDate     ? `Delivery date: ${dto.deliveryDate}` : null,
+      dto.notes,
+    ].filter(Boolean);
 
     const booking = await this.prisma.advanceBooking.create({
       data: {
         bookingRef,
-        customerId: dto.customerId,
-        createdById: user.id,
+        customerId:    dto.customerId,
+        createdById:   user.id,
         requestedDate: new Date(dto.requestedDate),
         quantityTrays: dto.quantityTrays,
         quantityEggs,
-        pricePerEggKes: dto.pricePerEggKes,
+        pricePerEggKes,
         estimatedTotal,
-        stockLocked: true,
-        lockedAt: new Date(),
-        status: 'PENDING',
-        notes: dto.notes ?? null,
+        stockLocked:   true,
+        lockedAt:      new Date(),
+        status:        'PENDING',
+        notes:         noteParts.join(' | ') || null,
       },
       include: { customer: { select: { name: true, phone: true } } },
     });
 
-    await this._notifyStockLocked(booking);
+    await this._notifyStockLocked(booking, eggTypeLabel);
     return booking;
   }
 
-  private async _notifyStockLocked(booking: any) {
+  private async _notifyStockLocked(booking: any, eggTypeLabel: string) {
     const targets = await this.prisma.user.findMany({
       where: { role: { in: ['STORE', 'MANAGER', 'OWNER'] }, isActive: true },
       select: { id: true },
     });
-
     for (const t of targets) {
       await this.prisma.notification.create({
         data: {
           userId: t.id,
-          type: 'STOCK_LOCKED_BOOKING' as any,
-          title: `Stock Locked — ${booking.bookingRef}`,
-          message: `${booking.customer.name} has booked ${booking.quantityTrays} trays (${booking.quantityEggs} eggs) for ${new Date(booking.requestedDate).toLocaleDateString('en-KE')}. Stock is now locked for this booking.`,
-          entityId: booking.id,
+          type:   'STOCK_LOCKED_BOOKING' as any,
+          title:  `Stock Locked — ${booking.bookingRef}`,
+          message: `${booking.customer.name} booked ${booking.quantityTrays} trays (${booking.quantityEggs} eggs) of ${eggTypeLabel} for ${dayjs(booking.requestedDate).format('D MMM YYYY')}. Stock locked.`,
+          entityId:   booking.id,
           entityType: 'AdvanceBooking',
         },
       });
@@ -81,9 +128,7 @@ export class BookingsService {
   async getAllBookings(status?: string) {
     return this.prisma.advanceBooking.findMany({
       where: status ? { status: status as any } : {},
-      include: {
-        customer: { select: { name: true, phone: true, email: true } },
-      },
+      include: { customer: { select: { name: true, phone: true, email: true } } },
       orderBy: [{ status: 'asc' }, { requestedDate: 'asc' }],
     });
   }
@@ -100,14 +145,8 @@ export class BookingsService {
   async confirmBooking(id: string, user: RequestUser) {
     const booking = await this.prisma.advanceBooking.findUnique({ where: { id } });
     if (!booking) throw new NotFoundException('Booking not found');
-    if (booking.status !== 'PENDING') {
-      throw new BadRequestException('Only PENDING bookings can be confirmed');
-    }
-
-    return this.prisma.advanceBooking.update({
-      where: { id },
-      data: { status: 'CONFIRMED' },
-    });
+    if (booking.status !== 'PENDING') throw new BadRequestException('Only PENDING bookings can be confirmed');
+    return this.prisma.advanceBooking.update({ where: { id }, data: { status: 'CONFIRMED' } });
   }
 
   async cancelBooking(id: string, dto: CancelBookingDto, user: RequestUser) {
@@ -119,12 +158,7 @@ export class BookingsService {
 
     const updated = await this.prisma.advanceBooking.update({
       where: { id },
-      data: {
-        status: 'CANCELLED',
-        stockLocked: false,
-        unlockedAt: new Date(),
-        cancellationReason: dto.cancellationReason,
-      },
+      data: { status: 'CANCELLED', stockLocked: false, unlockedAt: new Date(), cancellationReason: dto.cancellationReason },
       include: { customer: { select: { name: true } } },
     });
 
@@ -136,15 +170,14 @@ export class BookingsService {
       await this.prisma.notification.create({
         data: {
           userId: t.id,
-          type: 'BOOKING_CANCELLED' as any,
-          title: `Booking Cancelled — ${booking.bookingRef}`,
-          message: `Booking for ${updated.customer.name} (${booking.quantityTrays} trays) has been cancelled. Stock is now unlocked. Reason: ${dto.cancellationReason}`,
-          entityId: booking.id,
+          type:   'BOOKING_CANCELLED' as any,
+          title:  `Booking Cancelled — ${booking.bookingRef}`,
+          message: `Booking for ${updated.customer.name} (${booking.quantityTrays} trays) cancelled. Stock unlocked. Reason: ${dto.cancellationReason}`,
+          entityId:   booking.id,
           entityType: 'AdvanceBooking',
         },
       });
     }
-
     return updated;
   }
 
@@ -158,34 +191,49 @@ export class BookingsService {
       throw new BadRequestException('Only CONFIRMED bookings can be fulfilled');
     }
 
-    // Auto-generate order number
-    const count = await this.prisma.salesOrder.count();
+    // Fetch today's pricing for accurate total at fulfillment
     const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: today } });
+    if (!pricing) {
+      throw new BadRequestException('No pricing set for today. Ask the accountant to set prices before fulfilling.');
+    }
+
+    // Determine egg type from notes (until schema gets a dedicated eggType column)
+    const notesStr = ((booking.notes ?? '') as string);
+    let eggType: EggItemType = 'STANDARD_EGGS';
+    if      (notesStr.includes('Starter Eggs'))           eggType = 'STARTER_EGGS';
+    else if (notesStr.includes('Consumable Broken Eggs')) eggType = 'CONSUMABLE_BROKEN_EGGS';
+
+    let pricePerEgg = Number(pricing.pricePerEgg);
+    if      (eggType === 'STARTER_EGGS'           && pricing.pricePerEggStarter) pricePerEgg = Number(pricing.pricePerEggStarter);
+    else if (eggType === 'CONSUMABLE_BROKEN_EGGS' && pricing.pricePerEggBroken)  pricePerEgg = Number(pricing.pricePerEggBroken);
+
+    const unitPrice = pricePerEgg * 30;      // price per tray
+    const subtotal  = booking.quantityTrays * unitPrice;
+
+    const count = await this.prisma.salesOrder.count();
+    const today2  = new Date();
     const pad = (n: number, d = 2) => String(n).padStart(d, '0');
-    const datePart = `${today.getFullYear()}${pad(today.getMonth() + 1)}${pad(today.getDate())}`;
+    const datePart = `${today2.getFullYear()}${pad(today2.getMonth() + 1)}${pad(today2.getDate())}`;
     const orderNumber = `SO-${datePart}-${String(count + 1).padStart(4, '0')}`;
 
-    const totalTrays = booking.quantityTrays;
-    const tier = totalTrays >= 11 ? 'TIER_2' : 'TIER_1';
-    const unitPrice = Number(booking.pricePerEggKes) * 30; // price per tray
-    const subtotal = totalTrays * unitPrice;
-
-    // Create the SalesOrder and link it to the booking in a transaction
     const [salesOrder] = await this.prisma.$transaction([
       this.prisma.salesOrder.create({
         data: {
           orderNumber,
-          customerId: booking.customerId,
-          orderDate: today,
+          customerId:      booking.customerId,
+          orderDate:       today2,
           subtotal,
           deliveryAddress: dto.deliveryAddress ?? null,
-          notes: dto.notes ?? `Fulfilling advance booking ${booking.bookingRef}`,
-          createdById: user.id,
+          notes:           dto.notes ?? `Fulfilling advance booking ${booking.bookingRef}`,
+          createdById:     user.id,
+          status:          'CONFIRMED' as any,
+          confirmedAt:     new Date(),
           items: {
             create: [{
-              itemType: 'EGGS',
-              grade: null,
-              quantityTrays: totalTrays,
+              itemType:      eggType,       // e.g. 'STANDARD_EGGS' — no grade field
+              quantityTrays: booking.quantityTrays,
               unitPrice,
               subtotal,
             }],
@@ -198,19 +246,12 @@ export class BookingsService {
       }),
     ]);
 
-    // Mark booking as fulfilled and link the order
     const updatedBooking = await this.prisma.advanceBooking.update({
       where: { id },
-      data: {
-        status: 'FULFILLED',
-        stockLocked: false,
-        unlockedAt: new Date(),
-        salesOrderId: salesOrder.id,
-      },
+      data: { status: 'FULFILLED', stockLocked: false, unlockedAt: new Date(), salesOrderId: salesOrder.id },
       include: { customer: { select: { name: true } } },
     });
 
-    // Notify Manager and Owner
     const targets = await this.prisma.user.findMany({
       where: { role: { in: ['MANAGER', 'OWNER'] }, isActive: true },
       select: { id: true },
@@ -219,10 +260,10 @@ export class BookingsService {
       await this.prisma.notification.create({
         data: {
           userId: t.id,
-          type: 'BOOKING_FULFILLED' as any,
-          title: `Booking Fulfilled — ${booking.bookingRef}`,
-          message: `Advance booking for ${booking.customer.name} (${booking.quantityTrays} trays) has been fulfilled. Sales order ${orderNumber} created. Stock unlocked.`,
-          entityId: booking.id,
+          type:   'BOOKING_FULFILLED' as any,
+          title:  `Booking Fulfilled — ${booking.bookingRef}`,
+          message: `Advance booking for ${booking.customer.name} (${booking.quantityTrays} trays of ${EGG_TYPE_LABELS[eggType]}) fulfilled. Sales order ${orderNumber} created.`,
+          entityId:   booking.id,
           entityType: 'AdvanceBooking',
         },
       });
@@ -233,14 +274,13 @@ export class BookingsService {
 
   async getLockedStockSummary() {
     const active = await this.prisma.advanceBooking.findMany({
-      where: { stockLocked: true, status: { in: ['PENDING', 'CONFIRMED'] } },
+      where: { stockLocked: true, status: { in: ['PENDING', 'CONFIRMED'] as any[] } },
       include: { customer: { select: { name: true } } },
       orderBy: { requestedDate: 'asc' },
     });
-
     return {
-      activeBookings: active,
-      totalLockedEggs:  active.reduce((s: number, b: any) => s + b.quantityEggs, 0),
+      activeBookings:   active,
+      totalLockedEggs:  active.reduce((s: number, b: any) => s + b.quantityEggs,  0),
       totalLockedTrays: active.reduce((s: number, b: any) => s + b.quantityTrays, 0),
     };
   }
