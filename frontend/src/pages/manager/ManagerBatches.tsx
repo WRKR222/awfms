@@ -75,6 +75,7 @@ const BIRD_TYPE_LABELS: Record<string, { label: string; tip: string }> = {
 // ── Batch card ────────────────────────────────────────────────────────────────
 
 function BatchCard({ batch }: { batch: any }) {
+  const navigate = useNavigate();
   // Log Culling removed — culling is a Farm Event handled in Farm Events page (/manager/culling)
   const stage = STAGE_CONFIG[batch.stage as keyof typeof STAGE_CONFIG] ?? STAGE_CONFIG.BROODING;
   const birdType = BIRD_TYPE_LABELS[batch.birdType] ?? { label: batch.birdType, tip: '' };

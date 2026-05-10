@@ -35,15 +35,15 @@ import { AccountantLpoPage } from './pages/accountant/AccountantLpoPage';
 // Owner pages
 import OwnerVisitorPage from './pages/owner/OwnerVisitorPage';
 import OwnerUsersPage   from './pages/owner/OwnerUsersPage';
-import { OwnerHome }             from './pages/owner/OwnerHome';
+import OwnerHome                 from './pages/owner/OwnerHome';
 import { AiReportsPage }         from './pages/owner/AiReportsPage';
 import { DataUploadPage }        from './pages/owner/DataUploadPage';
 import { OwnerSalesOrdersPage }  from './pages/owner/OwnerSalesOrdersPage';
 
 // Sales pages
 import SalesHome            from './pages/sales/SalesHome';
-import { SalesOrders }      from './pages/sales/SalesOrders';
-import { AdvanceBookingsPage } from './pages/sales/AdvanceBookingsPage';
+import SalesOrders          from './pages/sales/SalesOrders';
+import AdvanceBookingsPage   from './pages/sales/AdvanceBookingsPage';
 import { ClientsPage }      from './pages/sales/ClientsPage';
 import SalesBreakagePage    from './pages/sales/SalesBreakagePage';
 import SalesDeliveryPage   from './pages/sales/SalesDeliveryPage';

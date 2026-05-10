@@ -52,6 +52,20 @@ const cardCls  = 'bg-white dark:bg-dark-card rounded-2xl border border-gray-100 
 
 // ── Tab button ────────────────────────────────────────────────────────────────
 
+// ── Vaccination form schema ──────────────────────────────────────────────────
+const vacSchema = z.object({
+  batchId:          z.string().uuid('Select a batch'),
+  vaccineName:      z.string().min(1, 'Vaccine name required'),
+  administeredDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Invalid date'),
+  route:            z.enum(['DRINKING_WATER', 'EYE_DROP', 'INJECTION', 'SPRAY', 'WING_WEB', 'OTHER']),
+  batchSize:        z.coerce.number().int().min(1, 'Enter number of birds vaccinated'),
+  dosageUnits:      z.string().optional(),
+  vetName:          z.string().optional(),
+  notes:            z.string().optional(),
+});
+type VacForm = z.infer<typeof vacSchema>;
+
+
 function VaccinationForm({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const { data: batches = [] } = useBatches({ isActive: true });

@@ -58,6 +58,7 @@ function shortDate(dateStr: string) {
 
 export function AnalyticsDashboard({ role }: Props) {
   const [range, setRange] = useState('30d');
+  const [includeHistory, setIncludeHistory] = useState(false);
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['analytics', range],
