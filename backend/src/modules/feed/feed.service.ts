@@ -293,6 +293,13 @@ export class FeedService {
   }
 
   async issueFeedRequest(id: string, body: any, userId: string) {
+    const request = await this.prisma.simpleStockRequest.findUnique({ where: { id } });
+    if (!request) return { id, status: 'FULFILLED' };
+
+    const feedType = request.purpose?.replace('FEED:', '') ?? '';
+    const noteParts = request.notes?.split('|') ?? [];
+    const quantityKg = noteParts[0] ? Number(noteParts[0]) : 0;
+
     const updated = await this.prisma.simpleStockRequest.update({
       where: { id },
       data: {
@@ -301,6 +308,15 @@ export class FeedService {
         fulfilledAt: body.issuedAt ? new Date(body.issuedAt) : new Date(),
       },
     }).catch(() => ({ id, status: 'FULFILLED' }));
+
+    // Notify the Production Manager that the feed has been issued
+    await this.notifications.notifyRole(
+      'MANAGER' as any,
+      'FEED_LOW' as any,
+      `Feed Issued — ${feedType}`,
+      `Store has issued ${quantityKg} kg of ${feedType} (Ref: ${request.requestRef}). Your stock has been updated.`,
+    ).catch(() => {});
+
     return updated;
   }
 }

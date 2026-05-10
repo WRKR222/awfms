@@ -1,8 +1,8 @@
 // src/pages/sales/SalesBreakagePage.tsx
-// FIXED: Adjustment type properly constrains which fields are editable.
-//        Standard → NON_CONSUMABLE or CONSUMABLE (both). Consumable → NON_CONSUMABLE only.
-//        notifyExpense() to accountant (handled by backend). Stock updates after submit.
-import { useState } from 'react';
+// Both new-quantity fields (non-consumable + consumable) are always editable.
+// adjustmentType is a categorisation label only. Backend saves both values.
+// notifyExpense() to accountant (handled by backend). Stock updates after submit.
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { Plus, EggOff, AlertTriangle, Info } from 'lucide-react';
@@ -39,13 +39,13 @@ const TYPE_BADGE: Record<AdjType, string> = {
 const ADJ_RULES: Record<AdjType, { editNon: boolean; editConsumable: boolean; description: string }> = {
   NON_CONSUMABLE: {
     editNon: true,
-    editConsumable: false,
-    description: 'Standard or consumable eggs that are now non-consumable (unsellable, no market value).',
+    editConsumable: true,
+    description: 'Record updated counts for non-consumable (unsellable) and/or consumable (sellable at reduced price) broken eggs.',
   },
   CONSUMABLE: {
-    editNon: false,
+    editNon: true,
     editConsumable: true,
-    description: 'Standard eggs that became consumable broken (still sellable at reduced price).',
+    description: 'Record updated counts for consumable (sellable at reduced price) and/or non-consumable (unsellable) broken eggs.',
   },
 };
 
@@ -66,6 +66,14 @@ export default function SalesBreakagePage() {
   const selectedTallyId = watch('tallySessionId');
   const adjustmentType  = watch('adjustmentType');
   const rules           = ADJ_RULES[adjustmentType];
+
+  // Pre-populate new quantity fields with current stock when form opens
+  useEffect(() => {
+    if (showForm) {
+      setValue('newNonConsumable', qtyNonConsumable);
+      setValue('newConsumable', qtyConsumable);
+    }
+  }, [showForm]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data: tallies = [] } = useQuery({
     queryKey: ['verified-tallies'],
@@ -95,9 +103,7 @@ export default function SalesBreakagePage() {
   // When adjustment type changes, reset the locked (non-editable) field
   function handleTypeChange(type: AdjType) {
     setValue('adjustmentType', type);
-    const newRules = ADJ_RULES[type];
-    if (!newRules.editNon)        setValue('newNonConsumable', qtyNonConsumable); // reset to current
-    if (!newRules.editConsumable) setValue('newConsumable',    qtyConsumable);
+    // Both fields always editable — no field resets needed
   }
 
   const create = useMutation({
@@ -110,8 +116,8 @@ export default function SalesBreakagePage() {
       quantityNonConsumableBefore: qtyNonConsumable,
       quantityConsumableBefore:    qtyConsumable,
       // Only send the editable field; backend computes quantityDiff
-      newNonConsumable: rules.editNon        ? Number(data.newNonConsumable) : qtyNonConsumable,
-      newConsumable:    rules.editConsumable ? Number(data.newConsumable)    : qtyConsumable,
+      newNonConsumable: Number(data.newNonConsumable),
+      newConsumable:    Number(data.newConsumable),
       notes: data.notes,
     }),
     onSuccess: () => {
@@ -228,16 +234,14 @@ export default function SalesBreakagePage() {
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">
                   New Non-Consumable Broken Count
-                  {!rules.editNon && <span className="ml-1 text-gray-400">(locked for this type)</span>}
                 </label>
                 <input
                   type="number" min="0"
                   {...register('newNonConsumable', { min: 0, valueAsNumber: true })}
-                  disabled={!rules.editNon}
                   className={iCls}
                   defaultValue={qtyNonConsumable}
                 />
-                {rules.editNon && diffNonConsumable !== 0 && (
+                {diffNonConsumable !== 0 && (
                   <p className={`text-xs mt-1 font-medium ${diffNonConsumable > 0 ? 'text-red-500' : 'text-green-600'}`}>
                     {diffNonConsumable > 0 ? `+${diffNonConsumable}` : diffNonConsumable} non-consumable
                   </p>
@@ -246,16 +250,14 @@ export default function SalesBreakagePage() {
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">
                   New Consumable Broken Count
-                  {!rules.editConsumable && <span className="ml-1 text-gray-400">(locked for this type)</span>}
                 </label>
                 <input
                   type="number" min="0"
                   {...register('newConsumable', { min: 0, valueAsNumber: true })}
-                  disabled={!rules.editConsumable}
                   className={iCls}
                   defaultValue={qtyConsumable}
                 />
-                {rules.editConsumable && diffConsumable !== 0 && (
+                {diffConsumable !== 0 && (
                   <p className={`text-xs mt-1 font-medium ${diffConsumable > 0 ? 'text-amber-500' : 'text-green-600'}`}>
                     {diffConsumable > 0 ? `+${diffConsumable}` : diffConsumable} consumable
                   </p>

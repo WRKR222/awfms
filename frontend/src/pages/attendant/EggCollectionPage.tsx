@@ -87,7 +87,7 @@ export function EggCollectionPage() {
   const qc = useQueryClient();
   const { data: batches = [] } = useQuery({
     queryKey: ['batches', 'active'],
-    queryFn: () => api.get('/flock/batches?isActive=true&stage=PRODUCTION').then(r => r.data),
+    queryFn: () => api.get('/flock/batches?isActive=true').then(r => r.data),
   });
   const { register, handleSubmit, watch, formState: { errors } } = useForm({
     defaultValues: {
@@ -264,13 +264,14 @@ export function EggCollectionPage() {
             </label>
             <select {...register('batchId', { required: true })} className={inputCls}>
               <option value="">Select batch...</option>
-              {batches
-                .filter((b: any) => b.stage === 'PRODUCTION')
-                .map((b: any) => (
-                  <option key={b.id} value={b.id}>
-                    {b.batchCode} — {b.house?.name}
-                  </option>
-                ))}
+              {(batches as any[]).length === 0 && (
+                <option value="" disabled>No active batches found</option>
+              )}
+              {(batches as any[]).map((b: any) => (
+                <option key={b.id} value={b.id}>
+                  {b.batchCode} — {b.house?.name} [{b.stage}]
+                </option>
+              ))}
             </select>
           </div>
           <div className={cardCls}>

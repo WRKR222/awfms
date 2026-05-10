@@ -22,6 +22,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.INVOICE_VIEW, Permission.AI_ALERTS_VIEW,
     Permission.BOOKINGS_VIEW, Permission.BOOKINGS_MANAGE,
     Permission.HR_VIEW,
+    Permission.STOCK_REQUEST_CREATE,   // PM can raise stock requests to Store
+    Permission.STOCK_REQUEST_VIEW,     // PM can view their stock requests
     // Tally sign-off — Production Manager is a primary signer
     Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
   ],
@@ -59,6 +61,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.FEED_VIEW,
     Permission.FEED_STOCK_VIEW,
     Permission.FEED_INTAKE_LOG,
+    Permission.FEED_APPROVE,    // Store can issue/approve feed requests from PM
+    Permission.FEED_APPROVE,    // Store can issue/approve feed requests from PM
     Permission.INVENTORY_VIEW,
     Permission.INVENTORY_MANAGE,
     Permission.INVENTORY_SPOILAGE_LOG,
@@ -69,15 +73,21 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.SALES_DELIVERY_LOG,
     // Phase 2: Store creates purchase requests
     Permission.PURCHASE_REQUEST_CREATE,
+    Permission.STOCK_REQUEST_VIEW,      // Store can view stock requests
+    Permission.STOCK_REQUEST_FULFILL,   // Store can fulfill/issue stock requests
     // Tally sign-off — Store signs the egg tally
     Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
   ],
   [UserRole.SECURITY1]: [
     Permission.VISITOR_LOG_VIEW,
     Permission.VISITOR_LOG_CREATE,
+    Permission.HEALTH_VISITOR_LOG,  // FIX: required by POST /visitors/gate-log (check-in/out)
+    Permission.HEALTH_VISITOR_VIEW, // FIX: required by GET /visitors/approved + /gate-log
   ],
   [UserRole.SECURITY2]: [
     Permission.VISITOR_LOG_VIEW,
     Permission.VISITOR_LOG_CREATE,
+    Permission.HEALTH_VISITOR_LOG,  // FIX: required by POST /visitors/gate-log (check-in/out)
+    Permission.HEALTH_VISITOR_VIEW, // FIX: required by GET /visitors/approved + /gate-log
   ],
 };

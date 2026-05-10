@@ -87,8 +87,10 @@ export function HealthChecklistPage() {
     queryFn: () => api.get('/flock/batches?isActive=true').then(r => r.data),
   });
 
+  const [batchId, setBatchId] = useState('');
+
   const submitMutation = useMutation({
-    mutationFn: (payload: object) => api.post('/health/checklist', payload),
+    mutationFn: (payload: object) => api.post('/health/events', payload),
     onSuccess: () => setSubmitted(true),
   });
 
@@ -107,14 +109,40 @@ export function HealthChecklistPage() {
   const total    = allIds.length;
 
   const handleSubmit = () => {
+    if (!batchId) return; // batch required
+
+    // Build a human-readable notes summary from the checklist results
+    const failedItems = CHECKLIST_SECTIONS
+      .flatMap(s => s.items)
+      .filter(item => checks[item.id] === 'fail')
+      .map(item => {
+        const note = notes[item.id] ? ` — ${notes[item.id]}` : '';
+        return `• ${item.label}${note}`;
+      });
+
+    const naCount = Object.values(checks).filter(v => v === 'na').length;
+    const summary =
+      `[${shift} Health Checklist] ${answered - failed} passed` +
+      (naCount > 0 ? `, ${naCount} N/A` : '') +
+      (failed > 0 ? `, ${failed} ISSUE(S) FLAGGED` : '') +
+      '.';
+
+    const notesText = [
+      summary,
+      ...(failedItems.length > 0 ? ['\nFailed items:', ...failedItems] : []),
+      ...(overallNotes ? ['\nOverall notes: ' + overallNotes] : []),
+    ].join('\n');
+
+    const selectedBatch = (batches as any[]).find((b: any) => b.id === batchId);
+    const affectedCount = selectedBatch?.currentBirdCount ?? 0;
+
     const payload = {
-      checkDate: today,
-      shift,
-      submittedById: user?.id,
-      checks,
-      itemNotes: notes,
-      overallNotes,
-      failCount: failed,
+      batchId,
+      eventType: 'ROUTINE_CHECKUP',
+      eventDate: today,
+      affectedCount,
+      symptoms: failed > 0 ? failedItems.join('; ') : undefined,
+      notes: notesText,
     };
     submitMutation.mutate(payload);
   };
@@ -125,11 +153,11 @@ export function HealthChecklistPage() {
         <CheckCircle className="w-16 h-16 text-brand-green" />
         <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Checklist Submitted</h2>
         <p className="text-sm text-gray-500">
-          {shift} health checklist for {today} recorded.
+          {shift} routine health check for {today} logged as a health event.
           {failed > 0 && <span className="text-red-500 font-medium ml-1">{failed} issue(s) flagged for manager review.</span>}
         </p>
         <button
-          onClick={() => { setChecks({}); setNotes({}); setOverallNotes(''); setSubmitted(false); }}
+          onClick={() => { setChecks({}); setNotes({}); setOverallNotes(''); setBatchId(''); setSubmitted(false); }}
           className="mt-2 px-5 py-2 bg-brand-green text-white rounded-xl text-sm font-medium"
         >
           New Checklist
@@ -161,6 +189,27 @@ export function HealthChecklistPage() {
             </button>
           ))}
         </div>
+      </div>
+
+      {/* ── Batch selector ────────────────────────────────────────────────── */}
+      <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 border border-gray-100 dark:border-gray-800">
+        <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+          Batch / Flock *
+        </label>
+        {(batches as any[]).length === 0 ? (
+          <p className="text-xs text-amber-600 dark:text-amber-400">No active batches found — ask the Production Manager to register one first.</p>
+        ) : (
+          <select
+            value={batchId}
+            onChange={e => setBatchId(e.target.value)}
+            className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green"
+          >
+            <option value="">— Select batch —</option>
+            {(batches as any[]).map((b: any) => (
+              <option key={b.id} value={b.id}>{b.batchCode} — {b.house?.name ?? ''} [{b.stage}]</option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* ── Progress bar ───────────────────────────────────────────────────── */}
@@ -257,7 +306,7 @@ export function HealthChecklistPage() {
       {/* ── Submit ─────────────────────────────────────────────────────────── */}
       <button
         onClick={handleSubmit}
-        disabled={answered < total || submitMutation.isPending}
+        disabled={answered < total || submitMutation.isPending || !batchId}
         className="w-full py-3 rounded-2xl bg-brand-green text-white font-semibold text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
       >
         {submitMutation.isPending ? (
@@ -271,10 +320,15 @@ export function HealthChecklistPage() {
           <Clock className="w-3.5 h-3.5" /> Answer all {total - answered} remaining items to submit
         </p>
       )}
+      {!batchId && answered === total && (
+        <p className="text-center text-xs text-amber-500 flex items-center justify-center gap-1">
+          <Clock className="w-3.5 h-3.5" /> Select a batch above to submit
+        </p>
+      )}
 
       {submitMutation.isError && (
         <p className="text-center text-xs text-red-500">
-          Submission failed — check your connection and try again.
+          {(submitMutation.error as any)?.response?.data?.message ?? 'Submission failed — check your connection and try again.'}
         </p>
       )}
     </div>

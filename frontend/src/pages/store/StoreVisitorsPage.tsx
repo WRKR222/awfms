@@ -45,13 +45,13 @@ export default function StoreVisitorsPage() {
 
   const { data: list = [], isLoading } = useQuery({
     queryKey: ['store-visitors'],
-    queryFn: async () => (await api.get('/visitors')).data as Visitor[],
+    queryFn: async () => (await api.get('/health/visitors')).data as Visitor[],
   });
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm<FormData>();
 
   const createMut = useMutation({
-    mutationFn: (data: FormData) => api.post('/visitors', data),
+    mutationFn: (data: FormData) => api.post('/health/visitors', data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['store-visitors'] }); reset(); setShowForm(false); },
   });
 

@@ -35,6 +35,7 @@ import { AccountantLpoPage } from './pages/accountant/AccountantLpoPage';
 // Owner pages
 import OwnerVisitorPage from './pages/owner/OwnerVisitorPage';
 import OwnerUsersPage   from './pages/owner/OwnerUsersPage';
+import OwnerLpoPage     from './pages/owner/OwnerLpoPage';
 import OwnerHome                 from './pages/owner/OwnerHome';
 import { AiReportsPage }         from './pages/owner/AiReportsPage';
 import { DataUploadPage }        from './pages/owner/DataUploadPage';
@@ -155,6 +156,8 @@ function AppInner() {
         >
           <Route index                    element={<AttendantHome />} />
           <Route path="egg-collection"    element={<EggCollectionPage />} />
+          <Route path="health"            element={<HealthBiosecurity />} />
+          <Route path="health-checklist"  element={<HealthChecklistPage />} />
           <Route path="settings"          element={<SettingsPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
         </Route>
@@ -216,6 +219,7 @@ function AppInner() {
           <Route path="data-upload"       element={<DataUploadPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="sales-orders"       element={<OwnerSalesOrdersPage />} />
+          <Route path="lpo"               element={<OwnerLpoPage />} />
           <Route path="visitors"          element={<OwnerVisitorPage />} />
           <Route path="users"             element={<OwnerUsersPage />} />
           <Route path="settings"          element={<SettingsPage />} />

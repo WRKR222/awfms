@@ -59,7 +59,7 @@ function BookingCard({ booking, onConfirm, onCancel, onFulfill }: {
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold text-gray-800 dark:text-gray-100">{booking.bookingRef}</p>
           <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-            {booking.customer?.name ?? '—'} · {dayjs(booking.requestedDate).format('D MMM YYYY')} · {booking.quantityTrays} trays · {eggLabel}
+            {booking.customer?.name ?? '—'} · {dayjs(booking.requestedDate).format('D MMM YYYY')} · {booking.quantityEggs ?? booking.quantityTrays * 30} eggs · {eggLabel}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -73,7 +73,7 @@ function BookingCard({ booking, onConfirm, onCancel, onFulfill }: {
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Customer</p><p className="font-semibold text-gray-700 dark:text-gray-300">{booking.customer?.name}</p>{booking.customer?.phone && <p className="text-gray-400">{booking.customer.phone}</p>}</div>
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Egg Type</p><p className="font-semibold text-gray-700 dark:text-gray-300">{eggLabel}</p></div>
-            <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Quantity</p><p className="font-semibold text-gray-700 dark:text-gray-300">{booking.quantityTrays} trays ({booking.quantityEggs} eggs)</p><p className="text-gray-400 mt-0.5">{fmtKES(booking.pricePerEggKes)}/egg</p></div>
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Quantity</p><p className="font-semibold text-gray-700 dark:text-gray-300">{booking.quantityEggs} eggs ({booking.quantityTrays} trays)</p><p className="text-gray-400 mt-0.5">{fmtKES(booking.pricePerEggKes)}/egg</p></div>
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Est. Total</p><p className="font-semibold text-brand-green">{fmtKES(booking.estimatedTotal)}</p></div>
           </div>
           {booking.notes && <p className="text-xs text-gray-500 dark:text-gray-400 italic bg-gray-50 dark:bg-gray-800 rounded-xl px-3 py-2">{booking.notes}</p>}
@@ -116,7 +116,7 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState('');
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: () => api.get('/sales/customers').then(r => r.data) });
   const { data: pricing } = useQuery({ queryKey: ['daily-price-today'], queryFn: () => api.get('/pricing/daily/today').then(r => r.data).catch(() => null) });
-  const [form, setForm] = useState({ customerId: '', eggType: 'STANDARD_EGGS' as EggItemType, requestedDate: dayjs().add(1, 'day').format('YYYY-MM-DD'), quantityTrays: 1, requiresDelivery: false, deliveryAddress: '', deliveryDate: '', notes: '' });
+  const [form, setForm] = useState({ customerId: '', eggType: 'STANDARD_EGGS' as EggItemType, requestedDate: dayjs().add(1, 'day').format('YYYY-MM-DD'), quantityTrays: 1, quantityEggs: 30, requiresDelivery: false, deliveryAddress: '', deliveryDate: '', notes: '' });
 
   function getPricePerEgg(et: EggItemType): number {
     if (!pricing) return 0;
@@ -126,11 +126,11 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
     return 0;
   }
   const peg = getPricePerEgg(form.eggType);
-  const qty = form.quantityTrays * 30;
+  const qty = form.quantityEggs ?? 30;
   const est = qty * peg;
 
   const createMutation = useMutation({
-    mutationFn: () => api.post('/bookings', { customerId: form.customerId, eggType: form.eggType, requestedDate: form.requestedDate, quantityTrays: form.quantityTrays, requiresDelivery: form.requiresDelivery, deliveryAddress: form.requiresDelivery ? form.deliveryAddress : undefined, deliveryDate: form.requiresDelivery && form.deliveryDate ? form.deliveryDate : undefined, notes: form.notes || undefined }),
+    mutationFn: () => api.post('/bookings', { customerId: form.customerId, eggType: form.eggType, requestedDate: form.requestedDate, quantityTrays: Math.max(1, Math.ceil((form.quantityEggs ?? 30) / 30)), requiresDelivery: form.requiresDelivery, deliveryAddress: form.requiresDelivery ? form.deliveryAddress : undefined, deliveryDate: form.requiresDelivery && form.deliveryDate ? form.deliveryDate : undefined, notes: form.notes || undefined }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['bookings'] }); qc.invalidateQueries({ queryKey: ['sales-stock'] }); onClose(); },
     onError: (err: any) => setError(err?.response?.data?.message ?? 'Failed to create booking.'),
   });
@@ -138,7 +138,7 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.customerId) { setError('Please select a customer'); return; }
-    if (form.quantityTrays < 1) { setError('Quantity must be at least 1 tray'); return; }
+    if ((form.quantityEggs ?? 0) < 1) { setError('Quantity must be at least 1 egg'); return; }
     if (form.requiresDelivery && !form.deliveryAddress.trim()) { setError('Please enter a delivery address'); return; }
     setError(''); createMutation.mutate();
   }
@@ -166,7 +166,7 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
               ))}
             </div></div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="text-xs text-gray-500 mb-1 block">Trays *</label><input type="number" min="1" value={form.quantityTrays} onChange={e => setForm(f => ({ ...f, quantityTrays: Math.max(1, parseInt(e.target.value) || 1) }))} className={iCls} /><p className="text-xs text-gray-400 mt-1">{qty} eggs</p></div>
+            <div><label className="text-xs text-gray-500 mb-1 block">Eggs *</label><input type="number" min="1" step="1" value={form.quantityEggs ?? 30} onChange={e => setForm(f => ({ ...f, quantityEggs: Math.max(1, parseInt(e.target.value) || 1) }))} className={iCls} /><p className="text-xs text-gray-400 mt-1">{Math.max(1, Math.ceil((form.quantityEggs ?? 30) / 30))} trays</p></div>
             <div><label className="text-xs text-gray-500 mb-1 block">Requested Date *</label><input type="date" value={form.requestedDate} onChange={e => setForm(f => ({ ...f, requestedDate: e.target.value }))} className={iCls} min={dayjs().format('YYYY-MM-DD')} required /></div>
           </div>
           {pricing ? (
