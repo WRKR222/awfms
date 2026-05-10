@@ -39,19 +39,39 @@ export class TallyVerificationService {
   }
 
   async listPending() {
-    return this.prisma.eggTallyVerification.findMany({
+    // Decouple batch lookup — handles orphaned batch_id FKs without a 500 crash
+    const tallies = await this.prisma.eggTallyVerification.findMany({
       where: { isLocked: false },
       include: {
         session: {
           select: {
             id: true, sessionDate: true, shift: true,
             houseId: true, totalGoodEggs: true, totalFullTrays: true,
-            batch: { select: { batchCode: true } },
+            batchId: true,
           },
         },
       },
       orderBy: { verificationDate: 'desc' },
     });
+
+    // Safely resolve batch codes — missing batches return '[Batch Removed]' instead of crashing
+    const batchIds = [
+      ...new Set(tallies.map(t => t.session?.batchId).filter(Boolean) as string[]),
+    ];
+    const batches = batchIds.length
+      ? await this.prisma.batch.findMany({
+          where: { id: { in: batchIds } },
+          select: { id: true, batchCode: true },
+        })
+      : [];
+    const batchMap = Object.fromEntries(batches.map(b => [b.id, b.batchCode]));
+
+    return tallies.map(t => ({
+      ...t,
+      session: t.session
+        ? { ...t.session, batch: { batchCode: batchMap[t.session.batchId] ?? '[Batch Removed]' } }
+        : null,
+    }));
   }
 
   /** Manager edits the underlying session row data. Clears all 3 signatures. */

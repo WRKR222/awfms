@@ -306,7 +306,7 @@ function NewBatchModal({ onClose }: { onClose: () => void }) {
       }
       return api.post('/flock/batches', payload).then(r => r.data);
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['batches'] }); onClose(); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['flock', 'batches'] }); onClose(); },
   });
 
   const onSubmit = (data: any) => {
@@ -470,7 +470,7 @@ function NewBatchModal({ onClose }: { onClose: () => void }) {
             <textarea {...register('notes')} rows={2} className={iCls} placeholder="Optional notes…" />
           </div>
 
-          {create.isError && <p className="text-red-500 text-sm">Failed to create batch. Please try again.</p>}
+          {create.isError && <p className="text-red-500 text-sm">{(create.error as any)?.response?.data?.message ?? 'Failed to create batch. Please try again.'}</p>}
 
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-3 font-semibold">Cancel</button>

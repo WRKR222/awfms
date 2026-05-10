@@ -75,8 +75,8 @@ export class CageMapService {
         const batch = assignment ? batchMap[assignment.batchId] : null;
         const ageWeeks = batch ? dayjs().diff(dayjs(batch.dateOfHatch), 'week') : null;
         return {
-          rowCode: row.row_code,
-          isActive: row.is_active,
+          rowCode: row.rowCode,
+          isActive: row.isActive,
           batch: batch
             ? {
                 batchCode: batch.batchCode, strain: batch.strain, stage: batch.stage,
