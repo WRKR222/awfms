@@ -1,13 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Patch,
-  Post,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { BatchLifecycleService } from './batch-lifecycle.service';
 import { BatchStage } from '@prisma/client';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -23,93 +14,83 @@ import { Permission } from '../../common/enums/permissions.enum';
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller('flock')
 export class FlockController {
-  constructor(
-    private readonly svc: FlockService,
-    private readonly lifecycle: BatchLifecycleService,
-  ) {}
+  constructor(private readonly svc: FlockService, private readonly lifecycle: BatchLifecycleService) {}
 
-  // ── Batches ────────────────────────────────────────────────────────────────
+  @Get('houses')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  listHouses(@Query('birdType') birdType?: string) { return this.svc.listHouses(birdType); }
+
   @Get('batches')
   @RequirePermission(Permission.FLOCK_VIEW)
-  @ApiOperation({ summary: 'List flock batches' })
-  listBatches(
-    @Query('isActive') isActive?: string,
-    @Query('houseId') houseId?: string,
-  ) {
-    const active =
-      isActive === undefined || isActive === '' ? undefined : isActive !== 'false';
-    return this.svc.listBatches({ isActive: active, houseId });
+  listBatches(@Query('isActive') isActive?: string, @Query('houseId') houseId?: string, @Query('stage') stage?: string) {
+    const active = isActive === undefined || isActive === '' ? undefined : isActive !== 'false';
+    return this.svc.listBatches({ isActive: active, houseId, stage });
   }
 
   @Get('batches/:id')
   @RequirePermission(Permission.FLOCK_VIEW)
-  getBatch(@Param('id') id: string) {
-    return this.svc.getBatch(id);
-  }
+  getBatch(@Param('id') id: string) { return this.svc.getBatch(id); }
 
   @Post('batches')
   @RequirePermission(Permission.FLOCK_BATCH_MANAGE)
-  @ApiOperation({ summary: 'Register a new flock batch' })
-  createBatch(@Body() body: any, @CurrentUser() user: any) {
-    return this.svc.createBatch(body, user.id);
-  }
+  createBatch(@Body() body: any, @CurrentUser() user: any) { return this.svc.createBatch(body, user.id); }
 
-  // ── Daily entries ──────────────────────────────────────────────────────────
-  @Get('entries/pending')
+  @Get('batches/:id/entries')
   @RequirePermission(Permission.FLOCK_VIEW)
-  pendingEntries() {
-    return this.svc.pendingEntries();
+  getBatchEntries(@Param('id') id: string, @Query('limit') limit?: string) {
+    return this.svc.getBatchEntries(id, limit ? Number(limit) : 50);
   }
 
-  @Post('entries')
-  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
-  createEntry(@Body() body: any, @CurrentUser() user: any) {
-    return this.svc.createEntry(body, user.id);
-  }
-
-  @Patch('entries/:id/verify')
-  @RequirePermission(Permission.FLOCK_ENTRY_APPROVE)
-  verifyEntry(
-    @Param('id') id: string,
-    @Body() body: any,
-    @CurrentUser() user: any,
-  ) {
-    return this.svc.verifyEntry(id, body, user.id);
-  }
-
-  // ── Batch stage transfer (Brooder → Production House) ─────────────────────
   @Patch('batches/:id/stage')
   @RequirePermission(Permission.FLOCK_BATCH_MANAGE)
-  @ApiOperation({ summary: 'Transfer batch to a new stage (e.g. BROODING → PRODUCTION)' })
   transferBatch(
     @Param('id') id: string,
     @Body('stage') stage: BatchStage,
     @Body('rowPlacements') rowPlacements: Array<{ rowId: string; birdCount: number }>,
     @CurrentUser() user: any,
-  ) {
-    return this.lifecycle.updateBatchStage(id, stage, user, rowPlacements);
+  ) { return this.lifecycle.updateBatchStage(id, stage, user, rowPlacements); }
+
+  @Get('entries/pending')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  pendingEntries() { return this.svc.pendingEntries(); }
+
+  @Post('entries')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  createEntry(@Body() body: any, @CurrentUser() user: any) { return this.svc.createEntry(body, user.id); }
+
+  @Patch('entries/:id/verify')
+  @RequirePermission(Permission.FLOCK_ENTRY_APPROVE)
+  verifyEntry(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    return this.svc.verifyEntry(id, body, user.id);
   }
 
-  // ── Culling ────────────────────────────────────────────────────────────────
+  @Patch('entries/:id/return')
+  @RequirePermission(Permission.FLOCK_ENTRY_APPROVE)
+  returnEntry(@Param('id') id: string, @Body('returnReason') returnReason: string, @CurrentUser() user: any) {
+    return this.svc.returnEntry(id, returnReason, user.id);
+  }
+
+  @Post('weight-samples')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  logWeightSample(@Body() body: any, @CurrentUser() user: any) { return this.svc.logWeightSample(body, user.id); }
+
+  @Get('weight-samples/:batchId')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getWeightSamples(@Param('batchId') batchId: string, @Query('limit') limit?: string) {
+    return this.svc.getWeightSamples(batchId, limit ? Number(limit) : 20);
+  }
+
   @Post('culling')
   @RequirePermission(Permission.FLOCK_BATCH_MANAGE)
-  logCulling(@Body() body: any, @CurrentUser() user: any) {
-    return this.svc.logCulling(body, user.id);
-  }
+  logCulling(@Body() body: any, @CurrentUser() user: any) { return this.svc.logCulling(body, user.id); }
 
-  // ── Brooder logs ──────────────────────────────────────────────────────────
   @Get('brooder-logs')
   @RequirePermission(Permission.FLOCK_VIEW)
-  listBrooderLogs(
-    @Query('batchId') batchId: string,
-    @Query('limit') limit?: string,
-  ) {
+  listBrooderLogs(@Query('batchId') batchId: string, @Query('limit') limit?: string) {
     return this.svc.listBrooderLogs(batchId, limit ? Number(limit) : 50);
   }
 
   @Post('brooder-logs')
   @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
-  createBrooderLog(@Body() body: any, @CurrentUser() user: any) {
-    return this.svc.createBrooderLog(body, user.id);
-  }
+  createBrooderLog(@Body() body: any, @CurrentUser() user: any) { return this.svc.createBrooderLog(body, user.id); }
 }

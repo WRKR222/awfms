@@ -167,4 +167,13 @@ export class StoreService {
       lockedBookings, totalLockedEggs, totalLockedTrays,
     };
   }
+
+  async cosignEggIntake(id: string, userId: string) {
+    const intake = await this.prisma.storeEggIntake.findUnique({ where: { id } });
+    if (!intake) throw new NotFoundException('Store intake not found');
+    return this.prisma.storeEggIntake.update({
+      where: { id },
+      data: { storeSignedById: userId, storeSignedAt: new Date() },
+    });
+  }
 }

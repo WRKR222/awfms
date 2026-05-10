@@ -248,7 +248,7 @@ export function ClientsPage() {
 
   const update = useMutation({
     mutationFn: ({ id, data }: { id: string; data: CustomerForm }) =>
-      api.patch(`/sales/customers/${id}`, {
+      api.put(`/sales/customers/${id}`, {
         name: data.name,
         phone: data.phone || undefined,
         email: data.email || undefined,

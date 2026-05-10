@@ -23,22 +23,18 @@ interface NotificationsState {
 export const useNotificationsStore = create<NotificationsState>((set, get) => ({
   notifications: [],
   unreadCount: 0,
-
   fetchNotifications: async () => {
     try {
       const res = await api.get('/notifications');
       const notifications = res.data;
       set({ notifications, unreadCount: notifications.filter((n: any) => !n.isRead).length });
-    } catch {
-      // Fail silently — offline mode
-    }
+    } catch {}
   },
-
   markRead: async (ids: string[]) => {
-    await api.patch('/notifications/read', { ids });
+    if (ids.length === 0) return;
+    await Promise.all(ids.map(id => api.patch(`/notifications/${id}/read`).catch(() => {})));
     await get().fetchNotifications();
   },
-
   markAllRead: async () => {
     await api.patch('/notifications/read-all');
     set(state => ({

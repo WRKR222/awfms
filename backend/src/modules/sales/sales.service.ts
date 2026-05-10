@@ -480,4 +480,14 @@ export class SalesService {
 
     return adjustment;
   }
+
+  async deleteCustomer(id: string) {
+    const customer = await this.prisma.customer.findUnique({ where: { id } });
+    if (!customer) throw new NotFoundException('Customer not found');
+    return this.prisma.customer.update({
+      where: { id },
+      data: { isActive: false, deletedAt: new Date() },
+      select: { id: true, name: true, isActive: true },
+    });
+  }
 }

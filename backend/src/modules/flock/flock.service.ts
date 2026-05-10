@@ -20,12 +20,13 @@ export class FlockService {
 
   // ── Batches ────────────────────────────────────────────────────────────────
 
-  async listBatches(filters: { isActive?: boolean; houseId?: string }) {
+  async listBatches(filters: { isActive?: boolean; houseId?: string; stage?: string }) {
     return this.prisma.batch.findMany({
       where: {
         deletedAt: null,
         ...(filters.isActive !== undefined ? { isActive: filters.isActive } : {}),
         ...(filters.houseId ? { houseId: filters.houseId } : {}),
+        ...(filters.stage ? { stage: filters.stage as any } : {}),
       },
       include: {
         house: { select: { id: true, name: true, code: true } },
@@ -375,6 +376,59 @@ export class FlockService {
         notes: input.notes ?? null,
         loggedById: userId,
       },
+    });
+  }
+
+  async listHouses(birdType?: string) {
+    return this.prisma.house.findMany({
+      where: { isActive: true, ...(birdType ? { birdType: birdType as BirdType } : {}) },
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true, code: true, birdType: true, capacity: true },
+    });
+  }
+
+  async getBatchEntries(batchId: string, limit = 50) {
+    return this.prisma.flockDailyEntry.findMany({
+      where: { batchId },
+      orderBy: { entryDate: 'desc' },
+      take: limit,
+      include: { batch: { select: { id: true, batchCode: true } } },
+    });
+  }
+
+  async returnEntry(id: string, returnReason: string, userId: string) {
+    const entry = await this.prisma.flockDailyEntry.findUnique({ where: { id } });
+    if (!entry) throw new NotFoundException('Entry not found');
+    return this.prisma.flockDailyEntry.update({
+      where: { id },
+      data: { status: EntryStatus.RETURNED, returnReason: returnReason ?? 'Returned for correction' },
+    });
+  }
+
+  async logWeightSample(input: any, userId: string) {
+    if (!input?.batchId) throw new BadRequestException('batchId is required');
+    const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+    return this.prisma.birdWeightSample.create({
+      data: {
+        batchId: batch.id,
+        sampleDate: input.sampleDate ? new Date(input.sampleDate) : new Date(),
+        sampleSize: Number(input.sampleSize ?? 1),
+        avgWeightKg: Number(input.avgWeightKg ?? 0),
+        minWeightKg: input.minWeightKg != null ? Number(input.minWeightKg) : null,
+        maxWeightKg: input.maxWeightKg != null ? Number(input.maxWeightKg) : null,
+        notes: input.notes ?? null,
+        recordedById: userId,
+      },
+    });
+  }
+
+  async getWeightSamples(batchId: string, limit = 20) {
+    return this.prisma.birdWeightSample.findMany({
+      where: { batchId },
+      orderBy: { sampleDate: 'desc' },
+      take: limit,
+      include: { recordedBy: { select: { id: true, fullName: true } } },
     });
   }
 }

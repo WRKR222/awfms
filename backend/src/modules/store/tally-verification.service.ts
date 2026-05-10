@@ -302,4 +302,21 @@ export class TallyVerificationService {
     };
   }
 
+
+  async listLocked(limit = 30) {
+    return this.prisma.eggTallyVerification.findMany({
+      where: { isLocked: true },
+      include: {
+        session: {
+          select: {
+            id: true, sessionDate: true, shift: true,
+            houseId: true, totalGoodEggs: true, totalFullTrays: true,
+            batch: { select: { batchCode: true } },
+          },
+        },
+      },
+      orderBy: { lockedAt: 'desc' },
+      take: limit,
+    });
+  }
 }

@@ -353,4 +353,16 @@ export class HealthService {
       orderBy: { logDate: 'desc' },
     });
   }
+
+  async getVaccinationRecords(batchId?: string, limit = 50) {
+    return this.prisma.vaccinationRecord.findMany({
+      where: { ...(batchId ? { batchId } : {}) },
+      orderBy: { administeredDate: 'desc' },
+      take: limit,
+      include: {
+        schedule: { select: { vaccineName: true, ageWeeks: true } },
+        recordedBy: { select: { fullName: true } },
+      },
+    });
+  }
 }

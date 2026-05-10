@@ -69,7 +69,7 @@ export default function SalesBreakagePage() {
 
   const { data: tallies = [] } = useQuery({
     queryKey: ['verified-tallies'],
-    queryFn: () => api.get('/tally-verifications?locked=true&limit=30').then(r => r.data),
+    queryFn: () => api.get('/tally-verifications/locked?limit=30').then(r => r.data),
   });
   const { data: stock } = useQuery({
     queryKey: ['sales-stock'],
