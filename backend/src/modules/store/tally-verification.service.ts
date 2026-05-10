@@ -188,7 +188,6 @@ export class TallyVerificationService {
           finalLooseEggs:      session.totalLooseEggs,
           // FIX-04: store per-category finals at lock time for complete audit trail
           finalStarterEggs:    (session as any).totalStarterEggs    ?? 0,
-          finalBrokenSellable: (session as any).totalBrokenSellable ?? 0,
           expectedRevenueKes: expectedRevenueKes ?? undefined,
           revenueSetById: expectedRevenueKes != null ? user.id : null,
           revenueSetAt:   expectedRevenueKes != null ? now : null,

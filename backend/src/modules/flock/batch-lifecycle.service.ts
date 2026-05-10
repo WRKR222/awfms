@@ -105,7 +105,7 @@ export class BatchLifecycleService {
           stage:    newStage,
           location: newStage === BatchStage.PRODUCTION ? 'PRODUCTION_HOUSE' : 'BROODER',
           // If transitioning back from sold/discarded (edge case) keep isActive true
-          isActive: ![BatchStage.SOLD, BatchStage.DISCARDED, BatchStage.CLOSED].includes(newStage),
+          isActive: !([BatchStage.SOLD, BatchStage.DISCARDED, BatchStage.CLOSED] as BatchStage[]).includes(newStage),
         },
       });
 
