@@ -168,11 +168,14 @@ export class StoreService {
     };
   }
 
-  async cosignEggIntake(id: string, userId: string) {
-    const intake = await this.prisma.storeEggIntake.findUnique({ where: { id } });
-    if (!intake) throw new NotFoundException('Store intake not found');
-    return this.prisma.storeEggIntake.update({
-      where: { id },
+  async cosignEggIntake(sessionId: string, userId: string) {
+    const tally = await this.prisma.eggTallyVerification.findUnique({
+      where: { sessionId },
+    });
+    if (!tally) throw new NotFoundException('Tally not found for this session');
+    if (tally.isLocked) throw new ConflictException('Tally is already locked');
+    return this.prisma.eggTallyVerification.update({
+      where: { sessionId },
       data: { storeSignedById: userId, storeSignedAt: new Date() },
     });
   }

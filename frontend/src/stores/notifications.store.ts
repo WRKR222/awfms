@@ -2,14 +2,8 @@ import { create } from 'zustand';
 import { api } from '../lib/api';
 
 export interface AppNotification {
-  id: string;
-  type: string;
-  title: string;
-  message: string;
-  entityId?: string;
-  entityType?: string;
-  isRead: boolean;
-  createdAt: string;
+  id: string; type: string; title: string; message: string;
+  entityId?: string; entityType?: string; isRead: boolean; createdAt: string;
 }
 
 interface NotificationsState {
@@ -37,9 +31,6 @@ export const useNotificationsStore = create<NotificationsState>((set, get) => ({
   },
   markAllRead: async () => {
     await api.patch('/notifications/read-all');
-    set(state => ({
-      notifications: state.notifications.map(n => ({ ...n, isRead: true })),
-      unreadCount: 0,
-    }));
+    set(state => ({ notifications: state.notifications.map(n => ({ ...n, isRead: true })), unreadCount: 0 }));
   },
 }));

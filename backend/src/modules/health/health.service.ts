@@ -361,7 +361,6 @@ export class HealthService {
       take: limit,
       include: {
         schedule: { select: { vaccineName: true, ageWeeks: true } },
-        recordedBy: { select: { fullName: true } },
       },
     });
   }

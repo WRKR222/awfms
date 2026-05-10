@@ -409,16 +409,22 @@ export class FlockService {
     if (!input?.batchId) throw new BadRequestException('batchId is required');
     const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
+    // Accept frontend field names (sampleSize/avgWeightKg) and map to schema field names
+    const sampleCount  = Number(input.sampleCount  ?? input.sampleSize ?? 1);
+    const avgWeightG   = input.averageWeightG
+      ? Number(input.averageWeightG)
+      : input.avgWeightKg ? Math.round(Number(input.avgWeightKg) * 1000) : 0;
+    const totalWeightG = Number(input.totalWeightG ?? Math.round(avgWeightG * sampleCount));
     return this.prisma.birdWeightSample.create({
       data: {
-        batchId: batch.id,
-        sampleDate: input.sampleDate ? new Date(input.sampleDate) : new Date(),
-        sampleSize: Number(input.sampleSize ?? 1),
-        avgWeightKg: Number(input.avgWeightKg ?? 0),
-        minWeightKg: input.minWeightKg != null ? Number(input.minWeightKg) : null,
-        maxWeightKg: input.maxWeightKg != null ? Number(input.maxWeightKg) : null,
-        notes: input.notes ?? null,
-        recordedById: userId,
+        batchId:        batch.id,
+        sampleDate:     input.sampleDate ? new Date(input.sampleDate) : new Date(),
+        sampleCount,
+        totalWeightG,
+        averageWeightG: avgWeightG,
+        ageWeeks:       Number(input.ageWeeks ?? 0),
+        notes:          input.notes ?? null,
+        recordedById:   userId,
       },
     });
   }
@@ -428,7 +434,6 @@ export class FlockService {
       where: { batchId },
       orderBy: { sampleDate: 'desc' },
       take: limit,
-      include: { recordedBy: { select: { id: true, fullName: true } } },
     });
   }
 }
