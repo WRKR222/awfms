@@ -53,7 +53,7 @@ export class DashboardController {
 
     // ── Pending LPO approvals (Director Activity Diagram: "Review Pending Approvals")
     const pendingLpoCount = await this.prisma.localPurchaseOrder.count({
-      where: { status: 'PENDING' },
+      where: { status: 'SUBMITTED' },  // FIX: LPOStatus has no PENDING; SUBMITTED = awaiting approval
     }).catch(() => 0);  // graceful fallback if LPO model not yet migrated
 
     // ── Egg production for period ────────────────────────────────────────

@@ -21,6 +21,7 @@ export class HealthService {
     symptoms?: string;
     diagnosis?: string;
     treatment?: string;
+    notes?: string;  // FIX: added missing notes field
   }, recordedById: string) {
     // FIX C2: Re-enabled event types per PM Activity Diagram – Farm Event Recording
     // and system specification. DISEASE_OUTBREAK, INJURY, QUARANTINE_IMPOSED,

@@ -79,29 +79,38 @@ export class DataUploadService {
 
       try {
         if (category === 'expenses') {
+          // Get or create an 'Imported Records' category for bulk imports
+          const importCat = await this.prisma.expenseCategory.upsert({
+            where: { name: 'Imported Records' },
+            create: { name: 'Imported Records', description: 'Auto-created for bulk imports', createdById: uploadedById },
+            update: {},
+          });
           await this.prisma.expenseLog.create({
             data: {
               expenseDate:  mapped.date ? new Date(mapped.date) : new Date(),
               description:  mapped.description ?? 'Imported record',
               amount:       parseFloat(mapped.amount ?? '0') || 0,
               batchId:      null,
+              categoryId:   importCat.id,
               recordedById: uploadedById,
             },
           });
           imported++;
         } else if (category === 'employees') {
           // Store employee records — upsert by employee number
-          await this.prisma.employee.upsert({
+          await (this.prisma as any).farmEmployee.upsert({
             where: { employeeNumber: String(mapped.employeeNumber ?? row['Employee Number'] ?? imported) },
             create: {
               fullName:       String(mapped.fullName ?? mapped.name ?? '—'),
-              employeeNumber: String(mapped.employeeNumber ?? `IMP-${imported}`),
-              mobilePhone:    mapped.phone ?? null,
-              addedById:      uploadedById,
+              nationalId: String(mapped.employeeNumber ?? `IMP-${imported}`),
+              role: 'FARM_WORKER',
+              phone: mapped.phone ?? null,
+              hireDate: new Date(),
+              houseIds: [],
             },
             update: {
-              fullName:    String(mapped.fullName ?? mapped.name ?? '—'),
-              mobilePhone: mapped.phone ?? null,
+              fullName: String(mapped.fullName ?? mapped.name ?? '—'),
+              phone: mapped.phone ?? null,
             },
           });
           imported++;
@@ -116,7 +125,7 @@ export class DataUploadService {
     }
 
     // Log the upload
-    await this.prisma.dataUploadLog.create({
+    await (this.prisma as any).dataUploadLog.create({
       data: {
         uploadType:      category,
         fileName:        fileName,

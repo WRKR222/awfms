@@ -1118,9 +1118,10 @@ model EggTallyVerification {
 
   isLocked       Boolean   @default(false) @map("is_locked")
   lockedAt       DateTime? @map("locked_at")
-  finalGoodEggs  Int?      @map("final_good_eggs")
-  finalFullTrays Int?      @map("final_full_trays")
-  finalLooseEggs Int?      @map("final_loose_eggs")
+  finalGoodEggs     Int?      @map("final_good_eggs")
+  finalFullTrays    Int?      @map("final_full_trays")
+  finalLooseEggs    Int?      @map("final_loose_eggs")
+  finalStarterEggs  Int?      @map("final_starter_eggs")
 
   expectedRevenueKes Decimal?  @map("expected_revenue_kes") @db.Decimal(12, 2)
   revenueSetById     String?   @map("revenue_set_by_id")
@@ -1296,6 +1297,7 @@ model StoreStockOut {
   quantityOut     Decimal  @map("quantity_out") @db.Decimal(10, 3)
   unitCostKes     Decimal  @map("unit_cost_kes") @db.Decimal(10, 2)
   totalCostKes    Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
+  issuedToName    String?  @map("issued_to_name")     // GAP-04: person receiving stock
   issuedToHouseId String?  @map("issued_to_house_id")
   issuedToBatchId String?  @map("issued_to_batch_id")
   purpose         String?

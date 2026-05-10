@@ -53,7 +53,7 @@ export class SalesController {
   @RequirePermission(Permission.SALES_ORDER_CREATE)
   @ApiOperation({
     summary: 'Create a new sales order',
-    description: 'Unit prices are enforced from the accountant's daily pricing — not accepted from the client.',
+    description: "Unit prices are enforced from the accountant's daily pricing — not accepted from the client.",
   })
   createOrder(@Body() body: CreateOrderDto, @CurrentUser() user: any) {
     return this.salesService.createOrder(body, user.id);
@@ -97,7 +97,7 @@ export class SalesController {
 
   @Get('stock')
   @RequirePermission(Permission.SALES_VIEW)
-  @ApiOperation({ summary: 'Get current egg stock summary with today's pricing' })
+  @ApiOperation({ summary: "Get current egg stock summary with today's pricing" })
   getStock() {
     return this.salesService.getSalesStock();
   }
