@@ -150,8 +150,7 @@ function EmployeesTab() {
       e.role, e.assignment ?? '', dayjs(e.hireDate).format('YYYY-MM-DD'), e.status,
       e.nextOfKinName ?? '', e.nextOfKinPhone ?? '',
     ]);
-    const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('
-');
+    const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
     a.download = `farm_employees_${dayjs().format('YYYYMMDD')}.csv`; a.click();
