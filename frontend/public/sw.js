@@ -9,7 +9,7 @@
  * This ensures attendants can always log entries even with no signal.
  */
 
-const CACHE_NAME = 'awfms-v1';
+const CACHE_NAME = 'awfms-v2';
 const OFFLINE_QUEUE_KEY = 'awfms-offline-queue';
 
 // Files to pre-cache (app shell)

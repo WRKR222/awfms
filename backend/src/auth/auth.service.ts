@@ -64,10 +64,22 @@ export class AuthService {
   }
 
   async refreshTokens(refreshToken: string) {
-    const stored = await this.prisma.refreshToken.findUnique({
-      where: { token: refreshToken },
-      include: { user: true },
-    });
+    // Guard: empty/missing token → 401 immediately (prevents Prisma validation error → 500)
+    if (!refreshToken?.trim()) {
+      throw new UnauthorizedException('Refresh token required');
+    }
+
+    let stored: any;
+    try {
+      stored = await this.prisma.refreshToken.findUnique({
+        where: { token: refreshToken },
+        include: { user: true },
+      });
+    } catch {
+      // Prisma error (e.g. DB schema mismatch, connection issue) → return 401 not 500
+      this.logger.warn('refreshTokens: DB error during token lookup — treating as invalid');
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
 
     if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
       throw new UnauthorizedException('Invalid or expired refresh token');
@@ -78,10 +90,15 @@ export class AuthService {
     }
 
     // Revoke old token (rotation)
-    await this.prisma.refreshToken.update({
-      where: { id: stored.id },
-      data: { revokedAt: new Date() },
-    });
+    try {
+      await this.prisma.refreshToken.update({
+        where: { id: stored.id },
+        data: { revokedAt: new Date() },
+      });
+    } catch {
+      // Best-effort revocation — still issue new tokens
+      this.logger.warn('refreshTokens: failed to revoke old token, continuing');
+    }
 
     return this.generateTokens(stored.user.id, stored.user.username, stored.user.role);
   }
