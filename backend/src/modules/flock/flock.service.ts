@@ -75,13 +75,12 @@ export class FlockService {
     const supplier = await this.resolveSupplier(input.supplierId, input.supplierName);
     const house = await this.resolveHouse(input.houseId, input.birdType as BirdType);
 
-    const stage = (input.stage as BatchStage) ?? BatchStage.BROODING;
-    const location: string =
-      input.location ?? (stage === BatchStage.PRODUCTION ? 'PRODUCTION_HOUSE' : 'BROODER');
-
+    
+    const location: string = input.location ?? 'PRODUCTION_HOUSE';
+    const stage: BatchStage = (input.stage as BatchStage) ??
+      (location === 'BROODER' ? BatchStage.BROODING : BatchStage.PRODUCTION);
     const vaccinationOnArrival = Boolean(
-      input.vaccinationOnArrival ?? input.vaccinatedOnArrival ?? false,
-    );
+      input.vaccinationOnArrival ?? input.vaccinatedOnArrival ?? false,);
 
     const notesParts: string[] = [];
     if (input.notes) notesParts.push(String(input.notes));
