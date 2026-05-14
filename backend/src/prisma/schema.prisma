@@ -647,13 +647,7 @@ model EggCollectionSession {
   storeSignedById String?    @map("store_signed_by_id")
   storeSignedAt   DateTime?  @map("store_signed_at")
 
-  // New fields for egg breakdown
-  totalStarterEggs    Int @default(0) @map("total_starter_eggs")
-  totalBrokenSellable Int @default(0) @map("total_broken_sellable")
-
-  editedAt  DateTime? @map("edited_at")
-  deletedAt DateTime? @map("deleted_at")
-
+  
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -1116,7 +1110,6 @@ model EggTallyVerification {
   revenueSetById     String?   @map("revenue_set_by_id")
   revenueSetAt       DateTime? @map("revenue_set_at")
 
-  editCount  Int       @default(0) @map("edit_count")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
