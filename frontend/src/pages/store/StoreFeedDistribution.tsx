@@ -93,7 +93,7 @@ export default function StoreFeedDistribution() {
           className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-colors ${activeTab === 'requests' ? 'bg-white dark:bg-dark-bg text-brand-green shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}
         >
           <Clock className="w-4 h-4" />
-          Manager Requests
+          Production Manager's Requests
           {pendingCount > 0 && <span className="bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">{pendingCount}</span>}
         </button>
         <button
@@ -105,7 +105,7 @@ export default function StoreFeedDistribution() {
         </button>
       </div>
 
-      {/* Tab: Manager Requests */}
+      {/* Tab: Production Manager's Requests */}
       {activeTab === 'requests' && (
         <div className="space-y-3">
           {(feedRequests as any[]).length === 0 ? (

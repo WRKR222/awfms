@@ -415,7 +415,9 @@ export function CageMap({ blockCode = 'BLK1', highlightBatchCode, compact = fals
   }
 
   if (error || !data) {
-    const is404 = (error as any)?.response?.status === 404;
+    const status = (error as any)?.response?.status;
+    const serverMsg = (error as any)?.response?.data?.message;
+    const errMsg = (error as any)?.message;
     return (
       <div style={{
         fontFamily: 'monospace', background: '#0a0f0d', border: '1px solid #1f2f24',
@@ -423,11 +425,12 @@ export function CageMap({ blockCode = 'BLK1', highlightBatchCode, compact = fals
         fontSize: 11, letterSpacing: 2,
       }}>
         <div style={{ color: '#f87171', marginBottom: 8 }}>UNABLE TO LOAD CAGE MAP</div>
-        <div style={{ color: '#6b7280', fontSize: 10, letterSpacing: 1 }}>
-          {is404
+        <div style={{ color: '#6b7280', fontSize: 10, letterSpacing: 1, lineHeight: 1.6 }}>
+          {status === 404
             ? 'Farm infrastructure not found. Run the database seed to create Block 1 sections and rows.'
-            : 'Could not fetch cage map data. Check your connection and try again.'}
+            : serverMsg || errMsg || 'Could not fetch cage map data. Check your connection and try again.'}
         </div>
+        {status && <div style={{ color: '#374151', fontSize: 9, marginTop: 6 }}>HTTP {status}</div>}
       </div>
     );
   }

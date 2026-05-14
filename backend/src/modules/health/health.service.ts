@@ -69,6 +69,17 @@ export class HealthService {
         { entityId: event.id, entityType: 'HealthEvent' },
       ).catch(() => { /* best-effort */ });
     }
+
+    // When birds are culled, subtract affected count from batch's currentBirdCount
+    if (dto.eventType === 'CULLING' && dto.affectedCount > 0) {
+      await this.prisma.batch.update({
+        where: { id: dto.batchId },
+        data: {
+          currentBirdCount: { decrement: dto.affectedCount },
+        },
+      });
+    }
+
     return event;
   }
 

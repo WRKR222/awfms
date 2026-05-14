@@ -52,7 +52,7 @@ export class FeedController {
   }
 
   @Post('requests')
-  @RequirePermission(Permission.FEED_INTAKE_LOG)
+  @RequirePermission(Permission.STOCK_REQUEST_CREATE)
   @ApiOperation({ summary: 'Create a feed request from Manager to Store' })
   createFeedRequest(@Body() body: any, @CurrentUser() user: any) {
     return this.feedService.createFeedRequest(body, user.id);

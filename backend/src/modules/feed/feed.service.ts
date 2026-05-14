@@ -280,6 +280,14 @@ export class FeedService {
         requestedById: userId,
       },
     });
+    // Notify Store role about the new feed request
+    await this.notifications.notifyRole(
+      UserRole.STORE,
+      NotificationType.SYSTEM,
+      'New Feed Request from Production Manager',
+      `Production Manager has requested ${Number(input.quantityKg ?? 0)} kg of ${input.feedType ?? 'feed'} (Ref: ${record.requestRef}).${input.notes ? ' Notes: ' + input.notes : ''}`,
+    ).catch(() => { /* best-effort */ });
+
     return {
       id: record.id,
       requestRef: record.requestRef,

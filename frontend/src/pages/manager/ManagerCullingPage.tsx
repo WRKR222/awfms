@@ -140,7 +140,9 @@ export function ManagerCullingPage() {
               <select className={iCls} {...register('batchId', { required: true })}>
                 <option value="">Select batch…</option>
                 {batches.map((b: any) => (
-                  <option key={b.id} value={b.id}>{b.batchCode}</option>
+                  <option key={b.id} value={b.id}>
+                    {b.batchCode} — {b.location === 'BROODER' ? 'Brooder' : b.location === 'PRODUCTION_HOUSE' ? 'Production House' : b.house?.name ?? ''}
+                  </option>
                 ))}
               </select>
               {errors.batchId && <p className="text-xs text-red-500 mt-1">Required</p>}
@@ -165,6 +167,26 @@ export function ManagerCullingPage() {
                 {...register('affectedCount', { required: true, min: 1, valueAsNumber: true })} />
             </div>
           </div>
+
+          {/* Row selector for production house culling */}
+          {selectedType === 'CULLING' && (() => {
+            const selectedBatch = batches.find((b: any) => b.id === watch('batchId'));
+            if (selectedBatch?.location === 'PRODUCTION_HOUSE') {
+              return (
+                <div className="bg-brand-green/5 dark:bg-brand-green/10 border border-brand-green/30 rounded-xl p-3">
+                  <label className={lCls}>Unit / Row (Production House)</label>
+                  <select className={iCls} {...register('notes')}>
+                    <option value="">Select row where culling occurred…</option>
+                    {['A1', 'A2', 'B1', 'B2', 'C1', 'C2'].map(row => (
+                      <option key={row} value={`Culled from row ${row}`}>Row {row}</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-gray-400 mt-1">Bird count will be subtracted from this row in the cage map.</p>
+                </div>
+              );
+            }
+            return null;
+          })()}
 
           {eventCfg?.showDisease && (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
