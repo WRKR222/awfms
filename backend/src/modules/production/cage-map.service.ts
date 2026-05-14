@@ -80,7 +80,7 @@ export class CageMapService {
           batch: batch
             ? {
                 batchCode: batch.batchCode, strain: batch.strain, stage: batch.stage,
-                birdCount: batch.currentBirdCount, ageWeeks,
+                birdCount: assignment.birdCount || batch.currentBirdCount, ageWeeks,
                 hdpPercent: hdpMap[batch.id] ?? null,
                 transferDate: assignment!.transferDate,
               }

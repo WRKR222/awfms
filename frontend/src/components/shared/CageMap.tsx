@@ -191,7 +191,7 @@ function RowCell({ row, color, highlightBatchCode, onHover, onLeave }: RowCellPr
       onMouseLeave={onLeave}
       style={{
         flex: 1,
-        minHeight: 68,
+        minHeight: 80,
         background: bg,
         border: `1px solid ${borderColor}`,
         borderRadius: 8,
@@ -271,7 +271,7 @@ function StatsBar({ sections }: { sections: SectionData[] }) {
 
   return (
     <div style={{
-      display: 'flex', gap: 1, marginBottom: 16,
+      display: 'flex', gap: 2, marginBottom: 20,
       background: '#0a0f0d', border: '1px solid #1f2f24',
       borderRadius: 10, overflow: 'hidden',
     }}>
@@ -415,9 +415,7 @@ export function CageMap({ blockCode = 'BLK1', highlightBatchCode, compact = fals
   }
 
   if (error || !data) {
-    const status = (error as any)?.response?.status;
-    const serverMsg = (error as any)?.response?.data?.message;
-    const errMsg = (error as any)?.message;
+    const is404 = (error as any)?.response?.status === 404;
     return (
       <div style={{
         fontFamily: 'monospace', background: '#0a0f0d', border: '1px solid #1f2f24',
@@ -425,12 +423,11 @@ export function CageMap({ blockCode = 'BLK1', highlightBatchCode, compact = fals
         fontSize: 11, letterSpacing: 2,
       }}>
         <div style={{ color: '#f87171', marginBottom: 8 }}>UNABLE TO LOAD CAGE MAP</div>
-        <div style={{ color: '#6b7280', fontSize: 10, letterSpacing: 1, lineHeight: 1.6 }}>
-          {status === 404
+        <div style={{ color: '#6b7280', fontSize: 10, letterSpacing: 1 }}>
+          {is404
             ? 'Farm infrastructure not found. Run the database seed to create Block 1 sections and rows.'
-            : serverMsg || errMsg || 'Could not fetch cage map data. Check your connection and try again.'}
+            : 'Could not fetch cage map data. Check your connection and try again.'}
         </div>
-        {status && <div style={{ color: '#374151', fontSize: 9, marginTop: 6 }}>HTTP {status}</div>}
       </div>
     );
   }
@@ -487,11 +484,11 @@ export function CageMap({ blockCode = 'BLK1', highlightBatchCode, compact = fals
             background: '#0a0f0d',
             border: '1px solid #1f2f24',
             borderRadius: 14,
-            padding: 18,
+            padding: 24,
           }}
         >
           {/* Column headers */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingLeft: 'calc(16% + 8px)' }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8, paddingLeft: 'calc(12% + 8px)' }}>
             {['Row 1', 'Row 2'].map(lbl => (
               <div key={lbl} style={{
                 flex: 1, textAlign: 'center',
@@ -508,7 +505,7 @@ export function CageMap({ blockCode = 'BLK1', highlightBatchCode, compact = fals
               <div key={section.code} style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
                 {/* Section label */}
                 <div style={{
-                  width: '16%', display: 'flex', alignItems: 'center',
+                  width: '12%', display: 'flex', alignItems: 'center',
                   justifyContent: 'flex-end', paddingRight: 8, gap: 4,
                 }}>
                   <span style={{ fontSize: 8, color: '#4b5563', letterSpacing: 2, textTransform: 'uppercase' }}>Sec</span>

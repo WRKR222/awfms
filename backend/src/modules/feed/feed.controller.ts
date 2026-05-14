@@ -52,7 +52,7 @@ export class FeedController {
   }
 
   @Post('requests')
-  @RequirePermission(Permission.STOCK_REQUEST_CREATE)
+  @RequirePermission(Permission.FEED_INTAKE_LOG)
   @ApiOperation({ summary: 'Create a feed request from Manager to Store' })
   createFeedRequest(@Body() body: any, @CurrentUser() user: any) {
     return this.feedService.createFeedRequest(body, user.id);
@@ -67,5 +67,19 @@ export class FeedController {
     @CurrentUser() user: any,
   ) {
     return this.feedService.issueFeedRequest(id, body, user.id);
+  }
+
+  @Patch('alert-threshold')
+  @RequirePermission(Permission.FEED_VIEW)
+  @ApiOperation({ summary: 'Update low stock alert threshold (days)' })
+  updateAlertThreshold(@Body() body: { days: number }) {
+    return this.feedService.updateAlertThreshold(body.days);
+  }
+
+  @Get('alert-threshold')
+  @RequirePermission(Permission.FEED_VIEW)
+  @ApiOperation({ summary: 'Get current alert threshold' })
+  getAlertThreshold() {
+    return this.feedService.getAlertThresholdConfig();
   }
 }

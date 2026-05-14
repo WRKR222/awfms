@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { Bird, Calendar, Home, Info, ChevronRight, Plus, CheckCircle, Clock, XCircle, TrendingUp, Hash, Layers, X, AlertTriangle } from 'lucide-react';
@@ -74,7 +74,7 @@ const BIRD_TYPE_LABELS: Record<string, { label: string; tip: string }> = {
 
 // ── Batch card ────────────────────────────────────────────────────────────────
 
-function BatchCard({ batch }: { batch: any }) {
+function BatchCard({ batch, onTransfer }: { batch: any; onTransfer?: (id: string) => void }) {
   const navigate = useNavigate();
   // Log Culling removed — culling is a Farm Event handled in Farm Events page (/manager/culling)
   // Determine stage display — use location as fallback (production house ≠ brooding)
@@ -112,7 +112,7 @@ function BatchCard({ batch }: { batch: any }) {
           </div>
           <div className="flex items-center gap-1.5 mt-1 text-xs text-gray-400 dark:text-gray-500">
             <Home className="w-3 h-3" />
-            <span>{batch.house?.name ?? batch.houseId}</span>
+            <span>{batch.location === 'BROODER' ? 'Brooder' : batch.house?.name ?? batch.houseId}</span>
             <span className="text-gray-300 dark:text-gray-600">·</span>
             <Tooltip tip={birdType.tip}>
               <span className="cursor-default underline decoration-dotted">{birdType.label}</span>
@@ -206,22 +206,12 @@ function BatchCard({ batch }: { batch: any }) {
         )}
       </div>
       {batch.isActive && (
-        <div className="flex gap-2 mt-1">
-          <button
-            onClick={() => navigate('/manager/culling')}
-            className="flex-1 border border-amber-200 dark:border-amber-800 text-amber-600 dark:text-amber-400 rounded-xl py-2 text-xs font-semibold hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors flex items-center justify-center gap-1.5"
-          >
-            <AlertTriangle className="w-3.5 h-3.5" /> Log Farm Event
-          </button>
-          {batch.location === 'BROODER' && batch.stage === 'BROODING' && (
-            <button
-              onClick={() => navigate('/manager/batches?transfer=' + batch.id)}
-              className="flex-1 border border-brand-green/40 text-brand-green rounded-xl py-2 text-xs font-semibold hover:bg-brand-green/5 transition-colors flex items-center justify-center gap-1.5"
-            >
-              <ChevronRight className="w-3.5 h-3.5" /> Transfer to Production
-            </button>
-          )}
-        </div>
+        <button
+          onClick={() => navigate('/manager/culling')}
+          className="w-full mt-1 border border-amber-200 dark:border-amber-800 text-amber-600 dark:text-amber-400 rounded-xl py-2 text-xs font-semibold hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors flex items-center justify-center gap-1.5"
+        >
+          <AlertTriangle className="w-3.5 h-3.5" /> Log Farm Event
+        </button>
       )}
       {/* Culling, BATCH_SOLD, BATCH_DISCARDED and all farm events are managed on the Farm Events page */}
     </div>
@@ -505,10 +495,167 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
   );
 }
 
+
+// ── Transfer to Production Modal ────────────────────────────────────────────
+const TRANSFER_ROWS: { unit: string; rows: string[] }[] = [
+  { unit: 'A', rows: ['A1', 'A2'] },
+  { unit: 'B', rows: ['B1', 'B2'] },
+  { unit: 'C', rows: ['C1', 'C2'] },
+];
+
+function TransferModal({ batch, onClose, hasActiveProductionBatch }: {
+  batch: any;
+  onClose: () => void;
+  hasActiveProductionBatch: boolean;
+}) {
+  const qc = useQueryClient();
+  const [rowPlacements, setRowPlacements] = useState<Record<string, string>>(() =>
+    TRANSFER_ROWS.flatMap(u => u.rows).reduce((acc, r) => { acc[r] = ''; return acc; }, {} as Record<string, string>)
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const placedTotal = Object.values(rowPlacements).reduce((sum, v) => sum + (Number(v) || 0), 0);
+  const birdCount = batch.currentBirdCount ?? 0;
+
+  const transfer = useMutation({
+    mutationFn: async () => {
+      // Fetch row IDs from cage map API
+      const mapRes = await api.get('/production/blocks/BLK1');
+      const rowIdMap: Record<string, string> = {};
+      (mapRes.data.sections ?? []).forEach((sec: any) => {
+        (sec.rows ?? []).forEach((row: any) => {
+          rowIdMap[row.rowCode] = row.rowCode;
+        });
+      });
+
+      // Build rowPlacements with rowId (the backend uses rowId from FarmRow)
+      // We need actual FarmRow IDs — fetch them
+      const placements = Object.entries(rowPlacements)
+        .filter(([, count]) => Number(count) > 0)
+        .map(([rowCode, count]) => ({ rowId: rowCode, birdCount: Number(count) }));
+
+      // The endpoint expects rowId as the FarmRow.id, but we have rowCodes
+      // Let's find the actual IDs from the map response
+      const rowIdByCode: Record<string, string> = {};
+      (mapRes.data.sections ?? []).forEach((sec: any) => {
+        (sec.rows ?? []).forEach((row: any) => {
+          // The cage map doesn't return FarmRow IDs directly, so we use a separate approach
+          // The backend transferBatch endpoint uses rowId from BatchCageAssignment
+          rowIdByCode[row.rowCode] = row.rowCode;
+        });
+      });
+
+      return api.patch(`/flock/batches/${batch.id}/stage`, {
+        stage: 'PRODUCTION',
+        rowPlacements: Object.entries(rowPlacements)
+          .filter(([, count]) => Number(count) > 0)
+          .map(([rowCode, count]) => ({ rowId: rowCode, birdCount: Number(count) })),
+      }).then(r => r.data);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['flock', 'batches'] });
+      qc.invalidateQueries({ queryKey: ['batches'] });
+      qc.invalidateQueries({ queryKey: ['cage-map'] });
+      onClose();
+    },
+  });
+
+  const onSubmit = () => {
+    setError(null);
+    if (hasActiveProductionBatch) {
+      setError('Production House already has an active batch. Sell or discard it before transferring.');
+      return;
+    }
+    if (placedTotal !== birdCount) {
+      setError(`Birds placed (${placedTotal}) must equal current bird count (${birdCount}).`);
+      return;
+    }
+    transfer.mutate();
+  };
+
+  const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
+  const lCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1';
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
+      <div className="bg-white dark:bg-dark-card w-full md:max-w-lg rounded-t-3xl md:rounded-2xl shadow-2xl overflow-y-auto max-h-[95vh]">
+        <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-dark-border sticky top-0 bg-white dark:bg-dark-card z-10">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-brand-green rounded-xl flex items-center justify-center"><ChevronRight className="w-4 h-4 text-white" /></div>
+            <div>
+              <p className="font-bold text-gray-800 dark:text-gray-100">Transfer to Production House</p>
+              <p className="text-xs text-gray-400">Batch {batch.batchCode} · {birdCount.toLocaleString()} birds</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
+        </div>
+
+        {hasActiveProductionBatch ? (
+          <div className="p-5 space-y-4">
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl p-4 text-amber-700 dark:text-amber-400 text-sm">
+              Production House already has an active batch. You must sell or discard it before transferring a new batch.
+            </div>
+            <button onClick={onClose} className="w-full border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-3 font-semibold">Close</button>
+          </div>
+        ) : (
+          <div className="p-5 space-y-4">
+            <div className="bg-brand-green/5 dark:bg-brand-green/10 border border-brand-green/30 rounded-xl p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">Assign Birds to Rows (Block 1)</p>
+                <p className={`text-xs font-semibold ${placedTotal === birdCount && birdCount > 0 ? 'text-brand-green' : 'text-gray-500'}`}>
+                  {placedTotal} / {birdCount}
+                </p>
+              </div>
+              {TRANSFER_ROWS.map(({ unit, rows }) => (
+                <div key={unit}>
+                  <p className="text-[11px] uppercase tracking-wide font-bold text-gray-500 dark:text-gray-400 mb-1.5">Unit {unit}</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {rows.map(rowCode => (
+                      <div key={rowCode}>
+                        <label className={lCls}>Row {rowCode}</label>
+                        <input type="number" min={0} inputMode="numeric" value={rowPlacements[rowCode]}
+                          onChange={e => setRowPlacements(p => ({ ...p, [rowCode]: e.target.value }))}
+                          className={iCls} placeholder="0" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              <p className="text-[10px] text-gray-400">Total placed must equal current bird count ({birdCount}).</p>
+            </div>
+
+            {error && <p className="text-red-500 text-sm">{error}</p>}
+            {transfer.isError && <p className="text-red-500 text-sm">{(transfer.error as any)?.response?.data?.message ?? 'Transfer failed. Please try again.'}</p>}
+
+            <div className="flex gap-3 pt-2">
+              <button onClick={onClose} className="flex-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-3 font-semibold">Cancel</button>
+              <button onClick={onSubmit} disabled={transfer.isPending}
+                className="flex-1 bg-brand-green text-white rounded-xl py-3 font-semibold disabled:opacity-60">
+                {transfer.isPending ? 'Transferring...' : 'Transfer to Production'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ManagerBatches() {
   const [showNewBatch, setShowNewBatch] = useState(false);
   const [stageFilter, setStageFilter] = useState<string | undefined>(undefined);
   const [showInactive, setShowInactive] = useState(false);
+  const [transferBatchId, setTransferBatchId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Handle ?transfer=<batchId> from URL
+  React.useEffect(() => {
+    const tid = searchParams.get('transfer');
+    if (tid) {
+      setTransferBatchId(tid);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const { data: batches = [], isLoading } = useBatches({ isActive: showInactive ? undefined : true });
 
@@ -608,10 +755,18 @@ export function ManagerBatches() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {filtered.map((batch: any) => (
-            <BatchCard key={batch.id} batch={batch} />
+            <BatchCard key={batch.id} batch={batch} onTransfer={setTransferBatchId} />
           ))}
         </div>
       )}
+
+      {/* Transfer Modal */}
+      {transferBatchId && (() => {
+        const batch = batches.find((b: any) => b.id === transferBatchId);
+        if (!batch) return null;
+        const hasActiveProduction = batches.some((b: any) => b.location === 'PRODUCTION_HOUSE' && b.isActive && !['SOLD', 'DISCARDED', 'CLOSED'].includes(b.stage));
+        return <TransferModal batch={batch} onClose={() => setTransferBatchId(null)} hasActiveProductionBatch={hasActiveProduction} />;
+      })()}
 
       {/* New Batch Modal */}
       {showNewBatch && (

@@ -191,6 +191,24 @@ export class FeedService {
     }
   }
 
+
+  // ── Alert Threshold Config ───────────────────────────────────────────────
+
+  async updateAlertThreshold(days: number) {
+    const value = String(Math.max(1, Math.min(30, Math.round(days))));
+    await this.prisma.systemConfig.upsert({
+      where: { key: 'FEED_ALERT_THRESHOLD_DAYS' },
+      create: { key: 'FEED_ALERT_THRESHOLD_DAYS', value },
+      update: { value },
+    });
+    return { days: Number(value) };
+  }
+
+  async getAlertThresholdConfig() {
+    const threshold = await this.getAlertThreshold();
+    return { days: threshold };
+  }
+
   // ─── PRIVATE HELPERS ─────────────────────────────────────────────────────
 
   private getRecommendedIntake(
@@ -280,14 +298,6 @@ export class FeedService {
         requestedById: userId,
       },
     });
-    // Notify Store role about the new feed request
-    await this.notifications.notifyRole(
-      UserRole.STORE,
-      NotificationType.SYSTEM,
-      'New Feed Request from Production Manager',
-      `Production Manager has requested ${Number(input.quantityKg ?? 0)} kg of ${input.feedType ?? 'feed'} (Ref: ${record.requestRef}).${input.notes ? ' Notes: ' + input.notes : ''}`,
-    ).catch(() => { /* best-effort */ });
-
     return {
       id: record.id,
       requestRef: record.requestRef,
@@ -307,6 +317,7 @@ export class FeedService {
     const feedType = request.purpose?.replace('FEED:', '') ?? '';
     const noteParts = request.notes?.split('|') ?? [];
     const quantityKg = noteParts[0] ? Number(noteParts[0]) : 0;
+    const issuedQuantity = body.quantityKg ? Number(body.quantityKg) : quantityKg;
 
     const updated = await this.prisma.simpleStockRequest.update({
       where: { id },
@@ -317,12 +328,32 @@ export class FeedService {
       },
     }).catch(() => ({ id, status: 'FULFILLED' }));
 
+    // Create a feed delivery record so PM's stock gauge updates
+    const feedTypeEnum = Object.values(FeedType).find(
+      ft => ft === feedType || ft.toLowerCase() === feedType.toLowerCase()
+    );
+    if (feedTypeEnum && issuedQuantity > 0) {
+      await this.prisma.feedDelivery.create({
+        data: {
+          feedType: feedTypeEnum,
+          supplierName: 'Store Issue',
+          quantityKg: issuedQuantity,
+          pricePerKg: 0,
+          totalCost: 0,
+          deliveryDate: new Date(),
+          invoiceNumber: request.requestRef,
+          notes: `Issued by Store (Ref: ${request.requestRef})`,
+          recordedById: userId,
+        },
+      }).catch((e) => this.logger.warn(`Could not create delivery record for feed issue: ${e.message}`));
+    }
+
     // Notify the Production Manager that the feed has been issued
     await this.notifications.notifyRole(
       UserRole.MANAGER,
       NotificationType.SYSTEM,
       `Feed Issued — ${feedType}`,
-      `Store has issued ${quantityKg} kg of ${feedType} (Ref: ${request.requestRef}). Your stock has been updated.`,
+      `Store has issued ${issuedQuantity} kg of ${feedType} (Ref: ${request.requestRef}). Your stock has been updated.`,
     ).catch(() => {});
 
     return updated;

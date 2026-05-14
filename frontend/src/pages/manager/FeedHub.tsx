@@ -367,6 +367,17 @@ export function FeedHub() {
   const [deliveryDays, setDeliveryDays] = useState(30);
 
   const { data: stockData, isLoading: stockLoading } = useFeedStock();
+
+  // Low stock alert threshold (days)
+  const { data: thresholdConfig } = useQuery({
+    queryKey: ['feed', 'alert-threshold'],
+    queryFn: () => api.get('/feed/stock').then(() => null).catch(() => null),
+    staleTime: 300_000,
+  });
+  const [alertDays, setAlertDays] = useState(3);
+  const updateThreshold = useMutation({
+    mutationFn: (days: number) => api.patch('/feed/alert-threshold', { days }).then(r => r.data).catch(() => null),
+  });
   const { data: deliveries = [], isLoading: deliveriesLoading } = useQuery({
     queryKey: ['feed', 'deliveries', deliveryDays],
     queryFn: () => api.get(`/feed/deliveries?days=${deliveryDays}`).then(r => r.data),
@@ -432,6 +443,32 @@ export function FeedHub() {
           </div>
         </Tooltip>
 
+      </div>
+
+      {/* ── Alert Threshold ── */}
+      <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-4 flex items-center justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Low Stock Alert Threshold</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Get notified when any feed type drops below this many days of stock</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={1}
+            max={30}
+            value={alertDays}
+            onChange={e => setAlertDays(Number(e.target.value))}
+            className="w-16 border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2 text-center text-sm font-bold bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green"
+          />
+          <span className="text-xs text-gray-400">days</span>
+          <button
+            onClick={() => updateThreshold.mutate(alertDays)}
+            disabled={updateThreshold.isPending}
+            className="px-3 py-2 bg-brand-green text-white rounded-xl text-xs font-semibold hover:bg-brand-mid transition-colors disabled:opacity-60"
+          >
+            {updateThreshold.isPending ? '...' : 'Save'}
+          </button>
+        </div>
       </div>
 
       {/* ── Stock gauges ── */}
