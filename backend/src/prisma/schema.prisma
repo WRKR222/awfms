@@ -21,10 +21,12 @@ enum UserRole {
 }
 
 enum BatchStage {
-  BROODING // 0-6 weeks
-  GROWER   // 6-18 weeks
+  BROODING   // 0-6 weeks
+  GROWER     // 6-18 weeks
   PRODUCTION // 18+ weeks
-  CLOSED
+  SOLD       // batch sold — all birds removed
+  DISCARDED  // batch discarded/culled out
+  CLOSED     // administratively closed
 }
 
 enum BirdType {
@@ -334,6 +336,8 @@ model Batch {
   notes                String?
   isActive             Boolean    @default(true) @map("is_active")
   closedAt             DateTime?  @map("closed_at")
+  soldAt               DateTime?  @map("sold_at")
+  discardedAt          DateTime?  @map("discarded_at")
   createdById          String     @map("created_by_id")
   createdAt            DateTime   @default(now()) @map("created_at")
   updatedAt            DateTime   @updatedAt @map("updated_at")
@@ -624,6 +628,11 @@ model EggCollectionSession {
   totalDeformed   Int       @default(0) @map("total_deformed")
   totalWeightKg   Decimal   @map("total_weight_kg") @db.Decimal(8, 2)
   totalGoodEggs   Int       @map("total_good_eggs")
+  totalStarterEggs   Int       @default(0) @map("total_starter_eggs")
+  totalBrokenSellable Int      @default(0) @map("total_broken_sellable")
+  editedAt           DateTime? @map("edited_at")
+  editedById         String?   @map("edited_by_id")
+  deletedAt          DateTime? @map("deleted_at")
   henDayPercent   Decimal?  @map("hen_day_percent") @db.Decimal(5, 2)
 
   vaccineGiven  String?     @map("vaccine_given")
@@ -1097,6 +1106,11 @@ model EggTallyVerification {
   finalGoodEggs  Int?      @map("final_good_eggs")
   finalFullTrays Int?      @map("final_full_trays")
   finalLooseEggs Int?      @map("final_loose_eggs")
+  finalStarterEggs   Int?      @map("final_starter_eggs")
+
+  editCount          Int       @default(0) @map("edit_count")
+  lastEditedById     String?   @map("last_edited_by_id")
+  lastEditedAt       DateTime? @map("last_edited_at")
 
   expectedRevenueKes Decimal?  @map("expected_revenue_kes") @db.Decimal(12, 2)
   revenueSetById     String?   @map("revenue_set_by_id")
@@ -1268,6 +1282,7 @@ model StoreStockOut {
   quantityOut   Decimal  @map("quantity_out") @db.Decimal(10, 3)
   unitCostKes   Decimal  @map("unit_cost_kes") @db.Decimal(10, 2)
   totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
+  issuedToName    String? @map("issued_to_name")
   issuedToHouseId String? @map("issued_to_house_id")
   issuedToBatchId String? @map("issued_to_batch_id")
   purpose       String?
@@ -1481,7 +1496,7 @@ model FarmSection {
   id         String @id @default(uuid())
   blockId    String @map("block_id")
   code       String
-  sort_order Int    @default(0)
+  sortOrder  Int    @default(0) @map("sort_order")
 
   block     FarmBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
   farm_rows FarmRow[]
@@ -1492,8 +1507,8 @@ model FarmSection {
 model FarmRow {
   id        String  @id @default(uuid())
   sectionId String  @map("section_id")
-  row_code  String  @map("row_code")
-  is_active Boolean @default(true)
+  rowCode   String  @map("row_code")
+  isActive  Boolean @default(true) @map("is_active")
 
   section     FarmSection          @relation(fields: [sectionId], references: [id], onDelete: Cascade)
   assignments BatchCageAssignment?
@@ -1505,6 +1520,7 @@ model BatchCageAssignment {
   id           String   @id @default(uuid())
   rowId        String   @unique @map("row_id")
   batchId      String   @map("batch_id")
+  birdCount    Int      @default(0) @map("bird_count")
   transferDate DateTime @map("transfer_date") @db.Date
   notes        String?
   assignedById String   @map("assigned_by_id")

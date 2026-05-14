@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Patch, Put, Delete, Body, Param, Query, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
-import { SalesService, CreateOrderDto } from './sales.service';
+import { SalesService } from './sales.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -40,7 +40,7 @@ export class SalesController {
 
   @Post('orders')
   @RequirePermission(Permission.SALES_ORDER_CREATE)
-  createOrder(@Body() body: CreateOrderDto, @CurrentUser() user: any) { return this.salesService.createOrder(body, user.id); }
+  createOrder(@Body() body: any, @CurrentUser() user: any) { return this.salesService.createOrder(body, user.id); }
 
   @Get('summary')
   @RequirePermission(Permission.SALES_VIEW)

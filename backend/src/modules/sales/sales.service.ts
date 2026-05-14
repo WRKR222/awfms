@@ -74,8 +74,6 @@ export class SalesService {
         orderDate: new Date(dto.orderDate),
         paymentMethod: (dto.paymentMethod ?? 'CASH') as PaymentMethod,
         subtotal,
-        tier: 'TIER_1' as any, // default to retail tier
-        paymentMethod: (dto.paymentMethod ?? 'CASH') as any,
         deliveryAddress: dto.deliveryAddress,
         notes: dto.notes,
         createdById,
@@ -222,4 +220,35 @@ export class SalesService {
       lastVerifiedDate:  latestTally.verificationDate,
     };
   }
+  // ── Customer management (update/delete) ──────────────────────────────────
+  async updateCustomer(id: string, body: any) {
+    return this.prisma.customer.update({
+      where: { id },
+      data: {
+        name:            body.name            ?? undefined,
+        phone:           body.phone           ?? undefined,
+        email:           body.email           ?? undefined,
+        deliveryAddress: body.deliveryAddress ?? undefined,
+      },
+    });
+  }
+
+  async deleteCustomer(id: string) {
+    // Soft-delete: mark inactive rather than hard delete (preserve order history)
+    return this.prisma.customer.update({
+      where: { id },
+      data: { isActive: false },
+    });
+  }
+
+  // ── Order lifecycle: move to DELIVERING status ────────────────────────────
+  async markOrderAsDelivering(id: string, user: any) {
+    const order = await this.prisma.salesOrder.findUnique({ where: { id } });
+    if (!order) throw new Error('Order not found');
+    return this.prisma.salesOrder.update({
+      where: { id },
+      data: { status: 'DELIVERING' as any },
+    });
+  }
+
 }
