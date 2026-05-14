@@ -72,6 +72,9 @@ export class FlockService {
     });
     if (dupe) throw new BadRequestException(`Batch code "${input.batchCode}" is already in use`);
 
+    // Determine location first — needed for duplicate check and stage derivation
+    const location: string = input.location ?? 'BROODER';
+
     // Prevent duplicate active production house batch (only one block exists)
     if (location === 'PRODUCTION_HOUSE') {
       const existingProductionBatch = await this.prisma.batch.findFirst({
@@ -93,8 +96,6 @@ export class FlockService {
     const supplier = await this.resolveSupplier(input.supplierId, input.supplierName);
     const house = await this.resolveHouse(input.houseId, input.birdType as BirdType);
 
-    
-    const location: string = input.location ?? 'BROODER';
     // Determine stage from location — production house chickens are NEVER brooding
     let stage: BatchStage;
     if (input.stage && Object.values(BatchStage).includes(input.stage as BatchStage)) {
