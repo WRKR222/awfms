@@ -76,7 +76,7 @@ export class FlockService {
     const house = await this.resolveHouse(input.houseId, input.birdType as BirdType);
 
     
-    const location: string = input.location ?? 'PRODUCTION_HOUSE';
+    const location: string = input.location ?? 'BROODER';
     const stage: BatchStage = (input.stage as BatchStage) ??
       (location === 'BROODER' ? BatchStage.BROODING : BatchStage.PRODUCTION);
     const vaccinationOnArrival = Boolean(

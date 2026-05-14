@@ -5,7 +5,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   [UserRole.ATTENDANT]: [
     Permission.FLOCK_VIEW, Permission.FLOCK_ENTRY_CREATE, Permission.FLOCK_WEIGHT_LOG,
     Permission.FEED_VIEW, Permission.FEED_INTAKE_LOG, Permission.FEED_STOCK_VIEW,
-    Permission.HEALTH_VIEW, Permission.HEALTH_VACCINATION_LOG,
+    Permission.HEALTH_VIEW, Permission.HEALTH_VACCINATION_LOG, Permission.HEALTH_EVENT_LOG,
     Permission.PRODUCTION_VIEW, Permission.PRODUCTION_ENTRY_CREATE,
   ],
   [UserRole.MANAGER]: [
