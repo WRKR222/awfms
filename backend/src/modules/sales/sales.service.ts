@@ -77,6 +77,7 @@ export class SalesService {
         deliveryAddress: dto.deliveryAddress,
         notes: dto.notes,
         createdById,
+        tier: 'TIER_1' as any,  // schema still has SalesTier; provide default until column is dropped
         items: { create: items },
       },
       include: {
@@ -228,7 +229,7 @@ export class SalesService {
         name:            body.name            ?? undefined,
         phone:           body.phone           ?? undefined,
         email:           body.email           ?? undefined,
-        deliveryAddress: body.deliveryAddress ?? undefined,
+        address: body.address ?? undefined,
       },
     });
   }
