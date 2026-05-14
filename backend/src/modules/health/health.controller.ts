@@ -1,12 +1,12 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { HealthService } from './health.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RequirePermissionGuard } from '../../common/guards/require-permission.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
 
-@UseGuards(JwtAuthGuard, RequirePermissionGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller('health')
 export class HealthController {
   constructor(private readonly healthService: HealthService) {}
@@ -69,17 +69,6 @@ export class HealthController {
     return this.healthService.updateAdvanceNoticeStatus(id, body.status, body.directorNote, user.id);
   }
 
-  @Post('checklist')
-  @RequirePermission(Permission.HEALTH_VIEW)
-  submitChecklist(@Body() body: any, @CurrentUser() user: any) { return this.healthService.submitChecklist(body, user.id); }
-
-  @Get('checklist')
-  @RequirePermission(Permission.HEALTH_VIEW)
-  getChecklists(@Query('days') days?: string) { return this.healthService.getChecklists(days ? parseInt(days, 10) : 14); }
-
-  @Get('checklist/:id')
-  @RequirePermission(Permission.HEALTH_VIEW)
-  getChecklist(@Param('id') id: string) { return this.healthService.getChecklistById(id); }
 
   @Post('biosecurity')
   @RequirePermission(Permission.HEALTH_VISITOR_LOG)

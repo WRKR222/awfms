@@ -141,6 +141,49 @@ async function main() {
   }
   console.log(`✓ ${schedules.length} vaccination schedules seeded`);
 
+
+  // ── Farm Infrastructure — Block 1 (Production House) ───────────────────────
+  // Required for the cage map to load. Block 2 is under construction.
+  const block1 = await prisma.farmBlock.upsert({
+    where: { code: 'BLK1' },
+    create: { code: 'BLK1', name: 'Block 1 — Production House', isActive: true, isUnderConstruction: false },
+    update: {},
+  });
+
+  await prisma.farmBlock.upsert({
+    where: { code: 'BLK2' },
+    create: { code: 'BLK2', name: 'Block 2 — Under Construction', isActive: false, isUnderConstruction: true },
+    update: {},
+  });
+
+  const sectionDefs = [
+    { code: 'A', sortOrder: 1, rows: ['A1', 'A2'] },
+    { code: 'B', sortOrder: 2, rows: ['B1', 'B2'] },
+    { code: 'C', sortOrder: 3, rows: ['C1', 'C2'] },
+  ];
+
+  for (const secDef of sectionDefs) {
+    let section = await prisma.farmSection.findFirst({
+      where: { blockId: block1.id, code: secDef.code },
+    });
+    if (!section) {
+      section = await prisma.farmSection.create({
+        data: { blockId: block1.id, code: secDef.code, sortOrder: secDef.sortOrder },
+      });
+    }
+    for (const rowCode of secDef.rows) {
+      const existingRow = await prisma.farmRow.findFirst({
+        where: { sectionId: section.id, rowCode },
+      });
+      if (!existingRow) {
+        await prisma.farmRow.create({
+          data: { sectionId: section.id, rowCode, isActive: true },
+        });
+      }
+    }
+  }
+  console.log('✓ Farm infrastructure seeded (Block 1: 3 sections × 2 rows, Block 2: under construction)');
+
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log('\n🎉 AWFMS seed complete!');
   console.log('\nTest login credentials (all users):');

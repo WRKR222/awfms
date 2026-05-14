@@ -77,7 +77,11 @@ const BIRD_TYPE_LABELS: Record<string, { label: string; tip: string }> = {
 function BatchCard({ batch }: { batch: any }) {
   const navigate = useNavigate();
   // Log Culling removed — culling is a Farm Event handled in Farm Events page (/manager/culling)
-  const stage = STAGE_CONFIG[batch.stage as keyof typeof STAGE_CONFIG] ?? STAGE_CONFIG.BROODING;
+  // Determine stage display — use location as fallback (production house ≠ brooding)
+  const resolvedStageKey = (batch.stage && STAGE_CONFIG[batch.stage as keyof typeof STAGE_CONFIG])
+    ? batch.stage as keyof typeof STAGE_CONFIG
+    : batch.location === 'PRODUCTION_HOUSE' ? 'PRODUCTION' : 'BROODING';
+  const stage = STAGE_CONFIG[resolvedStageKey];
   const birdType = BIRD_TYPE_LABELS[batch.birdType] ?? { label: batch.birdType, tip: '' };
   const ageDays = dayjs().diff(dayjs(batch.dateOfHatch), 'day');
   const ageWeeks = Math.floor(ageDays / 7);
@@ -251,7 +255,7 @@ function emptyRowPlacements(): RowPlacementMap {
   }, {} as RowPlacementMap);
 }
 
-function NewBatchModal({ onClose }: { onClose: () => void }) {
+function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => void; hasActiveProductionBatch: boolean }) {
   const qc = useQueryClient();
   const { register, handleSubmit, watch, formState: { errors } } = useForm({
     defaultValues: {
@@ -373,8 +377,15 @@ function NewBatchModal({ onClose }: { onClose: () => void }) {
             <div>
               <label className={lCls}>Assign To *</label>
               <select {...register('location', { required: true })} className={iCls}>
-                {BATCH_LOCATIONS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+                {BATCH_LOCATIONS.map(l => (
+                  <option key={l.value} value={l.value} disabled={l.value === 'PRODUCTION_HOUSE' && hasActiveProductionBatch}>
+                    {l.label}{l.value === 'PRODUCTION_HOUSE' && hasActiveProductionBatch ? ' (occupied)' : ''}
+                  </option>
+                ))}
               </select>
+              {hasActiveProductionBatch && (
+                <p className="text-[10px] text-amber-500 mt-1">Production House already has an active batch. Sell or discard it first.</p>
+              )}
               <p className="text-[10px] text-gray-400 mt-1">Block 2 is under construction.</p>
             </div>
             <div>
@@ -594,7 +605,10 @@ export function ManagerBatches() {
 
       {/* New Batch Modal */}
       {showNewBatch && (
-        <NewBatchModal onClose={() => setShowNewBatch(false)} />
+        <NewBatchModal
+            onClose={() => setShowNewBatch(false)}
+            hasActiveProductionBatch={batches.some((b: any) => b.location === 'PRODUCTION_HOUSE' && b.isActive && !['SOLD', 'DISCARDED', 'CLOSED'].includes(b.stage))}
+          />
       )}
 
       {/* Jargon reference */}

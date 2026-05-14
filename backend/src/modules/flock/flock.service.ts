@@ -72,13 +72,36 @@ export class FlockService {
     });
     if (dupe) throw new BadRequestException(`Batch code "${input.batchCode}" is already in use`);
 
+    // Prevent duplicate active production house batch (only one block exists)
+    if (location === 'PRODUCTION_HOUSE') {
+      const existingProductionBatch = await this.prisma.batch.findFirst({
+        where: {
+          location: 'PRODUCTION_HOUSE',
+          isActive: true,
+          deletedAt: null,
+          stage: { notIn: ['SOLD', 'DISCARDED', 'CLOSED'] as BatchStage[] },
+        },
+        select: { batchCode: true },
+      });
+      if (existingProductionBatch) {
+        throw new BadRequestException(
+          `An active batch (${existingProductionBatch.batchCode}) already exists in the Production House. Sell, discard, or close it before creating a new one.`,
+        );
+      }
+    }
+
     const supplier = await this.resolveSupplier(input.supplierId, input.supplierName);
     const house = await this.resolveHouse(input.houseId, input.birdType as BirdType);
 
     
     const location: string = input.location ?? 'BROODER';
-    const stage: BatchStage = (input.stage as BatchStage) ??
-      (location === 'BROODER' ? BatchStage.BROODING : BatchStage.PRODUCTION);
+    // Determine stage from location — production house chickens are NEVER brooding
+    let stage: BatchStage;
+    if (input.stage && Object.values(BatchStage).includes(input.stage as BatchStage)) {
+      stage = input.stage as BatchStage;
+    } else {
+      stage = location === 'PRODUCTION_HOUSE' ? BatchStage.PRODUCTION : BatchStage.BROODING;
+    }
     const vaccinationOnArrival = Boolean(
       input.vaccinationOnArrival ?? input.vaccinatedOnArrival ?? false,);
 

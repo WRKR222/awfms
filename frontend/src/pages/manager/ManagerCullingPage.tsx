@@ -30,7 +30,7 @@ const EVENT_TYPES = [
   { value: 'CULLING',             label: 'Bird Culling',        showDisease: false, showWeight: false },
   { value: 'BATCH_SOLD',          label: 'Batch Sold',          showDisease: false, showWeight: false },
   { value: 'BATCH_DISCARDED',     label: 'Batch Discarded',     showDisease: false, showWeight: false },
-  { value: 'BIRD_WEIGHING',       label: 'Bird Weighing',       showDisease: false, showWeight: true  },
+  { value: 'WEIGHING',            label: 'Bird Weighing',       showDisease: false, showWeight: true  },
 ];
 
 const EVENT_ICONS: Record<string, React.ElementType> = {
@@ -43,7 +43,7 @@ const EVENT_ICONS: Record<string, React.ElementType> = {
   CULLING:            Scissors,
   BATCH_SOLD:         Package,
   BATCH_DISCARDED:    Archive,
-  BIRD_WEIGHING:      Scale,
+  WEIGHING:           Scale,
 };
 
 const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
@@ -110,10 +110,10 @@ export function ManagerCullingPage() {
   });
 
   return (
-    <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-4">
+    <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Farm Events</h1>
+          <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Farm Events</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Log disease outbreaks, culling, weighing, batch closures and more</p>
         </div>
         <button
@@ -159,7 +159,7 @@ export function ManagerCullingPage() {
             </div>
             <div>
               <label className={lCls}>
-                {selectedType === 'BIRD_WEIGHING' ? 'Birds Sampled' : 'Affected Birds'}
+                {selectedType === 'WEIGHING' ? 'Birds Sampled' : 'Affected Birds'}
               </label>
               <input type="number" min={1} className={iCls}
                 {...register('affectedCount', { required: true, min: 1, valueAsNumber: true })} />

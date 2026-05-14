@@ -1,7 +1,7 @@
 import { usePendingEntries, useBatches } from '../../hooks/useFlock';
 import { useFeedStock } from '../../hooks/useFeed';
 import { useAuthStore } from '../../stores/auth.store';
-import { AlertTriangle, Package, ClipboardCheck, Wheat, Heart, ClipboardList, Users, ChevronRight, Flame, Thermometer, Droplets, Sun } from 'lucide-react';
+import { AlertTriangle, Package, ClipboardCheck, Wheat, Heart, Users, ChevronRight, Flame, Thermometer, Droplets, Sun } from 'lucide-react';
 import { useManagerRealtime } from '../../hooks/useRealtime';
 import { CageMap } from '../../components/shared/CageMap';
 import { BrooderCageMap } from '../../components/shared/BrooderCageMap';
@@ -55,13 +55,7 @@ export function ManagerHome() {
       color: 'bg-red-500',
       route: '/manager/health',
     },
-    {
-      label: 'Checklist',
-      sub: 'AM and PM farm checklist',
-      icon: ClipboardList,
-      color: 'bg-purple-500',
-      route: '/manager/health-checklist',
-    },
+
     {
       label: 'Visitors',
       sub: 'Manage visitor approvals',

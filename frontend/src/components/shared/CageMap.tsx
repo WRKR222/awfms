@@ -415,13 +415,19 @@ export function CageMap({ blockCode = 'BLK1', highlightBatchCode, compact = fals
   }
 
   if (error || !data) {
+    const is404 = (error as any)?.response?.status === 404;
     return (
       <div style={{
         fontFamily: 'monospace', background: '#0a0f0d', border: '1px solid #1f2f24',
-        borderRadius: 14, padding: 32, textAlign: 'center', color: '#f87171',
+        borderRadius: 14, padding: 32, textAlign: 'center',
         fontSize: 11, letterSpacing: 2,
       }}>
-        UNABLE TO LOAD CAGE MAP
+        <div style={{ color: '#f87171', marginBottom: 8 }}>UNABLE TO LOAD CAGE MAP</div>
+        <div style={{ color: '#6b7280', fontSize: 10, letterSpacing: 1 }}>
+          {is404
+            ? 'Farm infrastructure not found. Run the database seed to create Block 1 sections and rows.'
+            : 'Could not fetch cage map data. Check your connection and try again.'}
+        </div>
       </div>
     );
   }

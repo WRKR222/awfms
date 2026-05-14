@@ -21,13 +21,23 @@ export class HealthService {
     symptoms?: string;
     diagnosis?: string;
     treatment?: string;
-    notes?: string;  // FIX: added missing notes field
+    notes?: string;
   }, recordedById: string) {
-    // FIX C2: Re-enabled event types per PM Activity Diagram – Farm Event Recording
-    // and system specification. DISEASE_OUTBREAK, INJURY, QUARANTINE_IMPOSED,
-    // QUARANTINE_LIFTED are all valid PM farm events.
+    // Only pass fields that exist on HealthEvent model — avoids Prisma "Unknown arg" errors.
+    // HealthEvent has: batchId, eventType, eventDate, affectedCount, symptoms, diagnosis,
+    // treatment, outcome, isResolved, resolvedAt, recordedById. "notes" → "outcome".
     const event = await this.prisma.healthEvent.create({
-      data: { ...dto, eventDate: new Date(dto.eventDate), recordedById },
+      data: {
+        batchId:       dto.batchId,
+        eventType:     dto.eventType,
+        eventDate:     new Date(dto.eventDate),
+        affectedCount: dto.affectedCount,
+        symptoms:      dto.symptoms ?? null,
+        diagnosis:     dto.diagnosis ?? null,
+        treatment:     dto.treatment ?? null,
+        outcome:       dto.notes ?? null,
+        recordedById,
+      },
     });
 
     // When a batch is sold or discarded, update its stage explicitly so the
@@ -250,62 +260,6 @@ export class HealthService {
     });
 
     return notice;
-  }
-
-  // ── Health Checklist (Phase 5 — HL-01) ────────────────────────────────────
-
-  async submitChecklist(dto: {
-    checkDate: string;
-    shift: string;
-    houseId?: string;
-    checks: Record<string, string>;
-    itemNotes: Record<string, string>;
-    overallNotes?: string;
-    failCount: number;
-  }, submittedById: string) {
-    const checklist = await this.prisma.healthChecklist.create({
-      data: {
-        checkDate:    new Date(dto.checkDate),
-        shift:        dto.shift,
-        houseId:      dto.houseId,
-        submittedById,
-        checks:       dto.checks,
-        itemNotes:    dto.itemNotes,
-        overallNotes: dto.overallNotes,
-        failCount:    dto.failCount,
-      },
-    });
-
-    // If failures found, notify Manager and Owner
-    if (dto.failCount > 0) {
-      const dateStr = dayjs(dto.checkDate).format('D MMM YYYY');
-      const msg = `${dto.failCount} issue(s) flagged on the ${dto.shift} health checklist for ${dateStr}.`;
-
-      await this.notifications.notifyRole(
-        UserRole.MANAGER, NotificationType.SYSTEM,
-        'Health Checklist Issues Flagged', msg,
-        { entityId: checklist.id, entityType: 'health_checklist' },
-      );
-      await this.notifications.notifyRole(
-        UserRole.OWNER, NotificationType.SYSTEM,
-        'Health Checklist Issues Flagged', msg,
-        { entityId: checklist.id, entityType: 'health_checklist' },
-      );
-    }
-
-    return checklist;
-  }
-
-  async getChecklists(days = 14) {
-    const from = dayjs().subtract(days, 'day').toDate();
-    return this.prisma.healthChecklist.findMany({
-      where: { checkDate: { gte: from } },
-      orderBy: { checkDate: 'desc' },
-    });
-  }
-
-  async getChecklistById(id: string) {
-    return this.prisma.healthChecklist.findUnique({ where: { id } });
   }
 
   // ── Biosecurity Checkpoint (Phase 5 — HL-02) ──────────────────────────────

@@ -72,7 +72,6 @@ import { AnalyticsDashboard } from './pages/analytics/AnalyticsDashboard';
 import { VisitorManagementPage } from './pages/manager/VisitorManagementPage';
 import { ManagerCullingPage } from './pages/manager/ManagerCullingPage';
 import { HealthBiosecurity }   from './pages/attendant/HealthBiosecurity';
-import { HealthChecklistPage } from './pages/attendant/HealthChecklistPage';
 
 // Security roles
 import Security1Layout      from './pages/security/Security1Layout';
@@ -157,7 +156,6 @@ function AppInner() {
           <Route index                    element={<AttendantHome />} />
           <Route path="egg-collection"    element={<EggCollectionPage />} />
           <Route path="health"            element={<HealthBiosecurity />} />
-          <Route path="health-checklist"  element={<HealthChecklistPage />} />
           <Route path="settings"          element={<SettingsPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
         </Route>
@@ -182,7 +180,6 @@ function AppInner() {
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="culling"           element={<ManagerCullingPage />} />
           <Route path="health"            element={<HealthBiosecurity />} />
-          <Route path="health-checklist"  element={<HealthChecklistPage />} />
           <Route path="settings"          element={<SettingsPage />} />
         </Route>
 
