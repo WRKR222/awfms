@@ -5,6 +5,8 @@ import { RequestUser } from '../../auth/types/request-user.type';
 import dayjs from 'dayjs';
 import { FinanceService } from '../finance/finance.service';
 
+type EggItemType = 'STANDARD_EGGS' | 'STARTER_EGGS' | 'CONSUMABLE_BROKEN_EGGS';
+
 @Injectable()
 export class SalesService {
   constructor(
@@ -52,19 +54,38 @@ export class SalesService {
     orderDate: string;
     paymentMethod: 'CASH' | 'MPESA' | 'BANK' | 'CREDIT';
     deliveryAddress?: string;
+    deliveryDate?: string;
+    deliveryTime?: string;
+    requiresDelivery?: boolean;
     notes?: string;
-    items: Array<{ grade: string; quantityTrays: number; unitPrice: number; }>;
+    items: Array<{ eggType: EggItemType; quantityEggs: number; }>;
   }, createdById: string) {
     const count = await this.prisma.salesOrder.count();
     const orderNumber = `SO-${dayjs().format('YYYYMMDD')}-${String(count + 1).padStart(4, '0')}`;
 
-    const items = dto.items.map(i => ({
-      itemType: 'EGGS',
-      grade: i.grade,
-      quantityTrays: i.quantityTrays,
-      unitPrice: i.unitPrice,
-      subtotal: i.quantityTrays * i.unitPrice,
-    }));
+    // Auto-fetch today's pricing (set by accountant)
+    const today = dayjs().format('YYYY-MM-DD');
+    const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: new Date(today) } });
+    if (!pricing) throw new BadRequestException('No pricing set for today. Accountant must set daily prices before orders can be created.');
+
+    const priceMap: Record<EggItemType, number | null> = {
+      STANDARD_EGGS:          Number(pricing.pricePerEgg),
+      STARTER_EGGS:           pricing.pricePerEggStarter != null ? Number(pricing.pricePerEggStarter) : null,
+      CONSUMABLE_BROKEN_EGGS: pricing.pricePerEggBroken  != null ? Number(pricing.pricePerEggBroken)  : null,
+    };
+
+    const items = dto.items.map(i => {
+      const unitPrice = priceMap[i.eggType];
+      if (unitPrice == null) throw new BadRequestException(`No price set for ${i.eggType}. Ask the accountant to set it.`);
+      const quantityTrays = Math.ceil(i.quantityEggs / 30);
+      return {
+        itemType:     i.eggType,
+        grade:        null as string | null,
+        quantityTrays,
+        unitPrice,
+        subtotal:     i.quantityEggs * unitPrice,
+      };
+    });
     const subtotal = items.reduce((s, i) => s + i.subtotal, 0);
 
     return this.prisma.salesOrder.create({
@@ -74,7 +95,7 @@ export class SalesService {
         orderDate: new Date(dto.orderDate),
         paymentMethod: (dto.paymentMethod ?? 'CASH') as PaymentMethod,
         subtotal,
-        deliveryAddress: dto.deliveryAddress,
+        deliveryAddress: dto.requiresDelivery ? (dto.deliveryAddress ?? null) : null,
         notes: dto.notes,
         createdById,
         tier: 'TIER_1' as any,  // schema still has SalesTier; provide default until column is dropped

@@ -571,6 +571,35 @@ export class StoreInventoryService {
     return updated;
   }
 
+  async rejectLPO(id: string, rejectionReason: string, user: RequestUser) {
+    const lpo = await this.prisma.localPurchaseOrder.findUnique({ where: { id } });
+    if (!lpo) throw new NotFoundException('LPO not found');
+    if (lpo.status !== 'SUBMITTED') throw new BadRequestException('Only SUBMITTED LPOs can be rejected');
+    if (!rejectionReason?.trim()) throw new BadRequestException('Rejection reason is required');
+
+    const updated = await this.prisma.localPurchaseOrder.update({
+      where: { id },
+      data: { status: 'REJECTED' as any, notes: `REJECTED: ${rejectionReason.trim()}${lpo.notes ? ` | ${lpo.notes}` : ''}` },
+    });
+
+    // Notify the accountant who created it
+    const creator = await this.prisma.user.findUnique({ where: { id: lpo.createdById }, select: { id: true } });
+    if (creator) {
+      await this.prisma.notification.create({
+        data: {
+          userId:     creator.id,
+          type:       'LPO_REJECTED' as any,
+          title:      `LPO ${lpo.lpoNumber} rejected`,
+          message:    `LPO for ${lpo.supplierName} was rejected by ${user.fullName ?? 'Owner'}. Reason: ${rejectionReason.trim()}`,
+          entityId:   id,
+          entityType: 'LocalPurchaseOrder',
+        },
+      });
+    }
+
+    return updated;
+  }
+
   async listLPOs(status?: string) {
     return this.prisma.localPurchaseOrder.findMany({
       where: status ? { status: status as any } : {},

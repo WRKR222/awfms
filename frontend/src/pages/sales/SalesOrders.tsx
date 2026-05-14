@@ -45,7 +45,7 @@ const STATUS_CONFIG: Record<OrderStatus, { label: string; color: string; icon: a
 const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green disabled:opacity-60 disabled:cursor-not-allowed';
 
 interface DailyPrice { pricePerEgg: number; pricePerEggStarter: number | null; pricePerEggBroken: number | null; expectedRevenue: number | null; }
-interface OrderItem  { eggType: EggItemType; quantityTrays: number; }
+interface OrderItem  { eggType: EggItemType; quantityEggs: number; }
 
 function fmtKES(n?: number | string | null) {
   return `KES ${Number(n ?? 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -57,9 +57,9 @@ function getPricePerEgg(eggType: EggItemType, p: DailyPrice | null): number | nu
   if (eggType === 'CONSUMABLE_BROKEN_EGGS') return p.pricePerEggBroken  != null ? Number(p.pricePerEggBroken)  : null;
   return null;
 }
-function calcSubtotal(eggType: EggItemType, trays: number, p: DailyPrice | null): number {
+function calcSubtotal(eggType: EggItemType, eggs: number, p: DailyPrice | null): number {
   const peg = getPricePerEgg(eggType, p);
-  return peg == null ? 0 : trays * 30 * peg;
+  return peg == null ? 0 : eggs * peg;
 }
 
 // ── Revenue Banner ─────────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ function OrderCard({ order, onConfirm, onMarkDelivering, onMarkDelivered }: {
               <div key={item.id} className="flex justify-between text-xs">
                 <span className="text-gray-600 dark:text-gray-400">
                   <Package className="w-3 h-3 inline mr-1" />
-                  {EGG_TYPE_LABELS[item.itemType as EggItemType] ?? item.itemType} · {item.quantityTrays ?? 0} trays ({(item.quantityTrays ?? 0) * 30} eggs)
+                  {EGG_TYPE_LABELS[item.itemType as EggItemType] ?? item.itemType} · {(item.quantityTrays ?? 0) * 30} eggs ({item.quantityTrays ?? 0} trays)
                 </span>
                 <span className="font-semibold text-gray-700 dark:text-gray-300">{fmtKES(item.subtotal)}</span>
               </div>
@@ -194,16 +194,16 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
     customerId: '', orderDate: dayjs().format('YYYY-MM-DD'),
     paymentMethod: 'CASH', requiresDelivery: false,
     deliveryAddress: '', deliveryDate: '', deliveryTime: '', notes: '',
-    items: [{ eggType: 'STANDARD_EGGS' as EggItemType, quantityTrays: 1 }],
+    items: [{ eggType: 'STANDARD_EGGS' as EggItemType, quantityEggs: 30 }],
   });
   const [error, setError] = useState('');
 
-  const addItem    = () => setForm(f => ({ ...f, items: [...f.items, { eggType: 'STANDARD_EGGS' as EggItemType, quantityTrays: 1 }] }));
+  const addItem    = () => setForm(f => ({ ...f, items: [...f.items, { eggType: 'STANDARD_EGGS' as EggItemType, quantityEggs: 30 }] }));
   const removeItem = (i: number) => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
   const updateItem = (i: number, field: keyof OrderItem, val: any) =>
     setForm(f => ({ ...f, items: f.items.map((it, idx) => idx === i ? { ...it, [field]: val } : it) }));
 
-  const orderTotal = form.items.reduce((s, it) => s + calcSubtotal(it.eggType, it.quantityTrays, pricing), 0);
+  const orderTotal = form.items.reduce((s, it) => s + calcSubtotal(it.eggType, it.quantityEggs, pricing), 0);
 
   const createMutation = useMutation({
     mutationFn: (d: typeof form) => api.post('/sales/orders', {
@@ -214,7 +214,7 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
       deliveryTime:     d.requiresDelivery && d.deliveryTime ? d.deliveryTime : undefined,
       notes: d.notes || undefined,
       // Items use eggType — backend maps to itemType; no grade field sent
-      items: d.items.map(it => ({ eggType: it.eggType, quantityTrays: Number(it.quantityTrays) })),
+      items: d.items.map(it => ({ eggType: it.eggType, quantityEggs: Number(it.quantityEggs) })),
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sales-orders'] });
@@ -229,7 +229,7 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
     if (!form.customerId) return 'Please select a customer';
     if (!form.items.length) return 'Add at least one item';
     for (const it of form.items) {
-      if (it.quantityTrays <= 0) return 'All quantities must be greater than zero';
+      if (it.quantityEggs <= 0) return 'All quantities must be greater than zero';
       if (getPricePerEgg(it.eggType, pricing) == null) return `No price set for ${EGG_TYPE_LABELS[it.eggType]}. Ask the accountant.`;
     }
     if (form.requiresDelivery && !form.deliveryAddress.trim()) return 'Enter delivery address';
@@ -298,7 +298,7 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
             <div className="space-y-2">
               {form.items.map((item, idx) => {
                 const peg = getPricePerEgg(item.eggType, pricing);
-                const sub = calcSubtotal(item.eggType, item.quantityTrays, pricing);
+                const sub = calcSubtotal(item.eggType, item.quantityEggs, pricing);
                 return (
                   <div key={idx} className="bg-gray-50 dark:bg-gray-800 rounded-xl p-3 space-y-2">
                     <div className="flex items-center gap-2">
@@ -312,14 +312,14 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
                           ))}
                         </select>
                       </div>
-                      <div className="w-28">
-                        <label className="text-xs text-gray-500 mb-1 block">Trays</label>
-                        <input type="number" min="1" value={item.quantityTrays} onChange={e => updateItem(idx, 'quantityTrays', Math.max(1, parseInt(e.target.value) || 1))} className={iCls} />
+                      <div className="w-32">
+                        <label className="text-xs text-gray-500 mb-1 block">Quantity (eggs)</label>
+                        <input type="number" min="1" value={item.quantityEggs} onChange={e => updateItem(idx, 'quantityEggs', Math.max(1, parseInt(e.target.value) || 1))} className={iCls} />
                       </div>
                       {form.items.length > 1 && <button type="button" onClick={() => removeItem(idx)} className="mt-5 text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>}
                     </div>
                     <div className="flex justify-between text-xs text-gray-500">
-                      <span>{item.quantityTrays * 30} eggs{peg != null ? ` · KES ${(peg * 30).toFixed(2)}/tray (accountant's price)` : ''}</span>
+                      <span>{item.quantityEggs} eggs ({Math.ceil(item.quantityEggs / 30)} trays){peg != null ? ` · KES ${peg.toFixed(2)}/egg` : ''}</span>
                       <span className="font-bold text-gray-700 dark:text-gray-300">{fmtKES(sub)}</span>
                     </div>
                   </div>

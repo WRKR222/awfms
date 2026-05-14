@@ -149,6 +149,16 @@ export class StoreInventoryController {
     return this.svc.approveLPO(id, req.user);
   }
 
+  @Patch('lpos/:id/reject')
+  @RequirePermission(Permission.SETTINGS_MANAGE)   // Owner
+  rejectLPO(
+    @Param('id') id: string,
+    @Body('rejectionReason') rejectionReason: string,
+    @Request() req: any,
+  ) {
+    return this.svc.rejectLPO(id, rejectionReason, req.user);
+  }
+
   @Get('lpos')
   @RequirePermission(Permission.INVENTORY_VIEW)
   listLPOs(@Query('status') status?: string) {

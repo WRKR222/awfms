@@ -8,8 +8,12 @@ export interface CreateBookingDto {
   customerId: string;
   requestedDate: string;
   quantityTrays: number;
-  pricePerEggKes: number;
+  eggType?: 'STANDARD_EGGS' | 'STARTER_EGGS' | 'CONSUMABLE_BROKEN_EGGS';
+  requiresDelivery?: boolean;
+  deliveryAddress?: string;
+  deliveryDate?: string;
   notes?: string;
+  // pricePerEggKes is intentionally NOT accepted from client — auto-resolved from DailyEggPrice
 }
 
 export interface CancelBookingDto {
@@ -32,24 +36,41 @@ export class BookingsService {
     });
     if (!customer) throw new NotFoundException('Customer not found');
 
-    const quantityEggs = dto.quantityTrays * 30;
-    const estimatedTotal = quantityEggs * dto.pricePerEggKes;
-    const bookingRef = await this.generateRef();
+    // Auto-resolve price from today's DailyEggPrice — salesperson never sets price manually
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: today } });
+    if (!pricing) throw new BadRequestException('No pricing set for today. Accountant must set daily prices before bookings can be created.');
+
+    const eggType = dto.eggType ?? 'STANDARD_EGGS';
+    let pricePerEggKes: number;
+    if (eggType === 'STARTER_EGGS') {
+      pricePerEggKes = pricing.pricePerEggStarter != null ? Number(pricing.pricePerEggStarter) : Number(pricing.pricePerEgg);
+    } else if (eggType === 'CONSUMABLE_BROKEN_EGGS') {
+      if (pricing.pricePerEggBroken == null) throw new BadRequestException('No price set for Consumable Broken Eggs today. Ask the accountant.');
+      pricePerEggKes = Number(pricing.pricePerEggBroken);
+    } else {
+      pricePerEggKes = Number(pricing.pricePerEgg);
+    }
+
+    const quantityEggs  = dto.quantityTrays * 30;
+    const estimatedTotal = quantityEggs * pricePerEggKes;
+    const bookingRef    = await this.generateRef();
 
     const booking = await this.prisma.advanceBooking.create({
       data: {
         bookingRef,
-        customerId: dto.customerId,
-        createdById: user.id,
+        customerId:    dto.customerId,
+        createdById:   user.id,
         requestedDate: new Date(dto.requestedDate),
         quantityTrays: dto.quantityTrays,
         quantityEggs,
-        pricePerEggKes: dto.pricePerEggKes,
+        pricePerEggKes,   // auto-resolved from accountant's DailyEggPrice
         estimatedTotal,
         stockLocked: true,
-        lockedAt: new Date(),
-        status: 'PENDING',
-        notes: dto.notes ?? null,
+        lockedAt:    new Date(),
+        status:      'PENDING',
+        notes:       dto.notes ?? null,
       },
       include: { customer: { select: { name: true, phone: true } } },
     });
