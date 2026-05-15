@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { api } from '../../lib/api';
+import { useFeedStock } from '../../hooks/useFeed';
 import dayjs from 'dayjs';
 import {
   Bird, Thermometer, Droplets, Sun, XCircle, Plus,
@@ -50,6 +51,7 @@ function LogModal({
     defaultValues: {
       logDate: dayjs().format('YYYY-MM-DD'),
       waterConsumptionL: '',
+      feedType: '',
       feedConsumedKg: '',
       temperature: '',
       lightingOk: true,
@@ -68,6 +70,7 @@ function LogModal({
           batchId: batch.id,
           mortalityCount: Number(data.mortalityCount) || 0,
           waterConsumptionL: data.waterConsumptionL ? Number(data.waterConsumptionL) : undefined,
+          feedType: data.feedType || undefined,
           feedConsumedKg: data.feedConsumedKg ? Number(data.feedConsumedKg) : undefined,
           temperature: data.temperature ? Number(data.temperature) : undefined,
         })
@@ -124,6 +127,10 @@ function LogModal({
                 className={iCls}
                 placeholder="e.g. 25"
               />
+            </div>
+            <div>
+              <label className={lCls}>Feed Type</label>
+              <FeedTypeSelect register={register} />
             </div>
             <div>
               <label className={lCls}>Feed Consumed (kg)</label>

@@ -386,6 +386,27 @@ export class FlockService {
       });
     }
 
+    // If feed was consumed, also create a FeedIntakeLog to deduct from stock
+    const feedKg = Number(input.feedConsumedKg ?? 0);
+    if (feedKg > 0 && input.feedType) {
+      try {
+        await this.prisma.feedIntakeLog.create({
+          data: {
+            batchId: batch.id,
+            houseId: batch.houseId,
+            feedType: input.feedType,
+            entryDate: input.logDate ? new Date(input.logDate) : new Date(),
+            quantityDispensedKg: feedKg,
+            wastageKg: 0,
+            recommendedMinKg: 0,
+            recommendedMaxKg: 0,
+            notes: 'Logged from Brooder page',
+            recordedById: userId,
+          },
+        });
+      } catch (_) { /* feed intake log is best-effort */ }
+    }
+
     return this.prisma.brooderLog.create({
       data: {
         batchId: batch.id,

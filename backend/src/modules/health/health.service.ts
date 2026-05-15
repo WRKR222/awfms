@@ -47,6 +47,8 @@ export class HealthService {
         where: { id: dto.batchId },
         data: { isActive: false, stage: 'SOLD' as any, soldAt: new Date() },
       });
+      // Clear cage assignments so cage map shows rows as vacant
+      await this.prisma.batchCageAssignment.deleteMany({ where: { batchId: dto.batchId } });
       // ── Notify Director (OWNER) — batch sold ─────────────────────────────
       const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId }, select: { batchCode: true } });
       await this.notifications.notifyRole(
@@ -60,6 +62,8 @@ export class HealthService {
         where: { id: dto.batchId },
         data: { isActive: false, stage: 'DISCARDED' as any, discardedAt: new Date() },
       });
+      // Clear cage assignments so cage map shows rows as vacant
+      await this.prisma.batchCageAssignment.deleteMany({ where: { batchId: dto.batchId } });
       // ── Notify Director (OWNER) — batch discarded ─────────────────────────
       const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId }, select: { batchCode: true } });
       await this.notifications.notifyRole(
@@ -74,10 +78,24 @@ export class HealthService {
     if (dto.eventType === 'CULLING' && dto.affectedCount > 0) {
       await this.prisma.batch.update({
         where: { id: dto.batchId },
-        data: {
-          currentBirdCount: { decrement: dto.affectedCount },
-        },
+        data: { currentBirdCount: { decrement: dto.affectedCount } },
       });
+      // Update cage map row if row specified in notes (e.g. "Culled from row A1")
+      const rowMatch = (dto.notes ?? '').match(/row\s+(\w+)/i);
+      if (rowMatch) {
+        const rowCode = rowMatch[1].toUpperCase();
+        const assignments = await this.prisma.batchCageAssignment.findMany({
+          where: { batchId: dto.batchId },
+          include: { row: { select: { rowCode: true } } },
+        });
+        const match = assignments.find((a: any) => a.row?.rowCode === rowCode);
+        if (match) {
+          await this.prisma.batchCageAssignment.update({
+            where: { id: match.id },
+            data: { birdCount: Math.max(0, match.birdCount - dto.affectedCount) },
+          });
+        }
+      }
     }
 
     return event;

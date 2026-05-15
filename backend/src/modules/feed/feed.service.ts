@@ -144,7 +144,7 @@ export class FeedService {
         currentStockKg: currentStock,
         avgDailyUsageKg: avgDailyUsage,
         daysRemaining: Math.round(daysRemaining * 10) / 10,
-        isLow: daysRemaining <= threshold,
+        isLow: currentStock <= threshold,  // threshold is now in kg
       };
     }
     return results;

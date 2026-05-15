@@ -474,19 +474,19 @@ export function FeedHub() {
       {/* ── Alert Threshold ── */}
       <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-4 flex items-center justify-between gap-4">
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Low Stock Alert Threshold</p>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Get notified when any feed type drops below this many days of stock</p>
+          <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Low Stock Alert Threshold (kg)</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Get notified when any feed type drops below this amount (kg)</p>
         </div>
         <div className="flex items-center gap-2">
           <input
             type="number"
             min={1}
-            max={30}
+            max={9999}
             value={alertDays}
             onChange={e => setAlertDays(Number(e.target.value))}
             className="w-16 border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2 text-center text-sm font-bold bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green"
           />
-          <span className="text-xs text-gray-400">days</span>
+          <span className="text-xs text-gray-400">kg</span>
           <button
             onClick={() => updateThreshold.mutate(alertDays)}
             disabled={updateThreshold.isPending}

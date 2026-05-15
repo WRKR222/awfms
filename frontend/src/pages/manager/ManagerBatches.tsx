@@ -206,12 +206,22 @@ function BatchCard({ batch, onTransfer }: { batch: any; onTransfer?: (id: string
         )}
       </div>
       {batch.isActive && (
-        <button
-          onClick={() => navigate('/manager/culling')}
-          className="w-full mt-1 border border-amber-200 dark:border-amber-800 text-amber-600 dark:text-amber-400 rounded-xl py-2 text-xs font-semibold hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors flex items-center justify-center gap-1.5"
-        >
-          <AlertTriangle className="w-3.5 h-3.5" /> Log Farm Event
-        </button>
+        <div className="flex gap-2 mt-1">
+          <button
+            onClick={() => navigate('/manager/culling')}
+            className="flex-1 border border-amber-200 dark:border-amber-800 text-amber-600 dark:text-amber-400 rounded-xl py-2 text-xs font-semibold hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors flex items-center justify-center gap-1.5"
+          >
+            <AlertTriangle className="w-3.5 h-3.5" /> Log Farm Event
+          </button>
+          {batch.location === 'BROODER' && (batch.stage === 'BROODING' || batch.stage === 'GROWER') && onTransfer && (
+            <button
+              onClick={() => onTransfer(batch.id)}
+              className="flex-1 border border-brand-green/40 text-brand-green rounded-xl py-2 text-xs font-semibold hover:bg-brand-green/5 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <ChevronRight className="w-3.5 h-3.5" /> Transfer to Production
+            </button>
+          )}
+        </div>
       )}
       {/* Culling, BATCH_SOLD, BATCH_DISCARDED and all farm events are managed on the Farm Events page */}
     </div>
