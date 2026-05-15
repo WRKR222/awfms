@@ -80,7 +80,7 @@ function BookingCard({ booking, onConfirm, onCancel, onFulfill }: {
           {canAct && !showCancel && !showFulfill && (
             <div className="flex flex-wrap gap-2">
               {booking.status === 'PENDING' && <button onClick={() => onConfirm(booking.id)} className="flex items-center gap-1 bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"><CheckCircle className="w-3 h-3" /> Confirm Booking</button>}
-              {booking.status === 'CONFIRMED' && <button onClick={() => setShowFulfill(true)} className="flex items-center gap-1 bg-brand-green text-white px-3 py-1.5 rounded-lg text-xs font-semibold"><Package className="w-3 h-3" /> Fulfil as Order</button>}
+              {(booking.status === 'CONFIRMED' || booking.status === 'PENDING') && <button onClick={() => setShowFulfill(true)} className="flex items-center gap-1 bg-brand-green text-white px-3 py-1.5 rounded-lg text-xs font-semibold"><Package className="w-3 h-3" /> Fulfil as Order</button>}
               <button onClick={() => setShowCancel(true)} className="flex items-center gap-1 border border-red-200 text-red-500 px-3 py-1.5 rounded-lg text-xs font-semibold"><XCircle className="w-3 h-3" /> Cancel</button>
             </div>
           )}
@@ -116,7 +116,7 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState('');
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: () => api.get('/sales/customers').then(r => r.data) });
   const { data: pricing } = useQuery({ queryKey: ['daily-price-today'], queryFn: () => api.get('/pricing/daily/today').then(r => r.data).catch(() => null) });
-  const [form, setForm] = useState({ customerId: '', eggType: 'STANDARD_EGGS' as EggItemType, requestedDate: dayjs().add(1, 'day').format('YYYY-MM-DD'), quantityTrays: 1, quantityEggs: 30, requiresDelivery: false, deliveryAddress: '', deliveryDate: '', notes: '' });
+  const [form, setForm] = useState({ customerId: '', eggType: 'STANDARD_EGGS' as EggItemType, requestedDate: dayjs().add(1, 'day').format('YYYY-MM-DD'), quantityTrays: 1, quantityEggs: 1, requiresDelivery: false, deliveryAddress: '', deliveryDate: '', notes: '' });
 
   function getPricePerEgg(et: EggItemType): number {
     if (!pricing) return 0;
@@ -130,7 +130,7 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
   const est = qty * peg;
 
   const createMutation = useMutation({
-    mutationFn: () => api.post('/bookings', { customerId: form.customerId, eggType: form.eggType, requestedDate: form.requestedDate, quantityTrays: Math.max(1, Math.ceil((form.quantityEggs ?? 30) / 30)), requiresDelivery: form.requiresDelivery, deliveryAddress: form.requiresDelivery ? form.deliveryAddress : undefined, deliveryDate: form.requiresDelivery && form.deliveryDate ? form.deliveryDate : undefined, notes: form.notes || undefined }),
+    mutationFn: () => api.post('/bookings', { customerId: form.customerId, eggType: form.eggType, requestedDate: form.requestedDate, quantityTrays: Math.max(1, Math.ceil((form.quantityEggs ?? 1) / 30)), quantityEggs: form.quantityEggs ?? 1, requiresDelivery: form.requiresDelivery, deliveryAddress: form.requiresDelivery ? form.deliveryAddress : undefined, deliveryDate: form.requiresDelivery && form.deliveryDate ? form.deliveryDate : undefined, notes: form.notes || undefined }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['bookings'] }); qc.invalidateQueries({ queryKey: ['sales-stock'] }); onClose(); },
     onError: (err: any) => setError(err?.response?.data?.message ?? 'Failed to create booking.'),
   });
@@ -166,7 +166,7 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
               ))}
             </div></div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="text-xs text-gray-500 mb-1 block">Eggs *</label><input type="number" min="1" step="1" value={form.quantityEggs ?? 30} onChange={e => setForm(f => ({ ...f, quantityEggs: Math.max(1, parseInt(e.target.value) || 1) }))} className={iCls} /><p className="text-xs text-gray-400 mt-1">{Math.max(1, Math.ceil((form.quantityEggs ?? 30) / 30))} trays</p></div>
+            <div><label className="text-xs text-gray-500 mb-1 block">Eggs *</label><input type="number" min="1" step="1" value={form.quantityEggs ?? 30} onChange={e => setForm(f => ({ ...f, quantityEggs: parseInt(e.target.value) || 0 }))} className={iCls} /><p className="text-xs text-gray-400 mt-1">{Math.max(1, Math.ceil((form.quantityEggs ?? 30) / 30))} trays equivalent)</p></div>
             <div><label className="text-xs text-gray-500 mb-1 block">Requested Date *</label><input type="date" value={form.requestedDate} onChange={e => setForm(f => ({ ...f, requestedDate: e.target.value }))} className={iCls} min={dayjs().format('YYYY-MM-DD')} required /></div>
           </div>
           {pricing ? (
