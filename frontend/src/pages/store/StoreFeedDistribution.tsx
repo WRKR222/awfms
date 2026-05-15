@@ -59,6 +59,23 @@ export default function StoreFeedDistribution() {
     },
   });
 
+  // Issue Now → mark request fulfilled, then redirect to Stock Out for proper stock tracking
+  const handleIssue = (req: any) => {
+    // Store request context for Stock Out form
+    try {
+      sessionStorage.setItem('pendingFeedIssue', JSON.stringify({
+        requestId: req.id,
+        feedType: req.feedType,
+        quantityKg: req.quantityKg,
+        requestRef: req.requestRef,
+      }));
+    } catch (_) {}
+    // Mark request as fulfilled via API
+    issueRequest.mutate(req.id);
+    // Navigate to Stock Out tab so Store logs the actual stock movement
+    setTimeout(() => navigate('/store/inventory?tab=stock-out'), 500);
+  };
+
   const selectedBatch = batches.find((b: any) => b.id === watch('batchId'));
   const qty = Number(watch('quantityKg') ?? 0);
   const pendingCount = (feedRequests as any[]).length;
