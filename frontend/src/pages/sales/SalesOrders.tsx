@@ -31,7 +31,7 @@ const PAYMENT_METHODS = [
   { value: 'MPESA',  label: 'M-Pesa'        },
   { value: 'CASH',   label: 'Cash'           },
   { value: 'BANK',   label: 'Bank Transfer'  },
-  { value: 'CREDIT', label: 'Credit'         },
+  { value:  label: ''         },
 ];
 
 const STATUS_CONFIG: Record<OrderStatus, { label: string; color: string; icon: any }> = {

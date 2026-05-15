@@ -3,14 +3,14 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RequirePermissionGuard } from '../../common/guards/require-permission.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
 import { BookingsService, CreateBookingDto, CancelBookingDto } from './bookings.service';
 
 @ApiTags('bookings')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RequirePermissionGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller('bookings')
 export class BookingsController {
   constructor(private readonly svc: BookingsService) {}

@@ -59,7 +59,7 @@ function BookingCard({ booking, onConfirm, onCancel, onFulfill }: {
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold text-gray-800 dark:text-gray-100">{booking.bookingRef}</p>
           <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-            {booking.customer?.name ?? '—'} · {dayjs(booking.requestedDate).format('D MMM YYYY')} · {booking.quantityEggs ?? booking.quantityTrays * 30} eggs · {eggLabel}
+            {booking.customer?.name ?? '—'} · {dayjs(booking.requestedDate).format('D MMM YYYY')} · {booking.quantityEggs ?? booking.quantityEggs * 30} eggs · {eggLabel}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -73,7 +73,7 @@ function BookingCard({ booking, onConfirm, onCancel, onFulfill }: {
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Customer</p><p className="font-semibold text-gray-700 dark:text-gray-300">{booking.customer?.name}</p>{booking.customer?.phone && <p className="text-gray-400">{booking.customer.phone}</p>}</div>
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Egg Type</p><p className="font-semibold text-gray-700 dark:text-gray-300">{eggLabel}</p></div>
-            <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Quantity</p><p className="font-semibold text-gray-700 dark:text-gray-300">{booking.quantityEggs} eggs ({booking.quantityTrays} trays)</p><p className="text-gray-400 mt-0.5">{fmtKES(booking.pricePerEggKes)}/egg</p></div>
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Quantity</p><p className="font-semibold text-gray-700 dark:text-gray-300">{booking.quantityEggs} eggs ({booking.quantityEggs} eggs)</p><p className="text-gray-400 mt-0.5">{fmtKES(booking.pricePerEggKes)}/egg</p></div>
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Est. Total</p><p className="font-semibold text-brand-green">{fmtKES(booking.estimatedTotal)}</p></div>
           </div>
           {booking.notes && <p className="text-xs text-gray-500 dark:text-gray-400 italic bg-gray-50 dark:bg-gray-800 rounded-xl px-3 py-2">{booking.notes}</p>}
@@ -116,7 +116,7 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState('');
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: () => api.get('/sales/customers').then(r => r.data) });
   const { data: pricing } = useQuery({ queryKey: ['daily-price-today'], queryFn: () => api.get('/pricing/daily/today').then(r => r.data).catch(() => null) });
-  const [form, setForm] = useState({ customerId: '', eggType: 'STANDARD_EGGS' as EggItemType, requestedDate: dayjs().add(1, 'day').format('YYYY-MM-DD'), quantityTrays: 1, quantityEggs: 30, requiresDelivery: false, deliveryAddress: '', deliveryDate: '', notes: '' });
+  const [form, setForm] = useState({ customerId: '', eggType: 'STANDARD_EGGS' as EggItemType, requestedDate: dayjs().add(1, 'day').format('YYYY-MM-DD'), quantityEggs: 1, quantityEggs: 30, requiresDelivery: false, deliveryAddress: '', deliveryDate: '', notes: '' });
 
   function getPricePerEgg(et: EggItemType): number {
     if (!pricing) return 0;
@@ -130,7 +130,7 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
   const est = qty * peg;
 
   const createMutation = useMutation({
-    mutationFn: () => api.post('/bookings', { customerId: form.customerId, eggType: form.eggType, requestedDate: form.requestedDate, quantityTrays: Math.max(1, Math.ceil((form.quantityEggs ?? 30) / 30)), requiresDelivery: form.requiresDelivery, deliveryAddress: form.requiresDelivery ? form.deliveryAddress : undefined, deliveryDate: form.requiresDelivery && form.deliveryDate ? form.deliveryDate : undefined, notes: form.notes || undefined }),
+    mutationFn: () => api.post('/bookings', { customerId: form.customerId, eggType: form.eggType, requestedDate: form.requestedDate, quantityEggs: Math.max(1, Math.ceil((form.quantityEggs ?? 30) / 30)), requiresDelivery: form.requiresDelivery, deliveryAddress: form.requiresDelivery ? form.deliveryAddress : undefined, deliveryDate: form.requiresDelivery && form.deliveryDate ? form.deliveryDate : undefined, notes: form.notes || undefined }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['bookings'] }); qc.invalidateQueries({ queryKey: ['sales-stock'] }); onClose(); },
     onError: (err: any) => setError(err?.response?.data?.message ?? 'Failed to create booking.'),
   });
@@ -166,7 +166,7 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
               ))}
             </div></div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="text-xs text-gray-500 mb-1 block">Eggs *</label><input type="number" min="1" step="1" value={form.quantityEggs ?? 30} onChange={e => setForm(f => ({ ...f, quantityEggs: Math.max(1, parseInt(e.target.value) || 1) }))} className={iCls} /><p className="text-xs text-gray-400 mt-1">{Math.max(1, Math.ceil((form.quantityEggs ?? 30) / 30))} trays</p></div>
+            <div><label className="text-xs text-gray-500 mb-1 block">Eggs *</label><input type="number" min="1" step="1" value={form.quantityEggs ?? 30} onChange={e => setForm(f => ({ ...f, quantityEggs: Math.max(1, parseInt(e.target.value) || 1) }))} className={iCls} /><p className="text-xs text-gray-400 mt-1">{Math.max(1, Math.ceil((form.quantityEggs ?? 30) / 30))} eggs</p></div>
             <div><label className="text-xs text-gray-500 mb-1 block">Requested Date *</label><input type="date" value={form.requestedDate} onChange={e => setForm(f => ({ ...f, requestedDate: e.target.value }))} className={iCls} min={dayjs().format('YYYY-MM-DD')} required /></div>
           </div>
           {pricing ? (
@@ -221,10 +221,10 @@ export default function AdvanceBookingsPage() {
         <div><h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2"><BookOpen className="w-5 h-5 text-amber-500" /> Advance Bookings</h1><p className="text-xs text-gray-400 mt-0.5">Lock stock for customers in advance. Fulfil as an order when ready.</p></div>
         <button onClick={() => setShowForm(true)} className="flex items-center gap-2 bg-amber-500 text-white px-4 py-2 rounded-xl text-sm font-semibold"><Plus className="w-4 h-4" /> New Booking</button>
       </div>
-      {lockedStock && lockedStock.totalLockedTrays > 0 && (
+      {lockedStock && lockedStock.totalLockedEggs > 0 && (
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-2xl p-4">
           <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-1 uppercase tracking-wider">Locked Stock</p>
-          <p className="text-sm text-amber-800 dark:text-amber-300"><strong>{lockedStock.totalLockedTrays}</strong> trays ({lockedStock.totalLockedEggs} eggs) reserved across <strong>{lockedStock.activeBookings?.length ?? 0}</strong> active booking{lockedStock.activeBookings?.length !== 1 ? 's' : ''}</p>
+          <p className="text-sm text-amber-800 dark:text-amber-300"><strong>{lockedStock.totalLockedEggs}</strong> eggs ({lockedStock.totalLockedEggs} eggs) reserved across <strong>{lockedStock.activeBookings?.length ?? 0}</strong> active booking{lockedStock.activeBookings?.length !== 1 ? 's' : ''}</p>
         </div>
       )}
       <div className="flex flex-wrap gap-2">

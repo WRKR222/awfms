@@ -115,23 +115,17 @@ export default function StoreFeedDistribution() {
       <div className="flex gap-1 bg-gray-100 dark:bg-dark-card p-1 rounded-xl mb-5">
         <button
           onClick={() => setActiveTab('requests')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-colors ${activeTab === 'requests' ? 'bg-white dark:bg-dark-bg text-brand-green shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}
+          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-colors ${true ? 'bg-white dark:bg-dark-bg text-brand-green shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}
         >
           <Clock className="w-4 h-4" />
           Production Manager's Requests
           {pendingCount > 0 && <span className="bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">{pendingCount}</span>}
         </button>
-        <button
-          onClick={() => setActiveTab('manual')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-colors ${activeTab === 'manual' ? 'bg-white dark:bg-dark-bg text-brand-green shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}
-        >
-          <Package className="w-4 h-4" />
-          Manual Issue
-        </button>
+        
       </div>
 
       {/* Tab: Production Manager's Requests */}
-      {activeTab === 'requests' && (
+      {true && (
         <div className="space-y-3">
           {(feedRequests as any[]).length === 0 ? (
             <div className={`${cardCls} text-center py-10`}>
@@ -177,73 +171,7 @@ export default function StoreFeedDistribution() {
       )}
 
       {/* Tab: Manual Issue */}
-      {activeTab === 'manual' && (
-        <form
-          onSubmit={handleSubmit(d => submit.mutate({ ...d, houseId: selectedBatch?.houseId, quantityKg: Number(d.quantityKg) }))}
-          className="space-y-3"
-        >
-          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl p-3 flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-            <p className="text-xs text-amber-700 dark:text-amber-400">Use this for feed issues not linked to a manager request (e.g. emergency, top-up).</p>
-          </div>
-
-          <div className={cardCls + ' space-y-4'}>
-            <div>
-              <label className={lCls}>Batch *</label>
-              <select {...register('batchId', { required: true })} className={iCls}>
-                <option value="">Select batch...</option>
-                {batches.map((b: any) => <option key={b.id} value={b.id}>{b.batchCode} — {b.house?.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className={lCls}>Feed Type *</label>
-              <select {...register('feedType', { required: true })} className={iCls}>
-                {FEED_TYPES.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-              </select>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={lCls}>Quantity (kg) *</label>
-                <input
-                  {...register('quantityKg', { required: true, min: 0.1 })}
-                  type="number" min="0" step="0.1" inputMode="decimal"
-                  placeholder="0.0"
-                  className={`${iCls} text-center font-bold`}
-                />
-                {qty > 0 && <p className="text-xs text-brand-green mt-1 text-center font-medium">{qty} kg</p>}
-              </div>
-              <div>
-                <label className={lCls}>Date *</label>
-                <input {...register('distributionDate')} type="date" className={iCls} />
-              </div>
-            </div>
-            <div>
-              <label className={lCls}>Notes <span className="font-normal text-gray-400 normal-case">(optional)</span></label>
-              <input {...register('notes')} placeholder="Optional remarks..." className={iCls} />
-            </div>
-          </div>
-
-          {qty > 0 && selectedBatch && (
-            <div className="bg-brand-green/10 dark:bg-brand-green/20 rounded-xl p-3 flex items-center gap-3">
-              <Package className="w-5 h-5 text-brand-green flex-shrink-0" />
-              <div>
-                <p className="text-sm font-semibold text-brand-green">{qty} kg to {selectedBatch.batchCode}</p>
-                <p className="text-xs text-gray-500 dark:text-gray-400">{watch('feedType')?.replace(/_/g, ' ')} · {watch('distributionDate')}</p>
-              </div>
-            </div>
-          )}
-
-          {submit.isError && (
-            <p className="text-red-500 text-sm text-center bg-red-50 dark:bg-red-900/20 rounded-xl p-3">
-              {(submit.error as any)?.response?.data?.message ?? 'Submission failed. Please try again.'}
-            </p>
-          )}
-
-          <button type="submit" disabled={submit.isPending} className="w-full bg-brand-green text-white rounded-2xl py-3.5 text-sm font-bold shadow-lg disabled:opacity-60 hover:bg-green-800 transition-colors">
-            {submit.isPending ? 'Logging...' : 'Issue Feed →'}
-          </button>
-        </form>
-      )}
+      
     </div>
   );
 }

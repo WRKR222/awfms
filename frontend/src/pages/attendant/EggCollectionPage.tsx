@@ -26,6 +26,7 @@ import { api } from '../../lib/api/client';
 import { useOfflineMutation } from '../../hooks/useOfflineSync';
 import { useOfflineStore } from '../../stores/offline.store';
 import dayjs from 'dayjs';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { useFeedStock } from '../../hooks/useFeed';
 
 const inputCls  = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-base bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
