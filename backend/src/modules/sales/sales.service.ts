@@ -220,12 +220,24 @@ export class SalesService {
     });
 
     if (!latestTally) {
+      // Still return pricing even with no tally
+      const todayDate = new Date();
+      todayDate.setHours(0, 0, 0, 0);
+      const todayPricing = await this.prisma.dailyEggPrice.findUnique({
+        where: { priceDate: todayDate },
+      });
       return {
         standardEggs:      0,
         starterEggs:       0,
         nonConsumableEggs: 0,
         consumableEggs:    0,
         lastVerifiedDate:  null,
+        pricing: todayPricing ? {
+          pricePerEgg: Number(todayPricing.pricePerEgg),
+          pricePerEggStarter: Number((todayPricing as any).pricePerEggStarter ?? 0),
+          pricePerEggBroken: Number((todayPricing as any).pricePerEggBroken ?? 0),
+          priceDate: todayPricing.priceDate,
+        } : null,
       };
     }
 
@@ -234,12 +246,25 @@ export class SalesService {
       orderBy: { adjustmentDate: 'desc' },
     });
 
+    // Fetch today's pricing
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const pricing = await this.prisma.dailyEggPrice.findUnique({
+      where: { priceDate: today },
+    });
+
     return {
       standardEggs:      latestTally.finalGoodEggs      ?? latestTally.session?.totalGoodEggs    ?? 0,
       starterEggs:       latestTally.session?.totalStarterEggs ?? 0,
       nonConsumableEggs: latestAdj?.newNonConsumable ?? latestTally.session?.totalBrokenEggs ?? 0,
       consumableEggs:    latestAdj?.newConsumable    ?? 0,
       lastVerifiedDate:  latestTally.verificationDate,
+      pricing: pricing ? {
+        pricePerEgg: Number(pricing.pricePerEgg),
+        pricePerEggStarter: Number((pricing as any).pricePerEggStarter ?? 0),
+        pricePerEggBroken: Number((pricing as any).pricePerEggBroken ?? 0),
+        priceDate: pricing.priceDate,
+      } : null,
     };
   }
   // ── Customer management (update/delete) ──────────────────────────────────
