@@ -312,17 +312,17 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
       <div className="grid grid-cols-3 gap-2">
         <div className="rounded-xl bg-brand-green/5 dark:bg-brand-green/10 p-2.5 text-center">
           <Bird className="w-3.5 h-3.5 text-brand-green mx-auto mb-0.5" />
-          <p className="text-lg font-bold text-brand-green">
+          <p className="text-xl font-bold text-brand-green">
             {batch.currentBirdCount.toLocaleString()}
           </p>
           <p className="text-[9px] text-gray-400 uppercase tracking-wide">Live birds</p>
         </div>
         <div className="rounded-xl bg-gray-50 dark:bg-dark-bg p-2.5 text-center">
-          <p className="text-lg font-bold text-gray-700 dark:text-gray-300">{survivalRate}%</p>
+          <p className="text-xl font-bold text-gray-700 dark:text-gray-300">{survivalRate}%</p>
           <p className="text-[9px] text-gray-400 uppercase tracking-wide">Survival</p>
         </div>
         <div className="rounded-xl bg-gray-50 dark:bg-dark-bg p-2.5 text-center">
-          <p className="text-lg font-bold text-gray-700 dark:text-gray-300">{ageWeeks}wk</p>
+          <p className="text-xl font-bold text-gray-700 dark:text-gray-300">{ageWeeks}wk</p>
           <p className="text-[9px] text-gray-400 uppercase tracking-wide">Age</p>
         </div>
       </div>
@@ -438,7 +438,7 @@ export function BrooderPage() {
   );
 
   return (
-    <div className="p-4 md:p-8 max-w-3xl mx-auto space-y-5">
+    <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
       {/* Header */}
       <div>
         <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Brooder</h1>

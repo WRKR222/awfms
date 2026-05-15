@@ -145,7 +145,7 @@ export function VisitorManagementPage() {
   );
 
   return (
-    <div className="p-4 md:p-6 max-w-2xl mx-auto space-y-4">
+    <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -193,7 +193,7 @@ export function VisitorManagementPage() {
         logDone ? (
           <div className="bg-white dark:bg-gray-900 rounded-2xl p-8 flex flex-col items-center gap-4 text-center border border-gray-100 dark:border-gray-800">
             <CheckCircle className="w-14 h-14 text-brand-green" />
-            <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100">Visitor Logged In</h2>
+            <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Visitor Logged In</h2>
             <p className="text-sm text-gray-500">Biosecurity checks recorded.</p>
             <button onClick={() => { setForm(emptyForm()); setLogDone(false); }} className="px-5 py-2 bg-brand-green text-white rounded-xl text-sm font-medium">
               Log Another
@@ -367,7 +367,7 @@ export function VisitorManagementPage() {
           {advDone ? (
             <div className="bg-white dark:bg-gray-900 rounded-2xl p-8 flex flex-col items-center gap-4 text-center border border-gray-100 dark:border-gray-800">
               <CheckCircle className="w-14 h-14 text-brand-green" />
-              <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100">Notice Submitted</h2>
+              <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Notice Submitted</h2>
               <p className="text-sm text-gray-500">Director has been notified for approval.</p>
               <button onClick={() => { setAdvForm({ visitorName: '', organisation: '', purpose: '', expectedDate: dayjs().add(1, 'day').format('YYYY-MM-DD'), expectedCount: '1' }); setAdvDone(false); }} className="px-5 py-2 bg-brand-green text-white rounded-xl text-sm font-medium">
                 Add Another

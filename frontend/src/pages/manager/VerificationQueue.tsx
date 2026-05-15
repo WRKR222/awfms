@@ -702,7 +702,7 @@ export function VerificationQueue() {
   const totalPending = flockCount + eggCount;
 
   return (
-    <div className="p-4 md:p-8 max-w-4xl mx-auto space-y-5">
+    <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -718,44 +718,10 @@ export function VerificationQueue() {
         )}
       </div>
 
-      {/* Tab bar */}
-      <div className="flex gap-1 bg-gray-100 dark:bg-dark-card rounded-2xl p-1">
-        <button
-          onClick={() => setActiveTab('flock')}
-          className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold transition-all ${
-            activeTab === 'flock'
-              ? 'bg-white dark:bg-dark-surface text-gray-800 dark:text-gray-100 shadow-sm'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-          }`}
-        >
-          <Bird className="w-4 h-4" />
-          Flock Entries
-          {flockCount > 0 && (
-            <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${activeTab === 'flock' ? 'bg-amber-500 text-white' : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400'}`}>
-              {flockCount}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab('eggs')}
-          className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold transition-all ${
-            activeTab === 'eggs'
-              ? 'bg-white dark:bg-dark-surface text-gray-800 dark:text-gray-100 shadow-sm'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-          }`}
-        >
-          <Egg className="w-4 h-4" />
-          Egg Sessions
-          {eggCount > 0 && (
-            <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${activeTab === 'eggs' ? 'bg-brand-green text-white' : 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400'}`}>
-              {eggCount}
-            </span>
-          )}
-        </button>
-      </div>
+      
 
       {/* Tab content */}
-      {activeTab === 'flock' ? <FlockTab /> : <EggSessionsTab />}
+      
     </div>
   );
 }

@@ -98,6 +98,7 @@ export function ManagerCullingPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['health-events'] });
       qc.invalidateQueries({ queryKey: ['batches'] });
+      qc.invalidateQueries({ queryKey: ['cage-map'] });
       setSubmitted(true);
       reset();
       setTimeout(() => { setSubmitted(false); setShowForm(false); }, 2000);

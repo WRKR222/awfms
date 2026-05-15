@@ -237,9 +237,9 @@ export default function TallyVerificationPage() {
   const { data: tallies = [], isLoading } = usePendingTallies();
 
   return (
-    <div className="p-4 md:p-8 space-y-4 max-w-3xl mx-auto">
+    <div className="p-4 md:p-8 space-y-5 max-w-5xl mx-auto">
       <div>
-        <h1 className="text-lg font-bold text-gray-800 dark:text-gray-100">Tally Verification</h1>
+        <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Tally Verification</h1>
         <p className="text-xs text-gray-400 mt-0.5">Next-morning 3-party sign-off on previous day's PM egg tally</p>
       </div>
 
@@ -252,7 +252,7 @@ export default function TallyVerificationPage() {
           <p className="text-xs mt-1">All recent tallies have been verified</p>
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-5">
           {tallies.map(t => <TallyCard key={t.id} tally={t} />)}
         </div>
       )}
