@@ -123,19 +123,16 @@ export class ProductionService {
       totalDeformed: totals.totalDeformed,
       totalWeightKg: totals.totalWeightKg,
       totalGoodEggs: totals.totalGoodEggs,
-      // ── new aligned fields ──
-      totalStarterEggs: totals.totalStarter,
-      totalBrokenUnsellable: totals.totalBrokenUnsellable,
-      totalBrokenSellable: totals.totalBrokenSellable,
-      feedKg: dto.sessionFeed.feedKg,
-      feedTypeName: dto.sessionFeed.feedTypeName,
-      waterLiters: dto.environment.waterLiters,
-      houseTempC: dto.environment.houseTempC,
-      vaccinesGiven: dto.vaccinesGiven as any,
-      // ── legacy field aliases retained for read-side compatibility ──
-      dailyFeedKg: dto.sessionFeed.feedKg,
+      totalStarterEggs: totals.totalStarter ?? 0,
+      totalBrokenSellable: totals.totalBrokenSellable ?? 0,
+      totalBrokenUnsellable: totals.totalBrokenUnsellable ?? 0,
+      feedKg: dto.sessionFeed?.feedKg ?? null,
+      feedTypeName: dto.sessionFeed?.feedTypeName ?? null,
+      waterLiters: dto.environment?.waterLiters ?? null,
+      houseTempC: dto.environment?.houseTempC ?? null,
+      dailyFeedKg: dto.sessionFeed?.feedKg ?? null,
       vaccineGiven: (dto.vaccinesGiven ?? [])
-        .map(v => `${v.kind === 'VACCINE' ? '💉' : '🍃'} ${v.name} (${v.dosage})`)
+        .map((v: any) => (v.kind === 'VACCINE' ? 'V: ' : 'S: ') + v.name + ' (' + v.dosage + ')')
         .join('; ') || null,
       henDayPercent,
       remarks: dto.remarks ?? null,
