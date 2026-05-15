@@ -146,6 +146,27 @@ export class ProductionService {
         })
       : await this.prisma.eggCollectionSession.create({ data });
 
+    // Deduct feed from stock if feed was recorded
+    if (data.feedKg && data.feedTypeName) {
+      try {
+        const feedType = data.feedTypeName as any;
+        await this.prisma.feedIntakeLog.create({
+          data: {
+            batchId: dto.batchId,
+            houseId: dto.houseId,
+            feedType: feedType,
+            entryDate: new Date(dto.sessionDate),
+            quantityDispensedKg: Number(data.feedKg),
+            wastageKg: 0,
+            recommendedMinKg: 0,
+            recommendedMaxKg: 0,
+            notes: 'Logged from ' + dto.shift + ' egg collection session',
+            recordedById: user.id,
+          },
+        });
+      } catch (_) { /* best-effort feed deduction */ }
+    }
+
     // Forward vaccines/supplements to VaccinationRecord so the Production
     // Manager Health page surfaces them as a historical log.
     for (const v of (dto.vaccinesGiven ?? [])) {

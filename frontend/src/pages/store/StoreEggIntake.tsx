@@ -15,7 +15,7 @@ const inputCls = 'w-full border border-gray-200 dark:border-dark-border rounded-
 const numInput = 'w-full text-center border border-gray-200 dark:border-dark-border rounded-lg px-1 py-2 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
 const cardCls  = 'bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-dark-border';
 
-const DEFAULT_ROW_CODES = ['D1', 'D2', 'E1', 'E2', 'F1', 'F2'];
+const DEFAULT_ROW_CODES = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 
 interface IntakeRow {
   rowCode: string;

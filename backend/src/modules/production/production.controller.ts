@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RequirePermissionGuard } from '../../common/guards/require-permission.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
 import { ProductionService } from './production.service';
@@ -13,7 +13,7 @@ import type { CreateEggCollectionSessionDto as CreateEggCollectionDto } from './
 
 @ApiTags('production')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RequirePermissionGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller('production')
 export class ProductionController {
   constructor(private readonly svc: ProductionService) {}

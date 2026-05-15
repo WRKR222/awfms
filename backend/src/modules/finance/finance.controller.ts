@@ -8,7 +8,7 @@ import {
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RequirePermissionGuard } from '../../common/guards/require-permission.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
 import {
@@ -23,7 +23,7 @@ import { InvoiceStatus } from '@prisma/client';
 
 @ApiTags('finance')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RequirePermissionGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller('finance')
 export class FinanceController {
   constructor(
