@@ -19,18 +19,42 @@ import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  ArrowLeft, CheckCircle, Egg, AlertCircle, WifiOff, ChevronDown,
+  CheckCircle, Egg, AlertCircle, WifiOff, ChevronDown,
   Droplet, Thermometer, Wheat, Syringe, Plus, X,
 } from 'lucide-react';
 import { api } from '../../lib/api/client';
 import { useOfflineMutation } from '../../hooks/useOfflineSync';
 import { useOfflineStore } from '../../stores/offline.store';
 import dayjs from 'dayjs';
+import { useFeedStock } from '../../hooks/useFeed';
 
 const inputCls  = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-base bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
 const numInput  = 'w-full text-center border border-gray-200 dark:border-dark-border rounded-lg px-1 py-2 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
 const cardCls   = 'bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-dark-border';
 const sectionLbl = 'text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3';
+
+
+// Feed type dropdown — shows only types with stock in Feed Hub
+function FeedTypeDropdown({ register, fieldName }: { register: any; fieldName: string }) {
+  const { data: stockData } = useFeedStock();
+  const feedTypes = stockData
+    ? Object.entries(stockData as Record<string, any>)
+        .filter(([, s]) => s.currentStockKg > 0)
+        .map(([key, s]) => ({ value: key, label: key.replace(/_/g, ' '), stock: s.currentStockKg }))
+    : [];
+
+  return (
+    <select {...register(fieldName)} className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100">
+      <option value="">Select feed type...</option>
+      {feedTypes.length === 0 && <option disabled>No feed in stock</option>}
+      {feedTypes.map(o => (
+        <option key={o.value} value={o.value}>
+          {o.label} ({Math.round(o.stock)} kg in stock)
+        </option>
+      ))}
+    </select>
+  );
+}
 
 function eggsToTrays(eggs: number): string {
   const trays = Math.floor(eggs / 30);
@@ -206,7 +230,7 @@ export function EggCollectionPage() {
 
   if (submitted) {
     return (
-      <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-lg mx-auto mt-20">
+      <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-20">
         {wasQueued ? (
           <>
             <WifiOff className="w-16 h-16 text-amber-500 mb-4" />
@@ -238,12 +262,7 @@ export function EggCollectionPage() {
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto pb-10 space-y-4">
       <div className="flex items-center gap-3 mb-1">
-        <button
-          onClick={() => navigate('/attendant')}
-          className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-card transition-colors"
-        >
-          <ArrowLeft className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-        </button>
+        
         <div>
           <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
             <Egg className="w-5 h-5 text-amber-500" /> Egg Collection
@@ -459,7 +478,7 @@ export function EggCollectionPage() {
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Feed Type Given</label>
-              <input {...register('feedTypeName')} type="text" className={inputCls} placeholder="e.g. Layers Mash, Kenchic Layer" />
+              <FeedTypeDropdown register={register} fieldName="feedTypeName" />
             </div>
           </div>
           <p className="text-[11px] text-gray-400 mt-2">

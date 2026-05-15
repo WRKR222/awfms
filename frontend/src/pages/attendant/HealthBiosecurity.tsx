@@ -308,7 +308,7 @@ export function HealthBiosecurity() {
   const { data: batches = [] } = useBatches({ isActive: true });
 
   return (
-    <div className="p-4 md:p-8 max-w-4xl mx-auto space-y-5">
+    <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
       <div>
         <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Vaccinations</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
