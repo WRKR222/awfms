@@ -111,7 +111,6 @@ export class ProductionService {
       houseId: dto.houseId,
       sessionDate: new Date(dto.sessionDate),
       shift: dto.shift,
-      block: 'BLOCK1',
       collectedById: user.id,
       openingPop: dto.openingPop,
       mortalities: dto.mortalities,
