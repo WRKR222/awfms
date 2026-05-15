@@ -862,6 +862,7 @@ model SalesOrderItem {
   itemType      String   @map("item_type")
   grade         String?
   quantityTrays Int?     @map("quantity_trays")
+  quantityEggs  Int?     @map("quantity_eggs")
   quantityKg    Decimal? @map("quantity_kg") @db.Decimal(8, 2)
   unitPrice     Decimal  @map("unit_price") @db.Decimal(10, 2)
   subtotal      Decimal  @db.Decimal(12, 2)
