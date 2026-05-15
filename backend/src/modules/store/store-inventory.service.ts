@@ -278,23 +278,7 @@ export class StoreInventoryService {
         data: { currentStock: { decrement: dto.quantityOut } },
       });
 
-      
-    // Notify recipient role about the issuance
-    if (dto.recipientRole && dto.recipientRole !== 'OTHER') {
-      const role = dto.recipientRole as any;
-      const validRoles = Object.values(UserRole);
-      if (validRoles.includes(role)) {
-        const itemName = item.name;
-        await this.notifications.notifyRole(
-          role,
-          NotificationType.SYSTEM,
-          `Stock Issued — ${itemName}`,
-          \`Store has issued ${dto.quantityOut} ${item.unit} of ${itemName} to you.\${dto.purpose ? ' Purpose: ' + dto.purpose : ''}\`,
-        ).catch(() => {});
-      }
-    }
-
-return { stockOut: so, updatedItem: ui };
+      return { stockOut: so, updatedItem: ui };
     });
 
     // ── GAP-05: Reorder-level alert ──────────────────────────────────────────
