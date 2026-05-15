@@ -5,7 +5,7 @@ export function useFeedStock() {
   return useQuery({
     queryKey: ['feed', 'stock'],
     queryFn: () => api.get('/feed/stock').then(r => r.data),
-    refetchInterval: 5 * 60 * 1000,
+    refetchInterval: 30_000, // 30 seconds — picks up Store issue quickly
   });
 }
 

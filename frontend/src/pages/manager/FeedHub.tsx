@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -369,14 +369,31 @@ export function FeedHub() {
   const { data: stockData, isLoading: stockLoading } = useFeedStock();
 
   // Low stock alert threshold (days)
-  const { data: thresholdConfig } = useQuery({
+  const qc = useQueryClient();
+
+  // Load saved threshold from backend
+  const { data: thresholdConfig } = useQuery<{ days: number }>({
     queryKey: ['feed', 'alert-threshold'],
-    queryFn: () => api.get('/feed/stock').then(() => null).catch(() => null),
+    queryFn: () => api.get('/feed/alert-threshold').then(r => r.data).catch(() => ({ days: 3 })),
     staleTime: 300_000,
   });
   const [alertDays, setAlertDays] = useState(3);
+  const [thresholdSaved, setThresholdSaved] = useState(false);
+
+  // Sync local state when backend value loads
+  React.useEffect(() => {
+    if (thresholdConfig?.days) setAlertDays(thresholdConfig.days);
+  }, [thresholdConfig]);
+
   const updateThreshold = useMutation({
-    mutationFn: (days: number) => api.patch('/feed/alert-threshold', { days }).then(r => r.data).catch(() => null),
+    mutationFn: (days: number) => api.patch('/feed/alert-threshold', { days }).then(r => r.data),
+    onSuccess: () => {
+      // Refresh stock data (recalculates isLow with new threshold)
+      qc.invalidateQueries({ queryKey: ['feed', 'stock'] });
+      qc.invalidateQueries({ queryKey: ['feed', 'alert-threshold'] });
+      setThresholdSaved(true);
+      setTimeout(() => setThresholdSaved(false), 3000);
+    },
   });
   const { data: deliveries = [], isLoading: deliveriesLoading } = useQuery({
     queryKey: ['feed', 'deliveries', deliveryDays],
@@ -466,7 +483,7 @@ export function FeedHub() {
             disabled={updateThreshold.isPending}
             className="px-3 py-2 bg-brand-green text-white rounded-xl text-xs font-semibold hover:bg-brand-mid transition-colors disabled:opacity-60"
           >
-            {updateThreshold.isPending ? '...' : 'Save'}
+            {updateThreshold.isPending ? '...' : thresholdSaved ? '✓ Saved' : 'Save'}
           </button>
         </div>
       </div>
@@ -496,9 +513,19 @@ export function FeedHub() {
       {/* ── Delivery history ── */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">
-            Feed Requests (Issued by Stores)
-          </p>
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">
+              Feed Deliveries & Store Issues
+            </p>
+            <button
+              onClick={() => {
+                qc.invalidateQueries({ queryKey: ['feed'] });
+              }}
+              className="text-[10px] text-brand-green font-semibold hover:underline"
+            >
+              ↻ Refresh
+            </button>
+          </div>
           <div className="flex gap-1">
             {[7, 30, 90].map(d => (
               <button

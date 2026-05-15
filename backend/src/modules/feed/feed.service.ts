@@ -109,6 +109,7 @@ export class FeedService {
 
   async getCurrentStock(feedType?: FeedType) {
     const feedTypes = feedType ? [feedType] : Object.values(FeedType);
+    const threshold = await this.getAlertThreshold();
     const results: Record<string, any> = {};
 
     for (const ft of feedTypes) {
@@ -143,7 +144,7 @@ export class FeedService {
         currentStockKg: currentStock,
         avgDailyUsageKg: avgDailyUsage,
         daysRemaining: Math.round(daysRemaining * 10) / 10,
-        isLow: daysRemaining <= 3,
+        isLow: daysRemaining <= threshold,
       };
     }
     return results;
