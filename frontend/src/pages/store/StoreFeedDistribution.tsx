@@ -1,8 +1,8 @@
-import { useState } , useState } from 'react';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, CheckCircle, Truck, Package, Clock, AlertCircle, Send , AlertTriangle } from 'lucide-react';
+import { ArrowLeft, CheckCircle, Truck, Package, Clock, AlertCircle, Send, AlertTriangle } from 'lucide-react';
 import api from '../../lib/api/client';
 import dayjs from 'dayjs';
 
@@ -46,25 +46,16 @@ export default function StoreFeedDistribution() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['feed'] }); },
   });
 
-  const [issuingId, setIssuingId] = useState<string | null>(null);
-  const [issueQty, setIssueQty] = useState('');
   const [showPRPrompt, setShowPRPrompt] = useState(false);
 
   const issueRequest = useMutation({
-    mutationFn: ({ requestId, quantityKg }: { requestId: string; quantityKg?: number }) =>
-      api.patch(`/feed/requests/${requestId}/issue`, {
-        issuedAt: new Date().toISOString(),
-        quantityKg: quantityKg ?? undefined,
-      }).then(r => r.data),
+    mutationFn: (requestId: string) => api.patch(`/feed/requests/${requestId}/issue`, { issuedAt: new Date().toISOString() }).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['feed-requests'] });
       qc.invalidateQueries({ queryKey: ['feed'] });
       qc.invalidateQueries({ queryKey: ['store-items'] });
-      // Check if stock went low after issuance — prompt purchase request
       setShowPRPrompt(true);
       setTimeout(() => setShowPRPrompt(false), 8000);
-      setIssuingId(null);
-      setIssueQty('');
     },
   });
 
