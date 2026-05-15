@@ -108,15 +108,18 @@ export function PurchaseRequestsTab() {
                     </select>
                   </div>
                   <div className="col-span-4 md:col-span-2">
-                    <input type="number" step="any" placeholder="Qty"
+                    <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-0.5 uppercase">Quantity *</label>
+                    <input type="number" step="any" placeholder="e.g. 50"
                       {...register(`items.${idx}.quantityRequested` as const, { required: true })} className="input" />
                   </div>
                   <div className="col-span-4 md:col-span-2">
-                    <input type="number" step="any" placeholder="Est. Unit"
+                    <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-0.5 uppercase">Est. Cost/Unit (KES)</label>
+                    <input type="number" step="any" placeholder="e.g. 120"
                       {...register(`items.${idx}.estimatedUnitCost` as const)} className="input" />
                   </div>
                   <div className="col-span-3 md:col-span-2">
-                    <input placeholder="Reason" {...register(`items.${idx}.reason` as const)} className="input" />
+                    <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-0.5 uppercase">Reason</label>
+                    <input placeholder="e.g. Low stock" {...register(`items.${idx}.reason` as const)} className="input" />
                   </div>
                   <div className="col-span-1 flex items-center justify-center pt-2">
                     {fields.length > 1 && (

@@ -17,6 +17,7 @@ type FormData = {
   description?: string;
   reorderLevel?: number;
   unitCostKes?: number;
+  expiryDate?: string;
 };
 
 export function ItemsTab() {
@@ -85,7 +86,7 @@ export function ItemsTab() {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search name or SKU"
+            placeholder="Search name or Item Code"
             className="w-full pl-9 pr-3 py-2 rounded-xl text-sm border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800"
           />
         </div>
@@ -106,7 +107,7 @@ export function ItemsTab() {
             <Field label="Name *" error={errors.name?.message}>
               <input {...register('name', { required: 'Required' })} className="input" />
             </Field>
-            <Field label="SKU *" error={errors.sku?.message}>
+            <Field label="Item Code *" error={errors.sku?.message}>
               <input {...register('sku', { required: 'Required' })} disabled={!!editing} className="input disabled:opacity-60" />
             </Field>
             <Field label="Category *">
@@ -126,6 +127,9 @@ export function ItemsTab() {
             </Field>
             <Field label="Unit Cost (KES)">
               <input type="number" step="any" {...register('unitCostKes')} className="input" />
+            </Field>
+            <Field label="Expiry Date (if applicable)">
+              <input type="date" {...register('expiryDate')} className="input" />
             </Field>
             <div className="md:col-span-2">
               <Field label="Description">
@@ -163,7 +167,7 @@ export function ItemsTab() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 dark:bg-gray-800 text-gray-500 text-xs uppercase">
                 <tr>
-                  <th className="text-left px-4 py-2">SKU</th>
+                  <th className="text-left px-4 py-2">Item Code</th>
                   <th className="text-left px-4 py-2">Name</th>
                   <th className="text-left px-4 py-2">Category</th>
                   <th className="text-right px-4 py-2">Stock</th>
