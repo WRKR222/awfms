@@ -21,26 +21,14 @@ function FeedTypeSelect({ register }: { register: any }) {
         .map(([key, s]) => ({ value: key, label: key.replace(/_/g, ' '), stock: s.currentStockKg }))
     : [];
 
-  const allFeedTypes = [
-    { value: 'CHICK_MASH', label: 'Chick Mash' },
-    { value: 'GROWER_MASH', label: 'Grower Mash' },
-    { value: 'LAYER_MASH', label: 'Layer Mash' },
-    { value: 'KIENYEJI_STARTER', label: 'Kienyeji Starter' },
-    { value: 'KIENYEJI_GROWER', label: 'Kienyeji Grower' },
-    { value: 'KIENYEJI_FINISHER', label: 'Kienyeji Finisher' },
-  ];
-
-  const options = allFeedTypes.map(ft => {
-    const inStock = feedTypes.find(f => f.value === ft.value);
-    return { ...ft, stock: inStock?.stock ?? 0, available: !!inStock };
-  });
-
+  // Only show feed types that exist in the Feed Hub (have stock)
   return (
     <select {...register('feedType')} className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100">
       <option value="">Select feed type...</option>
-      {options.map(o => (
-        <option key={o.value} value={o.value} disabled={!o.available}>
-          {o.label}{o.available ? ' (' + Math.round(o.stock) + ' kg in stock)' : ' (no stock)'}
+      {feedTypes.length === 0 && <option disabled>No feed in stock — add via Feed Hub</option>}
+      {feedTypes.map(o => (
+        <option key={o.value} value={o.value}>
+          {o.label} ({Math.round(o.stock)} kg in stock)
         </option>
       ))}
     </select>

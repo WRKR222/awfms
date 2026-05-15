@@ -116,7 +116,7 @@ export function ManagerHome() {
           <div className="flex flex-wrap gap-2">
             {lowFeedAlerts.map((s: any) => (
               <span key={s.feedType} className="bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 text-xs px-3 py-1 rounded-full font-medium">
-                {s.feedType.replace(/_/g, ' ')} — {s.daysRemaining}d left
+                {s.feedType.replace(/_/g, ' ')} — {Math.round(s.currentStockKg)} kg remaining
               </span>
             ))}
           </div>

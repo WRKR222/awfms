@@ -110,8 +110,26 @@ export class BatchLifecycleService {
       });
 
       // When moving to PRODUCTION, write row assignments
+      // rowPlacements may contain rowCode strings (e.g. "A1") instead of UUIDs
+      // Resolve them to actual FarmRow IDs
       if (newStage === BatchStage.PRODUCTION && rowPlacements?.length) {
-        for (const placement of rowPlacements) {
+        // Check if first rowId looks like a UUID or a rowCode
+        const isRowCode = rowPlacements[0]?.rowId && !rowPlacements[0].rowId.includes('-');
+        
+        let resolvedPlacements = rowPlacements;
+        if (isRowCode) {
+          const rowCodes = rowPlacements.map(p => p.rowId);
+          const rows = await tx.farmRow.findMany({
+            where: { rowCode: { in: rowCodes } },
+            select: { id: true, rowCode: true },
+          });
+          const rowIdByCode = Object.fromEntries(rows.map(r => [r.rowCode, r.id]));
+          resolvedPlacements = rowPlacements
+            .map(p => ({ ...p, rowId: rowIdByCode[p.rowId] ?? p.rowId }))
+            .filter(p => p.rowId); // skip unresolved
+        }
+
+        for (const placement of resolvedPlacements) {
           await tx.batchCageAssignment.upsert({
             where: { rowId: placement.rowId },
             create: {

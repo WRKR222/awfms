@@ -139,13 +139,16 @@ export class FeedService {
 
       const daysRemaining = avgDailyUsage > 0 ? currentStock / avgDailyUsage : 999;
 
-      results[ft] = {
-        feedType: ft,
-        currentStockKg: currentStock,
-        avgDailyUsageKg: avgDailyUsage,
-        daysRemaining: Math.round(daysRemaining * 10) / 10,
-        isLow: currentStock <= threshold,  // threshold is now in kg
-      };
+      // Only include feed types that actually exist on the farm (have deliveries or usage)
+      if (totalDelivered > 0 || totalUsed > 0) {
+        results[ft] = {
+          feedType: ft,
+          currentStockKg: currentStock,
+          avgDailyUsageKg: avgDailyUsage,
+          daysRemaining: Math.round(daysRemaining * 10) / 10,
+          isLow: currentStock <= threshold,  // threshold is in kg
+        };
+      }
     }
     return results;
   }
