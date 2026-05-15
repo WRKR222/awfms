@@ -73,7 +73,7 @@ function BookingCard({ booking, onConfirm, onCancel, onFulfill }: {
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Customer</p><p className="font-semibold text-gray-700 dark:text-gray-300">{booking.customer?.name}</p>{booking.customer?.phone && <p className="text-gray-400">{booking.customer.phone}</p>}</div>
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Egg Type</p><p className="font-semibold text-gray-700 dark:text-gray-300">{eggLabel}</p></div>
-            <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Quantity</p><p className="font-semibold text-gray-700 dark:text-gray-300">{booking.quantityEggs} eggs ({booking.quantityTrays} eggs)</p><p className="text-gray-400 mt-0.5">{fmtKES(booking.pricePerEggKes)}/egg</p></div>
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Quantity</p><p className="font-semibold text-gray-700 dark:text-gray-300">{booking.quantityEggs} eggs ({booking.quantityEggs} eggs)</p><p className="text-gray-400 mt-0.5">{fmtKES(booking.pricePerEggKes)}/egg</p></div>
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2"><p className="text-gray-400">Est. Total</p><p className="font-semibold text-brand-green">{fmtKES(booking.estimatedTotal)}</p></div>
           </div>
           {booking.notes && <p className="text-xs text-gray-500 dark:text-gray-400 italic bg-gray-50 dark:bg-gray-800 rounded-xl px-3 py-2">{booking.notes}</p>}

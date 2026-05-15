@@ -81,7 +81,7 @@ export class BookingsService {
 
   private async _notifyStockLocked(booking: any) {
     const targets = await this.prisma.user.findMany({
-      where: { role: { in: ['STORE', 'MANAGER', 'OWNER'] }, isActive: true },
+      where: { role: { in: ['STORE'] }, isActive: true },
       select: { id: true },
     });
 
@@ -150,7 +150,7 @@ export class BookingsService {
     });
 
     const targets = await this.prisma.user.findMany({
-      where: { role: { in: ['STORE', 'MANAGER', 'OWNER'] }, isActive: true },
+      where: { role: { in: ['STORE'] }, isActive: true },
       select: { id: true },
     });
     for (const t of targets) {
@@ -235,7 +235,7 @@ export class BookingsService {
 
     // Notify Manager and Owner
     const targets = await this.prisma.user.findMany({
-      where: { role: { in: ['MANAGER', 'OWNER'] }, isActive: true },
+      where: { role: { in: ['STORE'] }, isActive: true },
       select: { id: true },
     });
     for (const t of targets) {

@@ -112,17 +112,7 @@ export default function StoreFeedDistribution() {
       </div>
 
       {/* Tab switcher */}
-      <div className="flex gap-1 bg-gray-100 dark:bg-dark-card p-1 rounded-xl mb-5">
-        <button
-          onClick={() => setActiveTab('requests')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold transition-colors ${true ? 'bg-white dark:bg-dark-bg text-brand-green shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}
-        >
-          <Clock className="w-4 h-4" />
-          Production Manager's Requests
-          {pendingCount > 0 && <span className="bg-red-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full">{pendingCount}</span>}
-        </button>
-        
-      </div>
+      
 
       {/* Tab: Production Manager's Requests */}
       {true && (

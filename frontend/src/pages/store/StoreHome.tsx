@@ -63,7 +63,7 @@ export default function StoreHome() {
           <Lock className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
           <div>
             <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
-              {summary.totalLockedTrays} trays locked for advance bookings
+              {summary.totalLockedTrays} eggs locked for advance bookings
             </p>
             <p className="text-xs text-amber-500 dark:text-amber-500 mt-0.5">
               Do not dispatch these eggs without Sales Person confirmation.
