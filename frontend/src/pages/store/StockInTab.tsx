@@ -17,6 +17,7 @@ type FormData = {
   invoiceRef?: string;
   lpoId?: string;
   notes?: string;
+  expiryDate?: string;
 };
 
 // Shape returned by GET /store/inventory/lpos
@@ -136,6 +137,10 @@ export function StockInTab() {
                   </option>
                 ))}
               </select>
+            </Field>
+
+            <Field label="Expiry Date (if applicable)">
+              <input type="date" {...register('expiryDate')} className="input" />
             </Field>
 
             <Field label="Supplier Name">

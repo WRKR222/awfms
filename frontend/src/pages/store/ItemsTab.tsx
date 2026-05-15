@@ -6,8 +6,27 @@ import { Plus, Search, AlertTriangle, Pencil } from 'lucide-react';
 import { api } from '../../lib/api/client';
 import { fmtKES, useStoreItems, type StoreItem } from './_shared';
 
-const CATEGORIES = ['FEED', 'MEDICATION', 'EQUIPMENT', 'CONSUMABLES', 'PACKAGING', 'OTHER'];
-const UNITS = ['KG', 'LITRES', 'BAGS', 'PIECES', 'BOXES', 'METERS', 'TRAYS'];
+const CATEGORIES = [
+  { value: 'MEDICATION',      label: 'Medication' },
+  { value: 'EQUIPMENT',       label: 'Equipment' },
+  { value: 'FEED_SUPPLEMENT', label: 'Feed / Feed Supplement' },
+  { value: 'PACKAGING',       label: 'Packaging' },
+  { value: 'CLEANING',        label: 'Cleaning' },
+  { value: 'SAFETY',          label: 'Safety' },
+  { value: 'OTHER',           label: 'Other' },
+];
+const UNITS = [
+  { value: 'KG',     label: 'Kilograms (kg)' },
+  { value: 'G',      label: 'Grams (g)' },
+  { value: 'L',      label: 'Litres (L)' },
+  { value: 'ML',     label: 'Millilitres (mL)' },
+  { value: 'PIECE',  label: 'Pieces' },
+  { value: 'BOX',    label: 'Boxes' },
+  { value: 'BAG',    label: 'Bags' },
+  { value: 'BOTTLE', label: 'Bottles' },
+  { value: 'SACHET', label: 'Sachets' },
+  { value: 'TRAY',   label: 'Trays' },
+];
 
 type FormData = {
   name: string;
@@ -17,7 +36,6 @@ type FormData = {
   description?: string;
   reorderLevel?: number;
   unitCostKes?: number;
-  expiryDate?: string;
 };
 
 export function ItemsTab() {
@@ -96,7 +114,7 @@ export function ItemsTab() {
           className="rounded-xl text-sm border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 px-3 py-2"
         >
           <option value="">All categories</option>
-          {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          {CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
       </div>
 
@@ -113,13 +131,13 @@ export function ItemsTab() {
             <Field label="Category *">
               <select {...register('category', { required: true })} className="input">
                 <option value="">Select…</option>
-                {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                {CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
               </select>
             </Field>
             <Field label="Unit *">
               <select {...register('unit', { required: true })} className="input">
                 <option value="">Select…</option>
-                {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                {UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
               </select>
             </Field>
             <Field label="Reorder Level">
@@ -128,9 +146,7 @@ export function ItemsTab() {
             <Field label="Unit Cost (KES)">
               <input type="number" step="any" {...register('unitCostKes')} className="input" />
             </Field>
-            <Field label="Expiry Date (if applicable)">
-              <input type="date" {...register('expiryDate')} className="input" />
-            </Field>
+
             <div className="md:col-span-2">
               <Field label="Description">
                 <textarea {...register('description')} rows={2} className="input" />
