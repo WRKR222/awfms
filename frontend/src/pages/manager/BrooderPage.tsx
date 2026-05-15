@@ -11,6 +11,42 @@ import {
 } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+// Feed type dropdown — shows only types with stock in Feed Hub
+function FeedTypeSelect({ register }: { register: any }) {
+  const { data: stockData } = useFeedStock();
+  const feedTypes = stockData
+    ? Object.entries(stockData as Record<string, any>)
+        .filter(([, s]) => s.currentStockKg > 0)
+        .map(([key, s]) => ({ value: key, label: key.replace(/_/g, ' '), stock: s.currentStockKg }))
+    : [];
+
+  const allFeedTypes = [
+    { value: 'CHICK_MASH', label: 'Chick Mash' },
+    { value: 'GROWER_MASH', label: 'Grower Mash' },
+    { value: 'LAYER_MASH', label: 'Layer Mash' },
+    { value: 'KIENYEJI_STARTER', label: 'Kienyeji Starter' },
+    { value: 'KIENYEJI_GROWER', label: 'Kienyeji Grower' },
+    { value: 'KIENYEJI_FINISHER', label: 'Kienyeji Finisher' },
+  ];
+
+  const options = allFeedTypes.map(ft => {
+    const inStock = feedTypes.find(f => f.value === ft.value);
+    return { ...ft, stock: inStock?.stock ?? 0, available: !!inStock };
+  });
+
+  return (
+    <select {...register('feedType')} className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100">
+      <option value="">Select feed type...</option>
+      {options.map(o => (
+        <option key={o.value} value={o.value} disabled={!o.available}>
+          {o.label}{o.available ? ' (' + Math.round(o.stock) + ' kg in stock)' : ' (no stock)'}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 interface BrooderBatch {
   id: string;
   batchCode: string;
