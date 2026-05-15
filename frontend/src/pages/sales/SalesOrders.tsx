@@ -313,7 +313,7 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
                       </div>
                       <div className="w-32">
                         <label className="text-xs text-gray-500 mb-1 block">Quantity (eggs)</label>
-                        <input type="number" min="1" value={item.quantityEggs} onChange={e => updateItem(idx, 'quantityEggs', Math.max(1, parseInt(e.target.value) || 1))} className={iCls} />
+                        <input type="number" min="1" value={item.quantityEggs} onChange={e => updateItem(idx, 'quantityEggs', parseInt(e.target.value) || 0)} className={iCls} />
                       </div>
                       {form.items.length > 1 && <button type="button" onClick={() => removeItem(idx)} className="mt-5 text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>}
                     </div>
