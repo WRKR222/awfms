@@ -104,6 +104,19 @@ export class StoreInventoryService {
     private readonly notifications: NotificationsService,
   ) {}
 
+
+  // Map role codes to human-readable labels for stock out records
+  private readonly ROLE_LABELS: Record<string, string> = {
+    MANAGER: 'Production Manager',
+    ATTENDANT: 'Lead Attendant',
+    SALES: 'Sales',
+    ACCOUNTANT: 'Accountant',
+    STORE: 'Store',
+    SECURITY1: 'Security (Main Gate)',
+    SECURITY2: 'Security (Farm Gate)',
+    OWNER: 'Director',
+  };
+
   // ── Ref generators ──────────────────────────────────────────────────────────
 
   private async generateRequestRef(): Promise<string> {
@@ -264,7 +277,7 @@ export class StoreInventoryService {
           quantityOut:     dto.quantityOut,
           unitCostKes:     item.unitCostKes,
           totalCostKes,
-          issuedToName:    dto.issuedToName ?? null,    // GAP-04
+          issuedToName:    dto.recipientRole ? (this.ROLE_LABELS[dto.recipientRole] ?? dto.otherRecipient ?? dto.recipientRole) : (dto.issuedToName ?? null),
           issuedToHouseId: dto.issuedToHouseId ?? null,
           issuedToBatchId: dto.issuedToBatchId ?? null,
           purpose:         dto.purpose ?? null,

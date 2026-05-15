@@ -41,6 +41,7 @@ export function StockOutTab() {
   const { data: houses  = [] } = useHouses();
   const { data: batches = [] } = useBatches();
   const [showForm, setShowForm] = useState(false);
+  const [search, setSearch] = useState('');
 
   const { register, handleSubmit, reset, control, watch } = useForm<FormData>({
     defaultValues: { issuedDate: dayjs().format('YYYY-MM-DD') },
@@ -209,7 +210,7 @@ export function StockOutTab() {
                 </tr>
               </thead>
               <tbody>
-                {list.map(r => (
+                {list.filter((r: any) => !search || (r.storeItem?.name + ' ' + r.storeItem?.sku + ' ' + (r.issuedToName ?? '')).toLowerCase().includes(search.toLowerCase())).map((r: any) => (
                   <tr key={r.id} className="border-t border-gray-100 dark:border-dark-border hover:bg-gray-50 dark:hover:bg-gray-800/50">
                     <td className="px-4 py-2 whitespace-nowrap">{dayjs(r.issuedDate).format('DD/MM/YYYY')}</td>
                     <td className="px-4 py-2 font-medium">
@@ -217,7 +218,7 @@ export function StockOutTab() {
                     </td>
                     <td className="px-4 py-2 text-right">{Number(r.quantityOut)} {r.storeItem?.unit}</td>
                     <td className="px-4 py-2 text-right">{fmtKES(r.totalCostKes)}</td>
-                    <td className="px-4 py-2 text-gray-600">{r.issuedToName ?? '—'}</td>
+                    <td className="px-4 py-2 text-gray-600">{r.issuedToName ?? r.purpose ?? '—'}</td>
                     <td className="px-4 py-2 text-gray-600">{r.purpose ?? '—'}</td>
                     <td className="px-4 py-2 text-gray-600">{r.issuedBy?.fullName ?? '—'}</td>
                   </tr>

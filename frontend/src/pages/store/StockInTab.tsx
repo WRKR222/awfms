@@ -32,6 +32,7 @@ export function StockInTab() {
   const qc = useQueryClient();
   const { data: items = [] } = useStoreItems(true);
   const [showForm, setShowForm] = useState(false);
+  const [search, setSearch] = useState('');
   const { register, handleSubmit, reset, control } = useForm<FormData>({
     defaultValues: { receivedDate: dayjs().format('YYYY-MM-DD') },
   });
@@ -187,7 +188,7 @@ export function StockInTab() {
                 </tr>
               </thead>
               <tbody>
-                {list.map(r => (
+                {list.filter((r: any) => !search || (r.storeItem?.name + ' ' + r.storeItem?.sku + ' ' + (r.supplierName ?? '')).toLowerCase().includes(search.toLowerCase())).map((r: any) => (
                   <tr key={r.id} className="border-t border-gray-100 dark:border-dark-border hover:bg-gray-50 dark:hover:bg-gray-800/50">
                     <td className="px-4 py-2 whitespace-nowrap">{dayjs(r.receivedDate).format('DD/MM/YYYY')}</td>
                     <td className="px-4 py-2 font-medium">{r.storeItem?.name} <span className="text-gray-400 text-xs">{r.storeItem?.sku}</span></td>

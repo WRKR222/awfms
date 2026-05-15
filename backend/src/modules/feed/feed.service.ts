@@ -299,6 +299,14 @@ export class FeedService {
         requestedById: userId,
       },
     });
+    // Notify Store role about the new feed request
+    await this.notifications.notifyRole(
+      UserRole.STORE,
+      NotificationType.SYSTEM,
+      'Feed Request from Production Manager',
+      'PM has requested ' + String(Number(input.quantityKg ?? 0)) + ' kg of ' + String(input.feedType ?? 'feed') + ' (Ref: ' + record.requestRef + ').',
+    ).catch(() => {});
+
     return {
       id: record.id,
       requestRef: record.requestRef,
@@ -330,8 +338,10 @@ export class FeedService {
     }).catch(() => ({ id, status: 'FULFILLED' }));
 
     // Create a feed delivery record so PM's stock gauge updates
+    // Normalize free-text feed type to enum (e.g. "Layer Mash" → "LAYER_MASH")
+    const normalized = feedType.toUpperCase().replace(/\s+/g, '_');
     const feedTypeEnum = Object.values(FeedType).find(
-      ft => ft === feedType || ft.toLowerCase() === feedType.toLowerCase()
+      ft => ft === feedType || ft === normalized || ft.toLowerCase() === feedType.toLowerCase()
     );
     if (feedTypeEnum && issuedQuantity > 0) {
       await this.prisma.feedDelivery.create({
