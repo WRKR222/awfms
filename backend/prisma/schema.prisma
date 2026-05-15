@@ -1257,6 +1257,7 @@ model StoreStockIn {
   lpoId         String?  @map("lpo_id")
   notes         String?
   receivedById  String   @map("received_by_id")
+  expiryDate    DateTime? @map("expiry_date") @db.Date
   createdAt     DateTime @default(now()) @map("created_at")
 
   storeItem     StoreItem           @relation(fields: [storeItemId], references: [id])
