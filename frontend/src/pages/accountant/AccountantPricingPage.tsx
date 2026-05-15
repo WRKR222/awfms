@@ -119,7 +119,7 @@ export function AccountantPricingPage() {
               <input {...register('priceDate')} type="date" className={inputCls} />
             </div>
 
-            <div className="space-y-1">
+            <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
               <label className={labelCls}>Production House Eggs (Standard) — KES/egg *</label>
               <span className={subLbl}>Standard eggs from production house</span>
               <input {...register('pricePerEgg', { required: true })} type="number" min="0" step="0.01" placeholder="e.g. 12.00" className={inputCls} />

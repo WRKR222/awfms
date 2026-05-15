@@ -82,6 +82,7 @@ export class SalesService {
         itemType:     i.eggType,
         grade:        null as string | null,
         quantityTrays,
+        quantityEggs: i.quantityEggs,
         unitPrice,
         subtotal:     i.quantityEggs * unitPrice,
       };

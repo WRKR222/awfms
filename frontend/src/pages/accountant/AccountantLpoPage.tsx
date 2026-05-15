@@ -26,7 +26,7 @@ export function AccountantLpoPage() {
   const [tab, setTab] = useState<Tab>('requests');
 
   return (
-    <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-4">
+    <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
       <div>
         <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">
           Local Purchase Orders

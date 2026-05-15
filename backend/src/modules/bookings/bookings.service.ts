@@ -187,9 +187,9 @@ export class BookingsService {
     const orderNumber = `SO-${datePart}-${String(count + 1).padStart(4, '0')}`;
 
     const totalTrays = booking.quantityTrays;
-    const tier = totalTrays >= 11 ? 'TIER_2' : 'TIER_1';
-    const unitPrice = Number(booking.pricePerEggKes) * 30; // price per tray
-    const subtotal = totalTrays * unitPrice;
+    const totalEggs = (booking as any).quantityEggs ?? (totalTrays * 30);
+    const unitPrice = Number(booking.pricePerEggKes);
+    const subtotal = totalEggs * unitPrice;
 
     // Create the SalesOrder and link it to the booking in a transaction
     const [salesOrder] = await this.prisma.$transaction([
@@ -209,6 +209,7 @@ export class BookingsService {
               itemType: 'EGGS',
               grade: null,
               quantityTrays: totalTrays,
+              quantityEggs: totalEggs,
               unitPrice,
               subtotal,
             }],

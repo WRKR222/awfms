@@ -720,8 +720,8 @@ export function VerificationQueue() {
 
       
 
-      {/* Tab content */}
-      
+      {/* Egg Sessions */}
+      <EggSessionsTab />
     </div>
   );
 }

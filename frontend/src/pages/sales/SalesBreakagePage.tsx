@@ -307,7 +307,7 @@ export default function SalesBreakagePage() {
         ) : (records as BreakageRecord[]).length === 0 ? (
           <p className="text-sm text-gray-400 text-center py-6">No breakage adjustments yet.</p>
         ) : (
-          <div className="space-y-3">
+          <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
             {(records as BreakageRecord[]).map(rec => (
               <div key={rec.id} className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
                 <div className="flex items-center justify-between mb-3">

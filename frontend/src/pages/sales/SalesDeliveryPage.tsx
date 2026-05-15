@@ -105,7 +105,7 @@ export default function SalesDeliveryPage() {
             )}
             {mode === 'transit' && (
               isConfirming ? (
-                <div className="space-y-2">
+                <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
                   <label className="text-xs text-gray-500 block">Delivery notes (optional)</label>
                   <input value={deliverNotes} onChange={e => setDeliverNotes(e.target.value)} placeholder="e.g. Received by owner at gate" className={iCls} />
                   <div className="flex gap-2">
@@ -140,7 +140,7 @@ export default function SalesDeliveryPage() {
       <div className="grid grid-cols-3 gap-3">
         <div className="bg-white dark:bg-dark-card rounded-2xl p-3 border border-gray-100 dark:border-dark-border text-center"><p className="text-xl font-bold text-blue-500">{(confirmedOrders as any[]).length}</p><p className="text-xs text-gray-400 mt-0.5">Ready to Dispatch</p></div>
         <div className="bg-white dark:bg-dark-card rounded-2xl p-3 border border-gray-100 dark:border-dark-border text-center"><p className="text-xl font-bold text-indigo-500">{(deliveringOrders as any[]).length}</p><p className="text-xs text-gray-400 mt-0.5">In Transit</p></div>
-        <div className="bg-white dark:bg-dark-card rounded-2xl p-3 border border-gray-100 dark:border-dark-border text-center"><p className="text-lg font-bold text-brand-green">{fmtKES(inTransitValue)}</p><p className="text-xs text-gray-400 mt-0.5">In-Transit Value</p></div>
+        <div className="bg-white dark:bg-dark-card rounded-2xl p-3 border border-gray-100 dark:border-dark-border text-center"><p className="text-xl font-bold text-brand-green">{fmtKES(inTransitValue)}</p><p className="text-xs text-gray-400 mt-0.5">In-Transit Value</p></div>
       </div>
       {isLoading ? <p className="text-sm text-gray-400 text-center py-8">Loading…</p> : (
         <>
