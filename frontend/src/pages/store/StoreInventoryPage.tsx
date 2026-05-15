@@ -74,7 +74,11 @@ function ExpiryAlertBanner() {
 }
 
 export default function StoreInventoryPage() {
-  const [tab, setTab] = useState<TabKey>('items');
+  const [tab, setTab] = useState<TabKey>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tab') === 'stock-out') return 'stock-out';
+    return 'items';
+  });
 
   return (
     <div className="p-4 md:p-6 space-y-4 max-w-7xl mx-auto">

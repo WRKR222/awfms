@@ -6,6 +6,8 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { NotificationsService } from '../../common/notifications/notifications.service';
+import { NotificationType, UserRole } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────
@@ -47,7 +49,9 @@ export interface StockOutDto {
   storeItemId: string;
   issuedDate: string;
   quantityOut: number;
-  issuedToName?: string;       // GAP-04: person name who receives the stock
+  recipientRole?: string;
+  otherRecipient?: string;
+  issuedToName?: string;
   issuedToHouseId?: string;
   issuedToBatchId?: string;
   purpose?: string;
@@ -95,7 +99,10 @@ export interface UpdateLPOStatusDto {
 
 @Injectable()
 export class StoreInventoryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   // ── Ref generators ──────────────────────────────────────────────────────────
 
@@ -271,7 +278,23 @@ export class StoreInventoryService {
         data: { currentStock: { decrement: dto.quantityOut } },
       });
 
-      return { stockOut: so, updatedItem: ui };
+      
+    // Notify recipient role about the issuance
+    if (dto.recipientRole && dto.recipientRole !== 'OTHER') {
+      const role = dto.recipientRole as any;
+      const validRoles = Object.values(UserRole);
+      if (validRoles.includes(role)) {
+        const itemName = item.name;
+        await this.notifications.notifyRole(
+          role,
+          NotificationType.SYSTEM,
+          `Stock Issued — ${itemName}`,
+          \`Store has issued ${dto.quantityOut} ${item.unit} of ${itemName} to you.\${dto.purpose ? ' Purpose: ' + dto.purpose : ''}\`,
+        ).catch(() => {});
+      }
+    }
+
+return { stockOut: so, updatedItem: ui };
     });
 
     // ── GAP-05: Reorder-level alert ──────────────────────────────────────────

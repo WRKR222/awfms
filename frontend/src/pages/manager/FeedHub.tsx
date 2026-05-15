@@ -364,6 +364,7 @@ function DeliveryRow({ delivery }: { delivery: any }) {
 export function FeedHub() {
   const [showDeliveryForm, setShowDeliveryForm] = useState(false);
   const [showRequestForm, setShowRequestForm] = useState(false);
+  const [requestSent, setRequestSent] = useState(false);
   const [deliveryDays, setDeliveryDays] = useState(30);
 
   const { data: stockData, isLoading: stockLoading } = useFeedStock();
@@ -429,6 +430,14 @@ export function FeedHub() {
           Request Feed
         </button>
       </div>
+
+      {/* Feed request sent banner */}
+      {requestSent && (
+        <div className="flex items-center gap-2 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 px-4 py-3 rounded-xl text-sm font-medium border border-green-200 dark:border-green-700">
+          <CheckCircle className="w-4 h-4" />
+          Feed request sent to Store. You'll be notified when it's issued.
+        </div>
+      )}
 
       {/* ── Summary KPIs ── */}
       <div className="grid grid-cols-2 gap-3">
@@ -560,20 +569,23 @@ export function FeedHub() {
 
       {/* ── Delivery form modal ── */}
       {showDeliveryForm && <DeliveryFormModal onClose={() => setShowDeliveryForm(false)} />}
-      {showRequestForm && <FeedRequestModal onClose={() => setShowRequestForm(false)} />}
+      {showRequestForm && <FeedRequestModal
+        onClose={() => setShowRequestForm(false)}
+        onSuccess={() => { setRequestSent(true); setTimeout(() => setRequestSent(false), 5000); }}
+      />}
     </div>
   );
 }
 
 // ── Feed Request Modal (Manager → Stores) ─────────────────────────────────────
-export function FeedRequestModal({ onClose }: { onClose: () => void }) {
+export function FeedRequestModal({ onClose, onSuccess }: { onClose: () => void; onSuccess?: () => void }) {
   const qc = useQueryClient();
   const { register, handleSubmit, watch, formState: { errors } } = useForm({
     defaultValues: { feedType: '', quantityKg: '', requestDate: dayjs().format('YYYY-MM-DD'), notes: '' }
   });
   const submit = useMutation({
     mutationFn: (data: any) => api.post('/feed/requests', { ...data, quantityKg: Number(data.quantityKg) }).then(r => r.data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['feed'] }); onClose(); }
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['feed'] }); onSuccess?.(); onClose(); }
   });
   const qty = Number(watch('quantityKg') ?? 0);
   const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';

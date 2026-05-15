@@ -13,11 +13,22 @@ import dayjs from 'dayjs';
 import { api } from '../../lib/api/client';
 import { fmtKES, useStoreItems, useHouses, useBatches } from './_shared';
 
+const RECIPIENT_ROLES = [
+  { value: 'MANAGER',    label: 'Production Manager' },
+  { value: 'ATTENDANT',  label: 'Lead Attendant' },
+  { value: 'SALES',      label: 'Sales' },
+  { value: 'ACCOUNTANT', label: 'Accountant' },
+  { value: 'SECURITY1',  label: 'Security (Main Gate)' },
+  { value: 'SECURITY2',  label: 'Security (Farm Gate)' },
+  { value: 'OTHER',      label: 'Other (specify)' },
+];
+
 type FormData = {
   storeItemId:     string;
   issuedDate:      string;
   quantityOut:     number;
-  issuedToName?:   string;   // GAP-04: person name receiving stock
+  recipientRole:   string;
+  otherRecipient?: string;
   issuedToHouseId?: string;
   issuedToBatchId?: string;
   purpose?:        string;
@@ -31,7 +42,7 @@ export function StockOutTab() {
   const { data: batches = [] } = useBatches();
   const [showForm, setShowForm] = useState(false);
 
-  const { register, handleSubmit, reset, control } = useForm<FormData>({
+  const { register, handleSubmit, reset, control, watch } = useForm<FormData>({
     defaultValues: { issuedDate: dayjs().format('YYYY-MM-DD') },
   });
 
@@ -62,7 +73,8 @@ export function StockOutTab() {
       quantityOut:     Number(data.quantityOut),
       issuedToHouseId: data.issuedToHouseId  || undefined,
       issuedToBatchId: data.issuedToBatchId  || undefined,
-      issuedToName:    data.issuedToName     || undefined,
+      recipientRole:   data.recipientRole    || undefined,
+      otherRecipient:  data.otherRecipient  || undefined,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['store-stock-out'] });
@@ -128,10 +140,22 @@ export function StockOutTab() {
               <input type="number" step="any" min="0.001" {...register('quantityOut', { required: true })} className="input" />
             </Field>
 
-            {/* GAP-04: Issued To (person name) */}
-            <Field label="Issued To (Name) *">
+            {/* Recipient Role */}
+            <Field label="Issued To (Role) *">
+              <select {...register('recipientRole', { required: true })} className="input">
+                <option value="">Select recipient…</option>
+                {RECIPIENT_ROLES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+            </Field>
+            {watch('recipientRole') === 'OTHER' && (
+              <Field label="Department / Project *">
+                <input {...register('otherRecipient', { required: watch('recipientRole') === 'OTHER' })}
+                  className="input" placeholder="e.g. Construction crew, Visitor catering" />
+              </Field>
+            )}
+            <Field label="Purpose">
               <input
-                {...register('issuedToName', { required: true })}
+                {...register('purpose')}
                 className="input"
                 placeholder="Name of person receiving stock"
               />

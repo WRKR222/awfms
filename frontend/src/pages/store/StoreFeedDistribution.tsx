@@ -140,7 +140,7 @@ export default function StoreFeedDistribution() {
                     </div>
                   </div>
                   <button
-                    onClick={() => issueRequest.mutate(req.id)}
+                    onClick={() => handleIssue(req)}
                     disabled={issueRequest.isPending}
                     className="flex items-center gap-1.5 bg-brand-green text-white px-3 py-2 rounded-xl text-xs font-bold shrink-0 hover:bg-green-800 transition-colors disabled:opacity-60"
                   >
