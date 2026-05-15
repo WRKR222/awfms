@@ -628,4 +628,37 @@ export class StoreInventoryService {
     if (!lpo) throw new NotFoundException('LPO not found');
     return lpo;
   }
+
+  // ── Expiry Alerts ──────────────────────────────────────────────────────────
+
+  async getExpiringItems() {
+    const now = new Date();
+    const oneMonth = new Date(now); oneMonth.setMonth(oneMonth.getMonth() + 1);
+    const twoMonths = new Date(now); twoMonths.setMonth(twoMonths.getMonth() + 2);
+
+    // Find stock-in records with expiry dates within 2 months
+    const expiringStock = await this.prisma.storeStockIn.findMany({
+      where: {
+        expiryDate: { lte: twoMonths, gte: now },
+      },
+      include: {
+        storeItem: { select: { id: true, name: true, sku: true, category: true, unit: true } },
+      },
+      orderBy: { expiryDate: 'asc' },
+    });
+
+    return expiringStock.map(s => {
+      const daysUntil = Math.ceil((new Date(s.expiryDate!).getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      return {
+        id: s.id,
+        item: s.storeItem,
+        expiryDate: s.expiryDate,
+        daysUntilExpiry: daysUntil,
+        severity: daysUntil <= 30 ? 'critical' : 'warning',
+        quantityIn: s.quantityIn,
+        supplierName: s.supplierName,
+      };
+    });
+  }
+
 }

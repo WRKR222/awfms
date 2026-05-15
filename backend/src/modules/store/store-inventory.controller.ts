@@ -170,4 +170,10 @@ export class StoreInventoryController {
   getLPO(@Param('id') id: string) {
     return this.svc.getLPOById(id);
   }
+
+  @Get('expiring')
+  @RequirePermission(Permission.INVENTORY_VIEW)
+  getExpiringItems() {
+    return this.svc.getExpiringItems();
+  }
 }
