@@ -321,6 +321,20 @@ export class StoreInventoryService {
     }
     // ── END GAP-05 ──────────────────────────────────────────────────────────
 
+    // Notify recipient role about the issuance
+    if (dto.recipientRole && dto.recipientRole !== 'OTHER') {
+      const validRoles = Object.values(UserRole);
+      if (validRoles.includes(dto.recipientRole as any)) {
+        const msg = 'Store has issued ' + dto.quantityOut + ' ' + item.unit + ' of ' + item.name + ' to you.';
+        await this.notifications.notifyRole(
+          dto.recipientRole as any,
+          NotificationType.SYSTEM,
+          'Stock Issued: ' + item.name,
+          dto.purpose ? msg + ' Purpose: ' + dto.purpose : msg,
+        ).catch(() => {});
+      }
+    }
+
     return stockOut;
   }
 
