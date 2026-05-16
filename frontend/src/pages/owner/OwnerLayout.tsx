@@ -13,7 +13,7 @@ import { LoginNotificationModal } from '../../components/shared/LoginNotificatio
 // OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { MobileSidebar } from '../../components/shared/MobileSidebar';
 // OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
-import { LayoutDashboard, Bell, LogOut, TrendingUp, Brain, Upload, Settings, UserCheck, Shield } from 'lucide-react';
+import { LayoutDashboard, Bell, LogOut, TrendingUp, Brain, Upload, Settings, UserCheck, Shield , FileText } from 'lucide-react';
 // OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
 import { Sidebar, SidebarBody, SidebarLink, SidebarLinkItem } from '../../components/ui/sidebar';
 // OO Fix: Added Visitors + User Management nav links per Class Diagram Director role
@@ -29,6 +29,7 @@ const navDefs = [
   { label: 'Data Upload', icon: Upload,          to: '/owner/data-upload' },
   { label: 'Visitors',       icon: UserCheck, to: '/owner/visitors' },
   { label: 'User Mgmt',      icon: Shield,    to: '/owner/users' },
+  { label: 'LPO Approvals', icon: FileText,      to: '/owner/lpos' },
   { label: 'Settings',    icon: Settings,        to: '/owner/settings' },
 ];
 
