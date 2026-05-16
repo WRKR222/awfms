@@ -201,6 +201,33 @@ export class SalesService {
       },
       include: { reportedBy: { select: { fullName: true } } },
     });
+
+    // Auto-log breakage as expense for the accountant
+    if (quantityDiff !== 0) {
+      try {
+        // Get today's pricing to calculate loss
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: today } });
+        const pricePerEgg = pricing ? Number(pricing.pricePerEgg) : 0;
+        const lossAmount = Math.abs(quantityDiff) * pricePerEgg;
+
+        if (lossAmount > 0) {
+          await this.prisma.notification.create({
+            data: {
+              userId: (await this.prisma.user.findFirst({ where: { role: 'ACCOUNTANT' as any, isActive: true } }))?.id ?? user.id,
+              type: 'SYSTEM' as any,
+              title: 'Egg Breakage Recorded',
+              message: 'Breakage of ' + Math.abs(quantityDiff) + ' eggs recorded (Ref: ' + adjustmentRef + '). Estimated loss: KES ' + lossAmount.toFixed(2) + '.',
+              entityId: adjustment.id,
+              entityType: 'EggBreakageAdjustment',
+            },
+          });
+        }
+      } catch (_) { /* best-effort */ }
+    }
+
+    return adjustment;
   }
 
   // ── Sales Stock ────────────────────────────────────────────────────────────
@@ -215,7 +242,6 @@ export class SalesService {
             totalGoodEggs: true,
             totalBrokenEggs: true,
             totalStarterEggs: true,
-            totalSoftShell: true,
           },
         },
       },
@@ -256,7 +282,7 @@ export class SalesService {
     });
 
     return {
-      standardEggs:      (latestTally.finalGoodEggs ?? latestTally.session?.totalGoodEggs ?? 0) + (latestTally.session?.totalSoftShell ?? 0),
+      standardEggs:      latestTally.finalGoodEggs      ?? latestTally.session?.totalGoodEggs    ?? 0,
       starterEggs:       latestTally.session?.totalStarterEggs ?? 0,
       nonConsumableEggs: latestAdj?.newNonConsumable ?? latestTally.session?.totalBrokenEggs ?? 0,
       consumableEggs:    latestAdj?.newConsumable    ?? 0,

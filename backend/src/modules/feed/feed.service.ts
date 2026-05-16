@@ -109,7 +109,7 @@ export class FeedService {
 
   async getCurrentStock(feedType?: FeedType) {
     const feedTypes = feedType ? [feedType] : Object.values(FeedType);
-    const threshold = await this.getAlertThreshold();
+    // Threshold is now checked per-category inside the loop
     const results: Record<string, any> = {};
 
     for (const ft of feedTypes) {
@@ -146,7 +146,7 @@ export class FeedService {
           currentStockKg: currentStock,
           avgDailyUsageKg: avgDailyUsage,
           daysRemaining: Math.round(daysRemaining * 10) / 10,
-          isLow: currentStock <= threshold,  // threshold is in kg
+          isLow: currentStock <= await this.getAlertThreshold(ft),  // per-category kg threshold
         };
       }
     }
@@ -157,7 +157,7 @@ export class FeedService {
   @Cron('0 6 * * *')
   async checkFeedStockAlerts() {
     this.logger.log('Running daily feed stock check...');
-    const threshold = await this.getAlertThreshold();
+    // Threshold is now checked per-category inside the loop
     const stocks = await this.getCurrentStock();
 
     for (const [feedType, stock] of Object.entries(stocks) as any) {
@@ -198,18 +198,19 @@ export class FeedService {
 
   // ── Alert Threshold Config ───────────────────────────────────────────────
 
-  async updateAlertThreshold(days: number) {
-    const value = String(Math.max(1, Math.min(30, Math.round(days))));
+  async updateAlertThreshold(days: number, feedType?: string) {
+    const value = String(Math.max(1, Math.min(9999, Math.round(days))));
+    const key = feedType ? 'FEED_ALERT_THRESHOLD_' + feedType : 'FEED_ALERT_THRESHOLD_DAYS';
     await this.prisma.systemConfig.upsert({
-      where: { key: 'FEED_ALERT_THRESHOLD_DAYS' },
-      create: { key: 'FEED_ALERT_THRESHOLD_DAYS', value },
+      where: { key },
+      create: { key, value },
       update: { value },
     });
-    return { days: Number(value) };
+    return { days: Number(value), feedType: feedType ?? 'ALL' };
   }
 
   async getAlertThresholdConfig() {
-    const threshold = await this.getAlertThreshold();
+    // Threshold is now checked per-category inside the loop
     return { days: threshold };
   }
 
@@ -241,11 +242,19 @@ export class FeedService {
     };
   }
 
-  private async getAlertThreshold(): Promise<number> {
+  private async getAlertThreshold(feedType?: string): Promise<number> {
+    // Check per-category threshold first
+    if (feedType) {
+      const perCategory = await this.prisma.systemConfig.findUnique({
+        where: { key: 'FEED_ALERT_THRESHOLD_' + feedType },
+      });
+      if (perCategory) return parseInt(perCategory.value, 10);
+    }
+    // Fall back to global threshold
     const config = await this.prisma.systemConfig.findUnique({
       where: { key: 'FEED_ALERT_THRESHOLD_DAYS' },
     });
-    return config ? parseInt(config.value, 10) : 3;
+    return config ? parseInt(config.value, 10) : 50;
   }
 
   // ── Feed Requests (Manager → Store) ──────────────────────────────────────
