@@ -215,6 +215,7 @@ export class SalesService {
             totalGoodEggs: true,
             totalBrokenEggs: true,
             totalStarterEggs: true,
+            totalSoftShell: true,
           },
         },
       },
@@ -255,7 +256,7 @@ export class SalesService {
     });
 
     return {
-      standardEggs:      (latestTally.finalGoodEggs ?? latestTally.session?.totalGoodEggs ?? 0) + (latestTally.session?.totalSoftShell ?? 0),  // soft shell sold as standard
+      standardEggs:      (latestTally.finalGoodEggs ?? latestTally.session?.totalGoodEggs ?? 0) + (latestTally.session?.totalSoftShell ?? 0),
       starterEggs:       latestTally.session?.totalStarterEggs ?? 0,
       nonConsumableEggs: latestAdj?.newNonConsumable ?? latestTally.session?.totalBrokenEggs ?? 0,
       consumableEggs:    latestAdj?.newConsumable    ?? 0,

@@ -8,6 +8,7 @@ export interface CreateBookingDto {
   customerId: string;
   requestedDate: string;
   quantityTrays: number;
+  quantityEggs?: number;
   eggType?: 'STANDARD_EGGS' | 'STARTER_EGGS' | 'CONSUMABLE_BROKEN_EGGS';
   requiresDelivery?: boolean;
   deliveryAddress?: string;
