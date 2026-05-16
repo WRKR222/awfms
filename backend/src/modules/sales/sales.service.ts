@@ -282,12 +282,48 @@ export class SalesService {
       where: { priceDate: today },
     });
 
-    return {
+    const stockResult = {
       standardEggs:      latestTally.finalGoodEggs      ?? latestTally.session?.totalGoodEggs    ?? 0,
       starterEggs:       latestTally.session?.totalStarterEggs ?? 0,
       nonConsumableEggs: latestAdj?.newNonConsumable ?? latestTally.session?.totalBrokenEggs ?? 0,
       consumableEggs:    latestAdj?.newConsumable    ?? 0,
       lastVerifiedDate:  latestTally.verificationDate,
+    };
+
+    // Subtract eggs sold today from available stock
+    const todaySold = await this.prisma.salesOrder.findMany({
+      where: {
+        orderDate: { gte: today },
+        status: { not: 'CANCELLED' as any },
+        deletedAt: null,
+      },
+      include: { items: true },
+    });
+    let soldStandard = 0, soldStarter = 0, soldConsumable = 0;
+    for (const order of todaySold) {
+      for (const item of order.items) {
+        const qty = (item as any).quantityEggs ?? ((item as any).quantityTrays ?? 0) * 30;
+        if (item.itemType === 'STANDARD_EGGS') soldStandard += qty;
+        else if (item.itemType === 'STARTER_EGGS') soldStarter += qty;
+        else if (item.itemType === 'CONSUMABLE_BROKEN_EGGS') soldConsumable += qty;
+      }
+    }
+
+    // Subtract locked advance bookings
+    const lockedBookings = await this.prisma.advanceBooking.findMany({
+      where: { stockLocked: true, status: { not: 'CANCELLED' as any } },
+    });
+    let lockedEggs = 0;
+    for (const b of lockedBookings) {
+      lockedEggs += (b as any).quantityEggs ?? ((b as any).quantityTrays ?? 0) * 30;
+    }
+
+    stockResult.standardEggs = Math.max(0, stockResult.standardEggs - soldStandard - lockedEggs);
+    stockResult.starterEggs = Math.max(0, stockResult.starterEggs - soldStarter);
+    stockResult.consumableEggs = Math.max(0, stockResult.consumableEggs - soldConsumable);
+
+    return {
+      ...stockResult,
       pricing: pricing ? {
         pricePerEgg: Number(pricing.pricePerEgg),
         pricePerEggStarter: Number((pricing as any).pricePerEggStarter ?? 0),

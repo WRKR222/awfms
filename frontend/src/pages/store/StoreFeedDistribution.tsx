@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, CheckCircle, Truck, Package, Clock, AlertCircle, Send, AlertTriangle } from 'lucide-react';
+import { CheckCircle, Truck, Package, Clock, AlertCircle, Send, AlertTriangle } from 'lucide-react';
 import api from '../../lib/api/client';
 import dayjs from 'dayjs';
 
@@ -100,11 +100,9 @@ export default function StoreFeedDistribution() {
     <div className="p-4 md:p-6 max-w-2xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-3 mb-5">
-        <button onClick={() => navigate('/store')} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-card transition-colors">
-          <ArrowLeft className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-        </button>
+        
         <div>
-          <h1 className="text-lg font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+          <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
             <Truck className="w-5 h-5 text-blue-500" /> Feed Distribution
           </h1>
           <p className="text-xs text-gray-500 dark:text-gray-400">{dayjs().format('dddd, D MMMM YYYY')}</p>

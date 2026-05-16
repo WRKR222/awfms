@@ -97,9 +97,7 @@ export default function StoreEggIntake() {
     return (
       <div className="p-4 md:p-6 max-w-2xl mx-auto">
         <div className="flex items-center gap-3 mb-5">
-          <button onClick={() => navigate('/store')} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-card">
-            <ArrowLeft className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-          </button>
+          
           <div>
             <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
               <Egg className="w-5 h-5 text-amber-500" /> Egg Intake
