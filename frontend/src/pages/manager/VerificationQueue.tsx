@@ -352,12 +352,16 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
       {/* Session totals */}
       <div>
         <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Egg Collection Totals</p>
-        <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+        <div className="grid grid-cols-3 md:grid-cols-4 gap-2">
+          <StatPill label="Total Eggs" value={(session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0)).toLocaleString()} accent="green" />
           <StatPill label="Good Eggs" value={session.totalGoodEggs.toLocaleString()} accent="green" />
           <StatPill label="Full Trays" value={session.totalFullTrays} accent="green" />
           <StatPill label="Loose Eggs" value={session.totalLooseEggs} accent="gray" />
-          <StatPill label="Broken" value={session.totalBrokenEggs ?? 0} alert={(session.totalBrokenEggs ?? 0) > 10} accent={(session.totalBrokenEggs ?? 0) > 10 ? 'red' : 'gray'} />
+          <StatPill label="Starter Eggs" value={session.totalStarterEggs ?? 0} accent="blue" />
+          <StatPill label="Broken (Sellable)" value={session.totalBrokenSellable ?? 0} accent="amber" />
+          <StatPill label="Broken (Unsellable)" value={session.totalBrokenUnsellable ?? (session.totalBrokenEggs ?? 0)} alert={(session.totalBrokenUnsellable ?? session.totalBrokenEggs ?? 0) > 10} accent="red" />
           <StatPill label="Soft Shell" value={session.totalSoftShell ?? 0} accent="amber" />
+          <StatPill label="Deformed" value={session.totalDeformed ?? 0} accent="amber" />
           <StatPill label="Weight (kg)" value={Number(session.totalWeightKg).toFixed(1)} accent="blue" />
         </div>
       </div>
@@ -389,9 +393,11 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
               <thead>
                 <tr className="text-gray-400 border-b border-gray-100 dark:border-dark-border">
                   <th className="text-left py-1.5 pr-3 font-medium">Row</th>
-                  <th className="text-right py-1.5 px-2 font-medium">Eggs</th>
-                  <th className="text-right py-1.5 px-2 font-medium">Broken</th>
-                  <th className="text-right py-1.5 px-2 font-medium">Soft</th>
+                  <th className="text-right py-1.5 px-2 font-medium">Total Eggs</th>
+                  <th className="text-right py-1.5 px-2 font-medium">Starter</th>
+                  <th className="text-right py-1.5 px-2 font-medium">Broken (S)</th>
+                  <th className="text-right py-1.5 px-2 font-medium">Broken (U)</th>
+                  <th className="text-right py-1.5 px-2 font-medium">Soft Shell</th>
                   <th className="text-right py-1.5 px-2 font-medium">Deformed</th>
                   <th className="text-right py-1.5 px-2 font-medium">Weight(kg)</th>
                   <th className="text-left py-1.5 pl-2 font-medium">Attendant</th>
@@ -399,7 +405,7 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
               </thead>
               <tbody>
                 {rows.map((row: any, i: number) => {
-                  const rowEggs = (row.fullTrays ?? 0) * 30 + (row.looseEggs ?? 0);
+                  const rowEggs = row.totalEggs ?? ((row.fullTrays ?? 0) * 30 + (row.looseEggs ?? 0));
                   return (
                     <tr key={i} className="border-b border-gray-50 dark:border-dark-border/50">
                       <td className="py-1.5 pr-3">
@@ -453,10 +459,31 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
               <p className="font-semibold text-gray-700 dark:text-gray-200">{session.vaccineGiven}</p>
             </div>
           )}
-          {session.dailyFeedKg != null && (
+          {(session.dailyFeedKg != null || session.feedKg != null) && (
             <div className="bg-white dark:bg-dark-card rounded-xl p-3 border border-gray-100 dark:border-dark-border">
-              <p className="text-xs text-gray-400 mb-0.5">Feed Today</p>
-              <p className="font-semibold text-gray-700 dark:text-gray-200">{Number(session.dailyFeedKg).toFixed(1)} kg</p>
+              <p className="text-xs text-gray-400 mb-0.5">Feed</p>
+              <p className="font-semibold text-gray-700 dark:text-gray-200">
+                {Number(session.feedKg ?? session.dailyFeedKg ?? 0).toFixed(1)} kg
+                {session.feedTypeName && <span className="text-gray-400 text-[10px] ml-1">({session.feedTypeName.replace(/_/g, ' ')})</span>}
+              </p>
+            </div>
+          )}
+          {session.waterLiters != null && (
+            <div className="bg-white dark:bg-dark-card rounded-xl p-3 border border-gray-100 dark:border-dark-border">
+              <p className="text-xs text-gray-400 mb-0.5">Water</p>
+              <p className="font-semibold text-gray-700 dark:text-gray-200">{Number(session.waterLiters).toFixed(1)} litres</p>
+            </div>
+          )}
+          {session.houseTempC != null && (
+            <div className="bg-white dark:bg-dark-card rounded-xl p-3 border border-gray-100 dark:border-dark-border">
+              <p className="text-xs text-gray-400 mb-0.5">House Temp</p>
+              <p className="font-semibold text-gray-700 dark:text-gray-200">{Number(session.houseTempC).toFixed(1)}°C</p>
+            </div>
+          )}
+          {session.vaccineGiven && (
+            <div className="bg-white dark:bg-dark-card rounded-xl p-3 border border-gray-100 dark:border-dark-border">
+              <p className="text-xs text-gray-400 mb-0.5">Vaccines</p>
+              <p className="font-semibold text-gray-700 dark:text-gray-200">{session.vaccineGiven}</p>
             </div>
           )}
         </div>
