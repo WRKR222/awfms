@@ -22,7 +22,7 @@ function fmtKES(n: number) {
   if (n >= 1_000)    return `KES ${(n / 1_000).toFixed(1)}K`;
   return `KES ${n.toLocaleString()}`;
 }
-function traysLabel(eggs: number) {
+function eggsLabel(eggs: number) {
   const t = Math.floor(eggs / 30), r = eggs % 30;
   if (!eggs) return '0 eggs';
   if (t === 0) return `${r} egg${r !== 1 ? 's' : ''}`;
@@ -80,7 +80,7 @@ export default function SalesHome() {
     .reduce((acc: any, order: any) => {
       (order.items ?? []).forEach((item: any) => {
         const itemType = (item.itemType ?? '').toUpperCase();
-        const qty = item.quantityTrays ? item.quantityTrays * 30 : 0;
+        const qty = item.quantityEggs ?? (item.quantityTrays ? item.quantityTrays * 30 : 0);
         const rev = Number(item.subtotal ?? 0);
         if      (itemType.includes('STARTER'))           { acc.starter    += qty; acc.revenue += rev; }
         else if (itemType.includes('CONSUMABLE_BROKEN')) { acc.consumable += qty; acc.revenue += rev; }
@@ -154,10 +154,10 @@ export default function SalesHome() {
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatChip label="Standard Eggs"       value={(stock?.standardEggs  ?? 0).toLocaleString()} sub={traysLabel(stock?.standardEggs  ?? 0)} color="text-brand-green"                    accent />
-            <StatChip label="Starter Eggs"        value={(stock?.starterEggs   ?? 0).toLocaleString()} sub={traysLabel(stock?.starterEggs   ?? 0)} color="text-blue-600 dark:text-blue-400" />
-            <StatChip label="Consumable Broken"   value={(stock?.consumableEggs ?? 0).toLocaleString()} sub={traysLabel(stock?.consumableEggs ?? 0)} color="text-amber-600 dark:text-amber-400" />
-            <StatChip label="Total Available"     value={totalStockEggs.toLocaleString()}              sub={traysLabel(totalStockEggs)}             color="text-gray-800 dark:text-gray-100" />
+            <StatChip label="Standard Eggs"       value={(stock?.standardEggs  ?? 0).toLocaleString()} sub={eggsLabel(stock?.standardEggs  ?? 0)} color="text-brand-green"                    accent />
+            <StatChip label="Starter Eggs"        value={(stock?.starterEggs   ?? 0).toLocaleString()} sub={eggsLabel(stock?.starterEggs   ?? 0)} color="text-blue-600 dark:text-blue-400" />
+            <StatChip label="Consumable Broken"   value={(stock?.consumableEggs ?? 0).toLocaleString()} sub={eggsLabel(stock?.consumableEggs ?? 0)} color="text-amber-600 dark:text-amber-400" />
+            <StatChip label="Total Available"     value={totalStockEggs.toLocaleString()}              sub={eggsLabel(totalStockEggs)}             color="text-gray-800 dark:text-gray-100" />
           </div>
         )}
         {(stock?.nonConsumableEggs ?? 0) > 0 && (
@@ -178,9 +178,9 @@ export default function SalesHome() {
       <div>
         <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Today's Sales</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatChip label="Standard Sold"          value={todaySold.standard.toLocaleString()}   sub={traysLabel(todaySold.standard)}   color="text-brand-green" />
-          <StatChip label="Starter Sold"           value={todaySold.starter.toLocaleString()}    sub={traysLabel(todaySold.starter)}    color="text-blue-600 dark:text-blue-400" />
-          <StatChip label="Consumable Broken Sold" value={todaySold.consumable.toLocaleString()} sub={traysLabel(todaySold.consumable)} color="text-amber-600 dark:text-amber-400" />
+          <StatChip label="Standard Sold"          value={todaySold.standard.toLocaleString()}   sub={eggsLabel(todaySold.standard)}   color="text-brand-green" />
+          <StatChip label="Starter Sold"           value={todaySold.starter.toLocaleString()}    sub={eggsLabel(todaySold.starter)}    color="text-blue-600 dark:text-blue-400" />
+          <StatChip label="Consumable Broken Sold" value={todaySold.consumable.toLocaleString()} sub={eggsLabel(todaySold.consumable)} color="text-amber-600 dark:text-amber-400" />
           <StatChip label="Today's Revenue"        value={fmtKES(todaySold.revenue)} sub={`${totalSoldEggs.toLocaleString()} eggs sold`} color="text-brand-green" accent />
         </div>
       </div>
