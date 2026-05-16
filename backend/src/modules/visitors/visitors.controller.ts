@@ -2,7 +2,7 @@ import {
   Body, Controller, Get, Param, Patch, Post, Query, UseGuards, BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard }           from '../../common/guards/jwt-auth.guard';
-import { RequirePermissionGuard } from '../../common/guards/require-permission.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission }      from '../../common/decorators/require-permission.decorator';
 import { CurrentUser }            from '../../common/decorators/current-user.decorator';
 import { Permission }             from '../../common/enums/permissions.enum';
@@ -13,7 +13,7 @@ import { VisitorsService }        from './visitors.service';
  * FIX: Permission.VISITOR_LOG_CREATE → Permission.HEALTH_VISITOR_LOG on checkout().
  * Gate ordering for both entry and exit enforced in service.
  */
-@UseGuards(JwtAuthGuard, RequirePermissionGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller('visitors')
 export class VisitorsController {
   constructor(private readonly svc: VisitorsService) {}
