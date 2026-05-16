@@ -34,7 +34,8 @@ export class SalesService {
   }
 
   async getOrders(days = 30, status?: string) {
-    const from = dayjs().subtract(days, 'day').toDate();
+    const safeDays = Number(days) > 0 ? Number(days) : 30;
+    const from = dayjs().subtract(safeDays, 'day').toDate();
     return this.prisma.salesOrder.findMany({
       where: {
         deletedAt: null,
