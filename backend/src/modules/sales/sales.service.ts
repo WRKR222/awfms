@@ -183,7 +183,7 @@ export class SalesService {
       (dto.newNonConsumable - dto.quantityNonConsumableBefore) +
       (dto.newConsumable    - dto.quantityConsumableBefore);
 
-    return this.prisma.eggBreakageAdjustment.create({
+    const adjustment = await this.prisma.eggBreakageAdjustment.create({
       data: {
         adjustmentRef,
         adjustmentDate:              new Date(dto.adjustmentDate),
@@ -209,7 +209,7 @@ export class SalesService {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: today } });
-        const pricePerEgg = pricing ? Number(pricing.pricePerEgg) : 0;
+        const pricePerEgg = pricing?.pricePerEgg ? Number(pricing.pricePerEgg) : 0;
         const lossAmount = Math.abs(quantityDiff) * pricePerEgg;
 
         if (lossAmount > 0) {

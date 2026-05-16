@@ -161,7 +161,7 @@ export class FeedService {
     const stocks = await this.getCurrentStock();
 
     for (const [feedType, stock] of Object.entries(stocks) as any) {
-      if (stock.daysRemaining <= threshold && stock.avgDailyUsageKg > 0) {
+      if (stock.daysRemaining <= (await this.getAlertThreshold(ft)) && stock.avgDailyUsageKg > 0) {
         // Check if alert already fired today
         const today = dayjs().startOf('day').toDate();
         const alreadyFired = await this.prisma.feedStockSnapshot.findFirst({
@@ -211,7 +211,8 @@ export class FeedService {
 
   async getAlertThresholdConfig() {
     // Threshold is now checked per-category inside the loop
-    return { days: threshold };
+    const t = await this.getAlertThreshold();
+    return { days: t };
   }
 
   // ─── PRIVATE HELPERS ─────────────────────────────────────────────────────

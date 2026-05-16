@@ -177,18 +177,18 @@ export default function OwnerHome() {
       </div>
 
             {/* ── Expected vs Actual Revenue ── */}
-      {dash && (
+      {data && (
         <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-5 space-y-3">
           <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300">Revenue Comparison</h3>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <p className="text-xs text-gray-400">Expected Revenue</p>
-              <p className="text-xl font-bold text-blue-600">KES {(dash.expectedRevenueKes ?? 0).toLocaleString()}</p>
+              <p className="text-xl font-bold text-blue-600">KES {(data.expectedRevenueKes ?? 0).toLocaleString()}</p>
               <p className="text-[10px] text-gray-400">Based on egg stock x pricing</p>
             </div>
             <div>
               <p className="text-xs text-gray-400">Actual Revenue</p>
-              <p className={'text-xl font-bold ' + (dash.revenueKes >= (dash.expectedRevenueKes ?? 0) ? 'text-green-600' : 'text-amber-600')}>KES {dash.revenueKes.toLocaleString()}</p>
+              <p className={'text-xl font-bold ' + (data.revenueKes >= (data.expectedRevenueKes ?? 0) ? 'text-green-600' : 'text-amber-600')}>KES {data.revenueKes.toLocaleString()}</p>
               <p className="text-[10px] text-gray-400">From completed sales</p>
             </div>
           </div>
