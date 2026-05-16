@@ -412,7 +412,9 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
                         <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5">{row.rowCode}</span>
                       </td>
                       <td className="text-right px-2 font-semibold text-gray-700 dark:text-gray-200">{rowEggs}</td>
-                      <td className={`text-right px-2 ${(row.brokenEggs ?? 0) > 3 ? 'text-red-500 font-semibold' : 'text-gray-500'}`}>{row.brokenEggs ?? 0}</td>
+                      <td className="text-right px-2 text-blue-500">{row.starterEggs ?? 0}</td>
+                      <td className="text-right px-2 text-amber-500">{row.brokenSellable ?? 0}</td>
+                      <td className={`text-right px-2 ${(row.brokenUnsellable ?? row.brokenEggs ?? 0) > 3 ? 'text-red-500 font-semibold' : 'text-gray-500'}`}>{row.brokenUnsellable ?? row.brokenEggs ?? 0}</td>
                       <td className={`text-right px-2 ${(row.softShell ?? 0) > 3 ? 'text-amber-500 font-semibold' : 'text-gray-500'}`}>{row.softShell ?? 0}</td>
                       <td className="text-right px-2 text-gray-500">{row.deformed ?? 0}</td>
                       <td className="text-right px-2 text-gray-500">{Number(row.weightKg ?? 0).toFixed(1)}</td>
