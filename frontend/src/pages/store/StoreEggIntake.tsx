@@ -38,7 +38,7 @@ export default function StoreEggIntake() {
   // Pending sessions (PM sessions from today/yesterday with no store intake)
   const { data: pending = [], isLoading: loadingPending } = useQuery({
     queryKey: ['pending-intakes'],
-    queryFn: () => api.get('/store/pending-intakes').then(r => r.data),
+    queryFn: () => api.get('/store/pending-intakes').then(r => r.data?.filter((s: any) => s.status === 'APPROVED') ?? r.data),
   });
 
   const { register, handleSubmit, watch, control, reset } = useForm<FormValues>({

@@ -53,7 +53,7 @@ export class BookingsService {
       pricePerEggKes = Number(pricing.pricePerEgg);
     }
 
-    const quantityEggs  = dto.quantityTrays * 30;
+    const quantityEggs  = dto.quantityEggs ?? (dto.quantityTrays * 30);
     const estimatedTotal = quantityEggs * pricePerEggKes;
     const bookingRef    = await this.generateRef();
 

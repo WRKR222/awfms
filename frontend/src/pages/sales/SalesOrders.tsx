@@ -136,7 +136,7 @@ function OrderCard({ order, onConfirm, onMarkDelivering, onMarkDelivered }: {
               <div key={item.id} className="flex justify-between text-xs">
                 <span className="text-gray-600 dark:text-gray-400">
                   <Package className="w-3 h-3 inline mr-1" />
-                  {EGG_TYPE_LABELS[item.itemType as EggItemType] ?? item.itemType} · {(item.quantityTrays ?? 0) * 30} eggs ({item.quantityTrays ?? 0} trays)
+                  {EGG_TYPE_LABELS[item.itemType as EggItemType] ?? item.itemType} · {item.quantityEggs ?? ((item.quantityTrays ?? 0) * 30)} eggs
                 </span>
                 <span className="font-semibold text-gray-700 dark:text-gray-300">{fmtKES(item.subtotal)}</span>
               </div>
