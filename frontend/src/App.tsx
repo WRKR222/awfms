@@ -219,6 +219,7 @@ function AppInner() {
           <Route path="lpo"               element={<OwnerLpoPage />} />
           <Route path="visitors"          element={<OwnerVisitorPage />} />
           <Route path="users"             element={<OwnerUsersPage />} />
+          <Route path="lpos"             element={<OwnerLpoPage />} />
           <Route path="settings"          element={<SettingsPage />} />
         </Route>
 

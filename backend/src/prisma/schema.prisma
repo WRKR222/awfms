@@ -574,6 +574,22 @@ model VisitorLog {
   @@map("visitor_log")
 }
 
+
+model VisitorGateLog {
+  id           String   @id @default(uuid())
+  visitorId    String   @map("visitor_id")
+  gate         String
+  action       String
+  timestamp    DateTime
+  recordedById String   @map("recorded_by_id")
+  notes        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([visitorId])
+  @@index([gate, timestamp])
+  @@map("visitor_gate_logs")
+}
+
 // ─── PRODUCTION TRACKING ──────────────────────────────────────────────────
 
 model ProductionEntry {
