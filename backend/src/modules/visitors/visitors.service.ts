@@ -130,8 +130,12 @@ export class VisitorsService {
       },
     });
 
-    // ── Notify Manager on final compound exit (Main Gate CHECK_OUT) ────────────
+    // ── Mark visitor as COMPLETED after final exit (Main Gate CHECK_OUT) ──────
     if (dto.action === 'CHECK_OUT' && dto.gate === 'MAIN_GATE') {
+      await this.prisma.visitorAdvanceNotice.update({
+        where: { id: dto.visitorId },
+        data: { status: 'COMPLETED' },
+      }).catch(() => {});
       try {
         await this.notifications.notifyRole(
           'MANAGER' as any,
@@ -142,6 +146,36 @@ export class VisitorsService {
         );
       } catch { /* best-effort */ }
     }
+
+    // ── Cross-gate notifications ─────────────────────────────────────────────
+    try {
+      if (dto.action === 'CHECK_IN' && dto.gate === 'MAIN_GATE') {
+        // Notify Farm Gate + Director
+        await this.notifications.notifyRole('SECURITY2' as any, 'SYSTEM' as any,
+          'Visitor Checked In at Main Gate',
+          notice.visitorName + (notice.organisation ? ' (' + notice.organisation + ')' : '') + ' has entered the main gate. Expect arrival at farm gate.',
+          { entityId: notice.id, entityType: 'visitor_advance_notice' },
+        );
+        await this.notifications.notifyRole('OWNER' as any, 'SYSTEM' as any,
+          'Visitor Check-In',
+          notice.visitorName + ' checked in at Main Gate at ' + new Date().toLocaleTimeString('en-KE'),
+          { entityId: notice.id, entityType: 'visitor_advance_notice' },
+        );
+      }
+      if (dto.action === 'CHECK_OUT' && dto.gate === 'FARM_GATE') {
+        // Notify Main Gate + Director
+        await this.notifications.notifyRole('SECURITY1' as any, 'SYSTEM' as any,
+          'Visitor Left Farm Gate',
+          notice.visitorName + ' has exited the farm gate. Expect departure at main gate.',
+          { entityId: notice.id, entityType: 'visitor_advance_notice' },
+        );
+        await this.notifications.notifyRole('OWNER' as any, 'SYSTEM' as any,
+          'Visitor Check-Out',
+          notice.visitorName + ' checked out at Farm Gate at ' + new Date().toLocaleTimeString('en-KE'),
+          { entityId: notice.id, entityType: 'visitor_advance_notice' },
+        );
+      }
+    } catch (_) { /* best-effort */ }
 
     return log;
   }
