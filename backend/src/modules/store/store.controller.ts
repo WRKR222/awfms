@@ -1,14 +1,14 @@
 import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { RequirePermissionGuard } from '../../common/guards/require-permission.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
 import { StoreService, CreateStoreIntakeDto, LogFeedDistributionDto } from './store.service';
 
 @ApiTags('store')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, RequirePermissionGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @Controller('store')
 export class StoreController {
   constructor(private readonly svc: StoreService) {}
@@ -32,7 +32,7 @@ export class StoreController {
   }
 
   @Patch('egg-intake/:id/cosign')
-  @RequirePermission(Permission.INVENTORY_MANAGE)
+  @RequirePermission(Permission.PRODUCTION_VIEW)
   cosignIntake(@Param('id') id: string, @Request() req: any) { return this.svc.cosignEggIntake(id, req.user.id); }
 
   @Get('egg-intake/:id')
