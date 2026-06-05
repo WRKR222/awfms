@@ -148,13 +148,6 @@ export function ManagerHome() {
         </div>
       </div>
 
-
-              <ChevronRight className="w-4 h-4 text-gray-300 dark:text-gray-600 flex-shrink-0 group-hover:translate-x-0.5 transition-all" />
-            </button>
-          ))}
-        </div>
-      </div>
-
       {/* Production House Cage Map */}
       <div>
         <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Production House — Cage Map</p>
