@@ -155,6 +155,7 @@ function AppInner() {
         >
           <Route index                    element={<AttendantHome />} />
           <Route path="egg-collection"    element={<EggCollectionPage />} />
+          <Route path="brooder"            element={<BrooderPage />} />
           <Route path="health"            element={<HealthBiosecurity />} />
           <Route path="settings"          element={<SettingsPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />

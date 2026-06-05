@@ -6,7 +6,7 @@
 // and Feed pages have been removed. The home shows today's outstanding
 // AM/PM submissions and any returned-for-correction entries.
 import { useNavigate } from 'react-router-dom';
-import { Egg, Clock, AlertCircle, ChevronRight, Sun, Moon, CheckCircle } from 'lucide-react';
+import { Egg, Clock, AlertCircle, ChevronRight, Sun, Moon, CheckCircle, Lock } from 'lucide-react';
 import { usePendingEntries } from '../../hooks/useFlock';
 import { useAuthStore } from '../../stores/auth.store';
 import { useQuery } from '@tanstack/react-query';
@@ -32,6 +32,10 @@ export function AttendantHome() {
   const amDone = todaySessions.some((s: any) => s.shift === 'AM');
   const pmDone = todaySessions.some((s: any) => s.shift === 'PM');
 
+  const currentHour = dayjs().hour();
+  const amLocked = currentHour >= 13;
+  const pmLocked = currentHour >= 19;
+
   const myEntries = pending.filter((e: any) => e.submittedById === user?.id);
   const returned = myEntries.filter((e: any) => e.status === 'RETURNED');
   const awaitingApproval = myEntries.filter((e: any) => e.status === 'PENDING').length;
@@ -41,33 +45,46 @@ export function AttendantHome() {
   const firstName = user?.fullName?.split(' ')[0] ?? '';
 
   const sessionTask = (kind: 'AM' | 'PM') => {
-    const done = kind === 'AM' ? amDone : pmDone;
-    const Icon = kind === 'AM' ? Sun : Moon;
+    const done   = kind === 'AM' ? amDone   : pmDone;
+    const locked = kind === 'AM' ? amLocked : pmLocked;
+    const Icon   = kind === 'AM' ? Sun      : Moon;
+    const isDisabled = done || locked;
     return (
       <button
         key={kind}
-        onClick={() => navigate('egg-collection')}
-        className="w-full bg-white dark:bg-dark-card rounded-2xl p-5 shadow-sm
-          border border-gray-100 dark:border-dark-border
-          flex items-center gap-4 text-left hover:shadow-md active:scale-[0.98]
-          transition-all group"
+        onClick={() => !isDisabled && navigate('egg-collection')}
+        disabled={isDisabled}
+        className={`w-full rounded-2xl p-5 shadow-sm border flex items-center gap-4 text-left transition-all ${
+          done
+            ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800 cursor-default'
+            : locked
+              ? 'bg-gray-50 dark:bg-dark-bg/60 border-gray-200 dark:border-dark-border opacity-70 cursor-not-allowed'
+              : 'bg-white dark:bg-dark-card border-gray-100 dark:border-dark-border hover:shadow-md active:scale-[0.98] group cursor-pointer'
+        }`}
       >
-        <div className={`w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0
-          group-hover:scale-105 transition-transform ${done ? 'bg-gray-200 dark:bg-dark-bg' : kind === 'AM' ? 'bg-amber-500' : 'bg-indigo-600'}`}>
-          {done
-            ? <CheckCircle className="w-7 h-7 text-green-600" />
-            : <Icon className="w-7 h-7 text-white" />}
+        <div className={`w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0 transition-transform ${
+          done ? 'bg-green-100 dark:bg-green-900/30'
+          : locked ? 'bg-gray-200 dark:bg-dark-bg'
+          : kind === 'AM' ? 'bg-amber-500' : 'bg-indigo-600'}`}>
+          {done   ? <CheckCircle className="w-7 h-7 text-green-600" />
+           : locked ? <Lock className="w-7 h-7 text-gray-400" />
+           : <Icon className="w-7 h-7 text-white" />}
         </div>
         <div className="flex-1 min-w-0">
           <p className="font-bold text-gray-800 dark:text-gray-100 text-base">
-            {kind} Egg Collection {done && <span className="text-xs font-normal text-green-600 ml-1">· Submitted</span>}
+            {kind} Egg Collection
+            {done   && <span className="text-xs font-normal text-green-600 ml-1">· Submitted ✓</span>}
+            {!done && locked && <span className="text-xs font-normal text-gray-400 ml-1">· Window closed</span>}
           </p>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-            Egg counts · Feed · Environment · Vaccines
+            {done   ? 'Awaiting Production Manager verification'
+             : locked ? `${kind} collection window has passed for today`
+             : 'Egg counts · Feed · Environment · Vaccines'}
           </p>
         </div>
-        <ChevronRight className="w-5 h-5 text-gray-300 dark:text-gray-600 flex-shrink-0
-          group-hover:text-gray-500 group-hover:translate-x-0.5 transition-all" />
+        {!done && !locked && (
+          <ChevronRight className="w-5 h-5 text-gray-300 dark:text-gray-600 flex-shrink-0 group-hover:text-gray-500 group-hover:translate-x-0.5 transition-all" />
+        )}
       </button>
     );
   };

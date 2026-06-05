@@ -75,10 +75,14 @@ export function VisitorManagementPage() {
     queryFn: () => api.get('/health/visitors/advance').then(r => r.data),
   });
 
-  const { data: houses = [] } = useQuery({
+  const { data: housesRaw = [] } = useQuery({
     queryKey: ['houses'],
     queryFn: () => api.get('/flock/houses').then(r => r.data).catch(() => []),
   });
+  // Deduplicate by id — prevents duplicate 'Brooder House' entries
+  const houses = (housesRaw as any[]).filter(
+    (h: any, idx: number, arr: any[]) => arr.findIndex((x: any) => x.id === h.id) === idx
+  );
 
   const logVisitorMutation = useMutation({
     mutationFn: (data: object) => api.post('/health/visitors', data),

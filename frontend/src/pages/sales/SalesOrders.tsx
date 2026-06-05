@@ -8,8 +8,9 @@ import dayjs from 'dayjs';
 import {
   ShoppingCart, Plus, X, ChevronDown, ChevronUp, CheckCircle, Clock,
   XCircle, Truck, Package, AlertCircle, TrendingUp, Trash2,
-  MapPin, RefreshCw,
+  MapPin, RefreshCw, FileText, CreditCard, AlertTriangle, ChevronRight, DollarSign,
 } from 'lucide-react';
+import { useForm } from 'react-hook-form';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 type OrderStatus = 'PENDING' | 'CONFIRMED' | 'DELIVERING' | 'DELIVERED' | 'CANCELLED';
@@ -363,8 +364,183 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
 }
 
 // ── Main Page ──────────────────────────────────────────────────────────────────
+
+// ── Invoices & AR ───────────────────────────────────────────────────────────
+
+function useInvoices(status?: string) {
+  return useQuery({
+    queryKey: ['finance-invoices', status],
+    queryFn: async () => {
+      const p = status ? `?status=${status}` : '';
+      return (await api.get(`/finance/invoices${p}`)).data as any[];
+    },
+    staleTime: 30_000,
+  });
+}
+
+function useArSummary() {
+  return useQuery({
+    queryKey: ['ar-summary'],
+    queryFn: async () => (await api.get('/finance/ar/summary')).data as any,
+    staleTime: 60_000,
+  });
+}
+
+function PaymentForm({ invoiceId, balanceDue, onClose }: { invoiceId: string; balanceDue: number; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { register, handleSubmit, formState: { errors } } = useForm<any>({
+    defaultValues: { amount: balanceDue, paymentDate: dayjs().format('YYYY-MM-DD'), paymentMethod: 'CASH' },
+  });
+
+  const log = useMutation({
+    mutationFn: (d: any) => api.post('/finance/invoices/payments', { ...d, invoiceId, amount: Number(d.amount) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['finance-invoices'] }); qc.invalidateQueries({ queryKey: ['ar-summary'] }); onClose(); },
+  });
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white dark:bg-dark-card rounded-2xl p-5 w-full max-w-sm space-y-3" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-gray-800 dark:text-gray-100">Log Payment</h3>
+          <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
+        </div>
+        <form onSubmit={handleSubmit(d => log.mutate(d))} className="space-y-3">
+          <Fld label="Amount (KES) *">
+            <input type="number" step="0.01" min="0.01" {...register('amount', { required: true })} className={inp} />
+          </Fld>
+          <Fld label="Payment Date *">
+            <input type="date" {...register('paymentDate', { required: true })} className={inp} />
+          </Fld>
+          <Fld label="Payment Method *">
+            <select {...register('paymentMethod', { required: true })} className={inp}>
+              <option value="CASH">Cash</option>
+              <option value="MPESA">M-Pesa</option>
+              <option value="BANK_TRANSFER">Bank Transfer</option>
+            </select>
+          </Fld>
+          <Fld label="Reference (optional)">
+            <input {...register('reference')} className={inp} placeholder="Transaction ID, cheque no." />
+          </Fld>
+          <Fld label="Notes">
+            <input {...register('notes')} className={inp} />
+          </Fld>
+          <button type="submit" disabled={log.isPending}
+            className="w-full bg-brand-green text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
+            <CreditCard className="w-4 h-4" />
+            {log.isPending ? 'Logging…' : 'Log Payment'}
+          </button>
+          {log.isError && <p className="text-xs text-red-600">Failed to log payment. Please try again.</p>}
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function InvoicesTab() {
+  const [statusFilter, setStatusFilter] = useState('');
+  const [payingInvoice, setPayingInvoice] = useState<any>(null);
+  const { data: invoices = [], isLoading } = useInvoices(statusFilter || undefined);
+  const { data: ar } = useArSummary();
+
+  return (
+    <div className="space-y-4">
+      {/* GAP-07 FIX: AR summary */}
+      {ar && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
+            <p className="text-xs text-gray-500 mb-1">Total Outstanding</p>
+            <p className="text-xl font-bold text-amber-600">KES {Number(ar.totalOutstanding).toLocaleString()}</p>
+          </div>
+          <div className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
+            <p className="text-xs text-gray-500 mb-1">Overdue Invoices</p>
+            <p className={`text-xl font-bold ${ar.overdueCount > 0 ? 'text-red-500' : 'text-gray-800 dark:text-gray-100'}`}>
+              {ar.overdueCount}
+            </p>
+          </div>
+          <div className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
+            <p className="text-xs text-gray-500 mb-1">Overdue Amount</p>
+            <p className="text-xl font-bold text-red-500">KES {Number(ar.overdueAmount).toLocaleString()}</p>
+          </div>
+          <div className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
+            <p className="text-xs text-gray-500 mb-1">Paid This Month</p>
+            <p className="text-xl font-bold text-brand-green">KES {Number(ar.paidThisMonth).toLocaleString()}</p>
+          </div>
+        </div>
+      )}
+
+      {/* GAP-07 FIX: status filter */}
+      <div className="flex gap-2 flex-wrap items-center">
+        <p className="text-xs font-medium text-gray-500">Filter:</p>
+        {['', 'UNPAID', 'PARTIAL', 'OVERDUE', 'PAID'].map(s => (
+          <button key={s}
+            onClick={() => setStatusFilter(s)}
+            className={`text-xs px-3 py-1.5 rounded-xl font-semibold transition-colors ${statusFilter === s ? 'bg-brand-green text-white' : 'bg-white dark:bg-dark-card border border-gray-200 dark:border-dark-border text-gray-600'}`}>
+            {s || 'All'}
+          </button>
+        ))}
+      </div>
+
+      {isLoading ? (
+        <p className="text-sm text-gray-400 text-center py-4">Loading invoices…</p>
+      ) : invoices.length === 0 ? (
+        <p className="text-sm text-gray-400 text-center py-4">No invoices found</p>
+      ) : (
+        <div className="space-y-2">
+          {invoices.map((inv: any) => {
+            const StatusIcon = STATUS_ICON[inv.status] ?? AlertTriangle;
+            const color = STATUS_COLOR[inv.status] ?? 'bg-gray-100 text-gray-600';
+            const canPay = ['UNPAID', 'PARTIAL', 'OVERDUE'].includes(inv.status);
+            return (
+              <div key={inv.id} className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-4 flex items-center gap-3">
+                <StatusIcon className={`w-5 h-5 flex-shrink-0 ${
+                  inv.status === 'PAID'    ? 'text-green-500' :
+                  inv.status === 'OVERDUE' ? 'text-red-500'   :
+                  inv.status === 'PARTIAL' ? 'text-blue-500'  : 'text-amber-500'
+                }`} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-semibold text-gray-800 dark:text-gray-200 text-sm">{inv.customer?.name}</p>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${color}`}>{inv.status}</span>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {inv.invoiceNumber} · Due {dayjs(inv.dueDate).format('D MMM YYYY')}
+                  </p>
+                </div>
+                <div className="text-right flex-shrink-0">
+                  <p className="text-sm font-bold">KES {Number(inv.totalAmount).toLocaleString()}</p>
+                  {Number(inv.balanceDue) > 0 && (
+                    <p className="text-xs text-red-500">Bal: KES {Number(inv.balanceDue).toLocaleString()}</p>
+                  )}
+                </div>
+                {/* GAP-09 FIX: payment logging button */}
+                {canPay && (
+                  <button
+                    onClick={() => setPayingInvoice(inv)}
+                    className="flex-shrink-0 bg-brand-green text-white text-xs px-3 py-1.5 rounded-lg font-semibold hover:bg-green-700 flex items-center gap-1">
+                    <CreditCard className="w-3 h-3" /> Pay
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Payment modal */}
+      {payingInvoice && (
+        <PaymentForm
+          invoiceId={payingInvoice.id}
+          balanceDue={Number(payingInvoice.balanceDue)}
+          onClose={() => setPayingInvoice(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function SalesOrders() {
   const qc = useQueryClient();
+  const [pageView, setPageView] = useState<'orders' | 'invoices'>('orders');
   const [showOrderForm, setShowOrderForm] = useState(false);
   const [statusFilter, setStatusFilter] = useState<OrderStatus | ''>('');
   const [days, setDays] = useState(30);
@@ -396,6 +572,12 @@ export default function SalesOrders() {
 
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-4xl mx-auto">
+      <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-2xl p-1 mb-4">
+        <button onClick={() => setPageView('orders')} className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold transition-colors ${pageView === 'orders' ? 'bg-white dark:bg-dark-card text-brand-green shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}><ShoppingCart className="w-3.5 h-3.5" /> Orders</button>
+        <button onClick={() => setPageView('invoices')} className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold transition-colors ${pageView === 'invoices' ? 'bg-white dark:bg-dark-card text-brand-green shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}><FileText className="w-3.5 h-3.5" /> Invoices &amp; AR</button>
+      </div>
+      {pageView === 'invoices' && <InvoicesTab />}
+      {pageView === 'orders' && <>
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2"><ShoppingCart className="w-5 h-5 text-brand-green" /> Sales Orders</h1>
@@ -442,6 +624,8 @@ export default function SalesOrders() {
         </div>
       )}
       {showOrderForm && <NewOrderModal onClose={() => setShowOrderForm(false)} pricing={todayPricing ?? null} />}
+      </>
+      }
     </div>
   );
 }

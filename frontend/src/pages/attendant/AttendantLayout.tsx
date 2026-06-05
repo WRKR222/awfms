@@ -5,7 +5,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Outlet, useNavigate } from 'react-router-dom';
-import { Egg, Bell, LogOut, Settings } from 'lucide-react';
+import { Egg, Bell, LogOut, Settings, Flame } from 'lucide-react';
 import { HomeIcon, FlockIcon } from '../../components/ui/icons';
 import { Sidebar, SidebarBody, SidebarLink, SidebarLinkItem } from '../../components/ui/sidebar';
 import { motion } from 'framer-motion';
@@ -35,6 +35,7 @@ export function AttendantLayout() {
   const sidebarLinks: SidebarLinkItem[] = [
     { to: '/attendant',                  label: t('nav.home'),     icon: <HomeIcon className="w-5 h-5" />, end: true },
     { to: '/attendant/egg-collection',   label: t('nav.eggs'),     icon: <Egg className="w-5 h-5" /> },
+    { to: '/attendant/brooder',           label: 'Brooder',         icon: <Flame className="w-5 h-5" /> },
     { to: '/attendant/settings',         label: t('nav.settings'), icon: <Settings className="w-5 h-5" /> },
     {
       to: '/attendant/notifications',

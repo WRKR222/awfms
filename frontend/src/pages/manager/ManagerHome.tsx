@@ -1,10 +1,9 @@
 import { usePendingEntries, useBatches } from '../../hooks/useFlock';
 import { useFeedStock } from '../../hooks/useFeed';
 import { useAuthStore } from '../../stores/auth.store';
-import { AlertTriangle, Package, ClipboardCheck, Wheat, Heart, Users, ChevronRight, Flame, Thermometer, Droplets, Sun } from 'lucide-react';
+import { AlertTriangle, Package, ClipboardCheck, Wheat, Heart, Users, ChevronRight } from 'lucide-react';
 import { useManagerRealtime } from '../../hooks/useRealtime';
 import { CageMap } from '../../components/shared/CageMap';
-import { BrooderCageMap } from '../../components/shared/BrooderCageMap';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 
@@ -65,36 +64,7 @@ export function ManagerHome() {
     },
   ];
 
-  const brooderTasks = [
-    {
-      label: 'Log Temperature',
-      sub: 'Record brooder house temperature',
-      icon: Thermometer,
-      color: 'bg-orange-500',
-      route: '/manager/brooder',
-    },
-    {
-      label: 'Water Consumption',
-      sub: 'Log daily water intake for brooder',
-      icon: Droplets,
-      color: 'bg-cyan-500',
-      route: '/manager/brooder',
-    },
-    {
-      label: 'Lighting Check',
-      sub: 'Verify brooder lighting is consistent',
-      icon: Sun,
-      color: 'bg-yellow-500',
-      route: '/manager/brooder',
-    },
-    {
-      label: 'Brooder Vaccines',
-      sub: 'Register any vaccines administered',
-      icon: Flame,
-      color: 'bg-amber-600',
-      route: '/manager/brooder',
-    },
-  ];
+
 
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-5xl mx-auto">
@@ -178,23 +148,7 @@ export function ManagerHome() {
         </div>
       </div>
 
-      {/* Brooder Tasks */}
-      <div>
-        <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Today's Brooder Tasks</p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {brooderTasks.map(({ label, sub, icon: Icon, color, route }) => (
-            <button
-              key={label}
-              onClick={() => navigate(route)}
-              className="w-full bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-dark-border flex items-center gap-4 text-left hover:shadow-md active:scale-[0.98] transition-all group"
-            >
-              <div className={`w-12 h-12 ${color} rounded-xl flex items-center justify-center flex-shrink-0 group-hover:scale-105 transition-transform`}>
-                <Icon className="w-6 h-6 text-white" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">{label}</p>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{sub}</p>
-              </div>
+
               <ChevronRight className="w-4 h-4 text-gray-300 dark:text-gray-600 flex-shrink-0 group-hover:translate-x-0.5 transition-all" />
             </button>
           ))}
@@ -209,11 +163,7 @@ export function ManagerHome() {
         </div>
       </div>
 
-      {/* Brooder Cage Map */}
-      <div>
-        <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Brooder — Live Map</p>
-        <BrooderCageMap />
-      </div>
+
     </div>
   );
 }

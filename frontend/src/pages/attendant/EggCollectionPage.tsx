@@ -107,13 +107,21 @@ function buildDefaultBlock(): { rows: RowEntry[] } {
 
 const defaultShift: 'AM' | 'PM' = dayjs().hour() < 14 ? 'AM' : 'PM';
 
+// AM window closes at 13:00; PM window closes at 19:00
+function useShiftLocks() {
+  const h = dayjs().hour();
+  return { amLocked: h >= 13, pmLocked: h >= 19 };
+}
+
 export function EggCollectionPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { data: batches = [] } = useQuery({
+  const { data: allBatches = [] } = useQuery({
     queryKey: ['batches', 'active'],
     queryFn: () => api.get('/flock/batches?isActive=true').then(r => r.data),
   });
+  // Only PRODUCTION-stage batches lay eggs — brooder/grower birds do not
+  const batches = (allBatches as any[]).filter((b: any) => b.stage === 'PRODUCTION');
   const { register, handleSubmit, watch, formState: { errors } } = useForm({
     defaultValues: {
       shift: defaultShift,
@@ -127,6 +135,7 @@ export function EggCollectionPage() {
       houseTempC: '' as string | number,
     },
   });
+  const { amLocked, pmLocked } = useShiftLocks();
   const { isOnline } = useOfflineStore();
   const [submitted, setSubmitted] = useState(false);
   const [wasQueued, setWasQueued] = useState(false);
@@ -284,12 +293,12 @@ export function EggCollectionPage() {
             </label>
             <select {...register('batchId', { required: true })} className={inputCls}>
               <option value="">Select batch...</option>
-              {(batches as any[]).length === 0 && (
-                <option value="" disabled>No active batches found</option>
+              {batches.length === 0 && (
+                <option value="" disabled>No production-stage batches available</option>
               )}
-              {(batches as any[]).map((b: any) => (
+              {batches.map((b: any) => (
                 <option key={b.id} value={b.id}>
-                  {b.batchCode} — {b.house?.name} [{b.stage}]
+                  {b.batchCode} — Production House ({b.house?.name ?? 'N/A'})
                 </option>
               ))}
             </select>
@@ -299,19 +308,24 @@ export function EggCollectionPage() {
               Collection Session *
             </label>
             <div className="flex gap-3">
-              {(['AM', 'PM'] as const).map(val => (
-                <label key={val} className="flex-1">
-                  <input type="radio" {...register('shift')} value={val} className="sr-only" />
-                  <div className={`text-center py-3 rounded-xl border-2 cursor-pointer font-semibold transition-colors ${
-                    shift === val
-                      ? 'border-brand-green bg-brand-green/10 text-brand-green'
-                      : 'border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400'
-                  }`}>
-                    <div className="font-bold text-lg">{val}</div>
-                    <div className="text-xs opacity-70">{val === 'AM' ? 'Morning' : 'Afternoon'}</div>
-                  </div>
-                </label>
-              ))}
+              {(['AM', 'PM'] as const).map(val => {
+                const isLocked = val === 'AM' ? amLocked : pmLocked;
+                return (
+                  <label key={val} className={`flex-1 ${isLocked ? 'cursor-not-allowed' : ''}`}>
+                    <input type="radio" {...register('shift')} value={val} className="sr-only" disabled={isLocked} />
+                    <div className={`text-center py-3 rounded-xl border-2 font-semibold transition-colors ${
+                      isLocked
+                        ? 'border-gray-200 dark:border-dark-border bg-gray-100 dark:bg-dark-bg/60 text-gray-400 cursor-not-allowed opacity-60'
+                        : shift === val
+                          ? 'border-brand-green bg-brand-green/10 text-brand-green cursor-pointer'
+                          : 'border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 cursor-pointer'
+                    }`}>
+                      <div className="font-bold text-lg">{val}</div>
+                      <div className="text-xs opacity-70">{isLocked ? '🔒 Window closed' : val === 'AM' ? 'Morning' : 'Afternoon'}</div>
+                    </div>
+                  </label>
+                );
+              })}
             </div>
             {shift === 'PM' && (
               <p className="mt-2 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">

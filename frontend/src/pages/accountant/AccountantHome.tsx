@@ -6,7 +6,7 @@
 //   GAP-15: LPO task card added (with pending PR count badge)
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, ChevronRight, CheckCircle, XCircle, AlertTriangle,
-         DollarSign, Tag, FileText, ClipboardList } from 'lucide-react';
+         DollarSign, Tag, ClipboardList } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';           // GAP-10 FIX: was ../../lib/api
 import { useAuthStore } from '../../stores/auth.store';
@@ -90,14 +90,6 @@ export function AccountantHome() {
       route: '/accountant/pricing',
       badge: summary?.pendingPriceSet ? '!' : null,
       alert: summary?.pendingPriceSet,
-    },
-    {
-      label: 'Tally',
-      sub: 'Sign off on morning egg tally',
-      icon: FileText,
-      color: 'bg-blue-500',
-      route: '/accountant/tally',
-      badge: null,
     },
     // GAP-15 FIX: LPO card was missing — core daily task for accountant
     {

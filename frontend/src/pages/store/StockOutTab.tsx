@@ -81,6 +81,7 @@ export function StockOutTab() {
       qc.invalidateQueries({ queryKey: ['store-stock-out'] });
       qc.invalidateQueries({ queryKey: ['store-items'] });
       qc.invalidateQueries({ queryKey: ['store-items-low'] });
+      qc.invalidateQueries({ queryKey: ['feed'] }); // sync FeedHub
       reset({ issuedDate: dayjs().format('YYYY-MM-DD') });
       setShowForm(false);
     },

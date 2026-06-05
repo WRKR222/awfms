@@ -560,8 +560,8 @@ function ExportTab() {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
+// NOTE: Invoices & AR tab moved to Sales role → Orders page
 const TABS = [
-  { id: 'invoices', label: 'Invoices & AR', icon: FileText },
   { id: 'expenses', label: 'Expenses',      icon: DollarSign },
   { id: 'export',   label: 'Export',        icon: FileText },
   { id: 'import',   label: 'Import',        icon: FileUp },
@@ -570,10 +570,11 @@ const TABS = [
 type TabId = typeof TABS[number]['id'];
 
 export function AccountantFinancePage() {
-  const [activeTab, setActiveTab] = useState<TabId>('invoices');
+  const [activeTab, setActiveTab] = useState<TabId>('expenses');
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-5xl mx-auto">
       <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Finance</h1>
+      <p className="text-xs text-gray-500 dark:text-gray-400 -mt-3">💡 Invoices &amp; AR are now in Sales role → Orders page.</p>
       <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-2xl p-1">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button key={id} onClick={() => setActiveTab(id)}
@@ -584,7 +585,6 @@ export function AccountantFinancePage() {
           </button>
         ))}
       </div>
-      {activeTab === 'invoices' && <InvoicesTab />}
       {activeTab === 'expenses' && <ExpensesTab />}
       {activeTab === 'export'   && <ExportTab />}
       {activeTab === 'import'   && <ImportTab />}

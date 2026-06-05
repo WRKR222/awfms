@@ -42,8 +42,17 @@ export default function StoreFeedDistribution() {
   });
 
   const submit = useMutation({
-    mutationFn: (d: any) => api.post('/store/feed-distribution', d).then(r => r.data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['feed'] }); },
+    mutationFn: (d: any) => {
+      const batch = (batches as any[]).find((b: any) => b.id === d.batchId);
+      return api.post('/store/feed-distribution', {
+        ...d,
+        houseId: batch?.houseId ?? undefined,
+      }).then(r => r.data);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['feed'] });
+      qc.invalidateQueries({ queryKey: ['feed', 'stock'] });
+    },
   });
 
   const [showPRPrompt, setShowPRPrompt] = useState(false);
@@ -53,6 +62,7 @@ export default function StoreFeedDistribution() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['feed-requests'] });
       qc.invalidateQueries({ queryKey: ['feed'] });
+      qc.invalidateQueries({ queryKey: ['feed', 'stock'] });
       qc.invalidateQueries({ queryKey: ['store-items'] });
       setShowPRPrompt(true);
       setTimeout(() => setShowPRPrompt(false), 8000);
