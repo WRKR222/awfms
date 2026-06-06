@@ -1,7 +1,7 @@
 // src/pages/sales/SalesOrders.tsx
 // Grade-free version: egg category stored as itemType (STANDARD_EGGS / STARTER_EGGS /
 // CONSUMABLE_BROKEN_EGGS). No grade field anywhere. Prices auto-enforced from accountant.
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from 'dayjs';
@@ -43,6 +43,35 @@ const STATUS_CONFIG: Record<OrderStatus, { label: string; color: string; icon: a
 };
 
 const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green disabled:opacity-60 disabled:cursor-not-allowed';
+
+// inp — alias used in modal forms (same styles as iCls)
+const inp = iCls;
+
+// ── Invoice status maps (used in the Invoices tab) ────────────────────────────
+const STATUS_ICON: Record<string, any> = {
+  UNPAID:  Clock,
+  PARTIAL: DollarSign,
+  OVERDUE: AlertTriangle,
+  PAID:    CheckCircle,
+};
+const STATUS_COLOR: Record<string, string> = {
+  UNPAID:  'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400',
+  PARTIAL: 'bg-blue-100  dark:bg-blue-900/30  text-blue-700  dark:text-blue-400',
+  OVERDUE: 'bg-red-100   dark:bg-red-900/30   text-red-700   dark:text-red-400',
+  PAID:    'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400',
+};
+
+// ── Fld — labelled field wrapper used in modal forms ─────────────────────────
+function Fld({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wide">
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
 
 interface DailyPrice { pricePerEgg: number; pricePerEggStarter: number | null; pricePerEggBroken: number | null; expectedRevenue: number | null; }
 interface OrderItem  { eggType: EggItemType; quantityEggs: number; }
