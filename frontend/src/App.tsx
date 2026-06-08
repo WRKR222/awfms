@@ -41,6 +41,7 @@ import { DataUploadPage }        from './pages/owner/DataUploadPage';
 import { OwnerSalesOrdersPage }  from './pages/owner/OwnerSalesOrdersPage';
 
 // Sales pages
+import { SalesEggStockPage } from './pages/sales/SalesEggStockPage';
 import SalesHome            from './pages/sales/SalesHome';
 import SalesOrders          from './pages/sales/SalesOrders';
 import AdvanceBookingsPage   from './pages/sales/AdvanceBookingsPage';
@@ -237,6 +238,7 @@ function AppInner() {
           <Route path="clients"           element={<ClientsPage />} />
           <Route path="breakage"          element={<SalesBreakagePage />} />
           <Route path="delivery"          element={<SalesDeliveryPage />} />
+          <Route path="egg-stock"         element={<SalesEggStockPage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="settings"          element={<SettingsPage />} />

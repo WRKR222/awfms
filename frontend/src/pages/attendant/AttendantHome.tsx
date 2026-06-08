@@ -6,7 +6,7 @@
 // and Feed pages have been removed. The home shows today's outstanding
 // AM/PM submissions and any returned-for-correction entries.
 import { useNavigate } from 'react-router-dom';
-import { Egg, Clock, AlertCircle, ChevronRight, Sun, Moon, CheckCircle, Lock } from 'lucide-react';
+import { Egg, Clock, AlertCircle, ChevronRight, Sun, Moon, CheckCircle, Lock, Flame } from 'lucide-react';
 import { usePendingEntries } from '../../hooks/useFlock';
 import { useAuthStore } from '../../stores/auth.store';
 import { useQuery } from '@tanstack/react-query';
@@ -33,8 +33,8 @@ export function AttendantHome() {
   const pmDone = todaySessions.some((s: any) => s.shift === 'PM');
 
   const currentHour = dayjs().hour();
-  const amLocked = currentHour >= 13;
-  const pmLocked = currentHour >= 19;
+  const amLocked = currentHour >= 12;
+  const pmLocked = false;
 
   const myEntries = pending.filter((e: any) => e.submittedById === user?.id);
   const returned = myEntries.filter((e: any) => e.status === 'RETURNED');
@@ -139,6 +139,20 @@ export function AttendantHome() {
           Each session bundles egg collection, session feed consumption, environmental data
           and any vaccines/supplements given — they are submitted together and locked once verified.
         </p>
+      </div>
+
+      {/* Brooder Management task */}
+      <div>
+        <button onClick={() => navigate('brooder')} className="w-full bg-white dark:bg-dark-card rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-dark-border flex items-center gap-4 text-left hover:shadow-md active:scale-[0.98] transition-all group">
+          <div className="w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0 bg-orange-500 group-hover:scale-105 transition-transform">
+            <Flame className="w-7 h-7 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-gray-800 dark:text-gray-100 text-base">Brooder Management</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Log temperature · Feed · Water · Health</p>
+          </div>
+          <ChevronRight className="w-5 h-5 text-gray-300 dark:text-gray-600 flex-shrink-0 group-hover:text-gray-500 group-hover:translate-x-0.5 transition-all" />
+        </button>
       </div>
 
       {/* Awaiting approval banner */}

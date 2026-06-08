@@ -5,7 +5,7 @@ import { useNotificationsStore } from '../../stores/notifications.store';
 import { useLoginNotifications } from '../../hooks/useLoginNotifications';
 import { LoginNotificationModal } from '../../components/shared/LoginNotificationModal';
 import { MobileSidebar } from '../../components/shared/MobileSidebar';
-import { ShoppingCart, Home, BookOpen, Users, Bell, LogOut, FileCheck, Settings, EggOff, Truck } from 'lucide-react';
+import { ShoppingCart, Home, BookOpen, Users, Bell, LogOut, FileCheck, Settings, EggOff, Truck, Package } from 'lucide-react';
 import { Sidebar, SidebarBody, SidebarLink, SidebarLinkItem } from '../../components/ui/sidebar';
 import { motion } from 'framer-motion';
 import { FlockIcon } from '../../components/ui/icons';
@@ -17,6 +17,7 @@ const navDefs = [
   { label: 'Clients',  icon: Users,        to: '/sales/clients' },
   { label: 'Breakage', icon: EggOff,       to: '/sales/breakage' },
   { label: 'Delivery', icon: Truck,        to: '/sales/delivery' },
+  { label: 'Egg Stock', icon: Package,     to: '/sales/egg-stock' },
   { label: 'Tally',    icon: FileCheck,    to: '/sales/tally' },
   { label: 'Settings', icon: Settings,     to: '/sales/settings' },
 ];

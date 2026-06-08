@@ -107,7 +107,7 @@ const defaultShift: 'AM' | 'PM' = dayjs().hour() < 14 ? 'AM' : 'PM';
 // AM window closes at 13:00; PM window closes at 19:00
 function useShiftLocks() {
   const h = dayjs().hour();
-  return { amLocked: h >= 13, pmLocked: h >= 19 };
+  return { amLocked: h >= 12, pmLocked: false };
 }
 
 export function EggCollectionPage() {
@@ -116,6 +116,12 @@ export function EggCollectionPage() {
   const { data: allBatches = [] } = useQuery({
     queryKey: ['batches', 'active'],
     queryFn: () => api.get('/flock/batches?isActive=true').then(r => r.data),
+  });
+
+  const { data: todaySessions = [] } = useQuery({
+    queryKey: ['egg-sessions-today'],
+    queryFn: () => api.get(`/production/sessions?sessionDate=${dayjs().format('YYYY-MM-DD')}`).then(r => r.data).catch(() => []),
+    refetchInterval: 30_000,
   });
   // Only PRODUCTION-stage batches lay eggs — brooder/grower birds do not
   const batches = (allBatches as any[]).filter((b: any) => b.stage === 'PRODUCTION');
@@ -155,6 +161,9 @@ export function EggCollectionPage() {
     },
     onQueued: () => { setSubmitted(true); setWasQueued(true); },
   });
+
+  const amSession = (todaySessions as any[]).find((s: any) => s.shift === 'AM');
+  const pmBlockedByAM = amSession?.status !== 'APPROVED';
 
   const shift = watch('shift') as 'AM' | 'PM';
   const batchId = watch('batchId');
@@ -251,6 +260,9 @@ export function EggCollectionPage() {
               <span className="font-bold text-brand-green">{grandTotalEggs} eggs</span>
               {' · '}{eggsToTrays(grandTotalEggs)} · HDP {hdp}%
             </p>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+              Feed: <span className="font-medium">{FEED_TYPE_OPTIONS.find(o => o.value === watch("feedTypeName"))?.label ?? "—"}</span>
+            </p>
             <p className="text-xs text-gray-400 mt-2">
               Awaiting Production Manager verification — entry is now locked.
             </p>
@@ -306,7 +318,7 @@ export function EggCollectionPage() {
             </label>
             <div className="flex gap-3">
               {(['AM', 'PM'] as const).map(val => {
-                const isLocked = val === 'AM' ? amLocked : pmLocked;
+                const isLocked = val === 'AM' ? amLocked : (pmLocked || pmBlockedByAM);
                 return (
                   <label key={val} className={`flex-1 ${isLocked ? 'cursor-not-allowed' : ''}`}>
                     <input type="radio" {...register('shift')} value={val} className="sr-only" disabled={isLocked} />
@@ -318,7 +330,9 @@ export function EggCollectionPage() {
                           : 'border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 cursor-pointer'
                     }`}>
                       <div className="font-bold text-lg">{val}</div>
-                      <div className="text-xs opacity-70">{isLocked ? '🔒 Window closed' : val === 'AM' ? 'Morning' : 'Afternoon'}</div>
+                      <div className="text-xs opacity-70">
+                        {isLocked ? (val === 'PM' && pmBlockedByAM ? '🔒 Awaiting AM verification' : '🔒 Window closed') : val === 'AM' ? 'Morning' : 'Afternoon'}
+                      </div>
                     </div>
                   </label>
                 );

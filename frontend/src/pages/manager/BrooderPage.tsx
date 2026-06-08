@@ -51,6 +51,7 @@ interface BrooderLog {
   logDate: string;
   waterConsumptionL?: number;
   feedConsumedKg?: number;
+  feedType?: string;
   temperature?: number;
   lightingOk: boolean;
   mortalityCount: number;
@@ -401,7 +402,9 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
                 <div className="flex gap-3 flex-wrap">
                   {log.temperature != null && <span>🌡 {log.temperature}°C</span>}
                   {log.waterConsumptionL != null && <span>💧 {log.waterConsumptionL}L</span>}
-                  {log.feedConsumedKg != null && <span>🌾 {log.feedConsumedKg}kg feed</span>}
+                  {log.feedConsumedKg != null && (
+                    <span>🌾 {FEED_TYPE_OPTIONS.find(o => o.value === log.feedType)?.label ?? log.feedType ?? 'Feed'}: {log.feedConsumedKg}kg</span>
+                  )}
                   {log.vaccineGiven && <span>💉 {log.vaccineGiven}</span>}
                   {!log.lightingOk && <span className="text-red-400">⚠ Lighting issue</span>}
                 </div>

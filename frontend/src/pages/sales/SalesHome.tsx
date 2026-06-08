@@ -7,7 +7,7 @@ import { useQuery } from '@tanstack/react-query';
 import api from '../../lib/api/client';
 import {
   ShoppingCart, BookOpen, Users, FileCheck, ChevronRight,
-  EggOff, Truck, AlertTriangle, ArrowRight, RefreshCw,
+  EggOff, Truck, AlertTriangle, ArrowRight, RefreshCw, Package,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 
@@ -99,6 +99,7 @@ export default function SalesHome() {
     { label: 'Egg Breakage',      sub: 'Log broken egg reclassifications',         icon: EggOff,       color: 'bg-red-500',     route: '/sales/breakage', badge: null },
     { label: 'Delivery Tracking', sub: 'Track orders out for delivery',            icon: Truck,        color: 'bg-blue-500',    route: '/sales/delivery', badge: (deliveryCount as number) > 0 ? deliveryCount : null },
     { label: 'Clients',           sub: 'View and manage customer records',         icon: Users,        color: 'bg-purple-500',  route: '/sales/clients',  badge: null },
+    { label: 'Egg Stock',         sub: 'View original & current egg inventory',    icon: Package,     color: 'bg-emerald-600', route: '/sales/egg-stock', badge: null },
     { label: 'Tally Verification',sub: 'Verify and confirm egg tally records',     icon: FileCheck,    color: 'bg-amber-500',   route: '/sales/tally',    badge: null },
   ];
 
