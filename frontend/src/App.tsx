@@ -18,11 +18,11 @@ import StoreLayout          from './pages/store/StoreLayout';
 // Attendant pages
 import { AttendantHome }    from './pages/attendant/AttendantHome';
 import { EggCollectionPage } from './pages/attendant/EggCollectionPage';
+import { BrooderPage }      from './pages/manager/BrooderPage';
 
 // Manager pages
 import { ManagerHome }      from './pages/manager/ManagerHome';
 import { ManagerBatches }   from './pages/manager/ManagerBatches';
-import { BrooderPage }      from './pages/manager/BrooderPage';
 import { VerificationQueue } from './pages/manager/VerificationQueue';
 
 // Accountant pages
@@ -172,7 +172,6 @@ function AppInner() {
         >
           <Route index                    element={<ManagerHome />} />
           <Route path="batches"           element={<ManagerBatches />} />
-          <Route path="brooder"           element={<BrooderPage />} />
           <Route path="verification"      element={<VerificationQueue />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="visitors"          element={<VisitorManagementPage />} />
