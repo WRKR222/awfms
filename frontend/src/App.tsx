@@ -23,7 +23,6 @@ import { EggCollectionPage } from './pages/attendant/EggCollectionPage';
 import { ManagerHome }      from './pages/manager/ManagerHome';
 import { ManagerBatches }   from './pages/manager/ManagerBatches';
 import { BrooderPage }      from './pages/manager/BrooderPage';
-import { FeedHub }          from './pages/manager/FeedHub';
 import { VerificationQueue } from './pages/manager/VerificationQueue';
 
 // Accountant pages
@@ -173,7 +172,6 @@ function AppInner() {
           <Route index                    element={<ManagerHome />} />
           <Route path="batches"           element={<ManagerBatches />} />
           <Route path="brooder"           element={<BrooderPage />} />
-          <Route path="feed"              element={<FeedHub />} />
           <Route path="verification"      element={<VerificationQueue />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="visitors"          element={<VisitorManagementPage />} />

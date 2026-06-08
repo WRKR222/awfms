@@ -1,7 +1,6 @@
 import { usePendingEntries, useBatches } from '../../hooks/useFlock';
-import { useFeedStock } from '../../hooks/useFeed';
 import { useAuthStore } from '../../stores/auth.store';
-import { AlertTriangle, Package, ClipboardCheck, Wheat, Heart, Users, ChevronRight } from 'lucide-react';
+import { AlertTriangle, Package, ClipboardCheck, Heart, Users, ChevronRight } from 'lucide-react';
 import { useManagerRealtime } from '../../hooks/useRealtime';
 import { CageMap } from '../../components/shared/CageMap';
 import { useNavigate } from 'react-router-dom';
@@ -14,11 +13,6 @@ export function ManagerHome() {
 
   const { data: pending = [] } = usePendingEntries();
   const { data: batches = [] } = useBatches({ isActive: true });
-  const { data: feedStock } = useFeedStock();
-
-  const lowFeedAlerts = feedStock
-    ? Object.values(feedStock).filter((s: any) => s.isLow)
-    : [];
 
   const hour = dayjs().hour();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
@@ -31,13 +25,6 @@ export function ManagerHome() {
       icon: Package,
       color: 'bg-brand-green',
       route: '/manager/batches',
-    },
-    {
-      label: 'Feed Hub',
-      sub: 'Monitor and manage feed stock',
-      icon: Wheat,
-      color: 'bg-amber-500',
-      route: '/manager/feed',
     },
     {
       label: 'Verification',
@@ -76,22 +63,7 @@ export function ManagerHome() {
         <p className="text-sm opacity-75 mt-0.5">Production Manager Dashboard</p>
       </div>
 
-      {/* Feed alert */}
-      {lowFeedAlerts.length > 0 && (
-        <div className="bg-red-50 dark:bg-red-900/20 border-2 border-red-300 dark:border-red-700 rounded-2xl p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400" />
-            <p className="font-bold text-red-700 dark:text-red-400">Low Feed Stock Alert</p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {lowFeedAlerts.map((s: any) => (
-              <span key={s.feedType} className="bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 text-xs px-3 py-1 rounded-full font-medium">
-                {s.feedType.replace(/_/g, ' ')} — {Math.round(s.currentStockKg)} kg remaining
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -104,13 +76,6 @@ export function ManagerHome() {
           <p className={`text-3xl font-bold ${(pending as any[]).length > 0 ? 'text-amber-600' : 'text-gray-800 dark:text-gray-100'}`}>
             {(pending as any[]).length}
           </p>
-        </div>
-        <div className="bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-dark-border">
-          <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Feed Alerts</p>
-          <p className={`text-3xl font-bold ${lowFeedAlerts.length > 0 ? 'text-red-600' : 'text-brand-green'}`}>
-            {lowFeedAlerts.length}
-          </p>
-          <p className="text-xs text-gray-400 mt-0.5">{lowFeedAlerts.length > 0 ? 'Below threshold' : 'All healthy'}</p>
         </div>
         <div className="bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-dark-border">
           <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Total Birds</p>

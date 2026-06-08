@@ -26,8 +26,6 @@ import { api } from '../../lib/api/client';
 import { useOfflineMutation } from '../../hooks/useOfflineSync';
 import { useOfflineStore } from '../../stores/offline.store';
 import dayjs from 'dayjs';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { useFeedStock } from '../../hooks/useFeed';
 
 const inputCls  = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-base bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
 const numInput  = 'w-full text-center border border-gray-200 dark:border-dark-border rounded-lg px-1 py-2 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
@@ -35,23 +33,22 @@ const cardCls   = 'bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border b
 const sectionLbl = 'text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3';
 
 
-// Feed type dropdown — shows only types with stock in Feed Hub
-function FeedTypeDropdown({ register, fieldName }: { register: any; fieldName: string }) {
-  const { data: stockData } = useFeedStock();
-  const feedTypes = stockData
-    ? Object.entries(stockData as Record<string, any>)
-        .filter(([, s]) => s.currentStockKg > 0)
-        .map(([key, s]) => ({ value: key, label: key.replace(/_/g, ' '), stock: s.currentStockKg }))
-    : [];
+// Static feed type options
+const FEED_TYPE_OPTIONS = [
+  { value: 'CHICK_MASH',  label: "Chick & Duckling Mash" },
+  { value: 'GROWER_MASH', label: "Grower's Mash" },
+  { value: 'LAYER_MASH',  label: "Layer's Mash" },
+] as const;
 
+function FeedTypeDropdown({ register, fieldName }: { register: any; fieldName: string }) {
   return (
-    <select {...register(fieldName)} className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100">
+    <select
+      {...register(fieldName)}
+      className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green"
+    >
       <option value="">Select feed type...</option>
-      {feedTypes.length === 0 && <option disabled>No feed in stock</option>}
-      {feedTypes.map(o => (
-        <option key={o.value} value={o.value}>
-          {o.label} ({Math.round(o.stock)} kg in stock)
-        </option>
+      {FEED_TYPE_OPTIONS.map(o => (
+        <option key={o.value} value={o.value}>{o.label}</option>
       ))}
     </select>
   );

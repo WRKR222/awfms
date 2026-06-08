@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { api } from '../../lib/api';
-import { useFeedStock } from '../../hooks/useFeed';
 import dayjs from 'dayjs';
 import {
   Bird, Thermometer, Droplets, Sun, XCircle, Plus,
@@ -12,24 +11,22 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-// Feed type dropdown — shows only types with stock in Feed Hub
-function FeedTypeSelect({ register }: { register: any }) {
-  const { data: stockData } = useFeedStock();
-  const feedTypes = stockData
-    ? Object.entries(stockData as Record<string, any>)
-        .filter(([, s]) => s.currentStockKg > 0)
-        .map(([key, s]) => ({ value: key, label: key.replace(/_/g, ' '), stock: s.currentStockKg }))
-    : [];
+// Static feed type options
+const FEED_TYPE_OPTIONS = [
+  { value: 'CHICK_MASH',  label: "Chick & Duckling Mash" },
+  { value: 'GROWER_MASH', label: "Grower's Mash" },
+  { value: 'LAYER_MASH',  label: "Layer's Mash" },
+] as const;
 
-  // Only show feed types that exist in the Feed Hub (have stock)
+function FeedTypeSelect({ register }: { register: any }) {
   return (
-    <select {...register('feedType')} className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100">
+    <select
+      {...register('feedType')}
+      className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green"
+    >
       <option value="">Select feed type...</option>
-      {feedTypes.length === 0 && <option disabled>No feed in stock — add via Feed Hub</option>}
-      {feedTypes.map(o => (
-        <option key={o.value} value={o.value}>
-          {o.label} ({Math.round(o.stock)} kg in stock)
-        </option>
+      {FEED_TYPE_OPTIONS.map(o => (
+        <option key={o.value} value={o.value}>{o.label}</option>
       ))}
     </select>
   );

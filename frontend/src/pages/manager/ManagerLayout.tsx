@@ -5,7 +5,7 @@ import { useNotificationsStore } from '../../stores/notifications.store';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import {
-  LayoutDashboard, Package, Wheat, ClipboardCheck, FileCheck, Bell, LogOut,
+  LayoutDashboard, Package, ClipboardCheck, FileCheck, Bell, LogOut,
   Users, BarChart2, Heart, Settings, AlertTriangle, Syringe,
 } from 'lucide-react';
 import { useLoginNotifications } from '../../hooks/useLoginNotifications';
@@ -49,7 +49,6 @@ export function ManagerLayout() {
   const sidebarLinks: SidebarLinkItem[] = [
     { to: '/manager',                  label: 'Home',          icon: <LayoutDashboard className="w-5 h-5" />, end: true },
     { to: '/manager/batches',          label: 'Batches',       icon: <Package className="w-5 h-5" /> },
-    { to: '/manager/feed',             label: 'Feed Hub',      icon: <Wheat className="w-5 h-5" /> },
     { to: '/manager/verification',     label: 'Verification',  icon: <ClipboardCheck className="w-5 h-5" /> },
     {
       to: '/manager/tally',
