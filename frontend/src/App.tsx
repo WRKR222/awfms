@@ -18,7 +18,7 @@ import StoreLayout          from './pages/store/StoreLayout';
 // Attendant pages
 import { AttendantHome }    from './pages/attendant/AttendantHome';
 import { EggCollectionPage } from './pages/attendant/EggCollectionPage';
-import { BrooderPage }      from './pages/manager/BrooderPage';
+
 
 // Manager pages
 import { ManagerHome }      from './pages/manager/ManagerHome';

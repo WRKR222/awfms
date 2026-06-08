@@ -1,4 +1,4 @@
-// src/pages/manager/BrooderPage.tsx
+// src/pages/attendant/BrooderPage.tsx
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
@@ -6,17 +6,27 @@ import { api } from '../../lib/api';
 import dayjs from 'dayjs';
 import {
   Bird, Thermometer, Droplets, Sun, XCircle, Plus,
-  X, CheckCircle, AlertTriangle, ChevronRight, Flame,
+  X, AlertTriangle, ChevronRight, Flame,
 } from 'lucide-react';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Feed type options & label helper ─────────────────────────────────────────
 
-// Static feed type options
 const FEED_TYPE_OPTIONS = [
-  { value: 'CHICK_MASH',  label: "Chick & Duckling Mash" },
+  { value: 'CHICK_MASH',  label: 'Chick & Duckling Mash' },
   { value: 'GROWER_MASH', label: "Grower's Mash" },
   { value: 'LAYER_MASH',  label: "Layer's Mash" },
 ] as const;
+
+const FEED_TYPE_LABELS: Record<string, string> = {
+  CHICK_MASH:  'Chick & Duckling Mash',
+  GROWER_MASH: "Grower's Mash",
+  LAYER_MASH:  "Layer's Mash",
+};
+
+function feedLabel(type?: string) {
+  if (!type) return null;
+  return FEED_TYPE_LABELS[type] ?? type;
+}
 
 function FeedTypeSelect({ register }: { register: any }) {
   return (
@@ -31,6 +41,8 @@ function FeedTypeSelect({ register }: { register: any }) {
     </select>
   );
 }
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface BrooderBatch {
   id: string;
@@ -50,6 +62,7 @@ interface BrooderLog {
   batchId: string;
   logDate: string;
   waterConsumptionL?: number;
+  feedType?: string;       // ← added
   feedConsumedKg?: number;
   temperature?: number;
   lightingOk: boolean;
@@ -68,7 +81,7 @@ function LogModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const { register, handleSubmit, formState: { errors } } = useForm({
+  const { register, handleSubmit } = useForm({
     defaultValues: {
       logDate: dayjs().format('YYYY-MM-DD'),
       waterConsumptionL: '',
@@ -128,10 +141,7 @@ function LogModal({
           </button>
         </div>
 
-        <form
-          onSubmit={handleSubmit(d => submit.mutate(d))}
-          className="p-5 space-y-4"
-        >
+        <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-4">
           <div>
             <label className={lCls}>Log Date</label>
             <input {...register('logDate')} type="date" className={iCls} />
@@ -142,11 +152,8 @@ function LogModal({
               <label className={lCls}>Water Consumed (L)</label>
               <input
                 {...register('waterConsumptionL')}
-                type="number"
-                step="0.1"
-                min="0"
-                className={iCls}
-                placeholder="e.g. 25"
+                type="number" step="0.1" min="0"
+                className={iCls} placeholder="e.g. 25"
               />
             </div>
             <div>
@@ -157,29 +164,23 @@ function LogModal({
               <label className={lCls}>Feed Consumed (kg)</label>
               <input
                 {...register('feedConsumedKg')}
-                type="number"
-                step="0.1"
-                min="0"
-                className={iCls}
-                placeholder="e.g. 10"
+                type="number" step="0.1" min="0"
+                className={iCls} placeholder="e.g. 10"
               />
             </div>
             <div>
               <label className={lCls}>Temperature (°C)</label>
               <input
                 {...register('temperature')}
-                type="number"
-                step="0.1"
-                className={iCls}
-                placeholder="e.g. 32"
+                type="number" step="0.1"
+                className={iCls} placeholder="e.g. 32"
               />
             </div>
             <div>
               <label className={lCls}>Mortality Count</label>
               <input
                 {...register('mortalityCount')}
-                type="number"
-                min="0"
+                type="number" min="0"
                 className={`${iCls} text-center font-bold`}
                 placeholder="0"
               />
@@ -188,11 +189,7 @@ function LogModal({
 
           {/* Lighting */}
           <label className="flex items-center gap-2 cursor-pointer p-3 rounded-xl bg-amber-50 dark:bg-amber-900/20">
-            <input
-              {...register('lightingOk')}
-              type="checkbox"
-              className="w-4 h-4 accent-amber-500"
-            />
+            <input {...register('lightingOk')} type="checkbox" className="w-4 h-4 accent-amber-500" />
             <Sun className="w-4 h-4 text-amber-500" />
             <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
               Lighting is adequate (chicks getting enough light)
@@ -201,28 +198,15 @@ function LogModal({
 
           <div>
             <label className={lCls}>Vaccine Given (if any)</label>
-            <input
-              {...register('vaccineGiven')}
-              className={iCls}
-              placeholder="e.g. Newcastle ND1 (leave blank if none)"
-            />
+            <input {...register('vaccineGiven')} className={iCls} placeholder="e.g. Newcastle ND1 (leave blank if none)" />
           </div>
           <div>
             <label className={lCls}>Supplement (if any)</label>
-            <input
-              {...register('supplement')}
-              className={iCls}
-              placeholder="e.g. Vitamins, Electrolytes"
-            />
+            <input {...register('supplement')} className={iCls} placeholder="e.g. Vitamins, Electrolytes" />
           </div>
           <div>
             <label className={lCls}>Notes</label>
-            <textarea
-              {...register('notes')}
-              rows={2}
-              className={`${iCls} resize-none`}
-              placeholder="Any observations or concerns..."
-            />
+            <textarea {...register('notes')} rows={2} className={`${iCls} resize-none`} placeholder="Any observations or concerns..." />
           </div>
 
           {submit.isError && (
@@ -231,15 +215,13 @@ function LogModal({
 
           <div className="flex gap-3 pt-2">
             <button
-              type="button"
-              onClick={onClose}
+              type="button" onClick={onClose}
               className="flex-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-3 font-semibold"
             >
               Cancel
             </button>
             <button
-              type="submit"
-              disabled={submit.isPending}
+              type="submit" disabled={submit.isPending}
               className="flex-1 bg-amber-500 text-white rounded-xl py-3 font-semibold disabled:opacity-60"
             >
               {submit.isPending ? 'Saving…' : 'Save Entry'}
@@ -272,7 +254,15 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
     staleTime: 30_000,
   });
 
-  const lastLog = logs[0];
+  // Always fetch the last log for the summary card (limit=1)
+  const { data: lastLogArr = [] } = useQuery<BrooderLog[]>({
+    queryKey: ['brooder-last-log', batch.id],
+    queryFn: () =>
+      api.get(`/flock/brooder-logs?batchId=${batch.id}&limit=1`).then(r => r.data).catch(() => []),
+    staleTime: 30_000,
+  });
+
+  const lastLog = lastLogArr[0];
 
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4 space-y-4">
@@ -324,7 +314,7 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
         </div>
       </div>
 
-      {/* Last log summary */}
+      {/* ── Last log summary (now includes feed given + feed type) ── */}
       {lastLog && (
         <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 text-xs text-gray-500 dark:text-gray-400">
           <p className="font-semibold text-gray-600 dark:text-gray-300 mb-1.5">
@@ -341,6 +331,16 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
               <span className="flex items-center gap-1">
                 <Droplets className="w-3 h-3 text-blue-400" />
                 {lastLog.waterConsumptionL}L water
+              </span>
+            )}
+            {/* Feed given + type */}
+            {(lastLog.feedConsumedKg != null || lastLog.feedType) && (
+              <span className="flex items-center gap-1">
+                🌾
+                {lastLog.feedConsumedKg != null ? `${lastLog.feedConsumedKg}kg` : ''}
+                {lastLog.feedType
+                  ? ` ${feedLabel(lastLog.feedType)}`
+                  : ' feed'}
               </span>
             )}
             <span className="flex items-center gap-1">
@@ -378,7 +378,7 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
         </button>
       </div>
 
-      {/* Log history */}
+      {/* Log history (shows feed type alongside kg) */}
       {expanded && (
         <div className="space-y-2 border-t border-gray-100 dark:border-dark-border pt-3">
           <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
@@ -401,7 +401,16 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
                 <div className="flex gap-3 flex-wrap">
                   {log.temperature != null && <span>🌡 {log.temperature}°C</span>}
                   {log.waterConsumptionL != null && <span>💧 {log.waterConsumptionL}L</span>}
-                  {log.feedConsumedKg != null && <span>🌾 {log.feedConsumedKg}kg feed</span>}
+                  {/* Feed: show kg + type label */}
+                  {(log.feedConsumedKg != null || log.feedType) && (
+                    <span>
+                      🌾{' '}
+                      {log.feedConsumedKg != null ? `${log.feedConsumedKg}kg` : ''}
+                      {log.feedType
+                        ? `${log.feedConsumedKg != null ? ' · ' : ''}${feedLabel(log.feedType)}`
+                        : ' feed'}
+                    </span>
+                  )}
                   {log.vaccineGiven && <span>💉 {log.vaccineGiven}</span>}
                   {!log.lightingOk && <span className="text-red-400">⚠ Lighting issue</span>}
                 </div>
@@ -465,10 +474,7 @@ export function BrooderPage() {
       {isLoading ? (
         <div className="space-y-4">
           {[1, 2].map(i => (
-            <div
-              key={i}
-              className="bg-gray-100 dark:bg-dark-card rounded-2xl h-48 animate-pulse"
-            />
+            <div key={i} className="bg-gray-100 dark:bg-dark-card rounded-2xl h-48 animate-pulse" />
           ))}
         </div>
       ) : brooderBatches.length === 0 ? (

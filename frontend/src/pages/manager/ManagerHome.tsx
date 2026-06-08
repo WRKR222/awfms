@@ -4,6 +4,7 @@ import { AlertTriangle, Package, ClipboardCheck, Heart, Users, ChevronRight } fr
 import { useManagerRealtime } from '../../hooks/useRealtime';
 import { CageMap } from '../../components/shared/CageMap';
 import { useNavigate } from 'react-router-dom';
+import { BrooderCageMap } from '../../components/shared/BrooderCageMap';
 import dayjs from 'dayjs';
 
 export function ManagerHome() {
@@ -121,7 +122,19 @@ export function ManagerHome() {
         </div>
       </div>
 
+      {/* Brooder Live Cage Map */}
+      <div>
+        <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">
+          Brooder — Live Cage Map
+        </p>
+        <div className="rounded-2xl overflow-hidden shadow-sm border border-dark-border" style={{ background: '#060c08' }}>
+          <BrooderCageMap />
+        </div>
+      </div>
 
     </div>
+
+
+    
   );
 }
