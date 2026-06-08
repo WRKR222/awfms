@@ -344,6 +344,12 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
                 {lastLog.waterConsumptionL}L water
               </span>
             )}
+            {(lastLog.feedConsumedKg != null || lastLog.feedType) && (
+              <span className="flex items-center gap-1">
+                🌾 {FEED_TYPE_OPTIONS.find(o => o.value === lastLog.feedType)?.label ?? lastLog.feedType ?? 'Feed'}
+                {lastLog.feedConsumedKg != null && `: ${lastLog.feedConsumedKg}kg`}
+              </span>
+            )}
             <span className="flex items-center gap-1">
               {lastLog.lightingOk ? (
                 <><Sun className="w-3 h-3 text-amber-400" /> Lighting OK</>
@@ -402,8 +408,11 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
                 <div className="flex gap-3 flex-wrap">
                   {log.temperature != null && <span>🌡 {log.temperature}°C</span>}
                   {log.waterConsumptionL != null && <span>💧 {log.waterConsumptionL}L</span>}
-                  {log.feedConsumedKg != null && (
-                    <span>🌾 {FEED_TYPE_OPTIONS.find(o => o.value === log.feedType)?.label ?? log.feedType ?? 'Feed'}: {log.feedConsumedKg}kg</span>
+                  {(log.feedConsumedKg != null || log.feedType) && (
+                    <span>
+                      🌾 {FEED_TYPE_OPTIONS.find(o => o.value === log.feedType)?.label ?? log.feedType ?? 'Feed'}
+                      {log.feedConsumedKg != null && `: ${log.feedConsumedKg}kg`}
+                    </span>
                   )}
                   {log.vaccineGiven && <span>💉 {log.vaccineGiven}</span>}
                   {!log.lightingOk && <span className="text-red-400">⚠ Lighting issue</span>}

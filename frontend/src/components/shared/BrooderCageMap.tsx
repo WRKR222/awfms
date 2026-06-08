@@ -4,7 +4,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
-import { Flame, Bird, Syringe, Thermometer, Droplets, Sun, AlertTriangle } from 'lucide-react';
+import { Flame, Bird, Syringe, Thermometer, Droplets, Sun, AlertTriangle, Wheat } from 'lucide-react';
 import dayjs from 'dayjs';
 
 interface BrooderBatch {
@@ -25,6 +25,8 @@ interface BrooderLog {
   batchId: string;
   logDate: string;
   waterConsumptionL?: number;
+  feedConsumedKg?: number;
+  feedType?: string;
   temperature?: number;
   lightingOk: boolean;
   mortalityCount: number;
@@ -32,6 +34,12 @@ interface BrooderLog {
   supplement?: string;
 }
 
+
+const FEED_LABELS: Record<string, string> = {
+  CHICK_MASH:  'Chick Mash',
+  GROWER_MASH: "Grower's Mash",
+  LAYER_MASH:  "Layer's Mash",
+};
 function InfoTile({
   icon: Icon,
   label,
@@ -128,6 +136,16 @@ function BatchCard({ batch }: { batch: BrooderBatch }) {
           icon={Droplets}
           label="Water (last log)"
           value={latest?.waterConsumptionL != null ? `${latest.waterConsumptionL}L` : '—'}
+        />
+        <InfoTile
+          icon={Wheat}
+          label="Last Feed"
+          value={
+            latest?.feedType || latest?.feedConsumedKg != null
+              ? `${FEED_LABELS[latest?.feedType ?? ''] ?? latest?.feedType ?? 'Fed'}${latest?.feedConsumedKg != null ? ` · ${latest.feedConsumedKg}kg` : ''}`
+              : '—'
+          }
+          accent="text-amber-200"
         />
         <InfoTile
           icon={Sun}
