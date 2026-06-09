@@ -14,6 +14,33 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('🌱 Seeding AWFMS database...');
 
+  // ── CLEANUP: Delete all historical test/transactional data before seeding ──
+  // Order matters — children before parents to respect FK constraints
+  console.log('🗑️  Clearing historical test data...');
+  await prisma.eggBreakageAdjustment.deleteMany({});
+  await prisma.eggTallyVerification.deleteMany({});
+  await prisma.eggCollectionSession.deleteMany({});
+  await prisma.invoicePayment.deleteMany({});
+  await prisma.arEntry.deleteMany({});
+  await prisma.invoice.deleteMany({});
+  await prisma.salesOrderItem.deleteMany({});
+  await prisma.salesOrder.deleteMany({});
+  await prisma.advanceBooking.deleteMany({});
+  await prisma.expenseLog.deleteMany({});
+  await prisma.dailyEggPrice.deleteMany({});
+  await prisma.storeStockOut.deleteMany({});
+  await prisma.storeStockIn.deleteMany({});
+  await prisma.feedIntakeLog.deleteMany({});
+  await prisma.vaccinationRecord.deleteMany({});
+  await prisma.mortalityLog.deleteMany({});
+  await prisma.notification.deleteMany({});
+  await prisma.localPurchaseOrderItem.deleteMany({});
+  await prisma.localPurchaseOrder.deleteMany({});
+  await prisma.purchaseRequestItem.deleteMany({});
+  await prisma.purchaseRequest.deleteMany({});
+  await prisma.batch.deleteMany({});
+  console.log('✓ Historical test data cleared');
+
   // ── System Config ──────────────────────────────────────────────────────────
   await prisma.systemConfig.upsert({
     where: { key: 'FEED_ALERT_THRESHOLD_DAYS' },

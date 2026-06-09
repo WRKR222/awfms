@@ -91,6 +91,17 @@ export default function SalesHome() {
 
   const totalSoldEggs  = todaySold.standard + todaySold.starter + todaySold.consumable;
   const latestAdj      = (adjustments as any[])[0];
+
+  // Payment method breakdown — aggregate across today's non-cancelled orders
+  const paymentBreakdown = (todayOrders as any[])
+    .filter((o: any) => o.status !== 'CANCELLED')
+    .reduce((acc: Record<string, number>, order: any) => {
+      const method = (order.paymentMethod ?? 'CASH').toUpperCase();
+      const amount = Number(order.subtotal ?? 0);
+      acc[method] = (acc[method] ?? 0) + amount;
+      acc['TOTAL'] = (acc['TOTAL'] ?? 0) + amount;
+      return acc;
+    }, {} as Record<string, number>);
   const totalStockEggs = (stock?.standardEggs ?? 0) + (stock?.starterEggs ?? 0) + (stock?.consumableEggs ?? 0);
 
   const tasks = [
@@ -185,6 +196,19 @@ export default function SalesHome() {
           <StatChip label="Today's Revenue"        value={fmtKES(todaySold.revenue)} sub={`${totalSoldEggs.toLocaleString()} eggs sold`} color="text-brand-green" accent />
         </div>
       </div>
+
+      {/* Payment Method Breakdown */}
+      {paymentBreakdown['TOTAL'] > 0 && (
+        <div>
+          <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Today's Payments by Method</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatChip label="Cash" value={fmtKES(paymentBreakdown['CASH'] ?? 0)} color="text-brand-green" />
+            <StatChip label="M-Pesa" value={fmtKES(paymentBreakdown['MPESA'] ?? 0)} color="text-blue-600 dark:text-blue-400" />
+            <StatChip label="Bank Transfer" value={fmtKES(paymentBreakdown['BANK'] ?? 0)} color="text-purple-600 dark:text-purple-400" />
+            <StatChip label="Total Collected" value={fmtKES(paymentBreakdown['TOTAL'] ?? 0)} color="text-brand-green" accent />
+          </div>
+        </div>
+      )}
 
       {/* Latest Breakage Adjustment */}
       {latestAdj && (

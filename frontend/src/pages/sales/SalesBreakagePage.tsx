@@ -148,20 +148,45 @@ export default function SalesBreakagePage() {
         </button>
       </div>
 
-      {/* Current stock */}
+      {/* Original stock (from tally sign-off) vs Current stock (after adjustments) */}
       {stock && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { label: 'Standard',           val: stock.standardEggs      ?? 0, color: 'text-brand-green' },
-            { label: 'Starter',            val: stock.starterEggs       ?? 0, color: 'text-blue-500'    },
-            { label: 'Non-Consumable',     val: stock.nonConsumableEggs ?? 0, color: 'text-red-500'     },
-            { label: 'Consumable Broken',  val: stock.consumableEggs    ?? 0, color: 'text-amber-500'   },
-          ].map(({ label, val, color }) => (
-            <div key={label} className="bg-white dark:bg-dark-card rounded-2xl p-3 border border-gray-100 dark:border-dark-border">
-              <p className={`text-xl font-bold ${color}`}>{(val as number).toLocaleString()}</p>
-              <p className="text-xs text-gray-400 mt-0.5">{label}</p>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Stock Overview</p>
+            {stock.lastVerifiedDate && (
+              <p className="text-xs text-gray-400">Last verified: {dayjs(stock.lastVerifiedDate).format('D MMM YYYY')}</p>
+            )}
+          </div>
+          {/* Table: Original (from tally) | Current (after breakage adjustments) */}
+          <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border overflow-hidden">
+            <div className="grid grid-cols-3 bg-gray-50 dark:bg-gray-800 px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100 dark:border-dark-border">
+              <span>Egg Type</span>
+              <span className="text-center">Original Stock<br/><span className="font-normal normal-case text-gray-400">(from tally sign-off)</span></span>
+              <span className="text-right">Current Stock<br/><span className="font-normal normal-case text-gray-400">(after adjustments)</span></span>
             </div>
-          ))}
+            {[
+              { label: 'Standard Eggs',          orig: stock.originalStandardEggs      ?? stock.standardEggs      ?? 0, curr: stock.standardEggs      ?? 0, color: 'text-brand-green' },
+              { label: 'Starter Eggs',           orig: stock.originalStarterEggs       ?? stock.starterEggs       ?? 0, curr: stock.starterEggs       ?? 0, color: 'text-blue-500'    },
+              { label: 'Consumable Broken',      orig: stock.originalConsumableEggs    ?? stock.consumableEggs    ?? 0, curr: stock.consumableEggs    ?? 0, color: 'text-amber-500'   },
+              { label: 'Non-Consumable Broken',  orig: stock.originalNonConsumableEggs ?? stock.nonConsumableEggs ?? 0, curr: stock.nonConsumableEggs ?? 0, color: 'text-red-500'     },
+            ].map(({ label, orig, curr, color }) => {
+              const diff = curr - orig;
+              return (
+                <div key={label} className="grid grid-cols-3 px-4 py-2.5 border-b border-gray-50 dark:border-gray-800 last:border-0 items-center">
+                  <span className="text-sm text-gray-700 dark:text-gray-300">{label}</span>
+                  <span className="text-sm font-semibold text-gray-500 dark:text-gray-400 text-center">{orig.toLocaleString()}</span>
+                  <span className="text-right flex items-center justify-end gap-2">
+                    <span className={`text-sm font-bold ${color}`}>{curr.toLocaleString()}</span>
+                    {diff !== 0 && (
+                      <span className={`text-xs px-1.5 py-0.5 rounded-full font-semibold ${diff > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                        {diff > 0 ? `+${diff}` : diff}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

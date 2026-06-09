@@ -21,7 +21,8 @@ export type PurchaseRequest = {
   requestRef: string;
   requestDate: string;
   status: 'DRAFT' | 'SUBMITTED' | 'REVIEWED' | 'REJECTED' | 'LPO_RAISED';
-  urgency: 'LOW' | 'NORMAL' | 'URGENT';
+  urgency?: 'LOW' | 'NORMAL' | 'URGENT' | null;  // deprecated — use expectedDate
+  expectedDate?: string | null;
   notes?: string | null;
   reviewNotes?: string | null;
   createdBy?: { fullName: string; role: string };

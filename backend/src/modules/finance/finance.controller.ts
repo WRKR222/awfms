@@ -178,4 +178,28 @@ export class FinanceController {
   ) {
     return this.svc.getOwnerFinanceDashboard(range);
   }
+
+  // ── P&L Report ────────────────────────────────────────────────────────────
+
+  @Get('pnl')
+  @RequirePermission(Permission.FINANCE_REPORT_VIEW)
+  getPnlReport(
+    @Query('from') from: string,
+    @Query('to')   to:   string,
+  ) {
+    const today = new Date().toISOString().split('T')[0];
+    return this.svc.getPnlReport(from ?? today, to ?? today);
+  }
+
+  // ── Sales Report (by item) ────────────────────────────────────────────────
+
+  @Get('sales-report')
+  @RequirePermission(Permission.FINANCE_REPORT_VIEW)
+  getSalesReport(
+    @Query('from') from: string,
+    @Query('to')   to:   string,
+  ) {
+    const today = new Date().toISOString().split('T')[0];
+    return this.svc.getSalesReport(from ?? today, to ?? today);
+  }
 }

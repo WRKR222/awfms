@@ -5,11 +5,11 @@ import { useForm, useFieldArray } from 'react-hook-form';
 import { Plus, Trash2, Send, Eye, X } from 'lucide-react';
 import dayjs from 'dayjs';
 import { api } from '../../lib/api/client';
-import { fmtKES, useStoreItems, STATUS_BADGE, URGENCY_BADGE, type PurchaseRequest } from './_shared';
+import { fmtKES, useStoreItems, STATUS_BADGE, type PurchaseRequest } from './_shared';
 
 type FormData = {
   requestDate: string;
-  urgency: 'LOW' | 'NORMAL' | 'URGENT';
+  expectedDate?: string;  // replaces urgency per spec
   notes?: string;
   items: Array<{ storeItemId: string; quantityRequested: number; estimatedUnitCost?: number; reason?: string }>;
 };
@@ -24,7 +24,7 @@ export function PurchaseRequestsTab() {
   const { register, control, handleSubmit, reset } = useForm<FormData>({
     defaultValues: {
       requestDate: dayjs().format('YYYY-MM-DD'),
-      urgency: 'NORMAL',
+      expectedDate: '',
       items: [{ storeItemId: '', quantityRequested: 1 }],
     },
   });
@@ -47,7 +47,7 @@ export function PurchaseRequestsTab() {
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['purchase-requests'] });
-      reset({ requestDate: dayjs().format('YYYY-MM-DD'), urgency: 'NORMAL', items: [{ storeItemId: '', quantityRequested: 1 }] });
+      reset({ requestDate: dayjs().format('YYYY-MM-DD'), expectedDate: '', items: [{ storeItemId: '', quantityRequested: 1 }] });
       setShowForm(false);
     },
   });
@@ -78,12 +78,8 @@ export function PurchaseRequestsTab() {
             <Field label="Request Date *">
               <input type="date" {...register('requestDate', { required: true })} className="input" />
             </Field>
-            <Field label="Urgency">
-              <select {...register('urgency')} className="input">
-                <option value="LOW">Low</option>
-                <option value="NORMAL">Normal</option>
-                <option value="URGENT">Urgent</option>
-              </select>
+            <Field label="Expected Delivery Date">
+              <input type="date" {...register('expectedDate')} className="input" />
             </Field>
             <Field label="Notes">
               <input {...register('notes')} className="input" />

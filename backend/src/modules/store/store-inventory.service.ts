@@ -60,7 +60,8 @@ export interface StockOutDto {
 
 export interface CreatePurchaseRequestDto {
   requestDate: string;
-  urgency?: 'LOW' | 'NORMAL' | 'URGENT';
+  urgency?: 'LOW' | 'NORMAL' | 'URGENT';  // kept for backward compat
+  expectedDate?: string;  // replaces urgency per spec
   notes?: string;
   items: Array<{
     storeItemId: string;
@@ -383,7 +384,7 @@ export class StoreInventoryService {
         requestRef,
         requestDate: new Date(dto.requestDate),
         urgency:     dto.urgency ?? 'NORMAL',
-        notes:       dto.notes ?? null,
+        notes:       dto.expectedDate ? `Expected by: ${dto.expectedDate}${dto.notes ? ' | ' + dto.notes : ''}` : (dto.notes ?? null),
         createdById: user.id,
         status:      'DRAFT',
         items: {

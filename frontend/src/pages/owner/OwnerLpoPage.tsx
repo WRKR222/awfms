@@ -35,9 +35,10 @@ interface LPO {
   lpoDate: string;
   supplierName: string;
   status: string;
-  subtotal: number;
-  vatAmount: number;
-  grandTotal: number;
+  // DB columns: subtotalKes / vatKes / totalKes
+  subtotalKes: number;
+  vatKes: number;
+  totalKes: number;
   notes?: string;
   purchaseRequest?: { requestRef: string };
   createdBy?: { fullName: string };
@@ -76,7 +77,7 @@ function LpoCard({
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-sm font-bold text-gray-700 dark:text-gray-200">{fmtKES(lpo.grandTotal)}</span>
+          <span className="text-sm font-bold text-gray-700 dark:text-gray-200">{fmtKES(lpo.totalKes)}</span>
           <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${STATUS_BADGE[lpo.status] ?? STATUS_BADGE.DRAFT}`}>
             {lpo.status}
           </span>
@@ -90,15 +91,15 @@ function LpoCard({
           <div className="grid grid-cols-3 gap-2 text-xs">
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2">
               <p className="text-gray-400">Subtotal</p>
-              <p className="font-semibold text-gray-700 dark:text-gray-300">{fmtKES(lpo.subtotal)}</p>
+              <p className="font-semibold text-gray-700 dark:text-gray-300">{fmtKES(lpo.subtotalKes)}</p>
             </div>
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2">
               <p className="text-gray-400">VAT</p>
-              <p className="font-semibold text-gray-700 dark:text-gray-300">{fmtKES(lpo.vatAmount)}</p>
+              <p className="font-semibold text-gray-700 dark:text-gray-300">{fmtKES(lpo.vatKes)}</p>
             </div>
             <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-2">
               <p className="text-gray-400">Grand Total</p>
-              <p className="font-bold text-brand-green">{fmtKES(lpo.grandTotal)}</p>
+              <p className="font-bold text-brand-green">{fmtKES(lpo.totalKes)}</p>
             </div>
           </div>
 

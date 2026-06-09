@@ -203,30 +203,64 @@ export class SalesService {
       include: { reportedBy: { select: { fullName: true } } },
     });
 
-    // Auto-log breakage as expense for the accountant
-    if (quantityDiff !== 0) {
-      try {
-        // Get today's pricing to calculate loss
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: today } });
-        const pricePerEgg = pricing?.pricePerEgg ? Number(pricing.pricePerEgg) : 0;
-        const lossAmount = Math.abs(quantityDiff) * pricePerEgg;
+    // Auto-log breakage as an ExpenseLog on the accountant's Finance → Expenses tab
+    // Formula per spec:
+    //   broken unsellable: costPerEgg × qty  (no revenue recovered)
+    //   broken sellable:   (costPerEgg − pricePerEggBroken) × qty
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: today } });
+      const costPerEgg        = pricing?.pricePerEgg       ? Number(pricing.pricePerEgg)       : 0;
+      const pricePerEggBroken = pricing?.pricePerEggBroken ? Number(pricing.pricePerEggBroken) : 0;
 
-        if (lossAmount > 0) {
-          await this.prisma.notification.create({
-            data: {
-              userId: (await this.prisma.user.findFirst({ where: { role: 'ACCOUNTANT' as any, isActive: true } }))?.id ?? user.id,
-              type: 'SYSTEM' as any,
-              title: 'Egg Breakage Recorded',
-              message: 'Breakage of ' + Math.abs(quantityDiff) + ' eggs recorded (Ref: ' + adjustmentRef + '). Estimated loss: KES ' + lossAmount.toFixed(2) + '.',
-              entityId: adjustment.id,
-              entityType: 'EggBreakageAdjustment',
-            },
+      const deltaUnsellable = dto.newNonConsumable - dto.quantityNonConsumableBefore;
+      const deltaSellable   = dto.newConsumable    - dto.quantityConsumableBefore;
+
+      const unsellableLoss = Math.max(0, deltaUnsellable) * costPerEgg;
+      const sellableLoss   = Math.max(0, deltaSellable)   * Math.max(0, costPerEgg - pricePerEggBroken);
+      const totalLoss      = unsellableLoss + sellableLoss;
+
+      if (totalLoss > 0) {
+        // Ensure "Egg Breakage" category exists (idempotent)
+        let cat = await this.prisma.expenseCategory.findUnique({ where: { name: 'Egg Breakage' } });
+        if (!cat) {
+          cat = await this.prisma.expenseCategory.create({
+            data: { name: 'Egg Breakage', description: 'Auto-logged egg breakage losses', createdById: user.id },
           });
         }
-      } catch (_) { /* best-effort */ }
-    }
+
+        await this.prisma.expenseLog.create({
+          data: {
+            categoryId:   cat.id,
+            description:
+              `Egg breakage — Ref: ${adjustmentRef}. ` +
+              (deltaUnsellable > 0 ? `Unsellable: ${deltaUnsellable} x KES ${costPerEgg.toFixed(2)}. ` : '') +
+              (deltaSellable   > 0 ? `Sellable: ${deltaSellable} x KES ${(costPerEgg - pricePerEggBroken).toFixed(2)} (cost minus sell). ` : ''),
+            amount:       totalLoss,
+            expenseDate:  today,
+            vendorName:   null,
+            receiptRef:   adjustmentRef,
+            recordedById: user.id,
+          },
+        });
+      }
+
+      // Notify accountant
+      const accountant = await this.prisma.user.findFirst({ where: { role: 'ACCOUNTANT' as any, isActive: true } });
+      if (accountant) {
+        await this.prisma.notification.create({
+          data: {
+            userId:     accountant.id,
+            type:       'SYSTEM' as any,
+            title:      'Egg Breakage Expense Logged',
+            message:    `Breakage ${adjustmentRef}: KES ${totalLoss.toFixed(2)} auto-logged as expense (${Math.max(0, deltaUnsellable)} unsellable, ${Math.max(0, deltaSellable)} sellable broken eggs).`,
+            entityId:   adjustment.id,
+            entityType: 'EggBreakageAdjustment',
+          },
+        });
+      }
+    } catch (_) { /* best-effort */ }
 
     return adjustment;
   }
@@ -322,8 +356,19 @@ export class SalesService {
     stockResult.starterEggs = Math.max(0, stockResult.starterEggs - soldStarter);
     stockResult.consumableEggs = Math.max(0, stockResult.consumableEggs - soldConsumable);
 
+    // Return original (tally) values alongside adjusted current values for the
+    // "Original stock vs Current stock" comparison on the Sales Breakage page.
+    const originalStandardEggs      = latestTally.finalGoodEggs      ?? latestTally.session?.totalGoodEggs    ?? 0;
+    const originalStarterEggs       = latestTally.session?.totalStarterEggs ?? 0;
+    const originalNonConsumableEggs = latestTally.session?.totalBrokenEggs ?? 0;
+    const originalConsumableEggs    = 0; // at tally time consumable = 0 (starts accumulating after)
+
     return {
       ...stockResult,
+      originalStandardEggs,
+      originalStarterEggs,
+      originalNonConsumableEggs,
+      originalConsumableEggs,
       pricing: pricing ? {
         pricePerEgg: Number(pricing.pricePerEgg),
         pricePerEggStarter: Number((pricing as any).pricePerEggStarter ?? 0),

@@ -398,6 +398,112 @@ export class FinanceService {
     };
   }
 
+  // ── P&L Report ───────────────────────────────────────────────────────────
+  // Returns revenue (payments received) + expenses in a given period for the PnL tab
+
+  async getPnlReport(from: string, to: string) {
+    const fromDate = new Date(from);
+    const toDate   = new Date(to);
+    // Push toDate to end of day
+    toDate.setHours(23, 59, 59, 999);
+
+    const [payments, expenses] = await Promise.all([
+      this.prisma.invoicePayment.findMany({
+        where: { paymentDate: { gte: fromDate, lte: toDate } },
+        include: { invoice: { select: { invoiceNumber: true, customerId: true } } },
+      }),
+      this.prisma.expenseLog.findMany({
+        where: { expenseDate: { gte: fromDate, lte: toDate } },
+        include: { expenseCategory: { select: { name: true } } },
+      }),
+    ]);
+
+    const totalRevenue  = payments.reduce((s, p) => s + Number(p.amount), 0);
+    const totalExpenses = expenses.reduce((s, e) => s + Number(e.amount), 0);
+    const netProfit     = totalRevenue - totalExpenses;
+    const margin        = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
+
+    const byCategory: Record<string, number> = {};
+    for (const e of expenses) {
+      const k = (e as any).expenseCategory?.name ?? 'Uncategorized';
+      byCategory[k] = (byCategory[k] ?? 0) + Number(e.amount);
+    }
+
+    const byPaymentMethod: Record<string, number> = {};
+    for (const p of payments) {
+      const m = p.paymentMethod ?? 'CASH';
+      byPaymentMethod[m] = (byPaymentMethod[m] ?? 0) + Number(p.amount);
+    }
+
+    return {
+      period: { from, to },
+      totalRevenue,
+      totalExpenses,
+      netProfit,
+      grossMarginPct: Math.round(margin * 10) / 10,
+      expensesByCategory: Object.entries(byCategory)
+        .map(([category, amount]) => ({ category, amount }))
+        .sort((a, b) => b.amount - a.amount),
+      revenueByPaymentMethod: Object.entries(byPaymentMethod)
+        .map(([method, amount]) => ({ method, amount })),
+      payments,
+      expenses,
+    };
+  }
+
+  // ── Sales Report (by item) ────────────────────────────────────────────────
+
+  async getSalesReport(from: string, to: string) {
+    const fromDate = new Date(from);
+    const toDate   = new Date(to);
+    toDate.setHours(23, 59, 59, 999);
+
+    const orders = await this.prisma.salesOrder.findMany({
+      where: {
+        orderDate: { gte: fromDate, lte: toDate },
+        status:    { not: 'CANCELLED' as any },
+        deletedAt: null,
+      },
+      include: {
+        customer: { select: { name: true } },
+        items:    true,
+      },
+      orderBy: { orderDate: 'desc' },
+    });
+
+    // Aggregate by item type
+    const byItemType: Record<string, { qty: number; revenue: number }> = {};
+    for (const order of orders) {
+      for (const item of order.items) {
+        const k = item.itemType ?? 'UNKNOWN';
+        if (!byItemType[k]) byItemType[k] = { qty: 0, revenue: 0 };
+        byItemType[k].qty     += (item as any).quantityEggs ?? 0;
+        byItemType[k].revenue += Number((item as any).subtotal ?? 0);
+      }
+    }
+
+    const totalRevenue = orders.reduce((s, o) => s + Number(o.subtotal), 0);
+
+    return {
+      period: { from, to },
+      orderCount: orders.length,
+      totalRevenue,
+      byItemType: Object.entries(byItemType)
+        .map(([itemType, data]) => ({ itemType, ...data }))
+        .sort((a, b) => b.revenue - a.revenue),
+      orders: orders.map(o => ({
+        id:          o.id,
+        orderNumber: o.orderNumber,
+        orderDate:   o.orderDate,
+        customer:    o.customer,
+        subtotal:    Number(o.subtotal),
+        status:      o.status,
+        paymentMethod: o.paymentMethod,
+        items:       o.items,
+      })),
+    };
+  }
+
   // ── Overdue Invoice Cron ─────────────────────────────────────────────────
 
   @Cron('0 1 * * *')

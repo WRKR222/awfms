@@ -12,6 +12,7 @@ import { api } from '../../lib/api/client';
 import {
   Plus, FileText, DollarSign, CheckCircle, AlertCircle, AlertTriangle,
   Upload, FileUp, X, CreditCard, Settings2, ChevronDown, ChevronRight,
+  TrendingUp, BarChart2, ShoppingCart,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 
@@ -497,6 +498,255 @@ function ImportTab() {
   );
 }
 
+// ── PnL Tab ───────────────────────────────────────────────────────────────────
+
+function PnLTab() {
+  const today      = dayjs().format('YYYY-MM-DD');
+  const monthStart = dayjs().startOf('month').format('YYYY-MM-DD');
+  const [from, setFrom] = useState(monthStart);
+  const [to,   setTo]   = useState(today);
+  const [period, setPeriod] = useState<'custom' | 'daily' | 'weekly' | 'monthly' | 'yearly'>('monthly');
+
+  const periodFrom = period === 'daily'   ? dayjs().format('YYYY-MM-DD')
+    : period === 'weekly'  ? dayjs().startOf('week').format('YYYY-MM-DD')
+    : period === 'monthly' ? dayjs().startOf('month').format('YYYY-MM-DD')
+    : period === 'yearly'  ? dayjs().startOf('year').format('YYYY-MM-DD')
+    : from;
+  const periodTo = period === 'custom' ? to : dayjs().format('YYYY-MM-DD');
+
+  const { data: revenue, isLoading: revLoading } = useQuery({
+    queryKey: ['pnl-revenue', periodFrom, periodTo],
+    queryFn: async () => {
+      // Sum payments in period
+      const inv = (await api.get(`/finance/invoices`)).data as any[];
+      return inv
+        .flatMap((i: any) => (i.payments ?? []))
+        .filter((p: any) => {
+          const pd = dayjs(p.paymentDate);
+          return pd.isAfter(dayjs(periodFrom).subtract(1, 'day')) && pd.isBefore(dayjs(periodTo).add(1, 'day'));
+        })
+        .reduce((s: number, p: any) => s + Number(p.amount), 0);
+    },
+    staleTime: 30_000,
+  });
+
+  const { data: expenses, isLoading: expLoading } = useQuery({
+    queryKey: ['pnl-expenses', periodFrom, periodTo],
+    queryFn: async () => (await api.get(`/finance/expenses?from=${periodFrom}&to=${periodTo}`)).data as any[],
+    staleTime: 30_000,
+  });
+
+  const totalExpenses = (expenses ?? []).reduce((s: number, e: any) => s + Number(e.amount), 0);
+  const totalRevenue  = revenue ?? 0;
+  const grossProfit   = totalRevenue - totalExpenses;
+  const margin        = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
+
+  // Group expenses by category
+  const byCategory: Record<string, number> = {};
+  for (const e of (expenses ?? [])) {
+    const k = e.expenseCategory?.name ?? 'Uncategorized';
+    byCategory[k] = (byCategory[k] ?? 0) + Number(e.amount);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 items-end">
+        <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
+          {(['daily','weekly','monthly','yearly','custom'] as const).map(p => (
+            <button key={p} onClick={() => setPeriod(p)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors capitalize ${period === p ? 'bg-white dark:bg-dark-card text-brand-green shadow-sm' : 'text-gray-500'}`}>
+              {p}
+            </button>
+          ))}
+        </div>
+        {period === 'custom' && (
+          <div className="flex gap-2 items-center">
+            <input type="date" value={from} onChange={e => setFrom(e.target.value)}
+              className="rounded-xl border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-xs px-3 py-2" />
+            <span className="text-xs text-gray-400">to</span>
+            <input type="date" value={to} onChange={e => setTo(e.target.value)}
+              className="rounded-xl border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-xs px-3 py-2" />
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
+          <p className="text-xs text-gray-500 mb-1">Revenue (Payments Received)</p>
+          <p className="text-xl font-bold text-brand-green">KES {totalRevenue.toLocaleString()}</p>
+        </div>
+        <div className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
+          <p className="text-xs text-gray-500 mb-1">Total Expenses</p>
+          <p className="text-xl font-bold text-red-500">KES {totalExpenses.toLocaleString()}</p>
+        </div>
+        <div className={`rounded-2xl p-4 border ${grossProfit >= 0 ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800' : 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-800'}`}>
+          <p className="text-xs text-gray-500 mb-1">Net Profit / Loss</p>
+          <p className={`text-xl font-bold ${grossProfit >= 0 ? 'text-green-700' : 'text-red-600'}`}>
+            {grossProfit >= 0 ? '+' : ''}KES {grossProfit.toLocaleString()}
+          </p>
+        </div>
+        <div className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
+          <p className="text-xs text-gray-500 mb-1">Gross Margin</p>
+          <p className={`text-xl font-bold ${margin >= 0 ? 'text-brand-green' : 'text-red-500'}`}>
+            {margin.toFixed(1)}%
+          </p>
+        </div>
+      </div>
+
+      {(revLoading || expLoading) && <p className="text-sm text-gray-400 text-center py-4">Loading P&L data…</p>}
+
+      {Object.keys(byCategory).length > 0 && (
+        <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-4">
+          <p className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">Expenses by Category</p>
+          <div className="space-y-2">
+            {Object.entries(byCategory)
+              .sort((a, b) => b[1] - a[1])
+              .map(([cat, amt]) => (
+                <div key={cat} className="flex items-center gap-3">
+                  <p className="text-sm text-gray-600 dark:text-gray-300 flex-1">{cat}</p>
+                  <div className="flex-1 bg-gray-100 dark:bg-gray-700 rounded-full h-2">
+                    <div className="bg-red-400 rounded-full h-2" style={{ width: `${totalExpenses > 0 ? (amt / totalExpenses) * 100 : 0}%` }} />
+                  </div>
+                  <p className="text-sm font-semibold text-gray-700 dark:text-gray-200 w-28 text-right">KES {amt.toLocaleString()}</p>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Sales Report Tab ──────────────────────────────────────────────────────────
+
+function SalesReportTab() {
+  const today      = dayjs().format('YYYY-MM-DD');
+  const monthStart = dayjs().startOf('month').format('YYYY-MM-DD');
+  const [from, setFrom] = useState(monthStart);
+  const [to,   setTo]   = useState(today);
+
+  const { data: invoices = [], isLoading } = useQuery({
+    queryKey: ['sales-report-invoices', from, to],
+    queryFn: async () => (await api.get('/finance/invoices')).data as any[],
+    staleTime: 30_000,
+  });
+
+  // Filter by date range
+  const filtered = invoices.filter((inv: any) => {
+    const d = dayjs(inv.invoiceDate);
+    return d.isAfter(dayjs(from).subtract(1, 'day')) && d.isBefore(dayjs(to).add(1, 'day'));
+  });
+
+  // Aggregate items by egg type
+  const itemTotals: Record<string, { qty: number; revenue: number }> = {};
+  for (const inv of filtered) {
+    for (const item of (inv.salesOrder?.items ?? [])) {
+      const k = item.itemType ?? 'UNKNOWN';
+      if (!itemTotals[k]) itemTotals[k] = { qty: 0, revenue: 0 };
+      itemTotals[k].qty     += item.quantityEggs ?? 0;
+      itemTotals[k].revenue += Number(item.subtotal ?? 0);
+    }
+  }
+
+  const EGG_LABEL: Record<string, string> = {
+    STANDARD_EGGS: 'Standard Eggs',
+    STARTER_EGGS: 'Starter Eggs',
+    CONSUMABLE_BROKEN_EGGS: 'Consumable Broken (Sellable)',
+  };
+
+  const totalRevenue = filtered.reduce((s: number, i: any) => s + Number(i.totalAmount ?? 0), 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 items-center flex-wrap">
+        <div className="flex gap-2 items-center ml-auto">
+          <input type="date" value={from} onChange={e => setFrom(e.target.value)}
+            className="rounded-xl border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-xs px-3 py-2" />
+          <span className="text-xs text-gray-400">to</span>
+          <input type="date" value={to} onChange={e => setTo(e.target.value)}
+            className="rounded-xl border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-xs px-3 py-2" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
+          <p className="text-xs text-gray-500 mb-1">Invoices Issued</p>
+          <p className="text-xl font-bold text-gray-800 dark:text-gray-100">{filtered.length}</p>
+        </div>
+        <div className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
+          <p className="text-xs text-gray-500 mb-1">Total Invoiced Revenue</p>
+          <p className="text-xl font-bold text-brand-green">KES {totalRevenue.toLocaleString()}</p>
+        </div>
+      </div>
+
+      {/* Sales by Item */}
+      {Object.keys(itemTotals).length > 0 && (
+        <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-4">
+          <p className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">Sales by Item Type</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-xs text-gray-400 border-b border-gray-100 dark:border-dark-border">
+                <th className="text-left pb-2">Item</th>
+                <th className="text-right pb-2">Qty (Eggs)</th>
+                <th className="text-right pb-2">Trays</th>
+                <th className="text-right pb-2">Revenue (KES)</th>
+              </tr></thead>
+              <tbody>
+                {Object.entries(itemTotals).map(([type, data]) => (
+                  <tr key={type} className="border-b border-gray-50 dark:border-gray-800">
+                    <td className="py-2 text-gray-700 dark:text-gray-300">{EGG_LABEL[type] ?? type}</td>
+                    <td className="py-2 text-right text-gray-600 dark:text-gray-400">{data.qty.toLocaleString()}</td>
+                    <td className="py-2 text-right text-gray-600 dark:text-gray-400">{Math.floor(data.qty / 30)}</td>
+                    <td className="py-2 text-right font-semibold text-gray-800 dark:text-gray-200">{data.revenue.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Invoice list with quantities */}
+      {isLoading ? (
+        <p className="text-sm text-gray-400 text-center py-4">Loading…</p>
+      ) : filtered.length === 0 ? (
+        <p className="text-sm text-gray-400 text-center py-4">No invoices in this period</p>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((inv: any) => (
+            <div key={inv.id} className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">{inv.customer?.name}</p>
+                  <p className="text-xs text-gray-400">{inv.invoiceNumber} · {dayjs(inv.invoiceDate).format('D MMM YYYY')}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-bold text-brand-green">KES {Number(inv.totalAmount).toLocaleString()}</p>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                    inv.status === 'PAID' ? 'bg-green-100 text-green-700' :
+                    inv.status === 'OVERDUE' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {inv.status}
+                  </span>
+                </div>
+              </div>
+              {(inv.salesOrder?.items ?? []).length > 0 && (
+                <div className="grid grid-cols-3 gap-1 mt-2">
+                  {(inv.salesOrder.items as any[]).map((item: any) => (
+                    <div key={item.id} className="bg-gray-50 dark:bg-gray-800 rounded-lg px-2 py-1 text-xs">
+                      <span className="text-gray-500">{EGG_LABEL[item.itemType] ?? item.itemType}</span>
+                      <span className="font-semibold text-gray-700 dark:text-gray-300 ml-1">{item.quantityEggs ?? 0} eggs</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Export Tab (unchanged from original) ─────────────────────────────────────
 
 function ExportTab() {
@@ -560,11 +810,13 @@ function ExportTab() {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
-// NOTE: Invoices & AR tab moved to Sales role → Orders page
 const TABS = [
-  { id: 'expenses', label: 'Expenses',      icon: DollarSign },
-  { id: 'export',   label: 'Export',        icon: FileText },
-  { id: 'import',   label: 'Import',        icon: FileUp },
+  { id: 'expenses',     label: 'Expenses',      icon: DollarSign },
+  { id: 'invoices',     label: 'Invoices',       icon: ShoppingCart },
+  { id: 'pnl',          label: 'P&L',            icon: TrendingUp },
+  { id: 'sales-report', label: 'Sales Report',   icon: BarChart2 },
+  { id: 'export',       label: 'Export',         icon: FileText },
+  { id: 'import',       label: 'Import',         icon: FileUp },
 ] as const;
 
 type TabId = typeof TABS[number]['id'];
@@ -574,20 +826,22 @@ export function AccountantFinancePage() {
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-5xl mx-auto">
       <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Finance</h1>
-      <p className="text-xs text-gray-500 dark:text-gray-400 -mt-3">💡 Invoices &amp; AR are now in Sales role → Orders page.</p>
-      <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-2xl p-1">
+      <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-2xl p-1 overflow-x-auto">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button key={id} onClick={() => setActiveTab(id)}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold transition-colors ${
+            className={`flex-shrink-0 flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-semibold transition-colors ${
               activeTab === id ? 'bg-white dark:bg-dark-card text-brand-green shadow-sm' : 'text-gray-500 dark:text-gray-400'
             }`}>
             <Icon className="w-3.5 h-3.5" /> {label}
           </button>
         ))}
       </div>
-      {activeTab === 'expenses' && <ExpensesTab />}
-      {activeTab === 'export'   && <ExportTab />}
-      {activeTab === 'import'   && <ImportTab />}
+      {activeTab === 'expenses'     && <ExpensesTab />}
+      {activeTab === 'invoices'     && <InvoicesTab />}
+      {activeTab === 'pnl'          && <PnLTab />}
+      {activeTab === 'sales-report' && <SalesReportTab />}
+      {activeTab === 'export'       && <ExportTab />}
+      {activeTab === 'import'       && <ImportTab />}
     </div>
   );
 }

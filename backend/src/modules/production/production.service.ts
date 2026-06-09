@@ -212,6 +212,54 @@ export class ProductionService {
       });
     }
 
+    // Auto-log collection-time breakage expenses (soft shell, deformed, broken unsellable, broken sellable)
+    try {
+      const collDate = new Date(dto.sessionDate);
+      collDate.setHours(0, 0, 0, 0);
+      const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: collDate } });
+      const costPerEgg        = pricing?.pricePerEgg       ? Number(pricing.pricePerEgg)       : 0;
+      const pricePerEggBroken = pricing?.pricePerEggBroken ? Number(pricing.pricePerEggBroken) : 0;
+
+      const softShellQty     = totals.totalSoftShell         ?? 0;
+      const deformedQty      = totals.totalDeformed          ?? 0;
+      const brokenSellQty    = totals.totalBrokenSellable     ?? 0;
+      const brokenUnsellQty  = totals.totalBrokenUnsellable   ?? 0;
+
+      // softShell + deformed: cost = costPerEgg × qty (not sold)
+      const softDeformedLoss   = (softShellQty + deformedQty) * costPerEgg;
+      // brokenSellable: cost = (costPerEgg − pricePerEggBroken) × qty
+      const brokenSellLoss     = brokenSellQty  * Math.max(0, costPerEgg - pricePerEggBroken);
+      // brokenUnsellable: cost = costPerEgg × qty (not sold)
+      const brokenUnsellLoss   = brokenUnsellQty * costPerEgg;
+      const totalCollLoss      = softDeformedLoss + brokenSellLoss + brokenUnsellLoss;
+
+      if (totalCollLoss > 0 && costPerEgg > 0) {
+        let cat = await this.prisma.expenseCategory.findUnique({ where: { name: 'Egg Breakage' } });
+        if (!cat) {
+          cat = await this.prisma.expenseCategory.create({
+            data: { name: 'Egg Breakage', description: 'Auto-logged egg breakage losses', createdById: user.id },
+          });
+        }
+        const parts: string[] = [];
+        if (softShellQty  > 0) parts.push(`Soft shell: ${softShellQty}`);
+        if (deformedQty   > 0) parts.push(`Deformed: ${deformedQty}`);
+        if (brokenSellQty > 0) parts.push(`Broken sellable: ${brokenSellQty}`);
+        if (brokenUnsellQty > 0) parts.push(`Broken unsellable: ${brokenUnsellQty}`);
+
+        await this.prisma.expenseLog.create({
+          data: {
+            categoryId:   cat.id,
+            description:  `${dto.shift} collection breakage — Batch ${batch.batchCode ?? dto.batchId}. ${parts.join(', ')}.`,
+            amount:       totalCollLoss,
+            expenseDate:  collDate,
+            vendorName:   null,
+            receiptRef:   `COLL-${session.id.slice(0, 8)}`,
+            recordedById: user.id,
+          },
+        });
+      }
+    } catch (_) { /* best-effort collection expense logging */ }
+
     // Create EggTallyVerification placeholder for both AM and PM sessions.
     // Tally sign-off is only triggered once BOTH sessions are APPROVED (see verifySession).
     await this._fireVerificationNotifications(session, batch);
