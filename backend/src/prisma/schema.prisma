@@ -1408,7 +1408,11 @@ model LPOItem {
 model FarmEmployee {
   id                String         @id @default(uuid())
   fullName          String         @map("full_name")
+  employeeNumber    String?        @map("employee_number")
   nationalId        String?        @unique @map("national_id")
+  address           String?
+  workPhone         String?        @map("work_phone")
+  mobilePhone       String?        @map("mobile_phone")
   phone             String?
   email             String?
   role              String
