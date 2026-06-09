@@ -119,7 +119,7 @@ function ReviewRequestsTab() {
                       <td className="px-4 py-2 text-center">{pr.items.length}</td>
                       <td className="px-4 py-2 text-right">{fmtKES(total)}</td>
                       <td className="px-4 py-2 text-center">
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${URGENCY_BADGE[pr.urgency]}`}>{pr.urgency}</span>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${URGENCY_BADGE[pr.urgency ?? 'NORMAL'] ?? ''}`}>{pr.urgency ?? '—'}</span>
                       </td>
                       <td className="px-4 py-2 text-center">
                         <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_BADGE[pr.status] ?? ''}`}>{pr.status}</span>

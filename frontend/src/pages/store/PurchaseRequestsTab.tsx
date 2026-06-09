@@ -161,8 +161,8 @@ export function PurchaseRequestsTab() {
                     <td className="px-4 py-2">{dayjs(pr.requestDate).format('YYYY-MM-DD')}</td>
                     <td className="px-4 py-2">{pr.createdBy?.fullName ?? '—'}</td>
                     <td className="px-4 py-2 text-center">{pr.items.length}</td>
-                    <td className="px-4 py-2 text-center">
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${URGENCY_BADGE[pr.urgency]}`}>{pr.urgency}</span>
+                    <td className="px-4 py-2 text-center text-xs text-gray-500">
+                      {pr.notes?.startsWith('Expected by:') ? pr.notes.split('|')[0].replace('Expected by:', '').trim() : (pr.urgency ?? '—')}
                     </td>
                     <td className="px-4 py-2 text-center">
                       <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_BADGE[pr.status] ?? ''}`}>{pr.status}</span>
