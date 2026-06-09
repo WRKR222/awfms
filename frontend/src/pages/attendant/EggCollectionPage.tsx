@@ -163,7 +163,12 @@ export function EggCollectionPage() {
   });
 
   const amSession = (todaySessions as any[]).find((s: any) => s.shift === 'AM');
+  const pmSession = (todaySessions as any[]).find((s: any) => s.shift === 'PM');
   const pmBlockedByAM = amSession?.status !== 'APPROVED';
+
+  // FIX-3: Show return reason + allow re-editing when session was returned
+  const returnedSession = (todaySessions as any[]).find((s: any) => s.status === 'RETURNED');
+  const returnReason = returnedSession?.returnReason ?? null;
 
   const shift = watch('shift') as 'AM' | 'PM';
   const batchId = watch('batchId');
@@ -283,6 +288,18 @@ export function EggCollectionPage() {
       <div className="flex items-center gap-3 mb-1">
         
         <div>
+
+      {/* FIX-3: Return reason banner — attendant is notified to recount */}
+      {returnReason && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-2xl p-4 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-bold text-red-700 dark:text-red-400">Recount Required — Session Returned</p>
+            <p className="text-sm text-red-600 dark:text-red-300 mt-0.5">Reason: {returnReason}</p>
+            <p className="text-xs text-red-500 dark:text-red-400 mt-1">Please review the values below, make corrections, and resubmit.</p>
+          </div>
+        </div>
+      )}
           <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
             <Egg className="w-5 h-5 text-amber-500" /> Egg Collection
           </h1>
@@ -331,7 +348,7 @@ export function EggCollectionPage() {
                     }`}>
                       <div className="font-bold text-lg">{val}</div>
                       <div className="text-xs opacity-70">
-                        {isLocked ? (val === 'PM' && pmBlockedByAM ? '🔒 Awaiting AM verification' : '🔒 Window closed') : val === 'AM' ? 'Morning' : 'Afternoon'}
+                        {isLocked ? (val === 'PM' && pmBlockedByAM ? '🔒 Awaiting AM approval' : amSession?.status === 'APPROVED' && pmSession?.status === 'APPROVED' ? '🔒 Day locked' : '🔒 Window closed') : val === 'AM' ? 'Morning' : 'Afternoon'}
                       </div>
                     </div>
                   </label>

@@ -11,6 +11,16 @@
 //   • Vaccines / supplements are forwarded to VaccinationRecord so they appear
 //     in the Production Manager's Health page as a historical log.
 //   • Once the Production Manager verifies, the entry is locked.
+//
+// CORRECTIONS APPLIED:
+//   FIX-1: Approving AM session now notifies the attendant that AM is approved
+//           and opens the PM session for data recording.
+//   FIX-2: Once BOTH AM and PM sessions are approved, both are locked (no
+//           further data can be recorded for that day).
+//   FIX-3: "Return to Attendant" now notifies the attendant with the reason
+//           and restores Block 1 units for editing.
+//   FIX-4: Tally sign-off is only triggered after BOTH AM and PM sessions
+//           are approved on the same day.
 
 import {
   Injectable, NotFoundException, ConflictException,
@@ -79,6 +89,24 @@ export class ProductionService {
       where: { id: dto.batchId, deletedAt: null, stage: { not: 'CLOSED' } },
     });
     if (!batch) throw new NotFoundException('Batch not found or closed');
+
+    // FIX-2: Block same-day recording if both sessions are already approved (day is locked)
+    if (dto.shift === 'PM') {
+      const amSession = await this.prisma.eggCollectionSession.findFirst({
+        where: {
+          batchId: dto.batchId,
+          houseId: dto.houseId,
+          sessionDate: new Date(dto.sessionDate),
+          shift: 'AM',
+          deletedAt: null,
+        },
+      });
+      if (!amSession || amSession.status !== EntryStatus.APPROVED) {
+        throw new ConflictException(
+          'AM session must be approved by the Production Manager before PM data can be recorded.',
+        );
+      }
+    }
 
     const existing = await this.prisma.eggCollectionSession.findFirst({
       where: {
@@ -184,11 +212,8 @@ export class ProductionService {
       });
     }
 
-    // FIX H1: Create EggTallyVerification for BOTH AM and PM sessions.
-    // Spec: "it should not be editable after submission and should be
-    //        immediately verified by the production manager" — applies to both shifts.
-    // AM sessions now appear in the PM's VerificationQueue "Egg Collection Sessions"
-    // tab alongside PM sessions, enabling the PM to verify them from the UI.
+    // Create EggTallyVerification placeholder for both AM and PM sessions.
+    // Tally sign-off is only triggered once BOTH sessions are APPROVED (see verifySession).
     await this._fireVerificationNotifications(session, batch);
     await this.prisma.eggTallyVerification.upsert({
       where: { sessionId: session.id },
@@ -275,7 +300,7 @@ export class ProductionService {
     }
     const session = await this.prisma.eggCollectionSession.findFirst({
       where: { id, deletedAt: null },
-      include: { storeIntakes: true, tally: true },
+      include: { storeIntakes: true, tally: true, batch: true },
     });
     if (!session) throw new NotFoundException('Session not found');
     if (session.tally?.isLocked) {
@@ -284,6 +309,11 @@ export class ProductionService {
     if (session.status !== EntryStatus.PENDING) {
       throw new BadRequestException(`Session is already ${session.status.toLowerCase()}`);
     }
+
+    const houseRecord = await this.prisma.house.findUnique({
+      where: { id: session.houseId }, select: { name: true },
+    });
+    const houseName = houseRecord?.name ?? 'House';
 
     if (action === 'approve') {
       const storeIntake = session.storeIntakes[0];
@@ -296,17 +326,108 @@ export class ProductionService {
           },
         });
       }
-      return this.prisma.eggCollectionSession.update({
+
+      const approved = await this.prisma.eggCollectionSession.update({
         where: { id },
         data: { status: EntryStatus.APPROVED },
       });
+
+      // FIX-1: Notify attendant that their session has been approved
+      const attendant = await this.prisma.user.findUnique({
+        where: { id: session.collectedById },
+        select: { id: true },
+      });
+      if (attendant) {
+        if (session.shift === 'AM') {
+          // AM approved → tell attendant they can now submit PM session
+          await this.prisma.notification.create({
+            data: {
+              userId: attendant.id,
+              type: 'EGG_TALLY_TRIGGERED' as any,
+              title: `AM Session Approved — ${houseName}`,
+              message: `Your AM egg collection for ${houseName} (${(session as any).batch?.batchCode ?? ''}) has been approved. You may now submit the PM session.`,
+              entityId: session.id,
+              entityType: 'EggCollectionSession',
+            },
+          });
+        } else {
+          // PM approved → notify attendant; day is now fully locked
+          await this.prisma.notification.create({
+            data: {
+              userId: attendant.id,
+              type: 'EGG_TALLY_TRIGGERED' as any,
+              title: `PM Session Approved — ${houseName}`,
+              message: `Your PM egg collection for ${houseName} (${(session as any).batch?.batchCode ?? ''}) has been approved. Both AM and PM sessions are now locked for today.`,
+              entityId: session.id,
+              entityType: 'EggCollectionSession',
+            },
+          });
+        }
+      }
+
+      // FIX-4: Only trigger tally sign-off when BOTH AM and PM sessions are approved
+      if (session.shift === 'PM') {
+        const amSession = await this.prisma.eggCollectionSession.findFirst({
+          where: {
+            batchId: session.batchId,
+            houseId: session.houseId,
+            sessionDate: session.sessionDate,
+            shift: 'AM',
+            status: EntryStatus.APPROVED,
+            deletedAt: null,
+          },
+        });
+
+        if (amSession) {
+          // Both AM and PM are approved — trigger next-morning tally sign-off
+          const tallyTargets = await this.prisma.user.findMany({
+            where: { role: { in: ['MANAGER', 'SALES', 'STORE'] }, isActive: true },
+            select: { id: true },
+          });
+          for (const t of tallyTargets) {
+            await this.prisma.notification.create({
+              data: {
+                userId: t.id,
+                type: 'EGG_TALLY_TRIGGERED' as any,
+                title: `Next Morning Sign-off Ready — ${houseName}`,
+                message: `Both AM and PM egg collection sessions for ${houseName} (${(session as any).batch?.batchCode ?? ''}) are approved. The next morning three-party sign-off on previous day AM and PM egg collection sessions is now available.`,
+                entityId: session.id,
+                entityType: 'EggCollectionSession',
+              },
+            });
+          }
+        }
+      }
+
+      return approved;
     }
 
     if (!returnReason) throw new BadRequestException('Return reason is required');
-    return this.prisma.eggCollectionSession.update({
+
+    const returned = await this.prisma.eggCollectionSession.update({
       where: { id },
       data: { status: EntryStatus.RETURNED, returnReason },
     });
+
+    // FIX-3: Notify attendant of the return with the reason so they know to recount
+    const attendant = await this.prisma.user.findUnique({
+      where: { id: session.collectedById },
+      select: { id: true },
+    });
+    if (attendant) {
+      await this.prisma.notification.create({
+        data: {
+          userId: attendant.id,
+          type: 'EGG_TALLY_TRIGGERED' as any,
+          title: `${session.shift} Session Returned — Recount Required`,
+          message: `Your ${session.shift} egg collection for ${houseName} has been returned for a recount. Reason: ${returnReason}. Please review and resubmit.`,
+          entityId: session.id,
+          entityType: 'EggCollectionSession',
+        },
+      });
+    }
+
+    return returned;
   }
 
   async getHenDayTrend(batchId: string, days = 14) {

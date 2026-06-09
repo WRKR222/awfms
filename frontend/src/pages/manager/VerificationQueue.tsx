@@ -1,12 +1,18 @@
 // src/pages/manager/VerificationQueue.tsx
-// Two-tab verification queue: Flock Entries (existing) + Egg Collection Sessions (Phase 3)
+// Two-tab verification queue: Flock Entries (existing) + Egg Collection Sessions
+//
+// CORRECTIONS APPLIED:
+//   FIX-1: Approving AM session shows clear notification that PM is now unlocked.
+//   FIX-2: Once both AM+PM are approved they display as locked (no further action).
+//   FIX-3: Return to Attendant button includes reason in the confirmation and sends it.
+//   FIX-4: Tally sign-off prompt only appears when BOTH AM+PM sessions are approved.
 
 import { useState } from 'react';
 import {
   Check, RotateCcw, ChevronDown, ChevronUp, Clock, AlertTriangle,
   Thermometer, Droplets, Bird, Info, CheckCircle2, XCircle,
   User, Calendar, Hash, ArrowUpDown, Filter, Egg, Package,
-  Scale, AlertCircle,
+  Scale, AlertCircle, Lock,
 } from 'lucide-react';
 import { usePendingEntries, useVerifyEntry } from '../../hooks/useFlock';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -333,8 +339,8 @@ function useVerifyEggSession() {
   });
 }
 
-function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, isCosigning }: {
-  session: any; onApprove: () => void; onReturn: (r: string) => void;
+function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign, isPending, isCosigning }: {
+  session: any; allSessions: any[]; onApprove: () => void; onReturn: (r: string) => void;
   onCosign?: () => void; isPending: boolean; isCosigning?: boolean;
 }) {
   const [returnReason, setReturnReason] = useState('');
@@ -346,8 +352,48 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
 
   const rows: any[] = Array.isArray(session.rowData) ? session.rowData : [];
 
+  // FIX-2: Determine if BOTH AM and PM are approved (day locked)
+  const sessionDate = session.sessionDate;
+  const batchId = session.batchId ?? session.batch?.id;
+  const sameDaySessions = allSessions.filter(
+    (s: any) => s.sessionDate === sessionDate && (s.batchId ?? s.batch?.id) === batchId
+  );
+  const amApproved = sameDaySessions.some((s: any) => s.shift === 'AM' && s.status === 'APPROVED');
+  const pmApproved = sameDaySessions.some((s: any) => s.shift === 'PM' && s.status === 'APPROVED');
+  const dayFullyLocked = amApproved && pmApproved;
+
+  // FIX-1: If this is AM and it's being approved, show PM unlock message
+  const isAM = session.shift === 'AM';
+
   return (
     <div className="border-t border-gray-100 dark:border-dark-border bg-gray-50/50 dark:bg-dark-bg/50 p-4 md:p-6 space-y-5">
+
+      {/* FIX-2: Day locked banner */}
+      {dayFullyLocked && (
+        <div className="flex items-center gap-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-3">
+          <Lock className="w-4 h-4 text-green-600 shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-green-700 dark:text-green-400">Day Fully Locked</p>
+            <p className="text-xs text-green-600 dark:text-green-500 mt-0.5">
+              Both AM and PM sessions are approved. No further data can be recorded for this day.
+              The next morning three-party sign-off is now available.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* FIX-1: AM approved — PM now open banner */}
+      {isAM && session.status === 'APPROVED' && !dayFullyLocked && (
+        <div className="flex items-center gap-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-3">
+          <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />
+          <div>
+            <p className="text-sm font-semibold text-blue-700 dark:text-blue-400">AM Session Approved</p>
+            <p className="text-xs text-blue-600 dark:text-blue-400 mt-0.5">
+              The attendant has been notified. The PM session is now open for data recording.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Session totals */}
       <div>
@@ -482,12 +528,6 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
               <p className="font-semibold text-gray-700 dark:text-gray-200">{Number(session.houseTempC).toFixed(1)}°C</p>
             </div>
           )}
-          {session.vaccineGiven && (
-            <div className="bg-white dark:bg-dark-card rounded-xl p-3 border border-gray-100 dark:border-dark-border">
-              <p className="text-xs text-gray-400 mb-0.5">Vaccines</p>
-              <p className="font-semibold text-gray-700 dark:text-gray-200">{session.vaccineGiven}</p>
-            </div>
-          )}
         </div>
       )}
 
@@ -498,6 +538,14 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
         </div>
       )}
 
+      {/* If returned — show the reason that was given */}
+      {session.status === 'RETURNED' && session.returnReason && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl p-3">
+          <p className="text-xs font-bold text-red-700 dark:text-red-400 uppercase tracking-wide mb-1">Return Reason Sent to Attendant</p>
+          <p className="text-sm text-red-700 dark:text-red-300">{session.returnReason}</p>
+        </div>
+      )}
+
       {/* Metadata */}
       <div className="flex flex-wrap gap-3 text-xs text-gray-400">
         <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{dayjs(session.sessionDate).format('D MMM YYYY')} · {session.shift} session</span>
@@ -505,10 +553,12 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
         <span className="flex items-center gap-1 font-mono"><Hash className="w-3 h-3" />{session.id.slice(0, 8)}</span>
       </div>
 
-      {/* Return reason */}
+      {/* Return reason input */}
       {isReturning && (
         <div>
-          <label className="block text-sm font-semibold text-red-700 dark:text-red-400 mb-1.5">Reason for returning *</label>
+          <label className="block text-sm font-semibold text-red-700 dark:text-red-400 mb-1.5">
+            Reason for returning * <span className="text-xs font-normal text-gray-400">(attendant will be notified with this reason)</span>
+          </label>
           <textarea value={returnReason} onChange={e => setReturnReason(e.target.value)} rows={3}
             className="w-full border-2 border-red-200 dark:border-red-700 rounded-xl px-4 py-3 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-400 resize-none placeholder-gray-400"
             placeholder="e.g. Row D1 total doesn't add up. Please recount and resubmit..." />
@@ -516,13 +566,14 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
       )}
 
       {/* Action buttons — shown only for PENDING sessions */}
-      {session.status === 'PENDING' && (
+      {session.status === 'PENDING' && !dayFullyLocked && (
         <div className="flex gap-3 pt-1">
           {!isReturning ? (
             <>
               <button onClick={onApprove} disabled={isPending}
                 className="flex-1 bg-brand-green hover:bg-green-800 text-white rounded-xl py-3 font-bold flex items-center justify-center gap-2 min-h-[52px] disabled:opacity-60 transition-all shadow-sm">
-                <CheckCircle2 className="w-5 h-5" /> Approve Session
+                <CheckCircle2 className="w-5 h-5" />
+                {session.shift === 'AM' ? 'Approve AM Session' : 'Approve PM Session'}
               </button>
               <button onClick={() => setIsReturning(true)}
                 className="flex-1 bg-white dark:bg-dark-card text-red-600 border-2 border-red-200 dark:border-red-700 hover:bg-red-50 rounded-xl py-3 font-bold flex items-center justify-center gap-2 min-h-[52px] transition-all">
@@ -534,7 +585,7 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
               <button onClick={() => { onReturn(returnReason); setIsReturning(false); setReturnReason(''); }}
                 disabled={!returnReason.trim() || isPending}
                 className="flex-1 bg-red-600 hover:bg-red-700 text-white rounded-xl py-3 font-bold min-h-[52px] disabled:opacity-40 transition-all">
-                {isPending ? 'Sending...' : 'Confirm Return'}
+                {isPending ? 'Sending...' : 'Confirm Return & Notify Attendant'}
               </button>
               <button onClick={() => { setIsReturning(false); setReturnReason(''); }}
                 className="flex-1 bg-gray-100 dark:bg-dark-card text-gray-600 rounded-xl py-3 font-bold min-h-[52px]">
@@ -571,8 +622,8 @@ function EggSessionDetail({ session, onApprove, onReturn, onCosign, isPending, i
   );
 }
 
-function EggSessionRow({ session, isExpanded, onToggle, onApprove, onReturn, onCosign, isPending, isCosigning }: {
-  session: any; isExpanded: boolean; onToggle: () => void;
+function EggSessionRow({ session, allSessions, isExpanded, onToggle, onApprove, onReturn, onCosign, isPending, isCosigning }: {
+  session: any; allSessions: any[]; isExpanded: boolean; onToggle: () => void;
   onApprove: () => void; onReturn: (r: string) => void;
   onCosign?: () => void; isPending: boolean; isCosigning?: boolean;
 }) {
@@ -580,16 +631,47 @@ function EggSessionRow({ session, isExpanded, onToggle, onApprove, onReturn, onC
   const hasDiscrepancy = storeIntake && storeIntake.totalGoodEggs !== session.totalGoodEggs;
   const needsCosign = session.status === 'APPROVED' && !session.storeSignedById;
 
+  // FIX-2: Check if both sessions for the same day are approved
+  const sessionDate = session.sessionDate;
+  const batchId = session.batchId ?? session.batch?.id;
+  const sameDaySessions = allSessions.filter(
+    (s: any) => s.sessionDate === sessionDate && (s.batchId ?? s.batch?.id) === batchId
+  );
+  const amApproved = sameDaySessions.some((s: any) => s.shift === 'AM' && s.status === 'APPROVED');
+  const pmApproved = sameDaySessions.some((s: any) => s.shift === 'PM' && s.status === 'APPROVED');
+  const dayFullyLocked = amApproved && pmApproved;
+
   return (
-    <div className={`bg-white dark:bg-dark-card rounded-2xl border overflow-hidden shadow-sm transition-all duration-200 ${isExpanded ? 'border-brand-green/40 shadow-md' : needsCosign ? 'border-blue-200 dark:border-blue-800' : 'border-gray-100 dark:border-dark-border hover:border-gray-200 hover:shadow-md'}`}>
+    <div className={`bg-white dark:bg-dark-card rounded-2xl border overflow-hidden shadow-sm transition-all duration-200 ${
+      isExpanded ? 'border-brand-green/40 shadow-md'
+      : dayFullyLocked ? 'border-green-200 dark:border-green-800'
+      : needsCosign ? 'border-blue-200 dark:border-blue-800'
+      : 'border-gray-100 dark:border-dark-border hover:border-gray-200 hover:shadow-md'
+    }`}>
       <button onClick={onToggle} className="w-full p-4 md:p-5 flex items-center gap-3 md:gap-4 text-left">
-        <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${hasDiscrepancy ? 'bg-amber-500 animate-pulse' : needsCosign ? 'bg-blue-500 animate-pulse' : 'bg-brand-green'}`} />
+        <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+          dayFullyLocked ? 'bg-green-500'
+          : hasDiscrepancy ? 'bg-amber-500 animate-pulse'
+          : needsCosign ? 'bg-blue-500 animate-pulse'
+          : 'bg-brand-green'
+        }`} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs bg-gray-100 dark:bg-dark-bg text-gray-500 px-2 py-0.5 rounded-full font-mono">{session.batch?.batchCode}</span>
             <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${session.shift === 'PM' ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'}`}>
               {session.shift} Session
             </span>
+            {dayFullyLocked && (
+              <span className="text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2 py-0.5 rounded-full font-semibold flex items-center gap-1">
+                <Lock className="w-2.5 h-2.5" /> Day Locked
+              </span>
+            )}
+            {/* FIX-1: AM approved, PM now open */}
+            {session.shift === 'AM' && session.status === 'APPROVED' && !dayFullyLocked && (
+              <span className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full font-semibold">
+                PM Now Open
+              </span>
+            )}
             {needsCosign && (
               <span className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full font-semibold">
                 Co-sign needed
@@ -632,7 +714,7 @@ function EggSessionRow({ session, isExpanded, onToggle, onApprove, onReturn, onC
         </div>
       </button>
       {isExpanded && (
-        <EggSessionDetail session={session} onApprove={onApprove} onReturn={onReturn}
+        <EggSessionDetail session={session} allSessions={allSessions} onApprove={onApprove} onReturn={onReturn}
           onCosign={onCosign} isPending={isPending} isCosigning={isCosigning} />
       )}
     </div>
@@ -645,6 +727,7 @@ function useEggSessionsNeedingAttention() {
     queryFn: () => api.get('/production/sessions').then(r =>
       r.data.filter((s: any) =>
         s.status === 'PENDING' ||
+        s.status === 'RETURNED' ||
         (s.status === 'APPROVED' && !s.storeSignedById && s.storeIntakes?.length > 0)
       )
     ),
@@ -704,7 +787,7 @@ function EggSessionsTab() {
       )}
       <div className="space-y-3">
         {sessions.map((session: any) => (
-          <EggSessionRow key={session.id} session={session} isExpanded={expanded === session.id}
+          <EggSessionRow key={session.id} session={session} allSessions={sessions} isExpanded={expanded === session.id}
             onToggle={() => setExpanded(expanded === session.id ? null : session.id)}
             onApprove={() => handleApprove(session.id)}
             onReturn={(reason) => handleReturn(session.id, reason)}
@@ -746,8 +829,6 @@ export function VerificationQueue() {
           </span>
         )}
       </div>
-
-      
 
       {/* Egg Sessions */}
       <EggSessionsTab />

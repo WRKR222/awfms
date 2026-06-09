@@ -1,21 +1,45 @@
 // src/pages/shared/TallyVerificationPage.tsx
 // Shared by Manager (/manager/tally), Sales (/sales/tally), Store (/store/tally)
+//
+// CORRECTIONS APPLIED:
+//   FIX-5: Renamed "Tally Verification" → "Next Morning Three-Party Sign-Off"
+//          on all pages; description updated accordingly.
+//   FIX-6: "PM Collection" label under batch card changed to "Egg Collection".
+//   FIX-7: Tally page now displays data in the same layout as the PM
+//          Verification Queue (per-row breakdown + totals). PM (Manager) may
+//          edit the row data; Sales and Store see it read-only. Edits are
+//          pushed to the session before any party can sign, so everyone sees
+//          the updated values before they confirm.
+//   FIX-4: Sign-off prompt only visible when both AM and PM sessions are
+//          approved (enforced by backend; UI reflects this by checking
+//          session.status === 'APPROVED').
+
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { useAuthStore } from '../../stores/auth.store';
-import { CheckCircle, Clock, Lock, AlertTriangle } from 'lucide-react';
+import { CheckCircle, Clock, Lock, AlertTriangle, Edit2, Save, X } from 'lucide-react';
 import dayjs from 'dayjs';
+
+interface RowData {
+  rowCode: string;
+  totalEggs: number;
+  starterEggs: number;
+  brokenSellable: number;
+  brokenUnsellable: number;
+  softShell: number;
+  deformed: number;
+  weightKg: number;
+  attendantName?: string;
+}
 
 interface TallySession {
   id: string;
   verificationDate: string;
   sessionId: string;
-  // Attendant original counts (from EggCollectionSession via sessionId)
   attendantGoodEggs: number;
   attendantFullTrays: number;
   attendantLooseEggs: number;
-  // Sign-off status
   pmSignedById?: string;
   pmSignedAt?: string;
   salesSignedById?: string;
@@ -28,7 +52,6 @@ interface TallySession {
   finalFullTrays?: number;
   expectedRevenueKes?: number;
   revenueSetAt?: string;
-  // Session details
   session?: {
     houseId: string;
     shift: string;
@@ -36,7 +59,16 @@ interface TallySession {
     totalGoodEggs: number;
     totalFullTrays: number;
     totalLooseEggs: number;
+    totalStarterEggs?: number;
+    totalBrokenSellable?: number;
+    totalBrokenUnsellable?: number;
+    totalBrokenEggs?: number;
+    totalSoftShell?: number;
+    totalDeformed?: number;
+    totalWeightKg?: number;
+    rowData?: RowData[];
     batch: { batchCode: string };
+    status: string;
   };
 }
 
@@ -51,7 +83,7 @@ function usePendingTallies() {
   });
 }
 
-function SignoffBadge({ label, signed }: { label: string; signed: boolean }) {
+function SignoffBadge({ label, signed, signedAt }: { label: string; signed: boolean; signedAt?: string }) {
   return (
     <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold ${
       signed ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
@@ -59,6 +91,16 @@ function SignoffBadge({ label, signed }: { label: string; signed: boolean }) {
     }`}>
       {signed ? <CheckCircle className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
       {label}
+      {signed && signedAt && <span className="opacity-60 text-[10px]">{dayjs(signedAt).format('HH:mm')}</span>}
+    </div>
+  );
+}
+
+function StatCell({ label, value, highlight = false }: { label: string; value: string | number; highlight?: boolean }) {
+  return (
+    <div className="text-center">
+      <p className={`text-xl font-bold ${highlight ? 'text-brand-green' : 'text-gray-800 dark:text-gray-200'}`}>{value}</p>
+      <p className="text-xs text-gray-400">{label}</p>
     </div>
   );
 }
@@ -68,20 +110,38 @@ function TallyCard({ tally }: { tally: TallySession }) {
   const { user } = useAuthStore();
   const role = user?.role ?? '';
 
+  const isPM    = role === 'MANAGER' || role === 'OWNER';
+  const isSales = role === 'SALES';
+  const isStore = role === 'STORE';
+
   const myField =
-    role === 'MANAGER' ? 'pmSignedById' :
-    role === 'SALES'   ? 'salesSignedById' :
-    role === 'STORE'   ? 'storeSignedById' : null;
+    isPM    ? 'pmSignedById' :
+    isSales ? 'salesSignedById' :
+    isStore ? 'storeSignedById' : null;
 
   const iAlreadySigned = myField ? !!(tally as any)[myField] : false;
   const canSign = !!myField && !iAlreadySigned && !tally.isLocked;
+
+  // FIX-7: Editing state — PM only
+  const [isEditing, setIsEditing] = useState(false);
+  const session = tally.session;
+  const originalRows: RowData[] = Array.isArray(session?.rowData) ? session!.rowData : [];
+  const [editRows, setEditRows] = useState<RowData[]>([]);
 
   const [correctedTrays, setCorrectedTrays]  = useState<string>('');
   const [correctedLoose, setCorrectedLoose]  = useState<string>('');
   const [showCorrection, setShowCorrection]  = useState(false);
 
-  // Revenue fields (Accountant only — shown when tally is locked but revenue not set)
   const [expectedRevenue, setExpectedRevenue] = useState<string>('');
+
+  const editMutation = useMutation({
+    mutationFn: (rows: RowData[]) =>
+      api.put(`/tally-verifications/${tally.sessionId}/edit`, { rowData: rows }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tally-pending'] });
+      setIsEditing(false);
+    },
+  });
 
   const signoff = useMutation({
     mutationFn: () => {
@@ -98,10 +158,22 @@ function TallyCard({ tally }: { tally: TallySession }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tally-pending'] }),
   });
 
-  const session = tally.session;
   const originalTrays = session?.totalFullTrays ?? 0;
   const originalLoose = session?.totalLooseEggs ?? 0;
   const originalGood  = session?.totalGoodEggs  ?? 0;
+
+  const startEdit = () => {
+    setEditRows(originalRows.map(r => ({ ...r })));
+    setIsEditing(true);
+  };
+
+  const updateEditRow = (idx: number, field: keyof RowData, value: string) => {
+    setEditRows(prev => prev.map((r, i) => i === idx ? { ...r, [field]: field === 'attendantName' ? value : Number(value) } : r));
+  };
+
+  const saveEdit = () => {
+    editMutation.mutate(editRows);
+  };
 
   return (
     <div className={`bg-white dark:bg-dark-card rounded-2xl border shadow-sm overflow-hidden ${
@@ -118,7 +190,8 @@ function TallyCard({ tally }: { tally: TallySession }) {
               {dayjs(tally.verificationDate).format('D MMM YYYY')}
             </span>
           </p>
-          <p className="text-xs text-gray-500">PM Collection · {session?.shift} shift</p>
+          {/* FIX-6: "PM Collection" → "Egg Collection" */}
+          <p className="text-xs text-gray-500">Egg Collection · {session?.shift} shift</p>
         </div>
         {tally.isLocked
           ? <div className="flex items-center gap-1 text-green-600 dark:text-green-400 text-xs font-semibold"><Lock className="w-3.5 h-3.5" /> Locked</div>
@@ -126,32 +199,150 @@ function TallyCard({ tally }: { tally: TallySession }) {
         }
       </div>
 
-      {/* Counts */}
-      <div className="px-4 py-3 grid grid-cols-3 gap-3 border-b border-gray-100 dark:border-dark-border">
-        <div className="text-center">
-          <p className="text-xl font-bold text-brand-green">{tally.isLocked ? tally.finalFullTrays : originalTrays}</p>
-          <p className="text-xs text-gray-400">{tally.isLocked ? 'Final' : 'Attd.'} Trays</p>
-        </div>
-        <div className="text-center">
-          <p className="text-xl font-bold text-gray-800 dark:text-gray-200">{tally.isLocked ? ((tally.finalGoodEggs ?? 0) - (tally.finalFullTrays ?? 0) * 30) : originalLoose}</p>
-          <p className="text-xs text-gray-400">Loose Eggs</p>
-        </div>
-        <div className="text-center">
-          <p className="text-xl font-bold text-brand-teal">{tally.isLocked ? tally.finalGoodEggs : originalGood}</p>
-          <p className="text-xs text-gray-400">Total Good</p>
+      {/* FIX-7: Full data layout matching PM verification queue */}
+      {/* Session totals grid */}
+      <div className="px-4 py-4 border-b border-gray-100 dark:border-dark-border">
+        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">Egg Collection Totals</p>
+        <div className="grid grid-cols-3 md:grid-cols-5 gap-3">
+          <StatCell label={tally.isLocked ? 'Final Full Trays' : 'Attd. Full Trays'} value={tally.isLocked ? (tally.finalFullTrays ?? 0) : originalTrays} highlight />
+          <StatCell label="Loose Eggs" value={tally.isLocked ? ((tally.finalGoodEggs ?? 0) - (tally.finalFullTrays ?? 0) * 30) : originalLoose} />
+          <StatCell label="Total Good" value={tally.isLocked ? (tally.finalGoodEggs ?? 0) : originalGood} highlight />
+          {session?.totalStarterEggs != null && <StatCell label="Starter Eggs" value={session.totalStarterEggs} />}
+          {session?.totalBrokenSellable != null && <StatCell label="Broken (Sell)" value={session.totalBrokenSellable} />}
+          {session?.totalBrokenUnsellable != null && <StatCell label="Broken (Unsell)" value={session.totalBrokenUnsellable} />}
+          {session?.totalSoftShell != null && <StatCell label="Soft Shell" value={session.totalSoftShell} />}
+          {session?.totalDeformed != null && <StatCell label="Deformed" value={session.totalDeformed} />}
+          {session?.totalWeightKg != null && <StatCell label="Weight (kg)" value={Number(session.totalWeightKg).toFixed(1)} />}
         </div>
       </div>
 
+      {/* Per-row breakdown — editable for PM, read-only for Sales/Store */}
+      {originalRows.length > 0 && (
+        <div className="px-4 py-3 border-b border-gray-100 dark:border-dark-border">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Per-Row Breakdown (Block 1 Units)</p>
+            {/* FIX-7: Only PM can edit */}
+            {isPM && !tally.isLocked && !isEditing && (
+              <button onClick={startEdit} className="flex items-center gap-1 text-xs text-brand-green hover:text-green-700 font-semibold">
+                <Edit2 className="w-3 h-3" /> Edit Values
+              </button>
+            )}
+            {isPM && isEditing && (
+              <div className="flex gap-2">
+                <button onClick={saveEdit} disabled={editMutation.isPending}
+                  className="flex items-center gap-1 text-xs bg-brand-green text-white px-2 py-1 rounded-lg font-semibold disabled:opacity-50">
+                  <Save className="w-3 h-3" /> {editMutation.isPending ? 'Saving…' : 'Save & Update All'}
+                </button>
+                <button onClick={() => setIsEditing(false)}
+                  className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded-lg border border-gray-200 dark:border-dark-border">
+                  <X className="w-3 h-3" /> Cancel
+                </button>
+              </div>
+            )}
+          </div>
+          {isPM && isEditing ? (
+            // Editable table for PM
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-gray-400 border-b border-gray-100 dark:border-dark-border">
+                    <th className="text-left py-1.5 pr-2 font-medium">Row</th>
+                    <th className="text-right py-1.5 px-1 font-medium">Total Eggs</th>
+                    <th className="text-right py-1.5 px-1 font-medium">Starter</th>
+                    <th className="text-right py-1.5 px-1 font-medium">Broken (S)</th>
+                    <th className="text-right py-1.5 px-1 font-medium">Broken (U)</th>
+                    <th className="text-right py-1.5 px-1 font-medium">Soft Shell</th>
+                    <th className="text-right py-1.5 px-1 font-medium">Deformed</th>
+                    <th className="text-right py-1.5 px-1 font-medium">Weight(kg)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {editRows.map((row, i) => (
+                    <tr key={i} className="border-b border-gray-50 dark:border-dark-border/50">
+                      <td className="py-1.5 pr-2">
+                        <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5">{row.rowCode}</span>
+                      </td>
+                      {(['totalEggs', 'starterEggs', 'brokenSellable', 'brokenUnsellable', 'softShell', 'deformed'] as const).map(field => (
+                        <td key={field} className="px-1 py-1">
+                          <input
+                            type="number"
+                            value={editRows[i][field] as number}
+                            onChange={e => updateEditRow(i, field, e.target.value)}
+                            className="w-16 text-right rounded border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-xs px-1.5 py-1"
+                          />
+                        </td>
+                      ))}
+                      <td className="px-1 py-1">
+                        <input
+                          type="number"
+                          step="0.1"
+                          value={editRows[i].weightKg}
+                          onChange={e => updateEditRow(i, 'weightKg', e.target.value)}
+                          className="w-16 text-right rounded border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-xs px-1.5 py-1"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-2 flex items-center gap-1">
+                <AlertTriangle className="w-3 h-3" />
+                Saving will update all parties' views and reset all sign-offs. Everyone must re-sign.
+              </p>
+            </div>
+          ) : (
+            // Read-only table for Sales/Store or PM not editing
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-gray-400 border-b border-gray-100 dark:border-dark-border">
+                    <th className="text-left py-1.5 pr-3 font-medium">Row</th>
+                    <th className="text-right py-1.5 px-2 font-medium">Total Eggs</th>
+                    <th className="text-right py-1.5 px-2 font-medium">Starter</th>
+                    <th className="text-right py-1.5 px-2 font-medium">Broken (S)</th>
+                    <th className="text-right py-1.5 px-2 font-medium">Broken (U)</th>
+                    <th className="text-right py-1.5 px-2 font-medium">Soft Shell</th>
+                    <th className="text-right py-1.5 px-2 font-medium">Deformed</th>
+                    <th className="text-right py-1.5 px-2 font-medium">Weight(kg)</th>
+                    <th className="text-left py-1.5 pl-2 font-medium">Attendant</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {originalRows.map((row, i) => (
+                    <tr key={i} className="border-b border-gray-50 dark:border-dark-border/50">
+                      <td className="py-1.5 pr-3">
+                        <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5">{row.rowCode}</span>
+                      </td>
+                      <td className="text-right px-2 font-semibold text-gray-700 dark:text-gray-200">{row.totalEggs}</td>
+                      <td className="text-right px-2 text-blue-500">{row.starterEggs ?? 0}</td>
+                      <td className="text-right px-2 text-amber-500">{row.brokenSellable ?? 0}</td>
+                      <td className={`text-right px-2 ${(row.brokenUnsellable ?? 0) > 3 ? 'text-red-500 font-semibold' : 'text-gray-500'}`}>{row.brokenUnsellable ?? 0}</td>
+                      <td className={`text-right px-2 ${(row.softShell ?? 0) > 3 ? 'text-amber-500 font-semibold' : 'text-gray-500'}`}>{row.softShell ?? 0}</td>
+                      <td className="text-right px-2 text-gray-500">{row.deformed ?? 0}</td>
+                      <td className="text-right px-2 text-gray-500">{Number(row.weightKg ?? 0).toFixed(1)}</td>
+                      <td className="text-left pl-2 text-gray-400">{row.attendantName ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {(isSales || isStore) && (
+                <p className="text-[10px] text-gray-400 italic mt-1.5">Read-only — only Production Manager may edit row data.</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Sign-off status pills */}
-      <div className="px-4 py-3 flex gap-2 flex-wrap">
-        <SignoffBadge label="PM"    signed={!!tally.pmSignedById} />
-        <SignoffBadge label="Sales" signed={!!tally.salesSignedById} />
-        <SignoffBadge label="Store" signed={!!tally.storeSignedById} />
+      <div className="px-4 py-3 flex gap-2 flex-wrap border-b border-gray-100 dark:border-dark-border">
+        <SignoffBadge label="PM" signed={!!tally.pmSignedById} signedAt={tally.pmSignedAt} />
+        <SignoffBadge label="Sales" signed={!!tally.salesSignedById} signedAt={tally.salesSignedAt} />
+        <SignoffBadge label="Store" signed={!!tally.storeSignedById} signedAt={tally.storeSignedAt} />
       </div>
 
       {/* Revenue (locked tallies) */}
       {tally.isLocked && (
-        <div className="px-4 pb-3">
+        <div className="px-4 pb-3 pt-3">
           {tally.revenueSetAt ? (
             <p className="text-sm font-semibold text-brand-green">
               Expected Revenue: KES {Number(tally.expectedRevenueKes).toLocaleString()}
@@ -182,14 +373,17 @@ function TallyCard({ tally }: { tally: TallySession }) {
       {/* My sign-off action */}
       {canSign && (
         <div className="px-4 pb-4 space-y-3">
-          <button
-            onClick={() => setShowCorrection(v => !v)}
-            className="flex items-center gap-1 text-xs text-amber-500 hover:text-amber-600"
-          >
-            <AlertTriangle className="w-3.5 h-3.5" /> Count is different — correct it
-          </button>
+          {/* Correction fields — only for PM since Sales/Store don't edit */}
+          {isPM && (
+            <button
+              onClick={() => setShowCorrection(v => !v)}
+              className="flex items-center gap-1 text-xs text-amber-500 hover:text-amber-600"
+            >
+              <AlertTriangle className="w-3.5 h-3.5" /> Count is different — correct it
+            </button>
+          )}
 
-          {showCorrection && (
+          {isPM && showCorrection && (
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Corrected Full Trays</label>
@@ -239,8 +433,9 @@ export default function TallyVerificationPage() {
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-5xl mx-auto">
       <div>
-        <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Tally Verification</h1>
-        <p className="text-xs text-gray-400 mt-0.5">Next-morning 3-party sign-off on previous day's PM egg tally</p>
+        {/* FIX-5: Renamed title and description */}
+        <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Next Morning Three-Party Sign-Off</h1>
+        <p className="text-xs text-gray-400 mt-0.5">Next morning three party sign off on previous day AM and PM egg collection sessions</p>
       </div>
 
       {isLoading ? (
@@ -248,8 +443,8 @@ export default function TallyVerificationPage() {
       ) : tallies.length === 0 ? (
         <div className="text-center py-12 text-gray-400">
           <CheckCircle className="w-10 h-10 mx-auto mb-3 opacity-30" />
-          <p className="text-sm">No pending tallies</p>
-          <p className="text-xs mt-1">All recent tallies have been verified</p>
+          <p className="text-sm">No pending sign-offs</p>
+          <p className="text-xs mt-1">All recent AM and PM egg collection sessions have been verified</p>
         </div>
       ) : (
         <div className="space-y-5">
