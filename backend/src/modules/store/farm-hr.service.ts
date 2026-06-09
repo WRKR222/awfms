@@ -25,11 +25,11 @@ export interface CreateEmployeeDto {
 
 export interface UpdateEmployeeDto {
   fullName?: string;
-  employeeNumber?: string;   // ← added
+  employeeNumber?: string;
   nationalId?: string;
-  address?: string;          // ← added
-  workPhone?: string;        // ← added
-  mobilePhone?: string;      // ← added
+  address?: string;
+  workPhone?: string;
+  mobilePhone?: string;
   phone?: string;            // legacy
   email?: string;
   role?: string;
@@ -37,6 +37,7 @@ export interface UpdateEmployeeDto {
   houseIds?: string[];
   salaryKes?: number;
   payPeriod?: string;
+  hireDate?: string;         // ← added: allow editing hire date
   status?: string;
   terminatedDate?: string;
   nextOfKinName?: string;
@@ -74,6 +75,23 @@ export interface UpdateConstructionDto {
   notes?: string;
 }
 
+
+/**
+ * Parse a date string safely.
+ * Returns a Date only when the value is a fully-valid YYYY-MM-DD string
+ * with a 4-digit year >= 1900. Returns undefined for empty strings, null,
+ * partial values, or "0026-..." accidents that browsers emit while the
+ * user is still typing a year digit-by-digit.
+ */
+function safeDate(value: string | undefined | null): Date | undefined {
+  if (!value) return undefined;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const year = parseInt(value.slice(0, 4), 10);
+  if (year < 1900) return undefined;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? undefined : d;
+}
+
 @Injectable()
 export class FarmHRService {
   constructor(private readonly prisma: PrismaService) {}
@@ -107,7 +125,7 @@ export class FarmHRService {
         houseIds:          dto.houseIds          ?? [],
         salaryKes:         dto.salaryKes         ?? 0,
         payPeriod:         dto.payPeriod         ?? 'MONTHLY',
-        hireDate:          new Date(dto.hireDate),
+        hireDate:          safeDate(dto.hireDate) ?? new Date(dto.hireDate),
         nextOfKinName:     dto.nextOfKinName     ?? null,
         nextOfKinPhone:    dto.nextOfKinPhone    ?? null,
         nextOfKinRelation: dto.nextOfKinRelation ?? null,
@@ -134,8 +152,11 @@ export class FarmHRService {
         ...(dto.houseIds          !== undefined ? { houseIds:          dto.houseIds }                          : {}),
         ...(dto.salaryKes         !== undefined ? { salaryKes:         dto.salaryKes }                         : {}),
         ...(dto.payPeriod         !== undefined ? { payPeriod:         dto.payPeriod }                         : {}),
+        ...(dto.hireDate          !== undefined && safeDate(dto.hireDate) !== undefined
+            ? { hireDate: safeDate(dto.hireDate)! } : {}),
         ...(dto.status            !== undefined ? { status:            dto.status as any }                     : {}),
-        ...(dto.terminatedDate    !== undefined ? { terminatedDate:    new Date(dto.terminatedDate) }          : {}),
+        ...(dto.terminatedDate    !== undefined && safeDate(dto.terminatedDate) !== undefined
+            ? { terminatedDate: safeDate(dto.terminatedDate)! } : {}),
         ...(dto.nextOfKinName     !== undefined ? { nextOfKinName:     dto.nextOfKinName }                     : {}),
         ...(dto.nextOfKinPhone    !== undefined ? { nextOfKinPhone:    dto.nextOfKinPhone }                    : {}),
         ...(dto.nextOfKinRelation !== undefined ? { nextOfKinRelation: dto.nextOfKinRelation }                 : {}),
@@ -163,8 +184,8 @@ export class FarmHRService {
         title:            dto.title,
         constructionType: dto.constructionType as any,
         location:         dto.location,
-        startDate:        new Date(dto.startDate),
-        endDate:          dto.endDate ? new Date(dto.endDate) : null,
+        startDate:        safeDate(dto.startDate) ?? new Date(dto.startDate),
+        endDate:          safeDate(dto.endDate) ?? null,
         contractorName:   dto.contractorName  ?? null,
         contractorPhone:  dto.contractorPhone ?? null,
         budgetKes:        dto.budgetKes       ?? 0,
@@ -184,7 +205,7 @@ export class FarmHRService {
         ...(dto.title            !== undefined ? { title:            dto.title }                                      : {}),
         ...(dto.constructionType !== undefined ? { constructionType: dto.constructionType as any }                    : {}),
         ...(dto.location         !== undefined ? { location:         dto.location }                                   : {}),
-        ...(dto.endDate          !== undefined ? { endDate:          dto.endDate ? new Date(dto.endDate) : null }     : {}),
+        ...(dto.endDate          !== undefined ? { endDate: safeDate(dto.endDate) ?? null }                          : {}),
         ...(dto.contractorName   !== undefined ? { contractorName:   dto.contractorName }                             : {}),
         ...(dto.contractorPhone  !== undefined ? { contractorPhone:  dto.contractorPhone }                            : {}),
         ...(dto.budgetKes        !== undefined ? { budgetKes:        dto.budgetKes }                                  : {}),
