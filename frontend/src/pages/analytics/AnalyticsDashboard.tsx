@@ -8,27 +8,23 @@ import {
   XAxis, YAxis, Tooltip, ResponsiveContainer,
   ReferenceLine,
 } from 'recharts';
-import { TrendingUp, Egg, AlertTriangle, Wheat, DollarSign, RefreshCw, Activity, BarChart2, Target } from 'lucide-react';
+import {
+  TrendingUp, Egg, AlertTriangle, Wheat, DollarSign,
+  RefreshCw, Activity, BarChart2, Target,
+} from 'lucide-react';
 
-// ── Brand palette ─────────────────────────────────────────────────────────────
-const BRAND = {
-  green:      '#16a34a',
-  greenLight: '#dcfce7',
-  greenMid:   '#4ade80',
-  teal:       '#0d9488',
-  tealLight:  '#ccfbf1',
-  blue:       '#2563eb',
-  blueLight:  '#dbeafe',
-  amber:      '#d97706',
-  amberLight: '#fef3c7',
-  red:        '#dc2626',
-  redLight:   '#fee2e2',
-  purple:     '#7c3aed',
-  purpleLight:'#ede9fe',
-  slate:      '#64748b',
+// ── Chart colours (work on dark and light backgrounds) ───────────────────────
+const C = {
+  green:  '#22c55e',
+  teal:   '#2dd4bf',
+  blue:   '#60a5fa',
+  amber:  '#fbbf24',
+  red:    '#f87171',
+  purple: '#a78bfa',
+  cyan:   '#22d3ee',
+  pink:   '#f472b6',
 };
-
-const CHART_COLORS = [BRAND.green, BRAND.teal, BRAND.blue, BRAND.amber, BRAND.red, BRAND.purple, '#0891b2', '#be185d'];
+const CHART_COLORS = [C.green, C.teal, C.blue, C.amber, C.red, C.purple, C.cyan, C.pink];
 
 const RANGES = [
   { label: 'Today',   value: 'today' },
@@ -39,21 +35,26 @@ const RANGES = [
 
 interface Props { role: 'OWNER' | 'MANAGER' }
 
-// ── Custom tooltip ────────────────────────────────────────────────────────────
-function CustomTooltipBox({ active, payload, label, formatter }: any) {
+// ── Recharts axis tick — light on dark, dark on light ────────────────────────
+const TICK_STYLE = { fontSize: 11, fill: '#6b8f74' };
+
+function shortDate(d: string) {
+  const dt = new Date(d);
+  return `${dt.getMonth() + 1}/${dt.getDate()}`;
+}
+
+// ── Tooltip ──────────────────────────────────────────────────────────────────
+function TipBox({ active, payload, label, fmt }: any) {
   if (!active || !payload?.length) return null;
   return (
-    <div style={{
-      background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10,
-      padding: '10px 14px', fontSize: 12, boxShadow: '0 4px 16px rgba(0,0,0,0.08)', minWidth: 120,
-    }}>
-      {label && <p style={{ color: '#64748b', marginBottom: 6, fontWeight: 600 }}>{label}</p>}
-      {payload.map((entry: any, i: number) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: entry.color, flexShrink: 0 }} />
-          <span style={{ color: '#475569' }}>{entry.name}:</span>
-          <span style={{ fontWeight: 600, color: '#1e293b' }}>
-            {formatter ? formatter(entry.value, entry.name) : entry.value?.toLocaleString()}
+    <div className="bg-dark-card border border-dark-border rounded-xl px-3 py-2 text-xs shadow-lg min-w-[120px]">
+      {label && <p className="text-dark-muted font-semibold mb-1">{label}</p>}
+      {payload.map((e: any, i: number) => (
+        <div key={i} className="flex items-center gap-1.5 mb-0.5">
+          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: e.color }} />
+          <span className="text-dark-muted">{e.name}:</span>
+          <span className="font-semibold text-dark-text">
+            {fmt ? fmt(e.value, e.name) : e.value?.toLocaleString()}
           </span>
         </div>
       ))}
@@ -61,95 +62,80 @@ function CustomTooltipBox({ active, payload, label, formatter }: any) {
   );
 }
 
-// ── KPI Card ─────────────────────────────────────────────────────────────────
-function KpiCard({ icon: Icon, label, value, sub, accentColor, bgColor }: {
+// ── KPI card ─────────────────────────────────────────────────────────────────
+function KpiCard({ icon: Icon, label, value, sub, accent, iconBg }: {
   icon: React.ElementType; label: string; value: string | number; sub?: string;
-  accentColor: string; bgColor: string;
+  accent: string; iconBg: string;
 }) {
   return (
-    <div style={{
-      background: '#fff', borderRadius: 16, padding: '18px 20px',
-      border: '1px solid #f1f5f9', position: 'relative', overflow: 'hidden',
-    }}>
-      <div style={{
-        position: 'absolute', top: 0, left: 0, bottom: 0, width: 4,
-        background: accentColor, borderRadius: '16px 0 0 16px',
-      }} />
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-        <div>
-          <p style={{ fontSize: 11, color: '#94a3b8', fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>{label}</p>
-          <p style={{ fontSize: 26, fontWeight: 700, color: '#0f172a', lineHeight: 1.1 }}>{value}</p>
-          {sub && <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>{sub}</p>}
+    <div className="relative bg-dark-card border border-dark-border rounded-2xl p-4 overflow-hidden">
+      {/* left accent stripe */}
+      <div className="absolute inset-y-0 left-0 w-1 rounded-l-2xl" style={{ background: accent }} />
+      <div className="flex items-start justify-between">
+        <div className="min-w-0">
+          <p className="text-[10px] font-bold tracking-widest uppercase text-dark-muted mb-1.5">{label}</p>
+          <p className="text-2xl font-extrabold text-dark-text leading-none truncate">{value}</p>
+          {sub && <p className="text-[11px] text-dark-muted mt-1">{sub}</p>}
         </div>
-        <div style={{
-          width: 40, height: 40, borderRadius: 12,
-          background: bgColor, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <Icon style={{ width: 20, height: 20, color: accentColor }} />
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ml-2" style={{ background: iconBg }}>
+          <Icon className="w-4 h-4" style={{ color: accent }} />
         </div>
       </div>
     </div>
   );
 }
 
-// ── Section wrapper ───────────────────────────────────────────────────────────
-function Section({ title, subtitle, children, action }: {
-  title: string; subtitle?: string; children: React.ReactNode; action?: React.ReactNode;
+// ── Section card ─────────────────────────────────────────────────────────────
+function Card({ title, sub, children, action }: {
+  title: string; sub?: string; children: React.ReactNode; action?: React.ReactNode;
 }) {
   return (
-    <div style={{ background: '#fff', borderRadius: 20, padding: '20px 24px', border: '1px solid #f1f5f9' }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 18 }}>
+    <div className="bg-dark-card border border-dark-border rounded-2xl p-5">
+      <div className="flex items-start justify-between mb-4">
         <div>
-          <h3 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', margin: 0 }}>{title}</h3>
-          {subtitle && <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 3 }}>{subtitle}</p>}
+          <h3 className="text-sm font-bold text-dark-text">{title}</h3>
+          {sub && <p className="text-[11px] text-dark-muted mt-0.5">{sub}</p>}
         </div>
-        {action && <div>{action}</div>}
+        {action}
       </div>
       {children}
     </div>
-  );
-}
-
-// ── Pill ──────────────────────────────────────────────────────────────────────
-function Pill({ children, color, bg }: { children: React.ReactNode; color: string; bg: string }) {
-  return (
-    <span style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 20, background: bg, color, display: 'inline-block' }}>
-      {children}
-    </span>
   );
 }
 
 // ── Mini progress bar ─────────────────────────────────────────────────────────
-function MiniBar({ pct, color }: { pct: number; color: string }) {
+function Bar2({ pct, color }: { pct: number; color: string }) {
   return (
-    <div style={{ height: 6, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden', width: '100%' }}>
-      <div style={{ height: '100%', width: `${Math.min(100, pct)}%`, background: color, borderRadius: 4 }} />
+    <div className="h-1.5 bg-dark-border rounded-full overflow-hidden w-full">
+      <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(100, pct)}%`, background: color }} />
     </div>
   );
 }
 
-// ── Legend row ────────────────────────────────────────────────────────────────
-function LegendRow({ items }: { items: { label: string; color: string }[] }) {
+// ── Legend strip ──────────────────────────────────────────────────────────────
+function Legend({ items }: { items: { label: string; color: string }[] }) {
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 10 }}>
+    <div className="flex flex-wrap gap-3 mt-2">
       {items.map(l => (
-        <span key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#64748b' }}>
-          <span style={{ width: 10, height: 10, borderRadius: 3, background: l.color }} />{l.label}
+        <span key={l.label} className="flex items-center gap-1.5 text-[11px] text-dark-muted">
+          <span className="w-2.5 h-2.5 rounded-sm" style={{ background: l.color }} />
+          {l.label}
         </span>
       ))}
     </div>
   );
 }
 
-// ── Axis tick style ───────────────────────────────────────────────────────────
-const TICK = { fontSize: 11, fill: '#94a3b8' };
-
-function shortDate(dateStr: string) {
-  const d = new Date(dateStr);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+// ── Pill ───────────────────────────────────────────────────────────────────────
+function Pill({ children, color }: { children: React.ReactNode; color: string }) {
+  return (
+    <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full" style={{ color, background: `${color}22` }}>
+      {children}
+    </span>
+  );
 }
 
-// ── Main export ───────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 export function AnalyticsDashboard({ role }: Props) {
   const [range, setRange] = useState('30d');
   const [includeHistory, setIncludeHistory] = useState(false);
@@ -167,159 +153,157 @@ export function AnalyticsDashboard({ role }: Props) {
     enabled: role === 'OWNER',
   });
 
-  if (isLoading) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', gap: 12 }}>
-        <div style={{
-          width: 36, height: 36, borderRadius: '50%',
-          border: `3px solid ${BRAND.greenLight}`, borderTopColor: BRAND.green,
-          animation: 'spin 0.8s linear infinite',
-        }} />
-        <p style={{ fontSize: 13, color: '#94a3b8' }}>Loading analytics…</p>
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
-    );
-  }
+  if (isLoading) return (
+    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
+      <div className="w-8 h-8 rounded-full border-4 border-dark-border border-t-brand-greenDark animate-spin" />
+      <p className="text-sm text-dark-muted">Loading analytics…</p>
+    </div>
+  );
 
-  if (isError || !data) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', gap: 12 }}>
-        <div style={{ width: 48, height: 48, borderRadius: 16, background: BRAND.redLight, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <AlertTriangle style={{ width: 24, height: 24, color: BRAND.red }} />
-        </div>
-        <p style={{ fontSize: 14, color: '#475569', fontWeight: 600 }}>Failed to load analytics</p>
-        <button onClick={() => refetch()} style={{ fontSize: 12, color: BRAND.green, background: BRAND.greenLight, border: 'none', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <RefreshCw style={{ width: 12, height: 12 }} /> Retry
-        </button>
+  if (isError || !data) return (
+    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
+      <div className="w-12 h-12 rounded-2xl bg-red-900/30 flex items-center justify-center">
+        <AlertTriangle className="w-6 h-6 text-red-400" />
       </div>
-    );
-  }
+      <p className="text-sm font-semibold text-dark-text">Failed to load analytics</p>
+      <button onClick={() => refetch()} className="flex items-center gap-1.5 text-xs text-brand-greenDark bg-brand-lightDark px-3 py-1.5 rounded-lg border border-dark-border">
+        <RefreshCw className="w-3 h-3" /> Retry
+      </button>
+    </div>
+  );
 
-  const { kpis, eggTrend, mortalityTrend, mortalityCauses, feedTrend, batchComparison, revenueTrend, revenueByCustomer, eggCondition } = data;
+  const {
+    kpis, eggTrend, mortalityTrend, mortalityCauses,
+    feedTrend, batchComparison, revenueTrend, revenueByCustomer, eggCondition,
+  } = data;
+
   const isDirector = role === 'OWNER';
 
   return (
-    <div style={{ padding: '20px 24px', maxWidth: 1140, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="p-4 md:p-6 space-y-4 max-w-6xl mx-auto">
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 36, height: 36, borderRadius: 12, background: BRAND.greenLight, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <BarChart2 style={{ width: 18, height: 18, color: BRAND.green }} />
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-brand-lightDark flex items-center justify-center">
+            <BarChart2 className="w-5 h-5 text-brand-greenDark" />
           </div>
           <div>
-            <h1 style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: '-0.02em' }}>
-              {isDirector ? 'Director Overview' : 'Production Analytics'}
-            </h1>
-            <p style={{ fontSize: 12, color: '#94a3b8', margin: 0 }}>
+            <h1 className="text-lg font-extrabold text-dark-text tracking-tight">Analytics Overview</h1>
+            <p className="text-[11px] text-dark-muted">
               {isDirector ? 'Revenue, production & forecast intelligence' : 'Production and feed performance metrics'}
             </p>
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 4, background: '#f8fafc', padding: 4, borderRadius: 12, border: '1px solid #e2e8f0' }}>
+        {/* Period tabs */}
+        <div className="flex gap-1 bg-dark-bg p-1 rounded-xl border border-dark-border">
           {RANGES.map(r => (
-            <button key={r.value} onClick={() => setRange(r.value)} style={{
-              padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-              border: 'none', cursor: 'pointer', transition: 'all 0.15s',
-              background: range === r.value ? BRAND.green : 'transparent',
-              color: range === r.value ? '#fff' : '#64748b',
-            }}>{r.label}</button>
+            <button
+              key={r.value}
+              onClick={() => setRange(r.value)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                range === r.value
+                  ? 'bg-brand-green text-white shadow'
+                  : 'text-dark-muted hover:text-dark-text hover:bg-dark-card'
+              }`}
+            >{r.label}</button>
           ))}
         </div>
       </div>
 
-      {/* ── KPI Strip ──────────────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${isDirector ? 5 : 4}, 1fr)`, gap: 12 }}>
-        <KpiCard icon={Egg}           label="Total Eggs" value={kpis.totalEggs.toLocaleString()} sub={`${kpis.totalTrays} trays`} accentColor={BRAND.green}  bgColor={BRAND.greenLight} />
-        <KpiCard icon={Activity}      label="Avg HDP %"  value={`${kpis.avgHdp}%`}               accentColor={BRAND.teal}   bgColor={BRAND.tealLight} />
-        <KpiCard icon={AlertTriangle} label="Mortality"  value={kpis.totalMortality}             accentColor={BRAND.red}    bgColor={BRAND.redLight} />
-        <KpiCard icon={Wheat}         label="Feed Used"  value={`${kpis.totalFeedKg.toLocaleString()} kg`} accentColor={BRAND.amber} bgColor={BRAND.amberLight} />
+      {/* ── KPI Strip ───────────────────────────────────────────────────── */}
+      <div className={`grid gap-3 ${isDirector ? 'grid-cols-2 md:grid-cols-5' : 'grid-cols-2 md:grid-cols-4'}`}>
+        <KpiCard icon={Egg}           label="Total Eggs" value={kpis.totalEggs.toLocaleString()} sub={`${kpis.totalTrays} trays`}     accent={C.green}  iconBg={`${C.green}22`} />
+        <KpiCard icon={Activity}      label="Avg HDP %"  value={`${kpis.avgHdp}%`}               accent={C.teal}   iconBg={`${C.teal}22`} />
+        <KpiCard icon={AlertTriangle} label="Mortality"  value={kpis.totalMortality}             accent={C.red}    iconBg={`${C.red}22`} />
+        <KpiCard icon={Wheat}         label="Feed Used"  value={`${kpis.totalFeedKg.toLocaleString()} kg`} accent={C.amber} iconBg={`${C.amber}22`} />
         {isDirector && (
-          <KpiCard icon={DollarSign}  label="Revenue"    value={`KES ${kpis.totalRevenue.toLocaleString()}`} accentColor={BRAND.blue} bgColor={BRAND.blueLight} />
+          <KpiCard icon={DollarSign}  label="Revenue"    value={`KES ${kpis.totalRevenue.toLocaleString()}`} accent={C.blue} iconBg={`${C.blue}22`} />
         )}
       </div>
 
-      {/* ── Egg Production + HDP ───────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
-        <Section title="Egg Production" subtitle="Daily good eggs, trays & breakage">
-          {eggTrend.length === 0 ? (
-            <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No approved egg sessions in this period</p>
-          ) : (
-            <>
-              <ResponsiveContainer width="100%" height={230}>
-                <ComposedChart data={eggTrend} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="eggGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={BRAND.green} stopOpacity={0.2} />
-                      <stop offset="100%" stopColor={BRAND.green} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK} axisLine={false} tickLine={false} />
-                  <YAxis tick={TICK} axisLine={false} tickLine={false} />
-                  <Tooltip content={<CustomTooltipBox formatter={(v: number) => v.toLocaleString()} />} />
-                  <Area type="monotone" dataKey="eggs" name="Good Eggs" stroke={BRAND.green} strokeWidth={2.5} fill="url(#eggGrad)" dot={false} />
-                  <Line type="monotone" dataKey="trays" name="Trays" stroke={BRAND.teal} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="broken" name="Broken" stroke={BRAND.red} strokeWidth={1.5} dot={false} strokeDasharray="5 3" />
-                </ComposedChart>
-              </ResponsiveContainer>
-              <LegendRow items={[{ label: 'Good Eggs', color: BRAND.green }, { label: 'Trays', color: BRAND.teal }, { label: 'Broken', color: BRAND.red }]} />
-            </>
-          )}
-        </Section>
+      {/* ── Egg Production + HDP ────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2">
+          <Card title="Egg Production" sub="Daily good eggs, trays & breakage">
+            {eggTrend.length === 0 ? (
+              <p className="text-xs text-dark-muted text-center py-8">No approved egg sessions in this period</p>
+            ) : (
+              <>
+                <ResponsiveContainer width="100%" height={220}>
+                  <ComposedChart data={eggTrend} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="eggGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={C.green} stopOpacity={0.25} />
+                        <stop offset="100%" stopColor={C.green} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                    <YAxis tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                    <Tooltip content={<TipBox fmt={(v: number) => v.toLocaleString()} />} />
+                    <Area type="monotone" dataKey="eggs"   name="Good Eggs" stroke={C.green} strokeWidth={2.5} fill="url(#eggGrad)" dot={false} />
+                    <Line  type="monotone" dataKey="trays"  name="Trays"     stroke={C.teal}  strokeWidth={2}   dot={false} />
+                    <Line  type="monotone" dataKey="broken" name="Broken"    stroke={C.red}   strokeWidth={1.5} dot={false} strokeDasharray="5 3" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+                <Legend items={[{ label: 'Good Eggs', color: C.green }, { label: 'Trays', color: C.teal }, { label: 'Broken', color: C.red }]} />
+              </>
+            )}
+          </Card>
+        </div>
 
-        <Section title="HDP % Trend" subtitle="Hen Day Production rate">
+        <Card title="HDP % Trend" sub="Hen Day Production rate">
           {eggTrend.filter((d: any) => d.hdp > 0).length === 0 ? (
-            <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No data</p>
+            <p className="text-xs text-dark-muted text-center py-8">No data</p>
           ) : (
             <>
-              <div style={{ marginBottom: 12 }}>
-                <p style={{ fontSize: 36, fontWeight: 800, color: BRAND.blue, lineHeight: 1, margin: 0 }}>{kpis.avgHdp}%</p>
-                <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Average over period</p>
-              </div>
-              <ResponsiveContainer width="100%" height={160}>
+              <p className="text-4xl font-black text-brand-greenDark leading-none mb-1">{kpis.avgHdp}%</p>
+              <p className="text-[11px] text-dark-muted mb-3">Average over period</p>
+              <ResponsiveContainer width="100%" height={155}>
                 <LineChart data={eggTrend.filter((d: any) => d.hdp > 0)} margin={{ top: 4, right: 8, left: -24, bottom: 0 }}>
-                  <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK} axisLine={false} tickLine={false} />
-                  <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={TICK} axisLine={false} tickLine={false} />
-                  <Tooltip content={<CustomTooltipBox formatter={(v: number) => `${v}%`} />} />
-                  <Line type="monotone" dataKey="hdp" name="HDP%" stroke={BRAND.blue} strokeWidth={2.5} dot={false} />
+                  <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                  <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                  <Tooltip content={<TipBox fmt={(v: number) => `${v}%`} />} />
+                  <Line type="monotone" dataKey="hdp" name="HDP%" stroke={C.blue} strokeWidth={2.5} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </>
           )}
-        </Section>
+        </Card>
       </div>
 
-      {/* ── Mortality + Causes ─────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <Section title="Mortality Trend" subtitle="Deaths and cullings over time">
+      {/* ── Mortality Trend + Causes ─────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card title="Mortality Trend" sub="Deaths and cullings over time">
           {mortalityTrend.length === 0 ? (
-            <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No mortality records</p>
+            <p className="text-xs text-dark-muted text-center py-8">No mortality records in this period</p>
           ) : (
             <>
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart data={mortalityTrend} margin={{ top: 4, right: 8, left: -16, bottom: 0 }} barGap={2}>
-                  <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK} axisLine={false} tickLine={false} />
-                  <YAxis tick={TICK} axisLine={false} tickLine={false} />
-                  <Tooltip content={<CustomTooltipBox />} />
-                  <Bar dataKey="mortality" name="Deaths"   fill={BRAND.red}   radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="culling"   name="Cullings" fill={BRAND.amber}  radius={[4, 4, 0, 0]} />
+                  <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                  <YAxis tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                  <Tooltip content={<TipBox />} />
+                  <Bar dataKey="mortality" name="Deaths"   fill={C.red}   radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="culling"   name="Cullings" fill={C.amber} radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
-              <LegendRow items={[{ label: 'Deaths', color: BRAND.red }, { label: 'Cullings', color: BRAND.amber }]} />
+              <Legend items={[{ label: 'Deaths', color: C.red }, { label: 'Cullings', color: C.amber }]} />
             </>
           )}
-        </Section>
+        </Card>
 
-        <Section title="Mortality Causes" subtitle="Breakdown by cause">
+        <Card title="Mortality Causes" sub="Breakdown by cause">
           {mortalityCauses.length === 0 ? (
-            <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No mortality data</p>
+            <p className="text-xs text-dark-muted text-center py-8">No mortality data</p>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'center' }}>
+            <div className="grid grid-cols-2 gap-4 items-center">
               <ResponsiveContainer width="100%" height={200}>
                 <PieChart>
-                  <Pie data={mortalityCauses} dataKey="count" nameKey="cause" cx="50%" cy="50%"
-                    innerRadius={50} outerRadius={80} paddingAngle={3} startAngle={90} endAngle={-270}>
+                  <Pie data={mortalityCauses} dataKey="count" nameKey="cause"
+                    cx="50%" cy="50%" innerRadius={50} outerRadius={80}
+                    paddingAngle={3} startAngle={90} endAngle={-270}>
                     {mortalityCauses.map((_: unknown, i: number) => (
                       <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} strokeWidth={0} />
                     ))}
@@ -327,208 +311,211 @@ export function AnalyticsDashboard({ role }: Props) {
                   <Tooltip formatter={(val: number, name: string) => [val, (name as string).replace(/_/g, ' ')]} />
                 </PieChart>
               </ResponsiveContainer>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="space-y-2.5">
                 {mortalityCauses.slice(0, 5).map((c: any, i: number) => {
                   const total = mortalityCauses.reduce((s: number, x: any) => s + x.count, 0);
                   const pct = total > 0 ? (c.count / total) * 100 : 0;
                   return (
                     <div key={i}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <span style={{ fontSize: 11, color: '#475569' }}>{c.cause.replace(/_/g, ' ')}</span>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: '#0f172a' }}>{c.count}</span>
+                      <div className="flex justify-between mb-1">
+                        <span className="text-[11px] text-dark-muted">{c.cause.replace(/_/g, ' ')}</span>
+                        <span className="text-[11px] font-bold text-dark-text">{c.count}</span>
                       </div>
-                      <MiniBar pct={pct} color={CHART_COLORS[i % CHART_COLORS.length]} />
+                      <Bar2 pct={pct} color={CHART_COLORS[i % CHART_COLORS.length]} />
                     </div>
                   );
                 })}
               </div>
             </div>
           )}
-        </Section>
+        </Card>
       </div>
 
-      {/* ── Feed Consumption ───────────────────────────────────────────────── */}
-      <Section title="Feed Consumption" subtitle="Daily kg by feed type (stacked)">
+      {/* ── Feed Consumption ─────────────────────────────────────────────── */}
+      <Card title="Feed Consumption" sub="Daily kg by feed type (stacked)">
         {feedTrend.length === 0 ? (
-          <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No feed logs in this period</p>
+          <p className="text-xs text-dark-muted text-center py-8">No feed logs in this period</p>
         ) : (
           <>
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={feedTrend} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
-                <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK} axisLine={false} tickLine={false} />
-                <YAxis tick={TICK} axisLine={false} tickLine={false} />
-                <Tooltip content={<CustomTooltipBox />} />
-                <Bar dataKey="LAYER_MASH"        name="Layer Mash"    fill={BRAND.green}  stackId="f" />
-                <Bar dataKey="GROWER_MASH"       name="Grower Mash"   fill={BRAND.teal}   stackId="f" />
-                <Bar dataKey="CHICK_MASH"        name="Chick Mash"    fill={BRAND.blue}   stackId="f" />
-                <Bar dataKey="KIENYEJI_STARTER"  name="KJ Starter"    fill={BRAND.amber}  stackId="f" />
-                <Bar dataKey="KIENYEJI_GROWER"   name="KJ Grower"     fill={BRAND.red}    stackId="f" />
-                <Bar dataKey="KIENYEJI_FINISHER" name="KJ Finisher"   fill={BRAND.purple} stackId="f" radius={[4, 4, 0, 0]} />
+                <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                <YAxis tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                <Tooltip content={<TipBox />} />
+                <Bar dataKey="LAYER_MASH"        name="Layer Mash"    fill={C.green}  stackId="f" />
+                <Bar dataKey="GROWER_MASH"       name="Grower Mash"   fill={C.teal}   stackId="f" />
+                <Bar dataKey="CHICK_MASH"        name="Chick Mash"    fill={C.blue}   stackId="f" />
+                <Bar dataKey="KIENYEJI_STARTER"  name="KJ Starter"    fill={C.amber}  stackId="f" />
+                <Bar dataKey="KIENYEJI_GROWER"   name="KJ Grower"     fill={C.red}    stackId="f" />
+                <Bar dataKey="KIENYEJI_FINISHER" name="KJ Finisher"   fill={C.purple} stackId="f" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
-            <LegendRow items={[
-              { label: 'Layer Mash', color: BRAND.green }, { label: 'Grower Mash', color: BRAND.teal },
-              { label: 'Chick Mash', color: BRAND.blue },  { label: 'KJ Starter', color: BRAND.amber },
-              { label: 'KJ Grower', color: BRAND.red },    { label: 'KJ Finisher', color: BRAND.purple },
+            <Legend items={[
+              { label: 'Layer Mash', color: C.green }, { label: 'Grower Mash', color: C.teal },
+              { label: 'Chick Mash', color: C.blue },  { label: 'KJ Starter',  color: C.amber },
+              { label: 'KJ Grower',  color: C.red },   { label: 'KJ Finisher', color: C.purple },
             ]} />
           </>
         )}
-      </Section>
+      </Card>
 
-      {/* ── Batch Comparison ──────────────────────────────────────────────── */}
-      <Section
+      {/* ── Batch Comparison ─────────────────────────────────────────────── */}
+      <Card
         title="Batch Performance"
-        subtitle="Eggs produced per active batch"
+        sub="Eggs produced per batch"
         action={
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#64748b', cursor: 'pointer' }}>
-            <input type="checkbox" checked={includeHistory} onChange={e => setIncludeHistory(e.target.checked)} style={{ accentColor: BRAND.green }} />
+          <label className="flex items-center gap-1.5 text-[11px] text-dark-muted cursor-pointer">
+            <input type="checkbox" checked={includeHistory} onChange={e => setIncludeHistory(e.target.checked)} className="accent-brand-green" />
             Include historical
           </label>
         }
       >
         {batchComparison.length === 0 ? (
-          <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>
-            {includeHistory ? 'No batch data' : 'No active batches — enable "Include Historical Batches" to compare past batches'}
+          <p className="text-xs text-dark-muted text-center py-8">
+            {includeHistory ? 'No batch data' : 'No active batches — enable "Include Historical" to compare past batches'}
           </p>
         ) : (
           <ResponsiveContainer width="100%" height={Math.max(180, batchComparison.length * 44)}>
-            <BarChart data={batchComparison} layout="vertical" margin={{ top: 4, right: 20, left: 64, bottom: 0 }} barGap={4}>
-              <XAxis type="number" tick={TICK} axisLine={false} tickLine={false} />
-              <YAxis dataKey="batchCode" type="category" tick={{ ...TICK, fontSize: 12 }} width={60} axisLine={false} tickLine={false} />
-              <Tooltip content={<CustomTooltipBox formatter={(v: number) => v.toLocaleString()} />} />
-              <Bar dataKey="totalEggs"  name="Eggs"  fill={BRAND.green} radius={[0, 6, 6, 0]} />
-              <Bar dataKey="totalTrays" name="Trays" fill={BRAND.tealLight} stroke={BRAND.teal} strokeWidth={1} radius={[0, 6, 6, 0]} />
+            <BarChart data={batchComparison} layout="vertical" margin={{ top: 4, right: 20, left: 64, bottom: 0 }}>
+              <XAxis type="number" tick={TICK_STYLE} axisLine={false} tickLine={false} />
+              <YAxis dataKey="batchCode" type="category" tick={{ ...TICK_STYLE, fontSize: 12 }} width={60} axisLine={false} tickLine={false} />
+              <Tooltip content={<TipBox fmt={(v: number) => v.toLocaleString()} />} />
+              <Bar dataKey="totalEggs"  name="Eggs"  fill={C.green}              radius={[0, 6, 6, 0]} />
+              <Bar dataKey="totalTrays" name="Trays" fill={C.teal} fillOpacity={0.7} radius={[0, 6, 6, 0]} />
             </BarChart>
           </ResponsiveContainer>
         )}
-      </Section>
+      </Card>
 
-      {/* ── Egg Condition + FCR ────────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <Section title="Egg Condition" subtitle="Good vs broken split">
+      {/* ── Egg Condition + FCR ───────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card title="Egg Condition" sub="Good vs broken split">
           {eggCondition.length === 0 ? (
-            <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No data</p>
+            <p className="text-xs text-dark-muted text-center py-8">No data</p>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'center' }}>
+            <div className="grid grid-cols-2 gap-4 items-center">
               <ResponsiveContainer width="100%" height={180}>
                 <PieChart>
-                  <Pie data={eggCondition} dataKey="value" nameKey="name" cx="50%" cy="50%"
-                    innerRadius={45} outerRadius={75} paddingAngle={4} startAngle={90} endAngle={-270}>
-                    <Cell fill={BRAND.green} strokeWidth={0} />
-                    <Cell fill={BRAND.red}   strokeWidth={0} />
+                  <Pie data={eggCondition} dataKey="value" nameKey="name"
+                    cx="50%" cy="50%" innerRadius={45} outerRadius={75}
+                    paddingAngle={4} startAngle={90} endAngle={-270}>
+                    <Cell fill={C.green} strokeWidth={0} />
+                    <Cell fill={C.red}   strokeWidth={0} />
                   </Pie>
                   <Tooltip formatter={(val: number, name: string) => [val.toLocaleString(), name]} />
                 </PieChart>
               </ResponsiveContainer>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div className="space-y-3">
                 {eggCondition.map((c: any, i: number) => {
                   const total = eggCondition.reduce((s: number, x: any) => s + x.value, 0);
                   const pct = total > 0 ? ((c.value / total) * 100).toFixed(1) : '0';
-                  const color = i === 0 ? BRAND.green : BRAND.red;
+                  const color = i === 0 ? C.green : C.red;
                   return (
                     <div key={c.name}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
-                        <span style={{ fontSize: 12, color: '#475569' }}>{c.name}</span>
-                        <span style={{ fontSize: 12, fontWeight: 700, color }}>{pct}%</span>
+                      <div className="flex justify-between mb-1">
+                        <span className="text-[11px] text-dark-muted">{c.name}</span>
+                        <span className="text-[11px] font-bold" style={{ color }}>{pct}%</span>
                       </div>
-                      <MiniBar pct={parseFloat(pct)} color={color} />
+                      <Bar2 pct={parseFloat(pct)} color={color} />
                     </div>
                   );
                 })}
               </div>
             </div>
           )}
-        </Section>
+        </Card>
 
-        <Section title="FCR Analysis" subtitle="Feed (kg) vs eggs per batch">
+        <Card title="FCR Analysis" sub="Feed (kg) vs eggs produced per batch">
           {batchComparison.length === 0 ? (
-            <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No batch data</p>
+            <p className="text-xs text-dark-muted text-center py-8">No batch data</p>
           ) : (
             <ResponsiveContainer width="100%" height={200}>
               <ScatterChart margin={{ top: 4, right: 12, left: -16, bottom: 20 }}>
-                <XAxis dataKey="totalFeedKg" name="Feed (kg)" tick={TICK} axisLine={false} tickLine={false}
-                  label={{ value: 'Feed (kg)', position: 'insideBottom', offset: -12, fontSize: 11, fill: '#94a3b8' }} />
-                <YAxis dataKey="totalEggs" name="Eggs" tick={TICK} axisLine={false} tickLine={false} />
+                <XAxis dataKey="totalFeedKg" name="Feed (kg)" tick={TICK_STYLE} axisLine={false} tickLine={false}
+                  label={{ value: 'Feed (kg)', position: 'insideBottom', offset: -12, fontSize: 11, fill: '#6b8f74' }} />
+                <YAxis dataKey="totalEggs" name="Eggs" tick={TICK_STYLE} axisLine={false} tickLine={false} />
                 <Tooltip
                   content={({ payload }: any) => {
                     if (!payload?.length) return null;
                     const d = payload[0].payload;
                     return (
-                      <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '10px 14px', fontSize: 12 }}>
-                        <p style={{ fontWeight: 700, marginBottom: 4 }}>{d.batchCode}</p>
-                        <p style={{ color: '#64748b' }}>Feed: <b>{d.totalFeedKg.toLocaleString()} kg</b></p>
-                        <p style={{ color: '#64748b' }}>Eggs: <b>{d.totalEggs.toLocaleString()}</b></p>
-                        <p style={{ color: '#64748b' }}>FCR: <b>{d.totalEggs > 0 ? (d.totalFeedKg / d.totalEggs).toFixed(3) : '—'}</b></p>
+                      <div className="bg-dark-card border border-dark-border rounded-xl px-3 py-2 text-xs shadow-lg">
+                        <p className="font-bold text-dark-text mb-1">{d.batchCode}</p>
+                        <p className="text-dark-muted">Feed: <span className="text-dark-text font-semibold">{d.totalFeedKg.toLocaleString()} kg</span></p>
+                        <p className="text-dark-muted">Eggs: <span className="text-dark-text font-semibold">{d.totalEggs.toLocaleString()}</span></p>
+                        <p className="text-dark-muted">FCR: <span className="text-dark-text font-semibold">{d.totalEggs > 0 ? (d.totalFeedKg / d.totalEggs).toFixed(3) : '—'}</span></p>
                       </div>
                     );
                   }}
                 />
-                <Scatter data={batchComparison} fill={BRAND.green} />
+                <Scatter data={batchComparison} fill={C.green} />
               </ScatterChart>
             </ResponsiveContainer>
           )}
-        </Section>
+        </Card>
       </div>
 
-      {/* ── Histogram ─────────────────────────────────────────────────────── */}
-      <Section title="Daily Egg Count Distribution" subtitle="Frequency of production volumes">
+      {/* ── Daily Egg Distribution ───────────────────────────────────────── */}
+      <Card title="Daily Egg Count Distribution" sub="Frequency of production volumes">
         {eggTrend.length === 0 ? (
-          <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No data</p>
+          <p className="text-xs text-dark-muted text-center py-8">No data</p>
         ) : (() => {
           const vals = eggTrend.map((d: any) => d.eggs).filter((v: number) => v > 0);
-          if (!vals.length) return <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No data</p>;
+          if (!vals.length) return <p className="text-xs text-dark-muted text-center py-8">No data</p>;
           const min = Math.min(...vals), max = Math.max(...vals);
-          const bucketCount = Math.min(10, vals.length);
-          const step = Math.ceil((max - min) / bucketCount) || 1;
-          const buckets = Array.from({ length: bucketCount }, (_, i) => {
+          const bc = Math.min(10, vals.length);
+          const step = Math.ceil((max - min) / bc) || 1;
+          const buckets = Array.from({ length: bc }, (_, i) => {
             const lo = min + i * step, hi = lo + step;
             return { range: lo.toLocaleString(), count: vals.filter((v: number) => v >= lo && v < hi).length };
           });
           return (
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={buckets} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
-                <XAxis dataKey="range" tick={TICK} axisLine={false} tickLine={false} />
-                <YAxis allowDecimals={false} tick={TICK} axisLine={false} tickLine={false} />
+                <XAxis dataKey="range" tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                <YAxis allowDecimals={false} tick={TICK_STYLE} axisLine={false} tickLine={false} />
                 <Tooltip formatter={(val: number) => [val, 'Days']} labelFormatter={l => `≥ ${l} eggs`} />
                 <Bar dataKey="count" name="Days" radius={[6, 6, 0, 0]}>
                   {buckets.map((_, i) => (
-                    <Cell key={i} fill={i % 2 === 0 ? BRAND.green : BRAND.greenMid} />
+                    <Cell key={i} fill={i % 2 === 0 ? C.green : C.teal} />
                   ))}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           );
         })()}
-      </Section>
+      </Card>
 
-      {/* ── DIRECTOR ONLY: Revenue & Forecast ─────────────────────────────── */}
+      {/* ── OWNER ONLY: Revenue + Forecast ──────────────────────────────── */}
       {isDirector && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            <Section title="Revenue Trend" subtitle="Daily payments received (KES)">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Revenue Trend */}
+            <Card title="Revenue Trend" sub="Daily payments received (KES)">
               {revenueTrend.length === 0 ? (
-                <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No payments in this period</p>
+                <p className="text-xs text-dark-muted text-center py-8">No payments in this period</p>
               ) : (
                 <ResponsiveContainer width="100%" height={220}>
                   <BarChart data={revenueTrend} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
-                    <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK} axisLine={false} tickLine={false} />
-                    <YAxis tick={TICK} axisLine={false} tickLine={false} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
-                    <Tooltip content={<CustomTooltipBox formatter={(v: number) => `KES ${v.toLocaleString()}`} />} />
+                    <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                    <YAxis tick={TICK_STYLE} axisLine={false} tickLine={false} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
+                    <Tooltip content={<TipBox fmt={(v: number) => `KES ${v.toLocaleString()}`} />} />
                     <Bar dataKey="amount" name="Revenue" radius={[6, 6, 0, 0]}>
                       {revenueTrend.map((_: any, i: number) => (
-                        <Cell key={i} fill={i === revenueTrend.length - 1 ? BRAND.blue : `${BRAND.blue}99`} />
+                        <Cell key={i} fill={i === revenueTrend.length - 1 ? C.blue : `${C.blue}99`} />
                       ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               )}
-            </Section>
+            </Card>
 
-            <Section title="Revenue by Customer" subtitle="Top 10 clients by share">
+            {/* Revenue by Customer */}
+            <Card title="Revenue by Customer" sub="Top 10 clients by share">
               {revenueByCustomer.length === 0 ? (
-                <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>No revenue data</p>
+                <p className="text-xs text-dark-muted text-center py-8">No revenue data</p>
               ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'center' }}>
+                <div className="grid grid-cols-2 gap-4 items-center">
                   <ResponsiveContainer width="100%" height={200}>
                     <PieChart>
                       <Pie data={revenueByCustomer} dataKey="value" nameKey="name"
@@ -541,102 +528,105 @@ export function AnalyticsDashboard({ role }: Props) {
                       <Tooltip formatter={(val: number, name: string) => [`KES ${val.toLocaleString()}`, name]} />
                     </PieChart>
                   </ResponsiveContainer>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div className="space-y-2">
                     {revenueByCustomer.slice(0, 6).map((c: any, i: number) => {
                       const total = revenueByCustomer.reduce((s: number, x: any) => s + x.value, 0);
                       const pct = total > 0 ? ((c.value / total) * 100).toFixed(1) : '0';
                       return (
                         <div key={c.name}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                            <span style={{ fontSize: 10, color: '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{c.name}</span>
-                            <span style={{ fontSize: 10, fontWeight: 700, color: CHART_COLORS[i % CHART_COLORS.length] }}>{pct}%</span>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-[10px] text-dark-muted truncate max-w-[90px]">{c.name}</span>
+                            <span className="text-[10px] font-bold" style={{ color: CHART_COLORS[i % CHART_COLORS.length] }}>{pct}%</span>
                           </div>
-                          <MiniBar pct={parseFloat(pct)} color={CHART_COLORS[i % CHART_COLORS.length]} />
+                          <Bar2 pct={parseFloat(pct)} color={CHART_COLORS[i % CHART_COLORS.length]} />
                         </div>
                       );
                     })}
                   </div>
                 </div>
               )}
-            </Section>
+            </Card>
           </div>
 
-          {/* ── 14-Day Forecast ─────────────────────────────────────────────── */}
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
-            <Section title="14-Day Sales Forecast" subtitle="Actual revenue with projected pipeline">
-              {!projData ? (
-                <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>Loading projection…</p>
-              ) : (
-                <>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-                    <Pill color={BRAND.blue}  bg={BRAND.blueLight}>Avg daily: KES {projData.summary.avgDailyRevenue.toLocaleString()}</Pill>
-                    <Pill color={BRAND.green} bg={BRAND.greenLight}>14-day: KES {projData.summary.projectedRevenue14d.toLocaleString()}</Pill>
-                    <Pill color={BRAND.amber} bg={BRAND.amberLight}>Pipeline: KES {projData.summary.pendingBookingsPipeline.toLocaleString()}</Pill>
-                    <Pill
-                      color={projData.summary.trendDirection === 'up' ? BRAND.green : projData.summary.trendDirection === 'down' ? BRAND.red : BRAND.slate}
-                      bg={projData.summary.trendDirection === 'up' ? BRAND.greenLight : projData.summary.trendDirection === 'down' ? BRAND.redLight : '#f1f5f9'}
-                    >
-                      {projData.summary.trendDirection === 'up' ? '↑ Rising' : projData.summary.trendDirection === 'down' ? '↓ Declining' : '→ Flat'}
-                    </Pill>
-                  </div>
-                  <ResponsiveContainer width="100%" height={230}>
-                    <ComposedChart data={projData.series} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="projGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor={BRAND.green} stopOpacity={0.15} />
-                          <stop offset="100%" stopColor={BRAND.green} stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK} axisLine={false} tickLine={false} interval={3} />
-                      <YAxis tick={TICK} axisLine={false} tickLine={false} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
-                      <Tooltip content={<CustomTooltipBox formatter={(v: number) => `KES ${v?.toLocaleString() ?? '—'}`} />} />
-                      <ReferenceLine x={dayjs().format('YYYY-MM-DD')} stroke="#cbd5e1" strokeWidth={1.5}
-                        label={{ value: 'Today', position: 'top', fontSize: 10, fill: '#94a3b8' }} />
-                      <Bar dataKey="actual" name="Actual revenue" fill={BRAND.blue} fillOpacity={0.85} radius={[4, 4, 0, 0]} />
-                      <Area dataKey="projected" name="" stroke="none" fill="url(#projGrad)" connectNulls={false} />
-                      <Line dataKey="projected" name="Projected revenue" stroke={BRAND.green} strokeWidth={2.5} dot={false} connectNulls={false} />
-                    </ComposedChart>
-                  </ResponsiveContainer>
-                  <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>
-                    Forecast blends 30-day revenue trend with confirmed booking pipeline. Green = projection.
-                  </p>
-                </>
-              )}
-            </Section>
+          {/* ── 14-Day Forecast ─────────────────────────────────────────── */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2">
+              <Card title="14-Day Sales Forecast" sub="Actual revenue with projected pipeline">
+                {!projData ? (
+                  <p className="text-xs text-dark-muted text-center py-8">Loading projection…</p>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap gap-2 mb-4">
+                      <Pill color={C.blue}>Avg daily: KES {projData.summary.avgDailyRevenue.toLocaleString()}</Pill>
+                      <Pill color={C.green}>14-day: KES {projData.summary.projectedRevenue14d.toLocaleString()}</Pill>
+                      <Pill color={C.amber}>Pipeline: KES {projData.summary.pendingBookingsPipeline.toLocaleString()}</Pill>
+                      <Pill color={
+                        projData.summary.trendDirection === 'up' ? C.green :
+                        projData.summary.trendDirection === 'down' ? C.red : '#94a3b8'
+                      }>
+                        {projData.summary.trendDirection === 'up' ? '↑ Rising' :
+                         projData.summary.trendDirection === 'down' ? '↓ Declining' : '→ Flat'}
+                      </Pill>
+                    </div>
+                    <ResponsiveContainer width="100%" height={230}>
+                      <ComposedChart data={projData.series} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="projGrad" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor={C.green} stopOpacity={0.2} />
+                            <stop offset="100%" stopColor={C.green} stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <XAxis dataKey="date" tickFormatter={shortDate} tick={TICK_STYLE} axisLine={false} tickLine={false} interval={3} />
+                        <YAxis tick={TICK_STYLE} axisLine={false} tickLine={false} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
+                        <Tooltip content={<TipBox fmt={(v: number) => `KES ${v?.toLocaleString() ?? '—'}`} />} />
+                        <ReferenceLine x={dayjs().format('YYYY-MM-DD')} stroke="#243329" strokeWidth={1.5}
+                          label={{ value: 'Today', position: 'top', fontSize: 10, fill: '#6b8f74' }} />
+                        <Bar  dataKey="actual"    name="Actual revenue"    fill={C.blue}  fillOpacity={0.8} radius={[4, 4, 0, 0]} />
+                        <Area dataKey="projected" name=""                  stroke="none"  fill="url(#projGrad)" connectNulls={false} />
+                        <Line dataKey="projected" name="Projected revenue" stroke={C.green} strokeWidth={2.5} dot={false} connectNulls={false} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                    <p className="text-[11px] text-dark-muted mt-2">
+                      Forecast blends 30-day revenue trend with confirmed booking pipeline. Green line = projection.
+                    </p>
+                  </>
+                )}
+              </Card>
+            </div>
 
-            <Section title="Forecast Summary" subtitle="Key projection metrics">
+            {/* Forecast Summary */}
+            <Card title="Forecast Summary" sub="Key projection metrics">
               {!projData ? (
-                <p style={{ fontSize: 12, color: '#94a3b8', textAlign: 'center', padding: '32px 0' }}>Loading…</p>
+                <p className="text-xs text-dark-muted text-center py-8">Loading…</p>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <div>
                   {[
-                    { label: 'Avg Daily Revenue', value: `KES ${projData.summary.avgDailyRevenue.toLocaleString()}`, color: BRAND.blue, bg: BRAND.blueLight, icon: DollarSign },
-                    { label: '14-Day Forecast',   value: `KES ${projData.summary.projectedRevenue14d.toLocaleString()}`, color: BRAND.green, bg: BRAND.greenLight, icon: TrendingUp },
-                    { label: 'Booking Pipeline',  value: `KES ${projData.summary.pendingBookingsPipeline.toLocaleString()}`, color: BRAND.amber, bg: BRAND.amberLight, icon: Target },
+                    { label: 'Avg Daily Revenue', value: `KES ${projData.summary.avgDailyRevenue.toLocaleString()}`,          color: C.blue,  icon: DollarSign },
+                    { label: '14-Day Forecast',   value: `KES ${projData.summary.projectedRevenue14d.toLocaleString()}`,     color: C.green, icon: TrendingUp },
+                    { label: 'Booking Pipeline',  value: `KES ${projData.summary.pendingBookingsPipeline.toLocaleString()}`, color: C.amber, icon: Target },
                     {
                       label: 'Revenue Trend',
                       value: projData.summary.trendDirection === 'up' ? '↑ Rising' : projData.summary.trendDirection === 'down' ? '↓ Declining' : '→ Flat',
-                      color: projData.summary.trendDirection === 'up' ? BRAND.green : projData.summary.trendDirection === 'down' ? BRAND.red : BRAND.slate,
-                      bg: projData.summary.trendDirection === 'up' ? BRAND.greenLight : projData.summary.trendDirection === 'down' ? BRAND.redLight : '#f1f5f9',
+                      color: projData.summary.trendDirection === 'up' ? C.green : projData.summary.trendDirection === 'down' ? C.red : '#94a3b8',
                       icon: Activity,
                     },
-                  ].map(({ label, value, color, bg, icon: Ic }) => (
-                    <div key={label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 0', borderBottom: '1px solid #f1f5f9' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <div style={{ width: 30, height: 30, borderRadius: 8, background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                          <Ic style={{ width: 14, height: 14, color }} />
+                  ].map(({ label, value, color, icon: Ic }) => (
+                    <div key={label} className="flex items-center justify-between py-3 border-b border-dark-border last:border-0">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: `${color}22` }}>
+                          <Ic className="w-3.5 h-3.5" style={{ color }} />
                         </div>
-                        <p style={{ fontSize: 12, color: '#64748b', margin: 0 }}>{label}</p>
+                        <p className="text-xs text-dark-muted">{label}</p>
                       </div>
-                      <p style={{ fontSize: 13, fontWeight: 700, color, margin: 0 }}>{value}</p>
+                      <p className="text-xs font-bold" style={{ color }}>{value}</p>
                     </div>
                   ))}
-                  <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 12, lineHeight: 1.6 }}>
+                  <p className="text-[11px] text-dark-muted mt-3 leading-relaxed">
                     Based on 30 days of actual revenue combined with confirmed advance bookings.
                   </p>
                 </div>
               )}
-            </Section>
+            </Card>
           </div>
         </>
       )}
