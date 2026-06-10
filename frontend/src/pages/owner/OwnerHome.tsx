@@ -39,10 +39,20 @@ interface DashData {
     orderNumber: string;
     customerName: string;
     trays: number;
+    standardEggs: number;
+    starterEggs: number;
+    brokenEggs: number;
+    totalEggs: number;
     amountKes: number;
     status: string;
     date: string;
   }>;
+  confirmedOrdersTotal: number;
+  confirmedOrdersCount: number;
+  totalStandardEggsSold: number;
+  totalStarterEggsSold: number;
+  totalBrokenEggsSold: number;
+  totalEggsSold: number;
   latestAiSummary?: { summary: string; generatedAt: string } | null;
 }
 
@@ -161,35 +171,90 @@ export default function OwnerHome() {
         <Egg className="w-12 h-12 opacity-20" />
       </div>
 
-      {/* Secondary KPIs */}
+      {/* Secondary KPIs — 4 evenly spread cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <KpiCard icon={<TrendingUp className="w-5 h-5" />} label="Mortality" value={data?.periodMortality?.toLocaleString() ?? '—'} sub={`${data?.periodCulling ?? 0} culled`} alert={(data?.periodMortality ?? 0) > 20} loading={isLoading} />
         <KpiCard icon={<Lock className="w-5 h-5" />} label="Pending Verifications" value={data?.pendingVerifications?.toLocaleString() ?? '—'} sub="flock entries" alert={(data?.pendingVerifications ?? 0) > 5} loading={isLoading} />
         <KpiCard icon={<Lock className="w-5 h-5" />} label="Pending Approvals" value={data?.pendingApprovals?.toLocaleString() ?? '—'} sub="LPOs to approve" alert={(data?.pendingApprovals ?? 0) > 0} loading={isLoading} />
-        <div className="col-span-2 bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border">
-          <p className="text-xs text-gray-500 mb-2 font-semibold">Feed Status</p>
-          {(data?.feedAlertsCount ?? 0) === 0 ? (
-            <p className="text-sm text-green-600 dark:text-green-400 font-medium">✓ All feed stocks adequate</p>
+        <div
+          className={`bg-white dark:bg-dark-card rounded-2xl p-4 border cursor-pointer transition-colors ${
+            (data?.feedAlertsCount ?? 0) > 0
+              ? 'border-red-500 dark:border-red-700 bg-red-50/30 dark:bg-red-900/10'
+              : 'border-gray-100 dark:border-dark-border'
+          }`}
+          onClick={() => navigate('/owner/procurement')}
+        >
+          <p className="text-xs text-gray-500 dark:text-dark-muted mb-2 font-semibold uppercase tracking-wider">Feed Status</p>
+          {isLoading ? (
+            <div className="h-4 w-24 bg-gray-200 dark:bg-dark-border rounded animate-pulse" />
+          ) : (data?.feedAlertsCount ?? 0) === 0 ? (
+            <>
+              <p className="text-sm font-bold text-green-600 dark:text-green-400">✓ All stocks OK</p>
+              <p className="text-[10px] text-gray-400 dark:text-dark-muted mt-0.5">No alerts</p>
+            </>
           ) : (
-            <p className="text-sm text-red-600 dark:text-red-400 font-medium">{data!.feedAlertsCount} type(s) need urgent reorder</p>
+            <>
+              <p className="text-sm font-bold text-red-600 dark:text-red-400">{data!.feedAlertsCount} type{data!.feedAlertsCount > 1 ? 's' : ''} critical</p>
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {data!.feedAlerts.slice(0, 3).map(a => (
+                  <span key={a.feedType} className="text-[10px] bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 px-1.5 py-0.5 rounded-full font-medium">
+                    {a.feedType.replace(/_/g, ' ')} {Number(a.daysRemaining).toFixed(1)}d
+                  </span>
+                ))}
+              </div>
+            </>
           )}
         </div>
       </div>
 
-            {/* ── Expected vs Actual Revenue ── */}
+      {/* ── Revenue & Eggs Sold Summary ── */}
       {data && (
-        <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-5 space-y-3">
-          <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300">Revenue Comparison</h3>
-          <div className="grid grid-cols-2 gap-4">
+        <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-5 space-y-4">
+          <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300">Revenue & Sales Summary</h3>
+
+          {/* Revenue row */}
+          <div className="grid grid-cols-3 gap-4">
             <div>
-              <p className="text-xs text-gray-400">Expected Revenue</p>
-              <p className="text-xl font-bold text-blue-600">KES {(data.expectedRevenueKes ?? 0).toLocaleString()}</p>
-              <p className="text-[10px] text-gray-400">Based on egg stock x pricing</p>
+              <p className="text-xs text-gray-400 dark:text-dark-muted">Expected Revenue</p>
+              <p className="text-xl font-bold text-blue-600 dark:text-blue-400">KES {(data.expectedRevenueKes ?? 0).toLocaleString()}</p>
+              <p className="text-[10px] text-gray-400 dark:text-dark-muted">Tally stock × accountant pricing</p>
             </div>
             <div>
-              <p className="text-xs text-gray-400">Actual Revenue</p>
-              <p className={'text-xl font-bold ' + (data.revenueKes >= (data.expectedRevenueKes ?? 0) ? 'text-green-600' : 'text-amber-600')}>KES {data.revenueKes.toLocaleString()}</p>
-              <p className="text-[10px] text-gray-400">From completed sales</p>
+              <p className="text-xs text-gray-400 dark:text-dark-muted">Confirmed Orders</p>
+              <p className={`text-xl font-bold ${data.confirmedOrdersTotal >= (data.expectedRevenueKes ?? 0) ? 'text-green-600 dark:text-green-400' : 'text-amber-500 dark:text-amber-400'}`}>
+                KES {(data.confirmedOrdersTotal ?? 0).toLocaleString()}
+              </p>
+              <p className="text-[10px] text-gray-400 dark:text-dark-muted">{data.confirmedOrdersCount ?? 0} confirmed orders</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-400 dark:text-dark-muted">Actual Revenue</p>
+              <p className={`text-xl font-bold ${data.revenueKes >= (data.expectedRevenueKes ?? 0) ? 'text-green-600 dark:text-green-400' : 'text-amber-500'}`}>
+                KES {data.revenueKes.toLocaleString()}
+              </p>
+              <p className="text-[10px] text-gray-400 dark:text-dark-muted">From completed invoice payments</p>
+            </div>
+          </div>
+
+          {/* Eggs sold breakdown */}
+          <div className="pt-3 border-t border-gray-100 dark:border-dark-border">
+            <p className="text-xs font-semibold text-gray-500 dark:text-dark-muted mb-2">Eggs Sold — {data.periodLabel}</p>
+            <div className="grid grid-cols-4 gap-3">
+              <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 text-center">
+                <p className="text-lg font-extrabold text-gray-800 dark:text-dark-text">{(data.totalEggsSold ?? 0).toLocaleString()}</p>
+                <p className="text-[10px] text-gray-400 dark:text-dark-muted font-medium mt-0.5">Total Sold</p>
+              </div>
+              <div className="bg-green-50 dark:bg-green-900/20 rounded-xl p-3 text-center">
+                <p className="text-lg font-extrabold text-green-700 dark:text-green-400">{(data.totalStandardEggsSold ?? 0).toLocaleString()}</p>
+                <p className="text-[10px] text-green-600 dark:text-green-500 font-medium mt-0.5">Standard</p>
+              </div>
+              <div className="bg-blue-50 dark:bg-blue-900/20 rounded-xl p-3 text-center">
+                <p className="text-lg font-extrabold text-blue-700 dark:text-blue-400">{(data.totalStarterEggsSold ?? 0).toLocaleString()}</p>
+                <p className="text-[10px] text-blue-600 dark:text-blue-500 font-medium mt-0.5">Starter</p>
+              </div>
+              <div className="bg-amber-50 dark:bg-amber-900/20 rounded-xl p-3 text-center">
+                <p className="text-lg font-extrabold text-amber-700 dark:text-amber-400">{(data.totalBrokenEggsSold ?? 0).toLocaleString()}</p>
+                <p className="text-[10px] text-amber-600 dark:text-amber-500 font-medium mt-0.5">Broken Sellable</p>
+              </div>
             </div>
           </div>
         </div>
@@ -212,17 +277,48 @@ export default function OwnerHome() {
         ) : (
           <div className="space-y-2">
             {data.salesFeed.map(order => (
-              <div key={order.id} className="bg-white dark:bg-dark-card rounded-2xl p-3 border border-gray-100 dark:border-dark-border flex items-center gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{order.customerName}</p>
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${STATUS_COLORS[order.status] ?? 'bg-gray-100 text-gray-500'}`}>
-                      {order.status}
+              <div key={order.id} className="bg-white dark:bg-dark-card rounded-2xl p-3 border border-gray-100 dark:border-dark-border">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{order.customerName}</p>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
+                        order.status === 'CONFIRMED'  ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300' :
+                        order.status === 'DELIVERED'  ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' :
+                        order.status === 'DELIVERING' ? 'bg-teal-100 dark:bg-teal-900/30 text-teal-700 dark:text-teal-300' :
+                        order.status === 'CANCELLED'  ? 'bg-gray-100 dark:bg-gray-800 text-gray-500' :
+                        'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
+                      }`}>
+                        {order.status}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-400 dark:text-dark-muted">{order.orderNumber} · {dayjs(order.date).format('D MMM')}</p>
+                  </div>
+                  <p className="text-sm font-bold text-brand-green dark:text-brand-greenDark flex-shrink-0">KES {order.amountKes.toLocaleString()}</p>
+                </div>
+                {/* Per-type egg breakdown */}
+                {order.totalEggs > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-gray-50 dark:border-dark-border">
+                    {order.standardEggs > 0 && (
+                      <span className="text-[10px] bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 px-2 py-0.5 rounded-full font-medium">
+                        {order.standardEggs.toLocaleString()} standard
+                      </span>
+                    )}
+                    {order.starterEggs > 0 && (
+                      <span className="text-[10px] bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded-full font-medium">
+                        {order.starterEggs.toLocaleString()} starter
+                      </span>
+                    )}
+                    {order.brokenEggs > 0 && (
+                      <span className="text-[10px] bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full font-medium">
+                        {order.brokenEggs.toLocaleString()} broken sellable
+                      </span>
+                    )}
+                    <span className="text-[10px] text-gray-400 dark:text-dark-muted ml-auto">
+                      {order.trays} trays total
                     </span>
                   </div>
-                  <p className="text-xs text-gray-400">{order.orderNumber} · {order.trays} trays · {dayjs(order.date).format('D MMM')}</p>
-                </div>
-                <p className="text-sm font-bold text-brand-green flex-shrink-0">KES {order.amountKes.toLocaleString()}</p>
+                )}
               </div>
             ))}
           </div>

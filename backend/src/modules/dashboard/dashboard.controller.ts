@@ -102,34 +102,117 @@ export class DashboardController {
       where: { status: InvoiceStatus.OVERDUE },
     });
 
-    // ── Feed alerts ──────────────────────────────────────────────────────
+    // ── Feed alerts — include items with 0 days remaining (critical) ────
     const feedAlerts = await this.prisma.feedStockSnapshot.findMany({
       where: {
         snapshotDate: { gte: dayjs().startOf('day').toDate() },
         daysRemaining: { lte: 3 },
       },
       distinct: ['feedType'],
+      orderBy: { daysRemaining: 'asc' },
     });
 
-    // ── Live sales feed (last 10 orders) ────────────────────────────────
+    // ── Live sales feed (last 10 orders) — include full item breakdown ──
     const recentOrders = await this.prisma.salesOrder.findMany({
-      where: { orderDate: { gte: from } },
+      where: { orderDate: { gte: from }, deletedAt: null },
       include: {
         customer: { select: { name: true } },
-        items: { select: { quantityTrays: true, subtotal: true } },
+        items: {
+          select: {
+            itemType: true,
+            quantityEggs: true,
+            quantityTrays: true,
+            subtotal: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take: 10,
     });
-    const salesFeed = recentOrders.map(o => ({
-      id: o.id,
-      orderNumber: o.orderNumber,
-      customerName: o.customer.name,
-      trays: o.items.reduce((s, i) => s + (i.quantityTrays ?? 0), 0),
-      amountKes: Number(o.subtotal),
-      status: o.status,
-      date: o.orderDate,
-    }));
+
+    const salesFeed = recentOrders.map(o => {
+      let standardEggs = 0, starterEggs = 0, brokenEggs = 0;
+      for (const item of o.items) {
+        const qty = item.quantityEggs ?? (item.quantityTrays ?? 0) * 30;
+        if (item.itemType === 'STANDARD_EGGS')          standardEggs += qty;
+        else if (item.itemType === 'STARTER_EGGS')      starterEggs  += qty;
+        else if (item.itemType === 'CONSUMABLE_BROKEN_EGGS') brokenEggs += qty;
+      }
+      return {
+        id: o.id,
+        orderNumber: o.orderNumber,
+        customerName: o.customer.name,
+        trays: o.items.reduce((s, i) => s + (i.quantityTrays ?? 0), 0),
+        standardEggs,
+        starterEggs,
+        brokenEggs,
+        totalEggs: standardEggs + starterEggs + brokenEggs,
+        amountKes: Number(o.subtotal),
+        status: o.status,
+        date: o.orderDate,
+      };
+    });
+
+    // ── Confirmed orders total (sum of confirmed/delivered subtotals) ───
+    const confirmedOrdersAgg = await this.prisma.salesOrder.aggregate({
+      where: {
+        orderDate: { gte: from },
+        status: { in: ['CONFIRMED', 'DELIVERING', 'DELIVERED'] as any },
+        deletedAt: null,
+      },
+      _sum: { subtotal: true },
+      _count: true,
+    });
+    const confirmedOrdersTotal = Number(confirmedOrdersAgg._sum.subtotal ?? 0);
+    const confirmedOrdersCount = confirmedOrdersAgg._count;
+
+    // ── Eggs sold totals (from paid invoices via AR payments) ───────────
+    const allPeriodOrders = await this.prisma.salesOrder.findMany({
+      where: {
+        orderDate: { gte: from },
+        status: { not: 'CANCELLED' as any },
+        deletedAt: null,
+      },
+      include: { items: { select: { itemType: true, quantityEggs: true, quantityTrays: true } } },
+    });
+    let totalStandardEggsSold = 0, totalStarterEggsSold = 0, totalBrokenEggsSold = 0;
+    for (const o of allPeriodOrders) {
+      for (const item of o.items) {
+        const qty = item.quantityEggs ?? (item.quantityTrays ?? 0) * 30;
+        if (item.itemType === 'STANDARD_EGGS')               totalStandardEggsSold += qty;
+        else if (item.itemType === 'STARTER_EGGS')           totalStarterEggsSold  += qty;
+        else if (item.itemType === 'CONSUMABLE_BROKEN_EGGS') totalBrokenEggsSold   += qty;
+      }
+    }
+
+    // ── Expected revenue: latest verified tally × accountant pricing ────
+    // = (standardEggs × pricePerEgg) + (starterEggs × pricePerEggStarter)
+    //   + (consumableEggs × pricePerEggBroken)
+    // derived from the most recent locked morning tally
+    let expectedRevenueKes = 0;
+    try {
+      const latestTally = await this.prisma.eggTallyVerification.findFirst({
+        where: { isLocked: true },
+        orderBy: { verificationDate: 'desc' },
+        include: {
+          session: { select: { totalGoodEggs: true, totalStarterEggs: true, totalBrokenEggs: true } },
+        },
+      });
+      const todayDate = new Date();
+      todayDate.setHours(0, 0, 0, 0);
+      const todayPricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: todayDate } });
+      if (latestTally && todayPricing) {
+        const stdEggs      = latestTally.finalGoodEggs ?? latestTally.session?.totalGoodEggs ?? 0;
+        const strtEggs     = latestTally.session?.totalStarterEggs ?? 0;
+        // Only sellable (consumable) broken eggs contribute to expected revenue
+        const latestAdj    = await this.prisma.eggBreakageAdjustment.findFirst({ orderBy: { adjustmentDate: 'desc' } });
+        const sellableBroken = latestAdj?.newConsumable ?? 0;
+        expectedRevenueKes =
+          stdEggs      * Number(todayPricing.pricePerEgg) +
+          strtEggs     * Number(todayPricing.pricePerEggStarter ?? 0) +
+          sellableBroken * Number(todayPricing.pricePerEggBroken ?? 0);
+      }
+    } catch (_) { /* best-effort */ }
 
     // ── Mortality for period ─────────────────────────────────────────────
     const mortalityAgg = await (this.prisma as any).flockDailyEntry.aggregate({
@@ -172,14 +255,25 @@ export class DashboardController {
 
       // Feed
       feedAlertsCount: feedAlerts.length,
-      feedAlerts: feedAlerts.map(f => ({ feedType: f.feedType, daysRemaining: f.daysRemaining })),
+      feedAlerts: feedAlerts.map(f => ({ feedType: f.feedType, daysRemaining: Number(f.daysRemaining) })),
 
       // Mortality
       periodMortality,
       periodCulling,
 
-      // Sales feed
+      // Sales feed (with per-type egg breakdown)
       salesFeed,
+
+      // Sales totals
+      confirmedOrdersTotal,
+      confirmedOrdersCount,
+      totalStandardEggsSold,
+      totalStarterEggsSold,
+      totalBrokenEggsSold,
+      totalEggsSold: totalStandardEggsSold + totalStarterEggsSold + totalBrokenEggsSold,
+
+      // Expected revenue from tally × pricing
+      expectedRevenueKes: Math.round(expectedRevenueKes),
 
       // AI
       latestAiSummary: latestAiReport
