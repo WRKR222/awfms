@@ -40,21 +40,22 @@ export class TallyVerificationService {
   // Creates tally records for BOTH AM and PM sessions so they appear on each
   // party's morning sign-off queue together.
   async createTallyForSession(sessionId: string, sessionDate: Date) {
-    // Idempotent — skip if already exists
-    const existing = await this.prisma.eggTallyVerification.findUnique({
-      where: { sessionId },
-    });
-    if (existing) return existing;
-
     const nextDay = new Date(sessionDate);
     nextDay.setDate(nextDay.getDate() + 1);
 
-    return this.prisma.eggTallyVerification.create({
-      data: {
-        sessionId,
-        verificationDate: nextDay,
-
-      },
+    // Upsert instead of create-or-skip: production.service creates a placeholder
+    // at submission time with verificationDate = sessionDate (the collection day).
+    // When both AM and PM are approved we must correct it to nextDay so that
+    // listPending() ordering puts AM before PM and both cards appear together in
+    // the next-morning queue. The old find-then-return-early meant the AM card
+    // kept sessionDate as its verificationDate, so it sorted after the PM card
+    // (which had a later DB createdAt). PM and Sales would then sign PM first,
+    // leaving AM with no PM/Sales signatures — causing Store to get a 400
+    // ("Sales must sign first") when trying to sign the AM card.
+    return this.prisma.eggTallyVerification.upsert({
+      where:  { sessionId },
+      update: { verificationDate: nextDay },
+      create: { sessionId, verificationDate: nextDay },
     });
   }
 

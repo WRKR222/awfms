@@ -266,28 +266,46 @@ export class SalesService {
   }
 
   // ── Sales Stock ────────────────────────────────────────────────────────────
-  // Returns a best-effort egg stock snapshot from the latest locked tally
+  // Returns an egg stock snapshot built from the DailyEggAggregate table, which
+  // holds the correct AM+PM combined totals written once BOTH session tallies are
+  // fully signed and locked. Falling back to the single latest locked tally only
+  // when no aggregate exists yet (e.g. first day of operation).
+  //
+  // BUG that was here: previously read only the single latest locked
+  // eggTallyVerification row, so Sales saw only one session's eggs (whichever
+  // tally locked last — usually PM) instead of the true AM+PM sum. The
+  // DailyEggAggregate row is the authoritative combined total and must be the
+  // primary source.
   async getSalesStock() {
-    const latestTally = await this.prisma.eggTallyVerification.findFirst({
-      where: { isLocked: true },
-      orderBy: { verificationDate: 'desc' },
-      include: {
-        session: {
-          select: {
-            totalGoodEggs: true,
-            totalBrokenEggs: true,
-            totalStarterEggs: true,
-          },
-        },
-      },
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // ── 1. Try the DailyEggAggregate first (AM + PM combined, written on full lock) ──
+    const latestAggregate = await this.prisma.dailyEggAggregate.findFirst({
+      orderBy: { aggregateDate: 'desc' },
     });
 
-    if (!latestTally) {
-      // Still return pricing even with no tally
-      const todayDate = new Date();
-      todayDate.setHours(0, 0, 0, 0);
+    // ── 2. Fallback: single latest locked tally (pre-aggregate or single-session day) ──
+    const latestTally = !latestAggregate
+      ? await this.prisma.eggTallyVerification.findFirst({
+          where: { isLocked: true },
+          orderBy: { lockedAt: 'desc' },
+          include: {
+            session: {
+              select: {
+                totalGoodEggs: true,
+                totalBrokenEggs: true,
+                totalStarterEggs: true,
+              },
+            },
+          },
+        })
+      : null;
+
+    if (!latestAggregate && !latestTally) {
+      // No locked tally at all yet — return zero stock with today's pricing
       const todayPricing = await this.prisma.dailyEggPrice.findUnique({
-        where: { priceDate: todayDate },
+        where: { priceDate: today },
       });
       return {
         standardEggs:      0,
@@ -296,10 +314,10 @@ export class SalesService {
         consumableEggs:    0,
         lastVerifiedDate:  null,
         pricing: todayPricing ? {
-          pricePerEgg: Number(todayPricing.pricePerEgg),
+          pricePerEgg:        Number(todayPricing.pricePerEgg),
           pricePerEggStarter: Number((todayPricing as any).pricePerEggStarter ?? 0),
-          pricePerEggBroken: Number((todayPricing as any).pricePerEggBroken ?? 0),
-          priceDate: todayPricing.priceDate,
+          pricePerEggBroken:  Number((todayPricing as any).pricePerEggBroken  ?? 0),
+          priceDate:          todayPricing.priceDate,
         } : null,
       };
     }
@@ -310,18 +328,33 @@ export class SalesService {
     });
 
     // Fetch today's pricing
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
     const pricing = await this.prisma.dailyEggPrice.findUnique({
       where: { priceDate: today },
     });
 
+    // ── Derive base stock from aggregate (preferred) or single tally (fallback) ──
+    const baseStandardEggs = latestAggregate
+      ? (latestAggregate.totalStdEggs ?? 0)
+      : (latestTally!.finalGoodEggs ?? latestTally!.session?.totalGoodEggs ?? 0);
+
+    const baseStarterEggs = latestAggregate
+      ? (latestAggregate.totalStarterEggs ?? 0)
+      : (latestTally!.session?.totalStarterEggs ?? 0);
+
+    const baseNonConsumableEggs = latestAggregate
+      ? ((latestAggregate as any).totalBrokenSellable ?? 0)
+      : (latestAdj?.newNonConsumable ?? latestTally!.session?.totalBrokenEggs ?? 0);
+
+    const lastVerifiedDate = latestAggregate
+      ? latestAggregate.aggregateDate
+      : latestTally!.verificationDate;
+
     const stockResult = {
-      standardEggs:      latestTally.finalGoodEggs      ?? latestTally.session?.totalGoodEggs    ?? 0,
-      starterEggs:       latestTally.session?.totalStarterEggs ?? 0,
-      nonConsumableEggs: latestAdj?.newNonConsumable ?? latestTally.session?.totalBrokenEggs ?? 0,
+      standardEggs:      baseStandardEggs,
+      starterEggs:       baseStarterEggs,
+      nonConsumableEggs: latestAdj?.newNonConsumable ?? baseNonConsumableEggs,
       consumableEggs:    latestAdj?.newConsumable    ?? 0,
-      lastVerifiedDate:  latestTally.verificationDate,
+      lastVerifiedDate,
     };
 
     // Subtract eggs sold today from available stock
@@ -352,16 +385,16 @@ export class SalesService {
       lockedEggs += (b as any).quantityEggs ?? ((b as any).quantityTrays ?? 0) * 30;
     }
 
-    stockResult.standardEggs = Math.max(0, stockResult.standardEggs - soldStandard - lockedEggs);
-    stockResult.starterEggs = Math.max(0, stockResult.starterEggs - soldStarter);
-    stockResult.consumableEggs = Math.max(0, stockResult.consumableEggs - soldConsumable);
+    stockResult.standardEggs      = Math.max(0, stockResult.standardEggs - soldStandard - lockedEggs);
+    stockResult.starterEggs        = Math.max(0, stockResult.starterEggs - soldStarter);
+    stockResult.consumableEggs     = Math.max(0, stockResult.consumableEggs - soldConsumable);
 
-    // Return original (tally) values alongside adjusted current values for the
-    // "Original stock vs Current stock" comparison on the Sales Breakage page.
-    const originalStandardEggs      = latestTally.finalGoodEggs      ?? latestTally.session?.totalGoodEggs    ?? 0;
-    const originalStarterEggs       = latestTally.session?.totalStarterEggs ?? 0;
-    const originalNonConsumableEggs = latestTally.session?.totalBrokenEggs ?? 0;
-    const originalConsumableEggs    = 0; // at tally time consumable = 0 (starts accumulating after)
+    // Return original (tally/aggregate) values alongside adjusted current values
+    // for the "Original stock vs Current stock" comparison on the Sales Breakage page.
+    const originalStandardEggs      = baseStandardEggs;
+    const originalStarterEggs       = baseStarterEggs;
+    const originalNonConsumableEggs = baseNonConsumableEggs;
+    const originalConsumableEggs    = 0; // consumable starts at 0 at tally time
 
     return {
       ...stockResult,
@@ -370,10 +403,10 @@ export class SalesService {
       originalNonConsumableEggs,
       originalConsumableEggs,
       pricing: pricing ? {
-        pricePerEgg: Number(pricing.pricePerEgg),
+        pricePerEgg:        Number(pricing.pricePerEgg),
         pricePerEggStarter: Number((pricing as any).pricePerEggStarter ?? 0),
-        pricePerEggBroken: Number((pricing as any).pricePerEggBroken ?? 0),
-        priceDate: pricing.priceDate,
+        pricePerEggBroken:  Number((pricing as any).pricePerEggBroken  ?? 0),
+        priceDate:          pricing.priceDate,
       } : null,
     };
   }
