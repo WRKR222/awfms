@@ -102,6 +102,21 @@ export class DashboardController {
       where: { status: InvoiceStatus.OVERDUE },
     });
 
+    // ── Today's egg pricing (set by accountant) ──────────────────────────
+    const todayDate = new Date();
+    todayDate.setHours(0, 0, 0, 0);
+    const todayPricing = await this.prisma.dailyEggPrice.findUnique({
+      where: { priceDate: todayDate },
+      select: {
+        priceDate:          true,
+        pricePerEgg:        true,
+        pricePerEggStarter: true,
+        pricePerEggBroken:  true,
+        expectedRevenue:    true,
+        notes:              true,
+      },
+    });
+
     // ── Feed alerts — include items with 0 days remaining (critical) ────
     const feedAlerts = await this.prisma.feedStockSnapshot.findMany({
       where: {
@@ -198,19 +213,15 @@ export class DashboardController {
           session: { select: { totalGoodEggs: true, totalStarterEggs: true, totalBrokenEggs: true } },
         },
       });
-      const todayDate = new Date();
-      todayDate.setHours(0, 0, 0, 0);
-      const todayPricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: todayDate } });
       if (latestTally && todayPricing) {
-        const stdEggs      = latestTally.finalGoodEggs ?? latestTally.session?.totalGoodEggs ?? 0;
-        const strtEggs     = latestTally.session?.totalStarterEggs ?? 0;
-        // Only sellable (consumable) broken eggs contribute to expected revenue
-        const latestAdj    = await this.prisma.eggBreakageAdjustment.findFirst({ orderBy: { adjustmentDate: 'desc' } });
+        const stdEggs        = latestTally.finalGoodEggs ?? latestTally.session?.totalGoodEggs ?? 0;
+        const strtEggs       = (latestTally.session as any)?.totalStarterEggs ?? 0;
+        const latestAdj      = await this.prisma.eggBreakageAdjustment.findFirst({ orderBy: { adjustmentDate: 'desc' } });
         const sellableBroken = latestAdj?.newConsumable ?? 0;
         expectedRevenueKes =
-          stdEggs      * Number(todayPricing.pricePerEgg) +
-          strtEggs     * Number(todayPricing.pricePerEggStarter ?? 0) +
-          sellableBroken * Number(todayPricing.pricePerEggBroken ?? 0);
+          stdEggs        * Number(todayPricing.pricePerEgg) +
+          strtEggs       * Number(todayPricing.pricePerEggStarter ?? 0) +
+          sellableBroken * Number(todayPricing.pricePerEggBroken  ?? 0);
       }
     } catch (_) { /* best-effort */ }
 
@@ -274,6 +285,16 @@ export class DashboardController {
 
       // Expected revenue from tally × pricing
       expectedRevenueKes: Math.round(expectedRevenueKes),
+
+      // Today's egg pricing (set by accountant) — shown on "Today" tab
+      todayPricing: todayPricing ? {
+        priceDate:          todayPricing.priceDate,
+        pricePerEgg:        Number(todayPricing.pricePerEgg),
+        pricePerEggStarter: todayPricing.pricePerEggStarter != null ? Number(todayPricing.pricePerEggStarter) : null,
+        pricePerEggBroken:  todayPricing.pricePerEggBroken  != null ? Number(todayPricing.pricePerEggBroken)  : null,
+        expectedRevenue:    todayPricing.expectedRevenue    != null ? Number(todayPricing.expectedRevenue)    : null,
+        notes:              todayPricing.notes,
+      } : null,
 
       // AI
       latestAiSummary: latestAiReport

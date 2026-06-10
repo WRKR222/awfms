@@ -423,7 +423,12 @@ function PaymentForm({ invoiceId, balanceDue, onClose }: { invoiceId: string; ba
 
   const log = useMutation({
     mutationFn: (d: any) => api.post('/finance/invoices/payments', { ...d, invoiceId, amount: Number(d.amount) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['finance-invoices'] }); qc.invalidateQueries({ queryKey: ['ar-summary'] }); onClose(); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['finance-invoices'] });
+      qc.invalidateQueries({ queryKey: ['ar-summary'] });
+      qc.invalidateQueries({ queryKey: ['owner-dashboard'] });
+      onClose();
+    },
   });
 
   return (
@@ -458,7 +463,12 @@ function PaymentForm({ invoiceId, balanceDue, onClose }: { invoiceId: string; ba
             <CreditCard className="w-4 h-4" />
             {log.isPending ? 'Logging…' : 'Log Payment'}
           </button>
-          {log.isError && <p className="text-xs text-red-600">Failed to log payment. Please try again.</p>}
+          {log.isError && (
+            <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 px-3 py-2 rounded-xl flex items-center gap-1.5">
+              <AlertCircle className="w-3 h-3 flex-shrink-0" />
+              {(log.error as any)?.response?.data?.message ?? 'Failed to log payment. Please try again.'}
+            </p>
+          )}
         </form>
       </div>
     </div>

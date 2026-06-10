@@ -50,6 +50,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.SALES_CUSTOMER_MANAGE,
     Permission.SALES_DELIVERY_LOG,
     Permission.INVOICE_VIEW,
+    Permission.INVOICE_MANAGE,
+    Permission.INVOICE_PAYMENT_LOG,  // FIX: Sales must be able to log payments via Pay button
+    Permission.AR_VIEW,              // FIX: Sales must be able to view AR summary on Invoices tab
     Permission.BOOKINGS_VIEW,
     Permission.BOOKINGS_MANAGE,
     Permission.BREAKAGE_LOG,

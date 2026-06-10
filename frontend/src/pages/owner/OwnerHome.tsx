@@ -54,6 +54,14 @@ interface DashData {
   totalBrokenEggsSold: number;
   totalEggsSold: number;
   latestAiSummary?: { summary: string; generatedAt: string } | null;
+  todayPricing?: {
+    priceDate: string;
+    pricePerEgg: number;
+    pricePerEggStarter: number | null;
+    pricePerEggBroken: number | null;
+    expectedRevenue: number | null;
+    notes: string | null;
+  } | null;
 }
 
 function useOwnerDash(range: Range) {
@@ -207,7 +215,94 @@ export default function OwnerHome() {
         </div>
       </div>
 
-      {/* ── Revenue & Eggs Sold Summary ── */}
+      {/* ── Today's Egg Pricing — visible only on "Today" tab ── */}
+      {range === 'daily' && (
+        <div className={`rounded-2xl border p-5 ${
+          data?.todayPricing
+            ? 'bg-white dark:bg-dark-card border-gray-100 dark:border-dark-border'
+            : 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-800'
+        }`}>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold text-gray-700 dark:text-gray-200 flex items-center gap-2">
+              <DollarSign className="w-4 h-4 text-brand-green" />
+              Today's Egg Prices
+            </h3>
+            {data?.todayPricing ? (
+              <span className="text-[10px] font-semibold px-2 py-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 rounded-full">
+                ✓ Set by accountant
+              </span>
+            ) : (
+              <span className="text-[10px] font-semibold px-2 py-1 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 rounded-full">
+                ⚠ Not set yet
+              </span>
+            )}
+          </div>
+
+          {!data?.todayPricing ? (
+            <p className="text-sm text-amber-600 dark:text-amber-400">
+              The accountant has not set today's egg prices yet. Orders cannot be created until prices are set.
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 gap-3">
+                {/* Standard */}
+                <div className="bg-green-50 dark:bg-green-900/20 rounded-xl p-3">
+                  <p className="text-[10px] font-bold text-green-600 dark:text-green-500 uppercase tracking-wider mb-1">Standard</p>
+                  <p className="text-lg font-extrabold text-green-700 dark:text-green-400">
+                    KES {Number(data.todayPricing.pricePerEgg).toFixed(2)}
+                    <span className="text-xs font-normal text-green-600 dark:text-green-500">/egg</span>
+                  </p>
+                  <p className="text-[11px] text-green-600 dark:text-green-500 mt-0.5">
+                    = KES {(Number(data.todayPricing.pricePerEgg) * 30).toFixed(2)}/tray
+                  </p>
+                </div>
+
+                {/* Starter */}
+                <div className={`rounded-xl p-3 ${data.todayPricing.pricePerEggStarter != null ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-gray-50 dark:bg-dark-bg opacity-50'}`}>
+                  <p className="text-[10px] font-bold text-blue-600 dark:text-blue-500 uppercase tracking-wider mb-1">Starter</p>
+                  {data.todayPricing.pricePerEggStarter != null ? (
+                    <>
+                      <p className="text-lg font-extrabold text-blue-700 dark:text-blue-400">
+                        KES {Number(data.todayPricing.pricePerEggStarter).toFixed(2)}
+                        <span className="text-xs font-normal text-blue-600 dark:text-blue-500">/egg</span>
+                      </p>
+                      <p className="text-[11px] text-blue-600 dark:text-blue-500 mt-0.5">
+                        = KES {(Number(data.todayPricing.pricePerEggStarter) * 30).toFixed(2)}/tray
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-400 dark:text-dark-muted">Not set</p>
+                  )}
+                </div>
+
+                {/* Broken sellable */}
+                <div className={`rounded-xl p-3 ${data.todayPricing.pricePerEggBroken != null ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-gray-50 dark:bg-dark-bg opacity-50'}`}>
+                  <p className="text-[10px] font-bold text-amber-600 dark:text-amber-500 uppercase tracking-wider mb-1">Broken Sellable</p>
+                  {data.todayPricing.pricePerEggBroken != null ? (
+                    <>
+                      <p className="text-lg font-extrabold text-amber-700 dark:text-amber-400">
+                        KES {Number(data.todayPricing.pricePerEggBroken).toFixed(2)}
+                        <span className="text-xs font-normal text-amber-600 dark:text-amber-500">/egg</span>
+                      </p>
+                      <p className="text-[11px] text-amber-600 dark:text-amber-500 mt-0.5">
+                        = KES {(Number(data.todayPricing.pricePerEggBroken) * 30).toFixed(2)}/tray
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-400 dark:text-dark-muted">Not set</p>
+                  )}
+                </div>
+              </div>
+
+              {data.todayPricing.notes && (
+                <p className="mt-3 text-[11px] text-gray-400 dark:text-dark-muted italic border-t border-gray-100 dark:border-dark-border pt-2">
+                  Note: {data.todayPricing.notes}
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
       {data && (
         <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-5 space-y-4">
           <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300">Revenue & Sales Summary</h3>
