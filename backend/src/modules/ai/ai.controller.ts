@@ -1,11 +1,16 @@
 import { Controller, Get, Post, Query, UseGuards, ParseIntPipe, DefaultValuePipe } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
 import { AiService } from './ai.service';
 
+// FIX: Added PermissionsGuard to @UseGuards. Previously the @RequirePermission decorators
+//      set metadata that nobody read, making all AI routes accessible to any authenticated
+//      user regardless of role.
+
 @Controller('ai')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class AiController {
   constructor(private ai: AiService) {}
 

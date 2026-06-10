@@ -1,4 +1,4 @@
-// src/app.module.ts  (REPLACE existing file)
+// src/app.module.ts
 import { Module } from '@nestjs/common';
 import { SalesModule }    from './modules/sales/sales.module';
 import { ConfigModule }   from '@nestjs/config';
@@ -22,6 +22,7 @@ import { AiModule }       from './modules/ai/ai.module';
 import { EventsModule }   from './modules/events/events.module';
 import { VisitorsModule } from './modules/visitors/visitors.module';
 import { DataUploadModule } from './modules/data-upload/data-upload.module';
+import { UsersModule }    from './modules/users/users.module';  // FIX: was never registered
 
 @Module({
   imports: [
@@ -34,7 +35,8 @@ import { DataUploadModule } from './modules/data-upload/data-upload.module';
     NotificationsModule,
 
     AuthModule,
-    FlockModule,      // batches, daily entries, culling — required by Production Manager
+    UsersModule,      // FIX: was missing — /users routes did not exist at all
+    FlockModule,
     FeedModule,
     HealthModule,
     SalesModule,
@@ -48,7 +50,7 @@ import { DataUploadModule } from './modules/data-upload/data-upload.module';
     AiModule,
     EventsModule,
     VisitorsModule,
-    DataUploadModule,    // Director historical data upload
+    DataUploadModule,
   ],
 })
 export class AppModule {}

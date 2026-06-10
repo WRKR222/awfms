@@ -5,7 +5,9 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { PrismaModule } from '../../common/prisma/prisma.module';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
 import { RequestUser } from '../../auth/types/request-user.type';
@@ -86,13 +88,18 @@ export class UsersService {
   }
 }
 
+// FIX: Added PermissionsGuard to @UseGuards — @RequirePermission decorators were silently
+//      ignored without a guard present to read the metadata.
+// FIX: Changed all @RequirePermission from Permission.AI_REPORTS_VIEW (wrong) to
+//      Permission.USERS_MANAGE (correct). Previously any Director with AI access could manage
+//      users, but a user-admin without AI access could not.
 @Controller('users')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get()
-  @RequirePermission(Permission.AI_REPORTS_VIEW)
+  @RequirePermission(Permission.USERS_MANAGE)
   getAll() { return this.usersService.findAll(); }
 
   @Get('me')
@@ -101,11 +108,11 @@ export class UsersController {
   }
 
   @Post()
-  @RequirePermission(Permission.AI_REPORTS_VIEW)
+  @RequirePermission(Permission.USERS_MANAGE)
   create(@Body() dto: any) { return this.usersService.create(dto); }
 
   @Patch(':id/status')
-  @RequirePermission(Permission.AI_REPORTS_VIEW)
+  @RequirePermission(Permission.USERS_MANAGE)
   updateStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @Body('isActive') isActive: boolean,
@@ -114,7 +121,9 @@ export class UsersController {
   }
 }
 
+// FIX: Added PrismaModule to imports so UsersService's PrismaService injection is explicit.
 @Module({
+  imports: [PrismaModule],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],

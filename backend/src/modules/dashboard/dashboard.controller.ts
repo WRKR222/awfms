@@ -1,6 +1,10 @@
-// src/modules/dashboard/dashboard.controller.ts  (REPLACE existing file)
+// src/modules/dashboard/dashboard.controller.ts
+// FIX: Added PermissionsGuard to @UseGuards. Previously the @RequirePermission decorators
+//      on ownerDashboard, analyticsData, and salesProjection set metadata that nobody read,
+//      making those endpoints accessible to any authenticated user regardless of role.
 import { Controller, Get, Query, UseGuards, ForbiddenException } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -30,7 +34,7 @@ function getPeriodBounds(range: DashRange): { from: Date; label: string } {
 }
 
 @Controller('dashboard')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class DashboardController {
   constructor(private prisma: PrismaService) {}
 
@@ -201,9 +205,6 @@ export class DashboardController {
     }
 
     // ── Expected revenue: latest verified tally × accountant pricing ────
-    // = (standardEggs × pricePerEgg) + (starterEggs × pricePerEggStarter)
-    //   + (consumableEggs × pricePerEggBroken)
-    // derived from the most recent locked morning tally
     let expectedRevenueKes = 0;
     try {
       const latestTally = await this.prisma.eggTallyVerification.findFirst({
@@ -251,7 +252,7 @@ export class DashboardController {
       totalBirds,
       activeBatchCount: activeBatches.length,
       pendingVerifications: pendingEntries,
-      pendingApprovals: pendingLpoCount,  // LPOs awaiting Director sign-off
+      pendingApprovals: pendingLpoCount,
 
       // Eggs
       periodEggs,
@@ -286,7 +287,7 @@ export class DashboardController {
       // Expected revenue from tally × pricing
       expectedRevenueKes: Math.round(expectedRevenueKes),
 
-      // Today's egg pricing (set by accountant) — shown on "Today" tab
+      // Today's egg pricing
       todayPricing: todayPricing ? {
         priceDate:          todayPricing.priceDate,
         pricePerEgg:        Number(todayPricing.pricePerEgg),
@@ -316,6 +317,7 @@ export class DashboardController {
     ]);
     return { pendingCount, approvedToday };
   }
+
   // ── Phase 5: Analytics time-series data ──────────────────────────────────
   @Get('analytics')
   @RequirePermission(Permission.PRODUCTION_VIEW)
@@ -325,7 +327,6 @@ export class DashboardController {
     @Query('includeHistory') includeHistoryParam?: string,
     @CurrentUser() user?: any,
   ) {
-    // Determine date range
     let fromDate: Date;
     const now = dayjs();
     switch (range) {
@@ -338,7 +339,6 @@ export class DashboardController {
 
     const batchFilter = batchId ? { batchId } : {};
 
-    // ── Egg production trend (daily) ─────────────────────────────────────
     const eggSessions = await this.prisma.eggCollectionSession.findMany({
       where: {
         sessionDate: { gte: fromDate },
@@ -355,7 +355,6 @@ export class DashboardController {
       orderBy: { sessionDate: 'asc' },
     });
 
-    // Group by date — sum AM+PM per day
     const eggByDate: Record<string, { date: string; eggs: number; trays: number; hdp: number[]; broken: number }> = {};
     for (const s of eggSessions) {
       const d = dayjs(s.sessionDate).format('YYYY-MM-DD');
@@ -373,7 +372,6 @@ export class DashboardController {
       hdp: d.hdp.length > 0 ? Math.round((d.hdp.reduce((a,b)=>a+b,0)/d.hdp.length)*100)/100 : 0,
     }));
 
-    // ── Mortality trend (daily) ──────────────────────────────────────────
     const flockEntries = await (this.prisma as any).flockDailyEntry.findMany({
       where: {
         entryDate: { gte: fromDate },
@@ -393,7 +391,6 @@ export class DashboardController {
     }
     const mortalityTrend = Object.values(mortalityByDate);
 
-    // ── Mortality cause breakdown (pie) ──────────────────────────────────
     const causeMap: Record<string, number> = {};
     for (const e of flockEntries) {
       const cause = e.mortalityCause ?? 'UNKNOWN';
@@ -401,7 +398,6 @@ export class DashboardController {
     }
     const mortalityCauses = Object.entries(causeMap).map(([cause, count]) => ({ cause, count }));
 
-    // ── Feed consumption trend ───────────────────────────────────────────
     const feedLogs = await this.prisma.feedIntakeLog.findMany({
       where: {
         entryDate: { gte: fromDate },
@@ -420,9 +416,6 @@ export class DashboardController {
     }
     const feedTrend = Object.entries(feedByDate).map(([date, types]) => ({ date, ...types }));
 
-    // ── Batch comparison (bar) ─────────────────────────────────────────
-    // When includeHistory=true, show ALL batches (active + historical/closed/sold/discarded).
-    // This enables Manager and Director to compare performance across batch lifecycles.
     const includeHistory = includeHistoryParam === 'true';
     const batches = await this.prisma.batch.findMany({
       where: {
@@ -449,7 +442,6 @@ export class DashboardController {
       totalFeedKg: b.feedIntakeLogs.reduce((s, f) => s + Number(f.quantityDispensedKg), 0),
     }));
 
-    // ── Revenue by period (bar) ───────────────────────────────────────────
     const payments = await this.prisma.invoicePayment.findMany({
       where: { paymentDate: { gte: fromDate } },
       select: { paymentDate: true, amount: true },
@@ -462,7 +454,6 @@ export class DashboardController {
     }
     const revenueTrend = Object.entries(revenueByDate).map(([date, amount]) => ({ date, amount }));
 
-    // ── Revenue by customer (pie) ─────────────────────────────────────────
     const ordersByCustomer = await this.prisma.salesOrder.findMany({
       where: { orderDate: { gte: fromDate } },
       select: { subtotal: true, customer: { select: { name: true } } },
@@ -477,7 +468,6 @@ export class DashboardController {
       .sort((a, b) => b.value - a.value)
       .slice(0, 10);
 
-    // ── Egg condition breakdown (pie) ────────────────────────────────────
     const totalGood   = eggSessions.reduce((s, e) => s + e.totalGoodEggs, 0);
     const totalBroken = eggSessions.reduce((s, e) => s + (e.totalBrokenEggs ?? 0), 0);
     const eggCondition = [
@@ -485,7 +475,6 @@ export class DashboardController {
       { name: 'Broken', value: totalBroken },
     ].filter(e => e.value > 0);
 
-    // ── Summary KPIs ─────────────────────────────────────────────────────
     const totalEggs   = eggTrend.reduce((s, d) => s + d.eggs, 0);
     const totalTrays  = eggTrend.reduce((s, d) => s + d.trays, 0);
     const hdpVals     = eggTrend.map(d => d.hdp).filter(v => v > 0);
@@ -517,10 +506,6 @@ export class DashboardController {
     };
   }
 
-  // ── AN-07: Predictive Sales Projection ──────────────────────────────────────
-  // Returns last 30 days of daily revenue (actuals) + 14-day forward projection
-  // Projection uses linear regression on the last 30 days combined with the
-  // confirmed booking pipeline as a demand signal.
   @Get('analytics/projection')
   @RequirePermission(Permission.PRODUCTION_VIEW)
   async salesProjection(@CurrentUser() user: any) {
@@ -530,14 +515,12 @@ export class DashboardController {
     const now = dayjs();
     const from30 = now.subtract(30, 'day').startOf('day').toDate();
 
-    // ── Actuals: daily revenue (payments received) over last 30 days ──────
     const payments = await this.prisma.invoicePayment.findMany({
       where: { paymentDate: { gte: from30 } },
       select: { paymentDate: true, amount: true },
       orderBy: { paymentDate: 'asc' },
     });
 
-    // Build a date-keyed map so every day in the window has a value (0 if no payment)
     const actualMap: Record<string, number> = {};
     for (let i = 0; i <= 30; i++) {
       const d = now.subtract(30 - i, 'day').format('YYYY-MM-DD');
@@ -555,7 +538,6 @@ export class DashboardController {
       projected: null as number | null,
     }));
 
-    // ── Linear regression on actuals (x = day index 0..30, y = revenue) ──
     const n = actuals.length;
     const xs = actuals.map((_, i) => i);
     const ys = actuals.map(a => a.actual);
@@ -566,7 +548,6 @@ export class DashboardController {
     const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX || 1);
     const intercept = (sumY - slope * sumX) / n;
 
-    // ── Booking pipeline: confirmed bookings for next 14 days ─────────────
     const pipelineStart = now.add(1, 'day').startOf('day').toDate();
     const pipelineEnd   = now.add(14, 'day').endOf('day').toDate();
     const bookings = await this.prisma.advanceBooking.findMany({
@@ -577,15 +558,12 @@ export class DashboardController {
       select: { requestedDate: true, estimatedTotal: true },
     });
 
-    // Group bookings by date
     const bookingMap: Record<string, number> = {};
     for (const b of bookings) {
       const d = dayjs(b.requestedDate).format('YYYY-MM-DD');
       bookingMap[d] = (bookingMap[d] ?? 0) + Number(b.estimatedTotal);
     }
 
-    // ── Build projection points for next 14 days ─────────────────────────
-    // Blend: 60% trend-based, 40% booking signal (when booking exists)
     const projected = Array.from({ length: 14 }, (_, i) => {
       const dayOffset = i + 1;
       const date = now.add(dayOffset, 'day').format('YYYY-MM-DD');
@@ -601,7 +579,6 @@ export class DashboardController {
       };
     });
 
-    // ── Summary stats ─────────────────────────────────────────────────────
     const avgDaily = sumY / n;
     const projectedTotal14 = projected.reduce((s, p) => s + (p.projected ?? 0), 0);
     const pendingBookingsValue = bookings.reduce((s, b) => s + Number(b.estimatedTotal), 0);
@@ -617,5 +594,4 @@ export class DashboardController {
       },
     };
   }
-
 }

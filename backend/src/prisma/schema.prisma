@@ -247,6 +247,7 @@ model User {
   cageAssignments              BatchCageAssignment[]    @relation("CageAssignedBy")
   simpleStockRequestsRequested SimpleStockRequest[]     @relation("SimpleStockRequestedBy")
   simpleStockRequestsFulfilled SimpleStockRequest[]     @relation("SimpleStockFulfilledBy")
+  dataUploadLogs               DataUploadLog[]
 
   @@map("users")
 }
@@ -1620,3 +1621,72 @@ model SimpleStockRequestItem {
 
 // ─── Egg Breakage Adjustment (Sales) ─────────────────────────────────────────
 
+// ─── Data Upload Log ──────────────────────────────────────────────────────────
+// Tracks every spreadsheet import performed by the Director via the data-upload
+// feature. The table is best-effort — the service catches errors gracefully —
+// but having it in the schema ensures the migration creates the table and
+// removes the (prisma as any) cast in DataUploadService.
+
+model DataUploadLog {
+  id              String   @id @default(uuid())
+  uploadType      String   @map("upload_type")       // "expenses" | "production" | "sales" | "employees"
+  fileName        String   @map("file_name")
+  recordsImported Int      @default(0) @map("records_imported")
+  recordsSkipped  Int      @default(0) @map("records_skipped")
+  uploadedById    String   @map("uploaded_by_id")
+  uploadedAt      DateTime @default(now()) @map("uploaded_at")
+
+  uploadedBy User @relation(fields: [uploadedById], references: [id])
+
+  @@index([uploadType])
+  @@index([uploadedAt])
+  @@map("data_upload_logs")
+}
+
+// ─── Historical Records (Finance Export) ─────────────────────────────────────
+// These three models hold pre-migration / legacy data imported by the Director
+// via the data-upload feature. The finance export service merges them with live
+// Prisma records so exported spreadsheets cover the full date range.
+
+model HistoricalCostRecord {
+  id           String   @id @default(uuid())
+  date         DateTime @db.Date
+  category     String                     // expense category label
+  description  String?
+  quantity     Decimal? @db.Decimal(10, 3)
+  unit         String?
+  unitCostKes  Decimal? @map("unit_cost_kes") @db.Decimal(12, 2)
+  totalCostKes Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([date])
+  @@index([category])
+  @@map("historical_cost_records")
+}
+
+model HistoricalProductionRecord {
+  id         String   @id @default(uuid())
+  date       DateTime @db.Date
+  batchCode  String?  @map("batch_code")
+  birdCount  Int      @map("bird_count")
+  mortality  Int?     @default(0)
+  goodEggs   Int      @map("good_eggs")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([date])
+  @@map("historical_production_records")
+}
+
+model HistoricalSalesRecord {
+  id            String   @id @default(uuid())
+  invoiceDate   DateTime @map("invoice_date") @db.Date
+  invoiceNumber String   @map("invoice_number")
+  customerName  String   @map("customer_name")
+  quantityTrays Int      @map("quantity_trays")
+  totalKes      Decimal  @map("total_kes") @db.Decimal(12, 2)
+  paymentDate   DateTime? @map("payment_date") @db.Date
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([invoiceDate])
+  @@map("historical_sales_records")
+}
