@@ -113,7 +113,26 @@ function TallyCard({ tally }: { tally: TallySession }) {
   const isStore = role === 'STORE';
 
   const myField =
-    isPM    ? 'pmSignedById' :\n    isSales ? 'salesSignedById' :\n    isStore ? 'storeSignedById' : null;\n\n  const iAlreadySigned = myField ? !!(tally as any)[myField] : false;\n\n  // FIX: Enforce sign order — SALES waits for PM, STORE waits for PM+SALES\n  const prerequisitesMet =\n    isPM    ? true :\n    isSales ? !!tally.pmSignedById :\n    isStore ? (!!tally.pmSignedById && !!tally.salesSignedById) :\n    false;\n\n  const prerequisiteLabel =\n    isSales && !tally.pmSignedById ? 'Waiting for Production Manager to sign first' :\n    isStore && !tally.pmSignedById ? 'Waiting for Production Manager to sign first' :\n    isStore && !tally.salesSignedById ? 'Waiting for Sales to sign first' :\n    null;\n\n  const canSign = !!myField && !iAlreadySigned && !tally.isLocked && prerequisitesMet;
+    isPM    ? 'pmSignedById' :
+    isSales ? 'salesSignedById' :
+    isStore ? 'storeSignedById' : null;
+
+  const iAlreadySigned = myField ? !!(tally as any)[myField] : false;
+
+  // FIX: Enforce sign order — SALES waits for PM, STORE waits for PM+SALES
+  const prerequisitesMet =
+    isPM    ? true :
+    isSales ? !!tally.pmSignedById :
+    isStore ? (!!tally.pmSignedById && !!tally.salesSignedById) :
+    false;
+
+  const prerequisiteLabel =
+    isSales && !tally.pmSignedById ? 'Waiting for Production Manager to sign first' :
+    isStore && !tally.pmSignedById ? 'Waiting for Production Manager to sign first' :
+    isStore && !tally.salesSignedById ? 'Waiting for Sales to sign first' :
+    null;
+
+  const canSign = !!myField && !iAlreadySigned && !tally.isLocked && prerequisitesMet;
 
   const [isEditing, setIsEditing] = useState(false);
   const session = tally.session;
