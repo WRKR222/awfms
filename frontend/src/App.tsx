@@ -104,10 +104,39 @@ function ProtectedRoute({
   allowedRoles?: string[];
 }) {
   const { isAuthenticated, user } = useAuthStore();
+
+  // Not authenticated at all → send to login
   if (!isAuthenticated) return <Navigate to="/login" replace />;
+
+  // FIX: Previously redirected to /unauthorized which:
+  //   1. Wiped the browser history entry so Back became a no-op
+  //   2. On page reload, Zustand store rehydrates from localStorage asynchronously;
+  //      if the component renders before rehydration completes, user is briefly null
+  //      causing a false-positive unauthorized redirect.
+  // SOLUTION: Render an inline access-denied message within the current route.
+  // This preserves the history stack and avoids the reload race condition.
   if (allowedRoles && user && !allowedRoles.includes(user.role)) {
-    return <Navigate to="/unauthorized" replace />;
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-8 bg-gray-50 dark:bg-dark-bg">
+        <div className="text-5xl">🔒</div>
+        <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Access Restricted</h1>
+        <p className="text-sm text-gray-500 text-center max-w-sm">
+          You don't have permission to view this page.
+        </p>
+        <button
+          onClick={() => window.history.back()}
+          className="px-5 py-2.5 bg-brand-green text-white rounded-xl font-semibold text-sm hover:bg-green-700 transition-colors"
+        >
+          ← Go Back
+        </button>
+      </div>
+    );
   }
+
+  // FIX: Guard against the reload race — if auth is persisted but user hasn't
+  // rehydrated yet (null), don't flash unauthorized; wait for hydration.
+  if (!user) return null;
+
   return <>{children}</>;
 }
 

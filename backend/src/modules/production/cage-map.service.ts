@@ -56,14 +56,39 @@ export class CageMapService {
         })
       : [];
 
+    // FIX: Daily HDP% = (AM good eggs + PM good eggs) / closing bird count * 100
+    // Previously only the latest single session henDayPercent was used, which
+    // captured AM only. Now we sum both sessions for the most recent day that
+    // has at least one APPROVED session, giving the true daily HDP%.
     const hdpMap: Record<string, number> = {};
     for (const b of batches) {
-      const latest = await this.prisma.eggCollectionSession.findFirst({
+      // Find the most recent date with an APPROVED session for this batch
+      const latestSession = await this.prisma.eggCollectionSession.findFirst({
         where: { batchId: b.id, status: 'APPROVED', deletedAt: null },
         orderBy: { sessionDate: 'desc' },
-        select: { henDayPercent: true },
+        select: { sessionDate: true, closingStock: true },
       });
-      if (latest?.henDayPercent != null) hdpMap[b.id] = Number(latest.henDayPercent);
+      if (!latestSession) continue;
+
+      // Fetch both AM and PM sessions for that date
+      const daySessions = await this.prisma.eggCollectionSession.findMany({
+        where: {
+          batchId: b.id,
+          status: 'APPROVED',
+          deletedAt: null,
+          sessionDate: latestSession.sessionDate,
+        },
+        select: { totalGoodEggs: true, closingStock: true, shift: true },
+      });
+
+      const totalGoodEggs = daySessions.reduce((s, sess) => s + (sess.totalGoodEggs ?? 0), 0);
+      // Use the PM closing stock if available (most accurate), else AM closing stock
+      const pmSession = daySessions.find(s => s.shift === 'PM');
+      const closingStock = pmSession?.closingStock ?? latestSession.closingStock ?? 0;
+
+      if (closingStock > 0) {
+        hdpMap[b.id] = Math.round((totalGoodEggs / closingStock) * 10000) / 100;
+      }
     }
 
     const batchMap = Object.fromEntries(batches.map(b => [b.id, b]));

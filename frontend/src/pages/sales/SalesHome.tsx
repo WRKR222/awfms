@@ -137,6 +137,15 @@ export default function SalesHome() {
 
   const pricing = aggregate?.pricing ?? null;
 
+  const { data: pendingTallies = [] } = useQuery({
+    queryKey: ['tally-pending'],
+    queryFn: () => api.get('/tally-verifications/pending').then(r => r.data as any[]).catch(() => []),
+    staleTime: 30_000,
+  });
+  const pendingTallyCount = (pendingTallies as any[]).filter(
+    (t: any) => !t.salesSignedById && !t.isLocked && t.pmSignedById
+  ).length;
+
   const tasks = [
     { label: 'Orders',            sub: 'Create and manage egg sales orders',       icon: ShoppingCart, color: 'bg-brand-green', route: '/sales/orders',   badge: null },
     { label: 'Advance Bookings',  sub: 'Manage pre-orders and stock reservations', icon: BookOpen,     color: 'bg-brand-teal',  route: '/sales/bookings', badge: null },
@@ -144,7 +153,8 @@ export default function SalesHome() {
     { label: 'Delivery Tracking', sub: 'Track orders out for delivery',            icon: Truck,        color: 'bg-blue-500',    route: '/sales/delivery', badge: (deliveryCount as number) > 0 ? deliveryCount : null },
     { label: 'Clients',           sub: 'View and manage customer records',         icon: Users,        color: 'bg-purple-500',  route: '/sales/clients',  badge: null },
     { label: 'Egg Stock',         sub: 'View original & current egg inventory',    icon: Package,     color: 'bg-emerald-600', route: '/sales/egg-stock', badge: null },
-    { label: 'Tally Verification',sub: 'Verify and confirm egg tally records',     icon: FileCheck,    color: 'bg-amber-500',   route: '/sales/tally',    badge: null },
+    // FIX: Show pending tally count badge on the Tally Verification task card
+    { label: 'Tally Verification',sub: 'Verify and confirm egg tally records',     icon: FileCheck,    color: 'bg-amber-500',   route: '/sales/tally',    badge: pendingTallyCount > 0 ? pendingTallyCount : null },
   ];
 
   return (
@@ -206,7 +216,10 @@ export default function SalesHome() {
               color="text-brand-green"
               accent
             />
-            {(starterEggs > 0 || aggregate) && (
+            {/* FIX: Show Starter Eggs card whenever count > 0 from either aggregate or stock.
+                Previously only rendered when aggregate object was truthy, which hid the card
+                when only AM session was complete and aggregate hadn't been written yet. */}
+            {starterEggs > 0 && (
               <StatChip
                 label="Starter Eggs"
                 value={starterEggs.toLocaleString()}

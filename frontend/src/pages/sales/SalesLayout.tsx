@@ -9,6 +9,8 @@ import { ShoppingCart, Home, BookOpen, Users, Bell, LogOut, FileCheck, Settings,
 import { Sidebar, SidebarBody, SidebarLink, SidebarLinkItem } from '../../components/ui/sidebar';
 import { motion } from 'framer-motion';
 import { FlockIcon } from '../../components/ui/icons';
+import { useQuery } from '@tanstack/react-query';
+import api from '../../lib/api/client';
 
 const navDefs = [
   { label: 'Home',     icon: Home,         to: '/sales',           end: true },
@@ -30,8 +32,34 @@ export default function SalesLayout() {
   const [open, setOpen] = useState(false);
   useEffect(() => { fetchNotifications(); const i = setInterval(fetchNotifications, 60_000); return () => clearInterval(i); }, [fetchNotifications]);
   const handleLogout = () => { logout(); navigate('/login'); };
+
+  // FIX: Query pending tallies so the Tally nav item shows a badge count
+  // matching what Sales sees in their queue — same as PM/Store roles.
+  const { data: pendingTallies = [] } = useQuery({
+    queryKey: ['tally-pending'],
+    queryFn: () => api.get('/tally-verifications/pending').then(r => r.data as any[]).catch(() => []),
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
+  // Count tallies that Sales hasn't signed yet
+  const pendingTallyCount = (pendingTallies as any[]).filter(
+    (t: any) => !t.salesSignedById && !t.isLocked && t.pmSignedById
+  ).length;
   const sidebarLinks: SidebarLinkItem[] = [
-    ...navDefs.map(n => ({ to: n.to, label: n.label, icon: <n.icon className="w-5 h-5" />, end: n.end })),
+    ...navDefs.map(n => ({
+      to: n.to,
+      label: n.label,
+      end: n.end,
+      // FIX: Show badge on Tally nav item when there are pending tallies for Sales to sign
+      icon: n.label === 'Tally' && pendingTallyCount > 0
+        ? (<span className="relative inline-flex w-5 h-5 items-center justify-center">
+            <FileCheck className="w-5 h-5" />
+            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] rounded-full w-3.5 h-3.5 flex items-center justify-center font-bold">
+              {pendingTallyCount > 9 ? '9' : pendingTallyCount}
+            </span>
+          </span>)
+        : <n.icon className="w-5 h-5" />,
+    })),
     { to: '/sales/notifications', label: 'Notifications', icon: (<span className="relative inline-flex w-5 h-5 items-center justify-center"><Bell className="w-5 h-5" />{unreadCount > 0 && (<span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] rounded-full w-3.5 h-3.5 flex items-center justify-center font-bold">{unreadCount > 9 ? '9' : unreadCount}</span>)}</span>) },
   ];
   return (

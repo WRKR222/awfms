@@ -216,10 +216,21 @@ export class TallyVerificationService {
       data.pmSignedById = user.id; data.pmSignedAt = now;
       data.pmRowData = tally.session.rowData;
     } else if (party === 'SALES') {
+      // FIX: Sales must wait for PM to sign first
+      if (!tally.pmSignedById) {
+        throw new BadRequestException('Production Manager must sign off before Sales can sign');
+      }
       if (tally.salesSignedById) throw new BadRequestException('Already signed by Sales');
       data.salesSignedById = user.id; data.salesSignedAt = now;
       data.salesRowData = tally.session.rowData;
     } else {
+      // FIX: Store must wait for both PM and Sales to sign first
+      if (!tally.pmSignedById) {
+        throw new BadRequestException('Production Manager must sign off before Store can sign');
+      }
+      if (!tally.salesSignedById) {
+        throw new BadRequestException('Sales must sign off before Store can sign');
+      }
       if (tally.storeSignedById) throw new BadRequestException('Already signed by Store');
       data.storeSignedById = user.id; data.storeSignedAt = now;
       data.storeRowData = tally.session.rowData;

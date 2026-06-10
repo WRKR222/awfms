@@ -113,12 +113,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
   const isStore = role === 'STORE';
 
   const myField =
-    isPM    ? 'pmSignedById' :
-    isSales ? 'salesSignedById' :
-    isStore ? 'storeSignedById' : null;
-
-  const iAlreadySigned = myField ? !!(tally as any)[myField] : false;
-  const canSign = !!myField && !iAlreadySigned && !tally.isLocked;
+    isPM    ? 'pmSignedById' :\n    isSales ? 'salesSignedById' :\n    isStore ? 'storeSignedById' : null;\n\n  const iAlreadySigned = myField ? !!(tally as any)[myField] : false;\n\n  // FIX: Enforce sign order — SALES waits for PM, STORE waits for PM+SALES\n  const prerequisitesMet =\n    isPM    ? true :\n    isSales ? !!tally.pmSignedById :\n    isStore ? (!!tally.pmSignedById && !!tally.salesSignedById) :\n    false;\n\n  const prerequisiteLabel =\n    isSales && !tally.pmSignedById ? 'Waiting for Production Manager to sign first' :\n    isStore && !tally.pmSignedById ? 'Waiting for Production Manager to sign first' :\n    isStore && !tally.salesSignedById ? 'Waiting for Sales to sign first' :\n    null;\n\n  const canSign = !!myField && !iAlreadySigned && !tally.isLocked && prerequisitesMet;
 
   const [isEditing, setIsEditing] = useState(false);
   const session = tally.session;
@@ -459,6 +454,15 @@ function TallyCard({ tally }: { tally: TallySession }) {
       {iAlreadySigned && !tally.isLocked && (
         <div className="px-4 pb-3">
           <p className="text-xs text-green-600 dark:text-green-400 font-medium">✓ You have signed off — waiting for others</p>
+        </div>
+      )}
+
+      {/* FIX: Show prerequisite message when sign order not met yet */}
+      {!iAlreadySigned && !canSign && !tally.isLocked && prerequisiteLabel && (
+        <div className="px-4 pb-3">
+          <p className="text-xs text-amber-500 dark:text-amber-400 flex items-center gap-1">
+            <Clock className="w-3 h-3" /> {prerequisiteLabel}
+          </p>
         </div>
       )}
     </div>

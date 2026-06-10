@@ -36,6 +36,15 @@ export function SalesEggStockPage() {
     refetchInterval: 5 * 60_000,
   });
 
+  // FIX: Also fetch DailyEggAggregate — this is written once BOTH AM+PM tallies
+  // are fully signed off and contains the true AM+PM combined starter egg total.
+  const { data: aggregate } = useQuery({
+    queryKey: ['daily-aggregate'],
+    queryFn: () =>
+      api.get(`/production/daily-aggregate?date=${dayjs().format('YYYY-MM-DD')}`).then(r => r.data).catch(() => null),
+    staleTime: 2 * 60_000,
+  });
+
   // Latest tally (cosigned by all 3 parties) — original stock released from stores
   const { data: tallyHistory = [] } = useQuery({
     queryKey: ['tally-history'],
@@ -63,11 +72,13 @@ export function SalesEggStockPage() {
   const latestTally = (tallyHistory as any[]).find((t: any) => t.isLocked);
 
   const origStandard   = latestTally?.finalGoodEggs ?? 0;
-  const origStarter    = stock?.starterEggs ?? 0;
-  const origConsumable = stock?.consumableEggs ?? 0;
+  // FIX: Prefer DailyEggAggregate for starter eggs (AM+PM combined total).
+  // Falls back to /sales/stock for legacy compatibility.
+  const origStarter    = aggregate?.totalStarterEggs ?? stock?.starterEggs ?? 0;
+  const origConsumable = aggregate?.totalBrokenSellable ?? stock?.consumableEggs ?? 0;
 
   const currentStandard   = stock?.standardEggs ?? 0;
-  const currentStarter    = stock?.starterEggs ?? 0;
+  const currentStarter    = aggregate?.totalStarterEggs ?? stock?.starterEggs ?? 0;
   const currentConsumable = stock?.consumableEggs ?? 0;
   const currentTotal = currentStandard + currentStarter + currentConsumable;
 
