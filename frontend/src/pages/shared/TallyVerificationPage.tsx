@@ -1,18 +1,15 @@
 // src/pages/shared/TallyVerificationPage.tsx
 // Shared by Manager (/manager/tally), Sales (/sales/tally), Store (/store/tally)
 //
-// CORRECTIONS APPLIED:
-//   FIX-5: Renamed "Tally Verification" → "Next Morning Three-Party Sign-Off"
-//          on all pages; description updated accordingly.
-//   FIX-6: "PM Collection" label under batch card changed to "Egg Collection".
-//   FIX-7: Tally page now displays data in the same layout as the PM
-//          Verification Queue (per-row breakdown + totals). PM (Manager) may
-//          edit the row data; Sales and Store see it read-only. Edits are
-//          pushed to the session before any party can sign, so everyone sees
-//          the updated values before they confirm.
-//   FIX-4: Sign-off prompt only visible when both AM and PM sessions are
-//          approved (enforced by backend; UI reflects this by checking
-//          session.status === 'APPROVED').
+// IMPLEMENTATION PLAN CHANGES:
+//   • Tally cards grouped by sessionDate+batchId — AM and PM cards shown together.
+//   • Each card retains its own independent sign-off buttons.
+//   • Tallies only arrive from backend once both AM+PM sessions are APPROVED
+//     (enforced by tally creation logic in production.service), so no frontend
+//     filtering required.
+//   • FIX-5: Title and description retained from previous fix.
+//   • FIX-6: "PM Collection" → "Egg Collection" label retained.
+//   • FIX-7: PM editable row table retained.
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -68,6 +65,7 @@ interface TallySession {
     totalWeightKg?: number;
     rowData?: RowData[];
     batch: { batchCode: string };
+    batchId: string;
     status: string;
   };
 }
@@ -122,7 +120,6 @@ function TallyCard({ tally }: { tally: TallySession }) {
   const iAlreadySigned = myField ? !!(tally as any)[myField] : false;
   const canSign = !!myField && !iAlreadySigned && !tally.isLocked;
 
-  // FIX-7: Editing state — PM only
   const [isEditing, setIsEditing] = useState(false);
   const session = tally.session;
   const originalRows: RowData[] = Array.isArray(session?.rowData) ? session!.rowData : [];
@@ -171,9 +168,10 @@ function TallyCard({ tally }: { tally: TallySession }) {
     setEditRows(prev => prev.map((r, i) => i === idx ? { ...r, [field]: field === 'attendantName' ? value : Number(value) } : r));
   };
 
-  const saveEdit = () => {
-    editMutation.mutate(editRows);
-  };
+  const shiftLabel = session?.shift ?? '—';
+  const shiftColor = shiftLabel === 'AM'
+    ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+    : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300';
 
   return (
     <div className={`bg-white dark:bg-dark-card rounded-2xl border shadow-sm overflow-hidden ${
@@ -184,14 +182,18 @@ function TallyCard({ tally }: { tally: TallySession }) {
         tally.isLocked ? 'bg-green-50 dark:bg-green-900/20' : 'bg-gray-50 dark:bg-gray-800/40'
       }`}>
         <div>
-          <p className="text-sm font-bold text-gray-800 dark:text-gray-200">
-            {session?.batch?.batchCode ?? '—'}
-            <span className="ml-2 text-xs font-normal text-gray-500">
-              {dayjs(tally.verificationDate).format('D MMM YYYY')}
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-bold text-gray-800 dark:text-gray-200">
+              {session?.batch?.batchCode ?? '—'}
+              <span className="ml-2 text-xs font-normal text-gray-500">
+                {dayjs(tally.verificationDate).format('D MMM YYYY')}
+              </span>
+            </p>
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${shiftColor}`}>
+              {shiftLabel}
             </span>
-          </p>
-          {/* FIX-6: "PM Collection" → "Egg Collection" */}
-          <p className="text-xs text-gray-500">Egg Collection · {session?.shift} shift</p>
+          </div>
+          <p className="text-xs text-gray-500">Egg Collection · {shiftLabel} shift</p>
         </div>
         {tally.isLocked
           ? <div className="flex items-center gap-1 text-green-600 dark:text-green-400 text-xs font-semibold"><Lock className="w-3.5 h-3.5" /> Locked</div>
@@ -199,7 +201,6 @@ function TallyCard({ tally }: { tally: TallySession }) {
         }
       </div>
 
-      {/* FIX-7: Full data layout matching PM verification queue */}
       {/* Session totals grid */}
       <div className="px-4 py-4 border-b border-gray-100 dark:border-dark-border">
         <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">Egg Collection Totals</p>
@@ -216,12 +217,11 @@ function TallyCard({ tally }: { tally: TallySession }) {
         </div>
       </div>
 
-      {/* Per-row breakdown — editable for PM, read-only for Sales/Store */}
+      {/* Per-row breakdown */}
       {originalRows.length > 0 && (
         <div className="px-4 py-3 border-b border-gray-100 dark:border-dark-border">
           <div className="flex items-center justify-between mb-2">
             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Per-Row Breakdown (Block 1 Units)</p>
-            {/* FIX-7: Only PM can edit */}
             {isPM && !tally.isLocked && !isEditing && (
               <button onClick={startEdit} className="flex items-center gap-1 text-xs text-brand-green hover:text-green-700 font-semibold">
                 <Edit2 className="w-3 h-3" /> Edit Values
@@ -229,7 +229,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
             )}
             {isPM && isEditing && (
               <div className="flex gap-2">
-                <button onClick={saveEdit} disabled={editMutation.isPending}
+                <button onClick={() => editMutation.mutate(editRows)} disabled={editMutation.isPending}
                   className="flex items-center gap-1 text-xs bg-brand-green text-white px-2 py-1 rounded-lg font-semibold disabled:opacity-50">
                   <Save className="w-3 h-3" /> {editMutation.isPending ? 'Saving…' : 'Save & Update All'}
                 </button>
@@ -241,7 +241,6 @@ function TallyCard({ tally }: { tally: TallySession }) {
             )}
           </div>
           {isPM && isEditing ? (
-            // Editable table for PM
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
@@ -291,7 +290,6 @@ function TallyCard({ tally }: { tally: TallySession }) {
               </p>
             </div>
           ) : (
-            // Read-only table for Sales/Store or PM not editing
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
@@ -373,7 +371,6 @@ function TallyCard({ tally }: { tally: TallySession }) {
       {/* My sign-off action */}
       {canSign && (
         <div className="px-4 pb-4 space-y-3">
-          {/* Correction fields — only for PM since Sales/Store don't edit */}
           {isPM && (
             <button
               onClick={() => setShowCorrection(v => !v)}
@@ -427,28 +424,66 @@ function TallyCard({ tally }: { tally: TallySession }) {
   );
 }
 
+// Group tallies by date+batchId and render AM before PM within each group
+function groupTallies(tallies: TallySession[]): TallySession[][] {
+  const map = new Map<string, TallySession[]>();
+  for (const t of tallies) {
+    const key = `${t.session?.sessionDate ?? t.verificationDate}_${t.session?.batchId ?? ''}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(t);
+  }
+  // Within each group sort AM before PM
+  return Array.from(map.values()).map(group =>
+    [...group].sort((a, b) => {
+      const shiftOrder = (s: TallySession) => s.session?.shift === 'AM' ? 0 : 1;
+      return shiftOrder(a) - shiftOrder(b);
+    })
+  );
+}
+
 export default function TallyVerificationPage() {
   const { data: tallies = [], isLoading } = usePendingTallies();
+  const groups = groupTallies(tallies as TallySession[]);
 
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-5xl mx-auto">
       <div>
-        {/* FIX-5: Renamed title and description */}
         <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Next Morning Three-Party Sign-Off</h1>
-        <p className="text-xs text-gray-400 mt-0.5">Next morning three party sign off on previous day AM and PM egg collection sessions</p>
+        <p className="text-xs text-gray-400 mt-0.5">
+          Next morning three party sign off on previous day AM and PM egg collection sessions
+        </p>
       </div>
 
       {isLoading ? (
         <p className="text-sm text-gray-400 text-center py-10">Loading tallies…</p>
-      ) : tallies.length === 0 ? (
+      ) : groups.length === 0 ? (
         <div className="text-center py-12 text-gray-400">
           <CheckCircle className="w-10 h-10 mx-auto mb-3 opacity-30" />
           <p className="text-sm">No pending sign-offs</p>
           <p className="text-xs mt-1">All recent AM and PM egg collection sessions have been verified</p>
         </div>
       ) : (
-        <div className="space-y-5">
-          {tallies.map(t => <TallyCard key={t.id} tally={t} />)}
+        <div className="space-y-6">
+          {groups.map((group, gi) => {
+            const firstSession = group[0].session;
+            const dateLabel = firstSession?.sessionDate
+              ? dayjs(firstSession.sessionDate).format('dddd, D MMMM YYYY')
+              : dayjs(group[0].verificationDate).subtract(1, 'day').format('dddd, D MMMM YYYY');
+            const batchCode = firstSession?.batch?.batchCode ?? '—';
+            return (
+              <div key={gi}>
+                <div className="flex items-center gap-2 mb-3">
+                  <p className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-widest">
+                    {dateLabel} — {batchCode}
+                  </p>
+                  <div className="flex-1 border-t border-gray-100 dark:border-dark-border" />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {group.map(t => <TallyCard key={t.id} tally={t} />)}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

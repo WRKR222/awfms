@@ -7,9 +7,9 @@ import { PrismaModule } from '../../common/prisma/prisma.module';
 import { NotificationsModule } from '../../common/notifications/notifications.module';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule],
+  imports: [PrismaModule, NotificationsModule, EventEmitterModule.forRoot()],
   controllers: [ProductionController, CageMapController],
-  providers: [ProductionService, CageMapService],
+  providers: [ProductionService, CageMapService, TallyVerificationService],
   exports: [ProductionService, CageMapService],
 })
 export class ProductionModule {}

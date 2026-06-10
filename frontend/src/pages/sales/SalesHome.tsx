@@ -1,6 +1,11 @@
 // src/pages/sales/SalesHome.tsx
-// Grade-free: todaySold aggregation uses item.itemType only.
-// Revenue progress section fixed: uses /sales/summary for expectedRevenue + todayRevenue.
+// IMPLEMENTATION PLAN CHANGES:
+//   • Stock panel now reads from /production/daily-aggregate (DailyEggAggregate)
+//     instead of /sales/stock for the primary egg count cards.
+//   • Four stock cards: Standard Eggs, Starter Eggs, Broken Sellable, Broken Unsellable.
+//   • Broken Unsellable card always renders at 0 with tooltip until breakage adjustments are recorded.
+//   • Expected revenue block shown below the stock cards.
+//   • Original /sales/stock query retained for legacy data and the existing broken egg warning.
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../stores/auth.store';
 import { useQuery } from '@tanstack/react-query';
@@ -8,6 +13,7 @@ import api from '../../lib/api/client';
 import {
   ShoppingCart, BookOpen, Users, FileCheck, ChevronRight,
   EggOff, Truck, AlertTriangle, ArrowRight, RefreshCw, Package,
+  Info,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 
@@ -30,11 +36,21 @@ function eggsLabel(eggs: number) {
   return `${t} tray${t !== 1 ? 's' : ''} + ${r}`;
 }
 
-function StatChip({ label, value, sub, color = 'text-gray-800 dark:text-gray-100', accent = false }:
-  { label: string; value: string; sub?: string; color?: string; accent?: boolean }) {
+function StatChip({ label, value, sub, color = 'text-gray-800 dark:text-gray-100', accent = false, tooltip }:
+  { label: string; value: string; sub?: string; color?: string; accent?: boolean; tooltip?: string }) {
   return (
-    <div className={`rounded-2xl p-3 md:p-4 border ${accent ? 'bg-brand-green/5 dark:bg-brand-green/10 border-brand-green/20' : 'bg-white dark:bg-dark-card border-gray-100 dark:border-dark-border'} text-left`}>
-      <p className="text-xs text-gray-500 dark:text-gray-400 mb-0.5">{label}</p>
+    <div className={`rounded-2xl p-3 md:p-4 border ${accent ? 'bg-brand-green/5 dark:bg-brand-green/10 border-brand-green/20' : 'bg-white dark:bg-dark-card border-gray-100 dark:border-dark-border'} text-left relative group`}>
+      <div className="flex items-center gap-1 mb-0.5">
+        <p className="text-xs text-gray-500 dark:text-gray-400">{label}</p>
+        {tooltip && (
+          <div className="relative">
+            <Info className="w-3 h-3 text-gray-400 cursor-help" />
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-48 bg-gray-800 text-white text-[10px] rounded-lg px-2 py-1.5 hidden group-hover:block z-10 pointer-events-none">
+              {tooltip}
+            </div>
+          </div>
+        )}
+      </div>
       <p className={`text-lg md:text-xl font-bold ${color}`}>{value}</p>
       {sub && <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{sub}</p>}
     </div>
@@ -48,12 +64,22 @@ export default function SalesHome() {
   const greeting   = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const firstName  = user?.fullName?.split(' ')[0] ?? '';
 
-  const { data: stock, isLoading: stockLoading } = useQuery({
+  // New: aggregate from DailyEggAggregate (written on tally lock)
+  const { data: aggregate, isLoading: aggregateLoading } = useQuery({
+    queryKey: ['daily-aggregate'],
+    queryFn: () =>
+      api.get(`/production/daily-aggregate?date=${dayjs().format('YYYY-MM-DD')}`).then(r => r.data).catch(() => null),
+    staleTime: 2 * 60_000,
+    refetchInterval: 60_000,
+  });
+
+  // Keep for legacy warnings and tally date display
+  const { data: stock } = useQuery({
     queryKey: ['sales-stock'],
     queryFn: () => api.get('/sales/stock').then(r => r.data).catch(() => null),
-    staleTime: 2 * 60_000, refetchInterval: 5 * 60_000,
+    staleTime: 2 * 60_000,
   });
-  // Summary returns todayRevenue, expectedRevenue, revenueProgressPct — no grade field
+
   const { data: summary } = useQuery({
     queryKey: ['sales-summary'],
     queryFn: () => api.get('/sales/summary').then(r => r.data).catch(() => null),
@@ -74,7 +100,6 @@ export default function SalesHome() {
     queryFn: () => api.get('/sales/orders?status=DELIVERING&days=90').then(r => (r.data as any[]).length).catch(() => 0),
   });
 
-  // Aggregate today's sold eggs by itemType — no grade field used
   const todaySold = (todayOrders as any[])
     .filter((o: any) => o.status !== 'CANCELLED')
     .reduce((acc: any, order: any) => {
@@ -92,7 +117,6 @@ export default function SalesHome() {
   const totalSoldEggs  = todaySold.standard + todaySold.starter + todaySold.consumable;
   const latestAdj      = (adjustments as any[])[0];
 
-  // Payment method breakdown — aggregate across today's non-cancelled orders
   const paymentBreakdown = (todayOrders as any[])
     .filter((o: any) => o.status !== 'CANCELLED')
     .reduce((acc: Record<string, number>, order: any) => {
@@ -102,7 +126,16 @@ export default function SalesHome() {
       acc['TOTAL'] = (acc['TOTAL'] ?? 0) + amount;
       return acc;
     }, {} as Record<string, number>);
-  const totalStockEggs = (stock?.standardEggs ?? 0) + (stock?.starterEggs ?? 0) + (stock?.consumableEggs ?? 0);
+
+  // Stock values — prefer DailyEggAggregate if available, fall back to /sales/stock
+  const stdEggs         = aggregate?.totalStdEggs        ?? stock?.standardEggs  ?? 0;
+  const starterEggs     = aggregate?.totalStarterEggs    ?? stock?.starterEggs   ?? 0;
+  const brokenSellable  = aggregate?.totalBrokenSellable ?? stock?.consumableEggs ?? 0;
+  const brokenUnsellable = aggregate?.totalBrokenUnsellable ?? 0;
+  const expectedRevenue  = aggregate ? Number(aggregate.expectedRevenueKes ?? 0) : null;
+  const aggregateDate    = aggregate?.aggregateDate ?? stock?.tallyDate ?? null;
+
+  const pricing = aggregate?.pricing ?? null;
 
   const tasks = [
     { label: 'Orders',            sub: 'Create and manage egg sales orders',       icon: ShoppingCart, color: 'bg-brand-green', route: '/sales/orders',   badge: null },
@@ -117,7 +150,7 @@ export default function SalesHome() {
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-5xl mx-auto">
 
-      {/* Revenue Progress — from /sales/summary (expectedRevenue + todayRevenue) */}
+      {/* Revenue Progress */}
       {summary && summary.expectedRevenue != null && summary.expectedRevenue > 0 && (() => {
         const expected  = Number(summary.expectedRevenue);
         const sold      = Number(summary.todayRevenue ?? 0);
@@ -150,28 +183,70 @@ export default function SalesHome() {
         <p className="text-sm opacity-75 mt-0.5">Sales Dashboard</p>
       </div>
 
-      {/* Egg Stock Overview */}
+      {/* Egg Stock Overview — from DailyEggAggregate */}
       <div>
         <div className="flex items-center justify-between mb-3">
           <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">Current Egg Stock</p>
-          {stock?.tallyDate && (
+          {aggregateDate && (
             <p className="text-xs text-gray-400 flex items-center gap-1">
-              <RefreshCw className="w-3 h-3" /> Last verified {dayjs(stock.tallyDate).format('D MMM')}
+              <RefreshCw className="w-3 h-3" /> Last verified {dayjs(aggregateDate).format('D MMM')}
             </p>
           )}
         </div>
-        {stockLoading ? (
+        {aggregateLoading ? (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[...Array(4)].map((_,i) => <div key={i} className="rounded-2xl p-4 bg-gray-100 dark:bg-gray-800 animate-pulse h-20"/>)}
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatChip label="Standard Eggs"       value={(stock?.standardEggs  ?? 0).toLocaleString()} sub={eggsLabel(stock?.standardEggs  ?? 0)} color="text-brand-green"                    accent />
-            <StatChip label="Starter Eggs"        value={(stock?.starterEggs   ?? 0).toLocaleString()} sub={eggsLabel(stock?.starterEggs   ?? 0)} color="text-blue-600 dark:text-blue-400" />
-            <StatChip label="Consumable Broken"   value={(stock?.consumableEggs ?? 0).toLocaleString()} sub={eggsLabel(stock?.consumableEggs ?? 0)} color="text-amber-600 dark:text-amber-400" />
-            <StatChip label="Total Available"     value={totalStockEggs.toLocaleString()}              sub={eggsLabel(totalStockEggs)}             color="text-gray-800 dark:text-gray-100" />
+            <StatChip
+              label="Standard Eggs"
+              value={stdEggs.toLocaleString()}
+              sub={eggsLabel(stdEggs)}
+              color="text-brand-green"
+              accent
+            />
+            {(starterEggs > 0 || aggregate) && (
+              <StatChip
+                label="Starter Eggs"
+                value={starterEggs.toLocaleString()}
+                sub={eggsLabel(starterEggs)}
+                color="text-blue-600 dark:text-blue-400"
+              />
+            )}
+            <StatChip
+              label="Broken Sellable"
+              value={brokenSellable.toLocaleString()}
+              sub={eggsLabel(brokenSellable)}
+              color="text-amber-600 dark:text-amber-400"
+            />
+            <StatChip
+              label="Broken Unsellable"
+              value={brokenUnsellable.toLocaleString()}
+              sub={brokenUnsellable > 0 ? eggsLabel(brokenUnsellable) : 'None recorded'}
+              color={brokenUnsellable > 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-400'}
+              tooltip="This will increase if egg breakage adjustments are recorded on the Egg Breakage page."
+            />
           </div>
         )}
+
+        {/* Expected Revenue block */}
+        {expectedRevenue !== null && expectedRevenue > 0 && (
+          <div className="bg-blue-50 dark:bg-blue-900/20 rounded-xl p-3 mt-3">
+            <p className="text-xs text-gray-500 dark:text-gray-400">Expected Revenue (today)</p>
+            <p className="text-xl font-bold text-blue-700 dark:text-blue-400">
+              KES {expectedRevenue.toLocaleString()}
+            </p>
+            {pricing && (
+              <p className="text-[10px] text-gray-400 mt-0.5">
+                Std × KES {Number(pricing.pricePerEgg).toFixed(2)}
+                {pricing.pricePerEggStarter != null && ` + Starter × KES ${Number(pricing.pricePerEggStarter).toFixed(2)}`}
+                {pricing.pricePerEggBroken  != null && ` + Broken Sellable × KES ${Number(pricing.pricePerEggBroken).toFixed(2)}`}
+              </p>
+            )}
+          </div>
+        )}
+
         {(stock?.nonConsumableEggs ?? 0) > 0 && (
           <div className="mt-2 flex items-center gap-2 text-xs text-red-500 dark:text-red-400">
             <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
@@ -186,7 +261,7 @@ export default function SalesHome() {
         )}
       </div>
 
-      {/* Today's Sales — uses itemType not grade */}
+      {/* Today's Sales */}
       <div>
         <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Today's Sales</p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

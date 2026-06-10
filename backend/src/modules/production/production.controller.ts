@@ -68,4 +68,18 @@ export class ProductionController {
   trend(@Param('batchId') batchId: string, @Query('days') days?: string) {
     return this.svc.getHenDayTrend(batchId, days ? Number(days) : 14);
   }
+
+  // ── Daily Aggregate (post-tally lock) ────────────────────────────────
+  /**
+   * GET /production/daily-aggregate?date=YYYY-MM-DD
+   *
+   * Returns the DailyEggAggregate for the given date (or the most recent
+   * locked day if no record exists for the exact date). Used by the Sales
+   * dashboard stock panel and the Director dashboard revenue section.
+   */
+  @Get('daily-aggregate')
+  @RequirePermission(Permission.PRODUCTION_VIEW)
+  async getDailyAggregate(@Query('date') date?: string) {
+    return this.svc.getDailyAggregate(date);
+  }
 }

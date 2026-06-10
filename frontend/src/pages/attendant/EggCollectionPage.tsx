@@ -1,26 +1,22 @@
 // src/pages/attendant/EggCollectionPage.tsx
 //
 // Lead Attendant — single submission page for the shift.
-// Per Anza Whole Foods Management System Summary + changes.pdf:
-//   • Block 1 has 3 units (A, B, C), each with two rows.
-//   • Block 2 is UNDER CONSTRUCTION and not selectable.
-//   • Per-row data: total birds, total eggs, starter eggs, broken unsellable
-//     (formerly empty-broken — contents intact but contaminated), broken sellable
-//     (formerly full-broken — sellable as broken eggs), soft shell, deformed,
-//     weight kg, attendant name.
-//   • Session-level data captured here as part of the SAME submission:
-//       - Session feed consumption (AM/PM) → kgs dispensed + feed type given
-//       - Environmental data (water consumed L, house temp °C)
-//       - Vaccines/supplements (name + dosage) — fed into PM Health page
-//   • Submission fails unless egg counts AND feed AND environmental records
-//     are all present (vaccines/supplements optional).
-import { useState } from 'react';
+// IMPLEMENTATION PLAN CHANGES:
+//   • Removed local `submitted` / `wasQueued` as the gating mechanism.
+//   • Page mode is now derived entirely from `todaySessions` server state.
+//   • Shift radio selector removed — shift is hardcoded based on pageMode.
+//   • `useShiftLocks()` hook removed.
+//   • Five display modes: AM_FORM, AM_PENDING, AM_RETURNED, PM_FORM, PM_PENDING,
+//     PM_RETURNED, DAY_LOCKED.
+//   • RETURNED sessions pre-populate form from returnedSession.rowData.
+//   • `localSubmitPending` flag prevents flash back to form during API round-trip.
+import { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CheckCircle, Egg, AlertCircle, WifiOff, ChevronDown,
-  Droplet, Thermometer, Wheat, Syringe, Plus, X,
+  Droplet, Thermometer, Wheat, Syringe, Plus, X, Lock,
 } from 'lucide-react';
 import { api } from '../../lib/api/client';
 import { useOfflineMutation } from '../../hooks/useOfflineSync';
@@ -32,8 +28,6 @@ const numInput  = 'w-full text-center border border-gray-200 dark:border-dark-bo
 const cardCls   = 'bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-dark-border';
 const sectionLbl = 'text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3';
 
-
-// Static feed type options
 const FEED_TYPE_OPTIONS = [
   { value: 'CHICK_MASH',  label: "Chick & Duckling Mash" },
   { value: 'GROWER_MASH', label: "Grower's Mash" },
@@ -70,8 +64,8 @@ interface RowEntry {
   totalBirds: number;
   totalEggs: number;
   starterEggs: number;
-  brokenUnsellable: number; // contents inside but contaminated
-  brokenSellable: number;   // sellable as broken eggs
+  brokenUnsellable: number;
+  brokenSellable: number;
   softShell: number;
   deformed: number;
   weightKg: number;
@@ -102,13 +96,100 @@ function buildDefaultBlock(): { rows: RowEntry[] } {
   return { rows };
 }
 
-const defaultShift: 'AM' | 'PM' = dayjs().hour() < 14 ? 'AM' : 'PM';
+// ── Page Mode ──────────────────────────────────────────────────────────────────
 
-// AM window closes at 13:00; PM window closes at 19:00
-function useShiftLocks() {
-  const h = dayjs().hour();
-  return { amLocked: h >= 12, pmLocked: false };
+type PageMode =
+  | 'AM_FORM'
+  | 'AM_PENDING'
+  | 'AM_RETURNED'
+  | 'PM_FORM'
+  | 'PM_PENDING'
+  | 'PM_RETURNED'
+  | 'DAY_LOCKED';
+
+function resolvePageMode(
+  amSession: any,
+  pmSession: any,
+  localSubmitPending: boolean,
+): PageMode {
+  if (!amSession || amSession.status === 'RETURNED') {
+    if (localSubmitPending) return 'AM_PENDING';
+    return amSession?.status === 'RETURNED' ? 'AM_RETURNED' : 'AM_FORM';
+  }
+  if (amSession.status === 'PENDING') return 'AM_PENDING';
+  if (amSession.status === 'APPROVED') {
+    if (!pmSession || pmSession.status === 'RETURNED') {
+      if (localSubmitPending) return 'PM_PENDING';
+      return pmSession?.status === 'RETURNED' ? 'PM_RETURNED' : 'PM_FORM';
+    }
+    if (pmSession.status === 'PENDING') return 'PM_PENDING';
+    if (pmSession.status === 'APPROVED') return 'DAY_LOCKED';
+  }
+  return 'AM_FORM';
 }
+
+// ── Sub-components ─────────────────────────────────────────────────────────────
+
+function PendingBanner({ shift, session, message }: { shift: 'AM' | 'PM'; session: any; message: string }) {
+  return (
+    <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
+      <CheckCircle className="w-16 h-16 text-brand-green mb-4" />
+      <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">{shift} Session Submitted</h2>
+      <p className="text-gray-500 dark:text-gray-400 mt-2 max-w-sm">{message}</p>
+      <div className="mt-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl px-4 py-2">
+        <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+          Entry is now locked — awaiting Production Manager verification.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ReturnAlert({ reason }: { reason: string }) {
+  return (
+    <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-2xl p-4 flex items-start gap-3">
+      <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+      <div>
+        <p className="text-sm font-bold text-red-700 dark:text-red-400">Recount Required — Session Returned</p>
+        <p className="text-sm text-red-600 dark:text-red-300 mt-0.5">Reason: {reason}</p>
+        <p className="text-xs text-red-500 dark:text-red-400 mt-1">
+          Please review the values below, make corrections, and resubmit.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function DayLockedPanel({ amSession, pmSession }: { amSession: any; pmSession: any }) {
+  const navigate = useNavigate();
+  return (
+    <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
+      <Lock className="w-16 h-16 text-gray-400 mb-4" />
+      <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Day Locked</h2>
+      <p className="text-gray-500 dark:text-gray-400 mt-2 max-w-sm">
+        Both AM and PM sessions have been approved. Today's egg collection is complete and locked.
+      </p>
+      <div className="mt-4 grid grid-cols-2 gap-3 w-full max-w-xs">
+        <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl p-3 text-center">
+          <p className="text-xs font-bold text-green-600 dark:text-green-400">AM</p>
+          <p className="text-sm font-semibold text-green-700 dark:text-green-300 mt-1">✓ Approved</p>
+        </div>
+        <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl p-3 text-center">
+          <p className="text-xs font-bold text-green-600 dark:text-green-400">PM</p>
+          <p className="text-sm font-semibold text-green-700 dark:text-green-300 mt-1">✓ Approved</p>
+        </div>
+      </div>
+      <button
+        onClick={() => navigate('/attendant')}
+        className="mt-6 bg-brand-green text-white rounded-xl px-8 py-3 font-semibold"
+      >
+        Back to Home
+      </button>
+    </div>
+  );
+}
+
+// ── Main Component ─────────────────────────────────────────────────────────────
 
 export function EggCollectionPage() {
   const navigate = useNavigate();
@@ -118,16 +199,17 @@ export function EggCollectionPage() {
     queryFn: () => api.get('/flock/batches?isActive=true').then(r => r.data),
   });
 
-  const { data: todaySessions = [] } = useQuery({
+  const { data: todaySessions = [], refetch: refetchSessions } = useQuery({
     queryKey: ['egg-sessions-today'],
-    queryFn: () => api.get(`/production/sessions?sessionDate=${dayjs().format('YYYY-MM-DD')}`).then(r => r.data).catch(() => []),
+    queryFn: () =>
+      api.get(`/production/sessions?sessionDate=${dayjs().format('YYYY-MM-DD')}`).then(r => r.data).catch(() => []),
     refetchInterval: 30_000,
   });
-  // Only PRODUCTION-stage batches lay eggs — brooder/grower birds do not
+
   const batches = (allBatches as any[]).filter((b: any) => b.stage === 'PRODUCTION');
-  const { register, handleSubmit, watch, formState: { errors } } = useForm({
+
+  const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm({
     defaultValues: {
-      shift: defaultShift,
       openingPop: 0,
       mortalities: 0,
       remarks: '',
@@ -138,16 +220,54 @@ export function EggCollectionPage() {
       houseTempC: '' as string | number,
     },
   });
-  const { amLocked, pmLocked } = useShiftLocks();
+
   const { isOnline } = useOfflineStore();
-  const [submitted, setSubmitted] = useState(false);
-  const [wasQueued, setWasQueued] = useState(false);
+
+  // Minimal in-flight flag — set true on mutate, cleared once server confirms
+  const [localSubmitPending, setLocalSubmitPending] = useState(false);
+
   const [selectedBlock, setSelectedBlock] = useState<BlockKey | null>('BLOCK1');
   const [blockData, setBlockData] = useState<Record<'BLOCK1', { rows: RowEntry[] }>>({
     BLOCK1: buildDefaultBlock(),
   });
   const [vaccines, setVaccines] = useState<VaccineEntry[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Derive session state from server
+  const amSession = (todaySessions as any[]).find((s: any) => s.shift === 'AM');
+  const pmSession = (todaySessions as any[]).find((s: any) => s.shift === 'PM');
+
+  const pageMode = resolvePageMode(amSession, pmSession, localSubmitPending);
+
+  // Determine shift from pageMode — no user control
+  const activeShift: 'AM' | 'PM' =
+    pageMode === 'PM_FORM' || pageMode === 'PM_PENDING' || pageMode === 'PM_RETURNED'
+      ? 'PM'
+      : 'AM';
+
+  // Clear localSubmitPending once server catches up
+  useEffect(() => {
+    if (localSubmitPending) {
+      const mode = resolvePageMode(amSession, pmSession, false);
+      if (mode === 'AM_PENDING' || mode === 'PM_PENDING') {
+        setLocalSubmitPending(false);
+      }
+    }
+  }, [amSession, pmSession, localSubmitPending]);
+
+  // Pre-populate form for RETURNED sessions
+  useEffect(() => {
+    const returned = pageMode === 'AM_RETURNED' ? amSession : (pageMode === 'PM_RETURNED' ? pmSession : null);
+    if (!returned?.rowData) return;
+    setBlockData({ BLOCK1: { rows: returned.rowData } });
+    if (returned.openingPop  != null) setValue('openingPop',  returned.openingPop);
+    if (returned.mortalities  != null) setValue('mortalities',  returned.mortalities);
+    if (returned.feedKg       != null) setValue('feedKg',       returned.feedKg);
+    if (returned.feedTypeName)          setValue('feedTypeName', returned.feedTypeName);
+    if (returned.waterLiters  != null) setValue('waterLiters',  returned.waterLiters);
+    if (returned.houseTempC   != null) setValue('houseTempC',   returned.houseTempC);
+    if (returned.remarks)               setValue('remarks',      returned.remarks);
+  }, [pageMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { mutate: offlineMutate } = useOfflineMutation({
     endpoint: '/production/sessions',
@@ -156,21 +276,12 @@ export function EggCollectionPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['production'] });
       qc.invalidateQueries({ queryKey: ['health'] });
-      setSubmitted(true);
-      setWasQueued(false);
+      refetchSessions();
+      setLocalSubmitPending(false);
     },
-    onQueued: () => { setSubmitted(true); setWasQueued(true); },
+    onQueued: () => { setLocalSubmitPending(true); },
   });
 
-  const amSession = (todaySessions as any[]).find((s: any) => s.shift === 'AM');
-  const pmSession = (todaySessions as any[]).find((s: any) => s.shift === 'PM');
-  const pmBlockedByAM = amSession?.status !== 'APPROVED';
-
-  // FIX-3: Show return reason + allow re-editing when session was returned
-  const returnedSession = (todaySessions as any[]).find((s: any) => s.status === 'RETURNED');
-  const returnReason = returnedSession?.returnReason ?? null;
-
-  const shift = watch('shift') as 'AM' | 'PM';
   const batchId = watch('batchId');
   const openingPop = Number(watch('openingPop') ?? 0);
   const mortalities = Number(watch('mortalities') ?? 0);
@@ -197,7 +308,6 @@ export function EggCollectionPage() {
   function onSubmit(data: any) {
     setSubmitError(null);
 
-    // Tied submission: feed + environmental records are required for ANY submission.
     const feedKg = Number(data.feedKg);
     const waterL = Number(data.waterLiters);
     const tempC  = Number(data.houseTempC);
@@ -213,7 +323,6 @@ export function EggCollectionPage() {
       setSubmitError('At least one row must have an egg count before submission.');
       return;
     }
-    // Vaccines: any partially-filled entry must be complete
     const cleanedVaccines = vaccines
       .map(v => ({ kind: v.kind, name: v.name.trim(), dosage: v.dosage.trim() }))
       .filter(v => v.name || v.dosage);
@@ -222,11 +331,13 @@ export function EggCollectionPage() {
       return;
     }
 
+    setLocalSubmitPending(true);
+
     offlineMutate({
       batchId: data.batchId,
       houseId: selectedBatch?.houseId,
       sessionDate: dayjs().format('YYYY-MM-DD'),
-      shift: data.shift,
+      shift: activeShift,  // hardcoded from pageMode — no user-controlled radio
       openingPop: Number(data.openingPop),
       mortalities: Number(data.mortalities),
       block: 'BLOCK1',
@@ -244,64 +355,36 @@ export function EggCollectionPage() {
       })),
       sessionFeed: { feedKg, feedTypeName: data.feedTypeName.trim() },
       environment: { waterLiters: waterL, houseTempC: tempC },
-      vaccinesGiven: cleanedVaccines, // pushed to VaccinationRecord by backend
+      vaccinesGiven: cleanedVaccines,
       remarks: data.remarks || undefined,
     });
   }
 
-  if (submitted) {
+  // ── Render by pageMode ────────────────────────────────────────────────────
+
+  if (pageMode === 'DAY_LOCKED') {
+    return <DayLockedPanel amSession={amSession} pmSession={pmSession} />;
+  }
+
+  if (pageMode === 'AM_PENDING' || pageMode === 'PM_PENDING') {
+    const shift = pageMode === 'AM_PENDING' ? 'AM' : 'PM';
     return (
-      <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-20">
-        {wasQueued ? (
-          <>
-            <WifiOff className="w-16 h-16 text-amber-500 mb-4" />
-            <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Saved Offline</h2>
-          </>
-        ) : (
-          <>
-            <CheckCircle className="w-16 h-16 text-green-500 mb-4" />
-            <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">{shift} Session Submitted</h2>
-            <p className="text-gray-500 dark:text-gray-400 mt-1">
-              <span className="font-bold text-brand-green">{grandTotalEggs} eggs</span>
-              {' · '}{eggsToTrays(grandTotalEggs)} · HDP {hdp}%
-            </p>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Feed: <span className="font-medium">{FEED_TYPE_OPTIONS.find(o => o.value === watch("feedTypeName"))?.label ?? "—"}</span>
-            </p>
-            <p className="text-xs text-gray-400 mt-2">
-              Awaiting Production Manager verification — entry is now locked.
-            </p>
-          </>
-        )}
-        <button
-          onClick={() => navigate('/attendant')}
-          className="mt-6 bg-brand-green text-white rounded-xl px-8 py-3 font-semibold"
-        >
-          Back to Home
-        </button>
-      </div>
+      <PendingBanner
+        shift={shift}
+        session={pageMode === 'AM_PENDING' ? amSession : pmSession}
+        message="Submitted — awaiting Production Manager verification."
+      />
     );
   }
 
+  // AM_FORM, AM_RETURNED, PM_FORM, PM_RETURNED → show the collection form
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto pb-10 space-y-4">
       <div className="flex items-center gap-3 mb-1">
-        
-        <div>
-
-      {/* FIX-3: Return reason banner — attendant is notified to recount */}
-      {returnReason && (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-2xl p-4 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-          <div>
-            <p className="text-sm font-bold text-red-700 dark:text-red-400">Recount Required — Session Returned</p>
-            <p className="text-sm text-red-600 dark:text-red-300 mt-0.5">Reason: {returnReason}</p>
-            <p className="text-xs text-red-500 dark:text-red-400 mt-1">Please review the values below, make corrections, and resubmit.</p>
-          </div>
-        </div>
-      )}
+        <div className="flex-1">
           <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
-            <Egg className="w-5 h-5 text-amber-500" /> Egg Collection
+            <Egg className="w-5 h-5 text-amber-500" />
+            Egg Collection — <span className="text-brand-green">{activeShift} Session</span>
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">
             {dayjs().format('dddd, D MMMM YYYY')}
@@ -309,58 +392,45 @@ export function EggCollectionPage() {
         </div>
       </div>
 
+      {/* Return alert banner */}
+      {(pageMode === 'AM_RETURNED' || pageMode === 'PM_RETURNED') && (
+        <ReturnAlert reason={
+          (pageMode === 'AM_RETURNED' ? amSession : pmSession)?.returnReason ?? ''
+        } />
+      )}
+
+      {/* PM form — AM verified banner */}
+      {(pageMode === 'PM_FORM' || pageMode === 'PM_RETURNED') && pageMode !== 'PM_RETURNED' && (
+        <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-2xl p-4 flex items-center gap-3">
+          <CheckCircle className="w-5 h-5 text-green-600 shrink-0" />
+          <p className="text-sm font-semibold text-green-700 dark:text-green-400">
+            AM session verified ✓ — You may now record the PM session.
+          </p>
+        </div>
+      )}
+
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
 
-        {/* ── Batch + Shift ── */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className={cardCls}>
-            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
-              Batch *
-            </label>
-            <select {...register('batchId', { required: true })} className={inputCls}>
-              <option value="">Select batch...</option>
-              {batches.length === 0 && (
-                <option value="" disabled>No production-stage batches available</option>
-              )}
-              {batches.map((b: any) => (
-                <option key={b.id} value={b.id}>
-                  {b.batchCode} — Production House ({b.house?.name ?? 'N/A'})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className={cardCls}>
-            <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
-              Collection Session *
-            </label>
-            <div className="flex gap-3">
-              {(['AM', 'PM'] as const).map(val => {
-                const isLocked = val === 'AM' ? amLocked : (pmLocked || pmBlockedByAM);
-                return (
-                  <label key={val} className={`flex-1 ${isLocked ? 'cursor-not-allowed' : ''}`}>
-                    <input type="radio" {...register('shift')} value={val} className="sr-only" disabled={isLocked} />
-                    <div className={`text-center py-3 rounded-xl border-2 font-semibold transition-colors ${
-                      isLocked
-                        ? 'border-gray-200 dark:border-dark-border bg-gray-100 dark:bg-dark-bg/60 text-gray-400 cursor-not-allowed opacity-60'
-                        : shift === val
-                          ? 'border-brand-green bg-brand-green/10 text-brand-green cursor-pointer'
-                          : 'border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 cursor-pointer'
-                    }`}>
-                      <div className="font-bold text-lg">{val}</div>
-                      <div className="text-xs opacity-70">
-                        {isLocked ? (val === 'PM' && pmBlockedByAM ? '🔒 Awaiting AM approval' : amSession?.status === 'APPROVED' && pmSession?.status === 'APPROVED' ? '🔒 Day locked' : '🔒 Window closed') : val === 'AM' ? 'Morning' : 'Afternoon'}
-                      </div>
-                    </div>
-                  </label>
-                );
-              })}
-            </div>
-            {shift === 'PM' && (
-              <p className="mt-2 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                <AlertCircle className="w-3 h-3" /> PM submission triggers next-day tally verification.
-              </p>
+        {/* ── Batch (shift is no longer user-controlled) ── */}
+        <div className={cardCls}>
+          <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
+            Batch *
+          </label>
+          <select {...register('batchId', { required: true })} className={inputCls}>
+            <option value="">Select batch...</option>
+            {batches.length === 0 && (
+              <option value="" disabled>No production-stage batches available</option>
             )}
-          </div>
+            {batches.map((b: any) => (
+              <option key={b.id} value={b.id}>
+                {b.batchCode} — Production House ({b.house?.name ?? 'N/A'})
+              </option>
+            ))}
+          </select>
+          <p className="mt-2 text-xs text-gray-400">
+            Recording <span className="font-semibold text-brand-green">{activeShift} session</span>
+            {activeShift === 'PM' && ' · AM session has been approved'}
+          </p>
         </div>
 
         {/* ── Population ── */}
@@ -388,7 +458,6 @@ export function EggCollectionPage() {
         <div className={cardCls}>
           <p className={sectionLbl}>Select Block</p>
           <div className="grid grid-cols-2 gap-3">
-            {/* Block 1 — selectable */}
             <button
               type="button"
               onClick={() => setSelectedBlock(selectedBlock === 'BLOCK1' ? null : 'BLOCK1')}
@@ -416,7 +485,6 @@ export function EggCollectionPage() {
               </div>
             </button>
 
-            {/* Block 2 — under construction, NOT selectable */}
             <div
               aria-disabled
               className="flex items-center justify-between rounded-xl p-4 border-2 border-dashed border-gray-200 dark:border-dark-border bg-gray-50 dark:bg-dark-bg/40 opacity-70 cursor-not-allowed"
@@ -512,7 +580,7 @@ export function EggCollectionPage() {
         {/* ── Session Feed Consumption ── */}
         <div className={cardCls}>
           <p className={sectionLbl + ' flex items-center gap-2'}>
-            <Wheat className="w-4 h-4 text-brand-green" /> Session Feed Consumption ({shift}) *
+            <Wheat className="w-4 h-4 text-brand-green" /> Session Feed Consumption ({activeShift}) *
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -666,7 +734,7 @@ export function EggCollectionPage() {
           className="w-full bg-brand-green text-white rounded-2xl py-4 text-base font-bold shadow-lg disabled:opacity-60 hover:bg-green-800 transition-colors"
         >
           {isOnline
-            ? `Submit ${shift} Session — ${grandTotalEggs} Eggs (${eggsToTrays(grandTotalEggs)}) →`
+            ? `Submit ${activeShift} Session — ${grandTotalEggs} Eggs (${eggsToTrays(grandTotalEggs)}) →`
             : `Save Offline — ${grandTotalEggs} Eggs`}
         </button>
         <p className="text-[11px] text-center text-gray-400">

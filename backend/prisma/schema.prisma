@@ -1144,6 +1144,29 @@ model EggTallyVerification {
   @@map("egg_tally_verifications")
 }
 
+model DailyEggAggregate {
+  id            String   @id @default(uuid())
+  aggregateDate DateTime @map("aggregate_date") @db.Date
+  batchId       String   @map("batch_id")
+  houseId       String   @map("house_id")
+
+  totalStdEggs          Int      @default(0) @map("total_std_eggs")
+  totalStarterEggs      Int      @default(0) @map("total_starter_eggs")
+  totalBrokenSellable   Int      @default(0) @map("total_broken_sellable")
+  totalBrokenUnsellable Int      @default(0) @map("total_broken_unsellable")
+  expectedRevenueKes    Decimal? @map("expected_revenue_kes") @db.Decimal(12, 2)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  batch Batch @relation(fields: [batchId], references: [id])
+
+  @@unique([aggregateDate, batchId, houseId])
+  @@index([aggregateDate])
+  @@index([batchId])
+  @@map("daily_egg_aggregates")
+}
+
 // ─── PHASE 5: HEALTH CHECKLISTS ──────────────────────────────────────────────
 
 model HealthChecklist {

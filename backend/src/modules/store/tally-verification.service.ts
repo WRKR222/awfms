@@ -1,10 +1,21 @@
 // src/modules/store/tally-verification.service.ts
 // 3-party morning tally sign-off — PM, Sales, Store all sign;
 // Manager may edit until lock; once all 3 signatures present, locks the tally.
+//
+// IMPLEMENTATION PLAN CHANGES:
+//   • Tally records are now created in createTallyForSession(), called from
+//     the production service when PM session is approved AND AM is already
+//     approved. Both AM and PM tally records are created at that point.
+//   • listPending() no longer needs a post-filter — tallies only exist when
+//     both sessions are approved.
+//   • signAndMaybeLock(): after all 6 cosigns (3 parties × 2 sessions),
+//     calculates aggregate revenue, writes DailyEggAggregate, and emits
+//     a tally.locked event.
 
 import {
   Injectable, NotFoundException, BadRequestException, ForbiddenException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RequestUser } from '../../auth/types/request-user.type';
@@ -20,7 +31,34 @@ const ROLE_TO_PARTY: Record<string, Party | undefined> = {
 
 @Injectable()
 export class TallyVerificationService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly events: EventEmitter2,
+  ) {}
+
+  // ─── Called by production.service when PM session is approved ───────────────
+  // Creates tally records for BOTH AM and PM sessions so they appear on each
+  // party's morning sign-off queue together.
+  async createTallyForSession(sessionId: string, sessionDate: Date) {
+    // Idempotent — skip if already exists
+    const existing = await this.prisma.eggTallyVerification.findUnique({
+      where: { sessionId },
+    });
+    if (existing) return existing;
+
+    const nextDay = new Date(sessionDate);
+    nextDay.setDate(nextDay.getDate() + 1);
+
+    return this.prisma.eggTallyVerification.create({
+      data: {
+        sessionId,
+        verificationDate: nextDay,
+        attendantGoodEggs: 0,  // populated from session on read
+        attendantFullTrays: 0,
+        attendantLooseEggs: 0,
+      },
+    });
+  }
 
   async getBySession(sessionId: string) {
     const tally = await this.prisma.eggTallyVerification.findUnique({
@@ -39,7 +77,8 @@ export class TallyVerificationService {
   }
 
   async listPending() {
-    // Decouple batch lookup — handles orphaned batch_id FKs without a 500 crash
+    // Tallies only exist once both AM+PM are approved (created in createTallyForSession),
+    // so no additional filter is needed here.
     const tallies = await this.prisma.eggTallyVerification.findMany({
       where: { isLocked: false },
       include: {
@@ -54,7 +93,6 @@ export class TallyVerificationService {
       orderBy: { verificationDate: 'desc' },
     });
 
-    // Safely resolve batch codes — missing batches return '[Batch Removed]' instead of crashing
     const batchIds = [
       ...new Set(tallies.map(t => t.session?.batchId).filter(Boolean) as string[]),
     ];
@@ -88,7 +126,6 @@ export class TallyVerificationService {
     if (!tally) throw new NotFoundException('Tally not found');
     if (tally.isLocked) throw new BadRequestException('Tally already locked');
 
-    // Recompute totals from row data
     let totalFullTrays = 0, totalLooseEggs = 0, totalBrokenEggs = 0;
     let totalSoftShell = 0, totalDeformed = 0, totalWeightKg = 0;
     for (const r of rowData) {
@@ -116,7 +153,6 @@ export class TallyVerificationService {
       const updated = await tx.eggTallyVerification.update({
         where: { sessionId },
         data: {
-          // Clear all 3 signatures so everyone re-signs the corrected tally
           pmSignedById: null,    pmSignedAt: null,    pmRowData: Prisma.JsonNull,
           salesSignedById: null, salesSignedAt: null, salesRowData: Prisma.JsonNull,
           storeSignedById: null, storeSignedAt: null, storeRowData: Prisma.JsonNull,
@@ -126,7 +162,6 @@ export class TallyVerificationService {
         },
       });
 
-      // Notify Sales + Store that the tally needs re-signing
       const targets = await tx.user.findMany({
         where: { role: { in: ['SALES', 'STORE'] }, isActive: true },
         select: { id: true },
@@ -159,8 +194,6 @@ export class TallyVerificationService {
     if (!tally) throw new NotFoundException('Tally not found');
     if (tally.isLocked) throw new BadRequestException('Tally already locked');
 
-    // The session must be Manager-approved (PM verified the prior evening) before
-    // morning sign-off can begin.
     if (tally.session.status !== 'APPROVED') {
       throw new BadRequestException('Session must be Manager-verified before tally signing');
     }
@@ -189,12 +222,24 @@ export class TallyVerificationService {
       const allSigned = !!(updated.pmSignedById && updated.salesSignedById && updated.storeSignedById);
       if (!allSigned) return updated;
 
-      // ── LOCK ────────────────────────────────────────────────────────────
-      const session = tally.session;
+      // ── Check if the sibling session's tally is also fully signed ───────────
+      const session = tally.session as any;
+      const siblingShift = session.shift === 'AM' ? 'PM' : 'AM';
+      const siblingSession = await tx.eggCollectionSession.findFirst({
+        where: {
+          batchId: session.batchId,
+          houseId: session.houseId,
+          sessionDate: session.sessionDate,
+          shift: siblingShift,
+          status: 'APPROVED',
+        },
+      });
+
+      // Lock this tally regardless of sibling status
       const dailyPrice = await tx.dailyEggPrice.findUnique({
         where: { priceDate: session.sessionDate },
       });
-      const expectedRevenueKes = dailyPrice
+      const singleExpectedRevenue = dailyPrice
         ? Number(dailyPrice.pricePerEgg) * session.totalGoodEggs
         : null;
 
@@ -203,18 +248,107 @@ export class TallyVerificationService {
         data: {
           isLocked: true,
           lockedAt: now,
-          finalGoodEggs:       session.totalGoodEggs,
-          finalFullTrays:      session.totalFullTrays,
-          finalLooseEggs:      session.totalLooseEggs,
-          // FIX-04: store per-category finals at lock time for complete audit trail
-          finalStarterEggs:    (session as any).totalStarterEggs    ?? 0,
-          expectedRevenueKes: expectedRevenueKes ?? undefined,
-          revenueSetById: expectedRevenueKes != null ? user.id : null,
-          revenueSetAt:   expectedRevenueKes != null ? now : null,
+          finalGoodEggs:    session.totalGoodEggs,
+          finalFullTrays:   session.totalFullTrays,
+          finalLooseEggs:   session.totalLooseEggs,
+          finalStarterEggs: (session as any).totalStarterEggs ?? 0,
+          expectedRevenueKes: singleExpectedRevenue ?? undefined,
+          revenueSetById: singleExpectedRevenue != null ? user.id : null,
+          revenueSetAt:   singleExpectedRevenue != null ? now : null,
         },
       });
 
-      // Broadcast lock
+      // ── Check if BOTH tallies (AM + PM) are now fully signed and locked ─────
+      if (siblingSession) {
+        const siblingTally = await tx.eggTallyVerification.findUnique({
+          where: { sessionId: siblingSession.id },
+        });
+
+        const bothLocked = siblingTally?.isLocked && locked.isLocked;
+
+        if (bothLocked) {
+          // Fetch both sessions for aggregate calculation
+          const bothSessions = await tx.eggCollectionSession.findMany({
+            where: {
+              batchId: session.batchId,
+              houseId: session.houseId,
+              sessionDate: session.sessionDate,
+              shift: { in: ['AM', 'PM'] },
+              status: 'APPROVED',
+            },
+          });
+
+          const totalStdEggs = bothSessions.reduce((s, sess) =>
+            s + (sess.totalGoodEggs ?? 0) - ((sess as any).totalStarterEggs ?? 0) -
+            ((sess as any).totalBrokenSellable ?? 0), 0);
+          const totalStarterEggs = bothSessions.reduce((s, sess) =>
+            s + ((sess as any).totalStarterEggs ?? 0), 0);
+          const totalBrokenSell = bothSessions.reduce((s, sess) =>
+            s + ((sess as any).totalBrokenSellable ?? 0), 0);
+
+          const expectedRevenue = dailyPrice
+            ? (totalStdEggs     * Number(dailyPrice.pricePerEgg)) +
+              (totalStarterEggs * Number((dailyPrice as any).pricePerEggStarter ?? 0)) +
+              (totalBrokenSell  * Number((dailyPrice as any).pricePerEggBroken  ?? 0))
+            : 0;
+
+          // Update both tallies with aggregate expected revenue
+          const allTallyIds = [locked.id, siblingTally!.id];
+          await Promise.all(
+            allTallyIds.map(id =>
+              tx.eggTallyVerification.update({
+                where: { id },
+                data: {
+                  expectedRevenueKes: expectedRevenue,
+                  revenueSetById: user.id,
+                  revenueSetAt: now,
+                },
+              })
+            )
+          );
+
+          // Write DailyEggAggregate
+          await tx.dailyEggAggregate.upsert({
+            where: {
+              aggregateDate_batchId_houseId: {
+                aggregateDate: session.sessionDate,
+                batchId: session.batchId,
+                houseId: session.houseId,
+              },
+            },
+            create: {
+              aggregateDate: session.sessionDate,
+              batchId: session.batchId,
+              houseId: session.houseId,
+              totalStdEggs,
+              totalStarterEggs,
+              totalBrokenSellable: totalBrokenSell,
+              totalBrokenUnsellable: 0,
+              expectedRevenueKes: expectedRevenue,
+            },
+            update: {
+              totalStdEggs,
+              totalStarterEggs,
+              totalBrokenSellable: totalBrokenSell,
+              expectedRevenueKes: expectedRevenue,
+              updatedAt: now,
+            },
+          });
+
+          // Emit WebSocket event for real-time Sales dashboard update
+          this.events.emit('tally.locked', {
+            date: session.sessionDate,
+            batchId: session.batchId,
+            totalStdEggs,
+            totalStarterEggs,
+            totalBrokenSellable: totalBrokenSell,
+            totalBrokenUnsellable: 0,
+            expectedRevenue,
+          });
+        }
+      }
+
+      // Broadcast lock notification
       const targets = await tx.user.findMany({
         where: { role: { in: ['MANAGER', 'SALES', 'STORE', 'OWNER', 'ACCOUNTANT'] }, isActive: true },
         select: { id: true },
@@ -234,6 +368,7 @@ export class TallyVerificationService {
       return locked;
     });
   }
+
   /** Accountant / Owner sets the expected morning revenue after the tally is locked. */
   async setRevenue(
     sessionId: string,
@@ -268,21 +403,13 @@ export class TallyVerificationService {
     });
   }
 
-
   // ─────────────────────────────────────────────────────────────────────────
-  // FIX-02: Return locked tally egg counts per category for a given date.
-  // Called by GET /tally-verifications/totals?date=YYYY-MM-DD
-  //
-  // Egg category → DailyEggPrice field mapping:
-  //   standardEggs   (totalGoodEggs)        ↔  pricePerEgg
-  //   starterEggs    (totalStarterEggs)      ↔  pricePerEggStarter
-  //   brokenSellable (totalBrokenSellable)   ↔  pricePerEggBroken
+  // Return locked tally egg counts per category for a given date.
   // ─────────────────────────────────────────────────────────────────────────
   async getTallyTotalsForDate(date: string) {
     const targetDate = new Date(date);
     targetDate.setHours(0, 0, 0, 0);
 
-    // Most recently locked tally for this date or earlier
     const tally = await this.prisma.eggTallyVerification.findFirst({
       where: {
         isLocked: true,
@@ -310,18 +437,15 @@ export class TallyVerificationService {
     return {
       sessionDate:        s.sessionDate,
       isLocked:           true,
-      // Standard names used by sales.service getSalesStock()
       standardEggs:       s.totalGoodEggs,
       starterEggs:        (s as any).totalStarterEggs    ?? 0,
       brokenSellableEggs: (s as any).totalBrokenSellable ?? 0,
-      // Aliases used by AccountantPricingPage
       productionEggs:     s.totalGoodEggs,
       fullBrokenEggs:     (s as any).totalBrokenSellable ?? 0,
       totalFullTrays:     s.totalFullTrays,
       totalLooseEggs:     s.totalLooseEggs,
     };
   }
-
 
   async listLocked(limit = 30) {
     return this.prisma.eggTallyVerification.findMany({

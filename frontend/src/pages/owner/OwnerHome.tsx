@@ -1,4 +1,13 @@
-// src/pages/owner/OwnerHome.tsx  (REPLACE existing file)
+// src/pages/owner/OwnerHome.tsx
+// IMPLEMENTATION PLAN CHANGES:
+//   • Removed Feed Status KPI card from secondary KPIs grid.
+//   • Secondary KPI grid changed from grid-cols-4 to grid-cols-3 with gap-4.
+//   • Feed alerts banner at top RETAINED.
+//   • "Pending Verifications" KPI relabelled "Morning Tally Sign-Off" with
+//     sub "sessions awaiting 3-party cosign".
+//   • Revenue & Sales Summary expanded to 4-column grid with new
+//     "Differential Revenue" card (surplus/shortfall vs expected).
+//   • Revenue and Outstanding AR KPI cards use toLocaleString() — no "K" abbreviation.
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
@@ -21,7 +30,7 @@ interface DashData {
   totalBirds: number;
   activeBatchCount: number;
   pendingVerifications: number;
-  pendingApprovals: number;   // FIX: LPOs awaiting Director approval
+  pendingApprovals: number;
   periodEggs: number;
   periodTrays: number;
   avgHdp: number;
@@ -98,20 +107,31 @@ export default function OwnerHome() {
   const [range, setRange] = useState<Range>('weekly');
   const { data, isLoading } = useOwnerDash(range);
 
-  // PW-02: real-time updates (WS on desktop, polling on mobile)
   useOwnerRealtime();
 
-  // Dedicated AI summary from the AI module (separate from dashboard endpoint)
   const { data: aiSummary } = useQuery({
     queryKey: ['ai-summary'],
     queryFn: () => api.get('/ai/reports/summary').then(r => r.data),
     staleTime: 10 * 60_000,
-    retry: false, // don't spam if AI key not configured yet
+    retry: false,
   });
 
   const hour = dayjs().hour();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const firstName = user?.fullName?.split(' ')[0] ?? 'Director';
+
+  // Differential revenue = actual - expected
+  const differentialRevenue = data
+    ? data.revenueKes - (data.expectedRevenueKes ?? 0)
+    : 0;
+
+  const confirmedVsExpectedColor = data && data.confirmedOrdersTotal >= (data.expectedRevenueKes ?? 0)
+    ? 'text-green-600 dark:text-green-400'
+    : 'text-amber-500 dark:text-amber-400';
+
+  const actualVsExpectedColor = data && data.revenueKes >= (data.expectedRevenueKes ?? 0)
+    ? 'text-green-600 dark:text-green-400'
+    : 'text-amber-500';
 
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-6xl mx-auto">
@@ -140,7 +160,7 @@ export default function OwnerHome() {
         ))}
       </div>
 
-      {/* Feed alerts banner */}
+      {/* Feed alerts banner — RETAINED */}
       {(data?.feedAlertsCount ?? 0) > 0 && (
         <div className="bg-red-50 dark:bg-red-900/20 border-2 border-red-300 dark:border-red-700 rounded-2xl p-4">
           <div className="flex items-center gap-2 mb-2">
@@ -163,11 +183,28 @@ export default function OwnerHome() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <KpiCard icon={<Bird className="w-5 h-5" />} label="Total Birds" value={data?.totalBirds?.toLocaleString() ?? '—'} sub={`${data?.activeBatchCount ?? 0} active batches`} loading={isLoading} />
         <KpiCard icon={<Egg className="w-5 h-5" />} label={`${data?.periodLabel ?? ''} Eggs`} value={data?.periodEggs?.toLocaleString() ?? '—'} sub={`${data?.periodTrays ?? 0} trays · ${data?.avgHdp ?? 0}% HDP`} loading={isLoading} />
-        <KpiCard icon={<DollarSign className="w-5 h-5" />} label="Revenue" value={data ? `KES ${(data.revenueKes / 1000).toFixed(1)}K` : '—'} sub={data?.periodLabel} loading={isLoading} accent />
-        <KpiCard icon={<Activity className="w-5 h-5" />} label="Outstanding AR" value={data ? `KES ${(data.totalOutstandingKes / 1000).toFixed(1)}K` : '—'} sub={data ? `${data.overdueInvoices} overdue` : '—'} alert={(data?.overdueInvoices ?? 0) > 0} loading={isLoading} onClick={() => navigate('/owner/finance')} />
+        {/* Revenue — full number, no "K" abbreviation */}
+        <KpiCard
+          icon={<DollarSign className="w-5 h-5" />}
+          label="Revenue"
+          value={data ? `KES ${data.revenueKes.toLocaleString()}` : '—'}
+          sub={data?.periodLabel}
+          loading={isLoading}
+          accent
+        />
+        {/* Outstanding AR — full number, no "K" abbreviation */}
+        <KpiCard
+          icon={<Activity className="w-5 h-5" />}
+          label="Outstanding AR"
+          value={data ? `KES ${data.totalOutstandingKes.toLocaleString()}` : '—'}
+          sub={data ? `${data.overdueInvoices} overdue` : '—'}
+          alert={(data?.overdueInvoices ?? 0) > 0}
+          loading={isLoading}
+          onClick={() => navigate('/owner/finance')}
+        />
       </div>
 
-      {/* Cumulative egg counter — big display */}
+      {/* Cumulative egg counter */}
       <div className="bg-gradient-to-r from-brand-green to-brand-teal text-white rounded-2xl p-5 flex items-center justify-between">
         <div>
           <p className="text-xs opacity-75 mb-1">Cumulative Eggs Produced</p>
@@ -179,43 +216,37 @@ export default function OwnerHome() {
         <Egg className="w-12 h-12 opacity-20" />
       </div>
 
-      {/* Secondary KPIs — 4 evenly spread cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KpiCard icon={<TrendingUp className="w-5 h-5" />} label="Mortality" value={data?.periodMortality?.toLocaleString() ?? '—'} sub={`${data?.periodCulling ?? 0} culled`} alert={(data?.periodMortality ?? 0) > 20} loading={isLoading} />
-        <KpiCard icon={<Lock className="w-5 h-5" />} label="Pending Verifications" value={data?.pendingVerifications?.toLocaleString() ?? '—'} sub="flock entries" alert={(data?.pendingVerifications ?? 0) > 5} loading={isLoading} />
-        <KpiCard icon={<Lock className="w-5 h-5" />} label="Pending Approvals" value={data?.pendingApprovals?.toLocaleString() ?? '—'} sub="LPOs to approve" alert={(data?.pendingApprovals ?? 0) > 0} loading={isLoading} />
-        <div
-          className={`bg-white dark:bg-dark-card rounded-2xl p-4 border cursor-pointer transition-colors ${
-            (data?.feedAlertsCount ?? 0) > 0
-              ? 'border-red-500 dark:border-red-700 bg-red-50/30 dark:bg-red-900/10'
-              : 'border-gray-100 dark:border-dark-border'
-          }`}
-          onClick={() => navigate('/owner/procurement')}
-        >
-          <p className="text-xs text-gray-500 dark:text-dark-muted mb-2 font-semibold uppercase tracking-wider">Feed Status</p>
-          {isLoading ? (
-            <div className="h-4 w-24 bg-gray-200 dark:bg-dark-border rounded animate-pulse" />
-          ) : (data?.feedAlertsCount ?? 0) === 0 ? (
-            <>
-              <p className="text-sm font-bold text-green-600 dark:text-green-400">✓ All stocks OK</p>
-              <p className="text-[10px] text-gray-400 dark:text-dark-muted mt-0.5">No alerts</p>
-            </>
-          ) : (
-            <>
-              <p className="text-sm font-bold text-red-600 dark:text-red-400">{data!.feedAlertsCount} type{data!.feedAlertsCount > 1 ? 's' : ''} critical</p>
-              <div className="flex flex-wrap gap-1 mt-1.5">
-                {data!.feedAlerts.slice(0, 3).map(a => (
-                  <span key={a.feedType} className="text-[10px] bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 px-1.5 py-0.5 rounded-full font-medium">
-                    {a.feedType.replace(/_/g, ' ')} {Number(a.daysRemaining).toFixed(1)}d
-                  </span>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
+      {/* Secondary KPIs — 3 cards (Feed Status card removed) */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <KpiCard
+          icon={<TrendingUp className="w-5 h-5" />}
+          label="Mortality"
+          value={data?.periodMortality?.toLocaleString() ?? '—'}
+          sub={`${data?.periodCulling ?? 0} culled`}
+          alert={(data?.periodMortality ?? 0) > 20}
+          loading={isLoading}
+        />
+        {/* Pending Verifications relabelled to Morning Tally Sign-Off */}
+        <KpiCard
+          icon={<Lock className="w-5 h-5" />}
+          label="Morning Tally Sign-Off"
+          value={data?.pendingVerifications?.toLocaleString() ?? '—'}
+          sub="sessions awaiting 3-party cosign"
+          alert={(data?.pendingVerifications ?? 0) > 0}
+          loading={isLoading}
+          onClick={() => navigate('/owner/tally')}
+        />
+        <KpiCard
+          icon={<Lock className="w-5 h-5" />}
+          label="Pending Approvals"
+          value={data?.pendingApprovals?.toLocaleString() ?? '—'}
+          sub="LPOs to approve"
+          alert={(data?.pendingApprovals ?? 0) > 0}
+          loading={isLoading}
+        />
       </div>
 
-      {/* ── Today's Egg Pricing — visible only on "Today" tab ── */}
+      {/* Today's Egg Pricing — visible only on "Today" tab */}
       {range === 'daily' && (
         <div className={`rounded-2xl border p-5 ${
           data?.todayPricing
@@ -245,7 +276,6 @@ export default function OwnerHome() {
           ) : (
             <>
               <div className="grid grid-cols-3 gap-3">
-                {/* Standard */}
                 <div className="bg-green-50 dark:bg-green-900/20 rounded-xl p-3">
                   <p className="text-[10px] font-bold text-green-600 dark:text-green-500 uppercase tracking-wider mb-1">Standard</p>
                   <p className="text-lg font-extrabold text-green-700 dark:text-green-400">
@@ -257,7 +287,6 @@ export default function OwnerHome() {
                   </p>
                 </div>
 
-                {/* Starter */}
                 <div className={`rounded-xl p-3 ${data.todayPricing.pricePerEggStarter != null ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-gray-50 dark:bg-dark-bg opacity-50'}`}>
                   <p className="text-[10px] font-bold text-blue-600 dark:text-blue-500 uppercase tracking-wider mb-1">Starter</p>
                   {data.todayPricing.pricePerEggStarter != null ? (
@@ -275,7 +304,6 @@ export default function OwnerHome() {
                   )}
                 </div>
 
-                {/* Broken sellable */}
                 <div className={`rounded-xl p-3 ${data.todayPricing.pricePerEggBroken != null ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-gray-50 dark:bg-dark-bg opacity-50'}`}>
                   <p className="text-[10px] font-bold text-amber-600 dark:text-amber-500 uppercase tracking-wider mb-1">Broken Sellable</p>
                   {data.todayPricing.pricePerEggBroken != null ? (
@@ -303,30 +331,55 @@ export default function OwnerHome() {
           )}
         </div>
       )}
+
       {data && (
         <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-5 space-y-4">
           <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300">Revenue & Sales Summary</h3>
 
-          {/* Revenue row */}
-          <div className="grid grid-cols-3 gap-4">
+          {/* Revenue row — 4 columns including new Differential Revenue card */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <p className="text-xs text-gray-400 dark:text-dark-muted">Expected Revenue</p>
-              <p className="text-xl font-bold text-blue-600 dark:text-blue-400">KES {(data.expectedRevenueKes ?? 0).toLocaleString()}</p>
+              <p className="text-xl font-bold text-blue-600 dark:text-blue-400">
+                KES {(data.expectedRevenueKes ?? 0).toLocaleString()}
+              </p>
               <p className="text-[10px] text-gray-400 dark:text-dark-muted">Tally stock × accountant pricing</p>
             </div>
+
             <div>
               <p className="text-xs text-gray-400 dark:text-dark-muted">Confirmed Orders</p>
-              <p className={`text-xl font-bold ${data.confirmedOrdersTotal >= (data.expectedRevenueKes ?? 0) ? 'text-green-600 dark:text-green-400' : 'text-amber-500 dark:text-amber-400'}`}>
+              <p className={`text-xl font-bold ${confirmedVsExpectedColor}`}>
                 KES {(data.confirmedOrdersTotal ?? 0).toLocaleString()}
               </p>
               <p className="text-[10px] text-gray-400 dark:text-dark-muted">{data.confirmedOrdersCount ?? 0} confirmed orders</p>
             </div>
+
             <div>
               <p className="text-xs text-gray-400 dark:text-dark-muted">Actual Revenue</p>
-              <p className={`text-xl font-bold ${data.revenueKes >= (data.expectedRevenueKes ?? 0) ? 'text-green-600 dark:text-green-400' : 'text-amber-500'}`}>
+              <p className={`text-xl font-bold ${actualVsExpectedColor}`}>
                 KES {data.revenueKes.toLocaleString()}
               </p>
               <p className="text-[10px] text-gray-400 dark:text-dark-muted">From completed invoice payments</p>
+            </div>
+
+            {/* NEW — Differential Revenue */}
+            <div className={`rounded-xl p-3 ${
+              differentialRevenue >= 0
+                ? 'bg-green-50 dark:bg-green-900/20'
+                : 'bg-red-50 dark:bg-red-900/20'
+            }`}>
+              <p className="text-xs text-gray-400 dark:text-dark-muted">Differential Revenue</p>
+              <p className={`text-xl font-bold ${
+                differentialRevenue >= 0
+                  ? 'text-green-700 dark:text-green-400'
+                  : 'text-red-600 dark:text-red-400'
+              }`}>
+                {differentialRevenue >= 0 ? '+' : ''}
+                KES {Math.abs(differentialRevenue).toLocaleString()}
+              </p>
+              <p className="text-[10px] text-gray-400 dark:text-dark-muted">
+                {differentialRevenue >= 0 ? 'Surplus' : 'Shortfall'} vs expected
+              </p>
             </div>
           </div>
 
@@ -391,7 +444,6 @@ export default function OwnerHome() {
                   </div>
                   <p className="text-sm font-bold text-brand-green dark:text-brand-greenDark flex-shrink-0">KES {order.amountKes.toLocaleString()}</p>
                 </div>
-                {/* Per-type egg breakdown */}
                 {order.totalEggs > 0 && (
                   <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-gray-50 dark:border-dark-border">
                     {order.standardEggs > 0 && (
@@ -420,7 +472,7 @@ export default function OwnerHome() {
         )}
       </div>
 
-      {/* Block 1 Cage Map — collapsible production section */}
+      {/* Block 1 Cage Map */}
       <CageMapPanel />
       <BrooderMapPanel />
 
@@ -455,7 +507,7 @@ export default function OwnerHome() {
   );
 }
 
-// ── Cage Map Collapsible Panel (Director view) ────────────────────────────────
+// ── Cage Map Collapsible Panel ────────────────────────────────────────────────
 
 function CageMapPanel() {
   const [open, setOpen] = useState(false);

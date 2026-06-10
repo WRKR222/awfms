@@ -75,6 +75,7 @@ export class ProductionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly tallyVerificationService: TallyVerificationService,
   ) {}
 
   async createEggCollection(dto: CreateEggCollectionSessionDto, user: RequestUser) {
@@ -170,7 +171,7 @@ export class ProductionService {
     const session = existing?.status === EntryStatus.RETURNED
       ? await this.prisma.eggCollectionSession.update({
           where: { id: existing.id },
-          data: { ...data, returnReason: null },
+          data: { ...data, status: EntryStatus.PENDING, returnReason: null, verifiedById: null, verifiedAt: null, },
         })
       : await this.prisma.eggCollectionSession.create({ data });
 
@@ -270,6 +271,35 @@ export class ProductionService {
     });
 
     return session;
+  }
+
+  async getDailyAggregate(date?: string) {
+    const targetDate = date ? new Date(date) : new Date();
+    targetDate.setHours(0, 0, 0, 0);
+
+    const aggregate = await this.prisma.dailyEggAggregate.findFirst({
+      where: {
+        aggregateDate: { lte: targetDate },
+      },
+      orderBy: { aggregateDate: 'desc' },
+    });
+
+    if (!aggregate) return null;
+
+    // Fetch the pricing for that day so the frontend can show the formula breakdown
+    const pricing = await this.prisma.dailyEggPrice.findUnique({
+      where: { priceDate: aggregate.aggregateDate },
+      select: {
+        pricePerEgg:        true,
+        pricePerEggStarter: true,
+        pricePerEggBroken:  true,
+      },
+    });
+
+    return {
+      ...aggregate,
+      pricing: pricing ?? null,
+    };
   }
 
   private async _fireVerificationNotifications(session: any, batch: any) {
@@ -425,9 +455,19 @@ export class ProductionService {
             deletedAt: null,
           },
         });
-
+   
         if (amSession) {
-          // Both AM and PM are approved — trigger next-morning tally sign-off
+          // Both AM and PM are approved — create tally records for each session
+          await this.tallyVerificationService.createTallyForSession(
+            amSession.id,
+            session.sessionDate,
+          );
+          await this.tallyVerificationService.createTallyForSession(
+            session.id,
+            session.sessionDate,
+          );
+   
+          // Notify all three tally parties
           const tallyTargets = await this.prisma.user.findMany({
             where: { role: { in: ['MANAGER', 'SALES', 'STORE'] }, isActive: true },
             select: { id: true },
@@ -438,7 +478,7 @@ export class ProductionService {
                 userId: t.id,
                 type: 'EGG_TALLY_TRIGGERED' as any,
                 title: `Next Morning Sign-off Ready — ${houseName}`,
-                message: `Both AM and PM egg collection sessions for ${houseName} (${(session as any).batch?.batchCode ?? ''}) are approved. The next morning three-party sign-off on previous day AM and PM egg collection sessions is now available.`,
+                message: `Both AM and PM sessions for ${houseName} (${session.batch?.batchCode ?? ''}) are approved. The morning three-party sign-off is now available.`,
                 entityId: session.id,
                 entityType: 'EggCollectionSession',
               },
