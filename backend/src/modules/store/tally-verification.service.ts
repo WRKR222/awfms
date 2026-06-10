@@ -372,6 +372,9 @@ export class TallyVerificationService {
       }
 
       // Broadcast lock notification
+      // NOTE: use EGG_TALLY_TRIGGERED — TALLY_LOCKED does not exist in the
+      // NotificationType enum and causes a Prisma runtime error (500) when
+      // Prisma validates the value against the database enum on INSERT.
       const targets = await tx.user.findMany({
         where: { role: { in: ['MANAGER', 'SALES', 'STORE', 'OWNER', 'ACCOUNTANT'] }, isActive: true },
         select: { id: true },
@@ -380,7 +383,7 @@ export class TallyVerificationService {
         await tx.notification.create({
           data: {
             userId: t.id,
-            type: 'TALLY_LOCKED' as any,
+            type: 'EGG_TALLY_TRIGGERED' as any,
             title: 'Tally locked',
             message: `Tally for session ${sessionId} is fully signed and locked. Final: ${session.totalGoodEggs} eggs.`,
             entityId: sessionId,
