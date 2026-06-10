@@ -53,9 +53,7 @@ export class TallyVerificationService {
       data: {
         sessionId,
         verificationDate: nextDay,
-        attendantGoodEggs: 0,  // populated from session on read
-        attendantFullTrays: 0,
-        attendantLooseEggs: 0,
+
       },
     });
   }

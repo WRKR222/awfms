@@ -31,6 +31,7 @@ import { EntryStatus, VaccinationRoute } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import type { CreateEggCollectionSessionDto } from './production.dto';
+import { TallyVerificationService } from '../store/tally-verification.service';
 
 interface RowDataEntry {
   rowCode: string;
