@@ -156,8 +156,13 @@ function TallyCard({ tally }: { tally: TallySession }) {
   });
 
   const originalTrays = session?.totalFullTrays ?? 0;
-  const originalLoose = session?.totalLooseEggs ?? 0;
   const originalGood  = session?.totalGoodEggs  ?? 0;
+  // Derive loose eggs from the authoritative formula (goodEggs % 30) rather than
+  // relying on totalLooseEggs alone — the listPending select previously omitted
+  // that field so it arrived as undefined and rendered as 0.
+  const originalLoose = session?.totalLooseEggs != null
+    ? session.totalLooseEggs
+    : originalGood - originalTrays * 30;
 
   const startEdit = () => {
     setEditRows(originalRows.map(r => ({ ...r })));

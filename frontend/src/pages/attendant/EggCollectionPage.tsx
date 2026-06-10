@@ -162,22 +162,38 @@ function ReturnAlert({ reason }: { reason: string }) {
 
 function DayLockedPanel({ amSession, pmSession }: { amSession: any; pmSession: any }) {
   const navigate = useNavigate();
+  const sessionDateLabel = amSession?.sessionDate
+    ? dayjs(amSession.sessionDate).format('dddd, D MMMM YYYY')
+    : dayjs().format('dddd, D MMMM YYYY');
+  const nextDay = dayjs(amSession?.sessionDate ?? undefined).add(1, 'day').format('dddd, D MMMM');
   return (
     <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
       <Lock className="w-16 h-16 text-gray-400 mb-4" />
       <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Day Locked</h2>
+      <p className="text-sm text-gray-400 mt-1">{sessionDateLabel}</p>
       <p className="text-gray-500 dark:text-gray-400 mt-2 max-w-sm">
-        Both AM and PM sessions have been approved. Today's egg collection is complete and locked.
+        Both AM and PM sessions have been approved and locked. No further submissions are accepted for this day.
       </p>
       <div className="mt-4 grid grid-cols-2 gap-3 w-full max-w-xs">
         <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl p-3 text-center">
           <p className="text-xs font-bold text-green-600 dark:text-green-400">AM</p>
           <p className="text-sm font-semibold text-green-700 dark:text-green-300 mt-1">✓ Approved</p>
+          {amSession?.totalGoodEggs != null && (
+            <p className="text-[11px] text-green-600/70 mt-0.5">{amSession.totalGoodEggs.toLocaleString()} eggs</p>
+          )}
         </div>
         <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl p-3 text-center">
           <p className="text-xs font-bold text-green-600 dark:text-green-400">PM</p>
           <p className="text-sm font-semibold text-green-700 dark:text-green-300 mt-1">✓ Approved</p>
+          {pmSession?.totalGoodEggs != null && (
+            <p className="text-[11px] text-green-600/70 mt-0.5">{pmSession.totalGoodEggs.toLocaleString()} eggs</p>
+          )}
         </div>
+      </div>
+      <div className="mt-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-xl px-4 py-2 max-w-xs">
+        <p className="text-xs text-blue-600 dark:text-blue-400">
+          Next session opens on {nextDay}
+        </p>
       </div>
       <button
         onClick={() => navigate('/attendant')}
@@ -199,11 +215,15 @@ export function EggCollectionPage() {
     queryFn: () => api.get('/flock/batches?isActive=true').then(r => r.data),
   });
 
+  // Include today's date in the query key so a new calendar day always gets a
+  // fresh fetch instead of reading stale data from the previous day's cache.
+  const today = dayjs().format('YYYY-MM-DD');
   const { data: todaySessions = [], refetch: refetchSessions } = useQuery({
-    queryKey: ['egg-sessions-today'],
+    queryKey: ['egg-sessions-today', today],
     queryFn: () =>
-      api.get(`/production/sessions?sessionDate=${dayjs().format('YYYY-MM-DD')}`).then(r => r.data).catch(() => []),
+      api.get(`/production/sessions?sessionDate=${today}`).then(r => r.data).catch(() => []),
     refetchInterval: 30_000,
+    staleTime: 0,
   });
 
   const batches = (allBatches as any[]).filter((b: any) => b.stage === 'PRODUCTION');

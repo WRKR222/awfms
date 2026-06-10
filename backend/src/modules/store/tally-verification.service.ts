@@ -84,6 +84,11 @@ export class TallyVerificationService {
           select: {
             id: true, sessionDate: true, shift: true,
             houseId: true, totalGoodEggs: true, totalFullTrays: true,
+            totalLooseEggs: true,
+            totalStarterEggs: true, totalBrokenSellable: true,
+            totalBrokenUnsellable: true, totalSoftShell: true,
+            totalDeformed: true, totalWeightKg: true,
+            rowData: true,
             batchId: true,
           },
         },
@@ -237,23 +242,8 @@ export class TallyVerificationService {
       const dailyPrice = await tx.dailyEggPrice.findUnique({
         where: { priceDate: session.sessionDate },
       });
-
-      // ── Per-spec revenue formula ─────────────────────────────────────────────
-      // If starterEggs == 0: all eggs × pricePerEgg
-      // If starterEggs  > 0: starterEggs × pricePerEggStarter
-      //                    + (brokenSellable + brokenUnsellable + softShell + deformed) × pricePerEgg
-      const sessStarterEggs      = (session as any).totalStarterEggs      ?? 0;
-      const sessBrokenSellable   = (session as any).totalBrokenSellable   ?? 0;
-      const sessBrokenUnsellable = (session as any).totalBrokenUnsellable ?? 0;
-      const sessSoftShell        = (session as any).totalSoftShell        ?? 0;
-      const sessDeformed         = (session as any).totalDeformed         ?? 0;
-
       const singleExpectedRevenue = dailyPrice
-        ? sessStarterEggs === 0
-          ? session.totalGoodEggs * Number(dailyPrice.pricePerEgg)
-          : sessStarterEggs * Number((dailyPrice as any).pricePerEggStarter ?? dailyPrice.pricePerEgg)
-            + (sessBrokenSellable + sessBrokenUnsellable + sessSoftShell + sessDeformed)
-              * Number(dailyPrice.pricePerEgg)
+        ? Number(dailyPrice.pricePerEgg) * session.totalGoodEggs
         : null;
 
       const locked = await tx.eggTallyVerification.update({
@@ -291,28 +281,19 @@ export class TallyVerificationService {
             },
           });
 
-          // Aggregate egg counts across both sessions
-          const totalStarterEggs       = bothSessions.reduce((s, sess) => s + ((sess as any).totalStarterEggs      ?? 0), 0);
-          const totalBrokenSellable    = bothSessions.reduce((s, sess) => s + ((sess as any).totalBrokenSellable   ?? 0), 0);
-          const totalBrokenUnsellable  = bothSessions.reduce((s, sess) => s + ((sess as any).totalBrokenUnsellable ?? 0), 0);
-          const totalSoftShell         = bothSessions.reduce((s, sess) => s + ((sess as any).totalSoftShell        ?? 0), 0);
-          const totalDeformed          = bothSessions.reduce((s, sess) => s + ((sess as any).totalDeformed         ?? 0), 0);
-          const totalGoodEggsAll       = bothSessions.reduce((s, sess) => s + (sess.totalGoodEggs ?? 0), 0);
+          const totalStdEggs = bothSessions.reduce((s, sess) =>
+            s + (sess.totalGoodEggs ?? 0) - ((sess as any).totalStarterEggs ?? 0) -
+            ((sess as any).totalBrokenSellable ?? 0), 0);
+          const totalStarterEggs = bothSessions.reduce((s, sess) =>
+            s + ((sess as any).totalStarterEggs ?? 0), 0);
+          const totalBrokenSell = bothSessions.reduce((s, sess) =>
+            s + ((sess as any).totalBrokenSellable ?? 0), 0);
 
-          // ── Per-spec revenue formula ───────────────────────────────────────────
-          // If starterEggs == 0: sum of ALL eggs × pricePerEgg
-          // If starterEggs  > 0: starterEggs × pricePerEggStarter
-          //                    + (brokenSellable + brokenUnsellable + softShell + deformed) × pricePerEgg
           const expectedRevenue = dailyPrice
-            ? totalStarterEggs === 0
-              ? totalGoodEggsAll * Number(dailyPrice.pricePerEgg)
-              : totalStarterEggs * Number((dailyPrice as any).pricePerEggStarter ?? dailyPrice.pricePerEgg)
-                + (totalBrokenSellable + totalBrokenUnsellable + totalSoftShell + totalDeformed)
-                  * Number(dailyPrice.pricePerEgg)
+            ? (totalStdEggs     * Number(dailyPrice.pricePerEgg)) +
+              (totalStarterEggs * Number((dailyPrice as any).pricePerEggStarter ?? 0)) +
+              (totalBrokenSell  * Number((dailyPrice as any).pricePerEggBroken  ?? 0))
             : 0;
-
-          // For DailyEggAggregate: stdEggs = all good eggs minus starter eggs (the non-starter portion)
-          const totalStdEggs = totalGoodEggsAll - totalStarterEggs;
 
           // Update both tallies with aggregate expected revenue
           const allTallyIds = [locked.id, siblingTally!.id];
@@ -344,15 +325,14 @@ export class TallyVerificationService {
               houseId: session.houseId,
               totalStdEggs,
               totalStarterEggs,
-              totalBrokenSellable,
-              totalBrokenUnsellable,
+              totalBrokenSellable: totalBrokenSell,
+              totalBrokenUnsellable: 0,
               expectedRevenueKes: expectedRevenue,
             },
             update: {
               totalStdEggs,
               totalStarterEggs,
-              totalBrokenSellable,
-              totalBrokenUnsellable,
+              totalBrokenSellable: totalBrokenSell,
               expectedRevenueKes: expectedRevenue,
               updatedAt: now,
             },
@@ -364,8 +344,8 @@ export class TallyVerificationService {
             batchId: session.batchId,
             totalStdEggs,
             totalStarterEggs,
-            totalBrokenSellable,
-            totalBrokenUnsellable,
+            totalBrokenSellable: totalBrokenSell,
+            totalBrokenUnsellable: 0,
             expectedRevenue,
           });
         }
