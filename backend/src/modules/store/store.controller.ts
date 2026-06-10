@@ -1,10 +1,15 @@
-import { Controller, Get, Post, Patch, Body, Param, Query, UseGuards, Request } from '@nestjs/common';
+// src/modules/store/store.controller.ts
+// Egg intake and feed distribution endpoints removed.
+// Store controller now exposes: summary, inventory, tally sign-off (via
+// TallyVerificationController), purchase requests, HR, visitors.
+
+import { Controller, Get, Patch, Param, Query, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
-import { StoreService, CreateStoreIntakeDto, LogFeedDistributionDto } from './store.service';
+import { StoreService } from './store.service';
 
 @ApiTags('store')
 @ApiBearerAuth()
@@ -17,35 +22,8 @@ export class StoreController {
   @RequirePermission(Permission.INVENTORY_VIEW)
   summary() { return this.svc.getStoreSummary(); }
 
-  @Get('pending-intakes')
-  @RequirePermission(Permission.INVENTORY_VIEW)
-  pendingIntakes() { return this.svc.getPendingIntakes(); }
-
-  @Post('egg-intake')
-  @RequirePermission(Permission.INVENTORY_MANAGE)
-  createIntake(@Body() dto: CreateStoreIntakeDto, @Request() req: any) { return this.svc.createEggIntake(dto, req.user); }
-
-  @Get('egg-intake')
-  @RequirePermission(Permission.INVENTORY_VIEW)
-  getIntakes(@Query('houseId') houseId?: string, @Query('intakeDate') intakeDate?: string) {
-    return this.svc.getEggIntakes(houseId, intakeDate);
-  }
-
+  // Kept for backwards compatibility — tally service still calls cosignEggIntake
   @Patch('egg-intake/:id/cosign')
   @RequirePermission(Permission.PRODUCTION_VIEW)
   cosignIntake(@Param('id') id: string, @Request() req: any) { return this.svc.cosignEggIntake(id, req.user.id); }
-
-  @Get('egg-intake/:id')
-  @RequirePermission(Permission.INVENTORY_VIEW)
-  getIntake(@Param('id') id: string) { return this.svc.getIntakeById(id); }
-
-  @Post('feed-distribution')
-  @RequirePermission(Permission.FEED_INTAKE_LOG)
-  logFeed(@Body() dto: LogFeedDistributionDto, @Request() req: any) { return this.svc.logFeedDistribution(dto, req.user); }
-
-  @Get('feed-distribution')
-  @RequirePermission(Permission.FEED_VIEW)
-  getFeed(@Query('houseId') houseId?: string, @Query('entryDate') entryDate?: string) {
-    return this.svc.getFeedDistributions(houseId, entryDate);
-  }
 }

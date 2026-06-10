@@ -52,8 +52,6 @@ import SalesDeliveryPage   from './pages/sales/SalesDeliveryPage';
 
 // Store pages
 import StoreHome            from './pages/store/StoreHome';
-import StoreEggIntake       from './pages/store/StoreEggIntake';
-import StoreFeedDistribution from './pages/store/StoreFeedDistribution';
 import StoreInventoryPage   from './pages/store/StoreInventoryPage';
 import StoreHRPage          from './pages/store/StoreHRPage';          // GAP-01
 import StorePRPage          from './pages/store/StorePRPage';          // GAP-02
@@ -254,8 +252,6 @@ function AppInner() {
           }
         >
           <Route index                    element={<StoreHome />} />
-          <Route path="egg-intake"        element={<StoreEggIntake />} />
-          <Route path="feed-distribution" element={<StoreFeedDistribution />} />
           <Route path="inventory"         element={<StoreInventoryPage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="hr"                element={<StoreHRPage />} />           {/* GAP-01 */}

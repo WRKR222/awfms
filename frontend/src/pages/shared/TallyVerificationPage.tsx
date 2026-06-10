@@ -123,7 +123,10 @@ function TallyCard({ tally }: { tally: TallySession }) {
   const [isEditing, setIsEditing] = useState(false);
   const session = tally.session;
   const originalRows: RowData[] = Array.isArray(session?.rowData) ? session!.rowData : [];
-  const [editRows, setEditRows] = useState<RowData[]>([]);
+  // editRows stores string values during editing so the user can clear a zero
+  // and type a fresh number (e.g. "0" → "" → "2") without the field forcing
+  // a numeric parse on every keystroke.
+  const [editRows, setEditRows] = useState<Record<string, string | number>[]>([]);
 
   const [correctedTrays, setCorrectedTrays]  = useState<string>('');
   const [correctedLoose, setCorrectedLoose]  = useState<string>('');
@@ -165,13 +168,38 @@ function TallyCard({ tally }: { tally: TallySession }) {
     : originalGood - originalTrays * 30;
 
   const startEdit = () => {
-    setEditRows(originalRows.map(r => ({ ...r })));
+    // Store all numeric fields as strings so inputs start empty-able
+    setEditRows(originalRows.map(r => ({
+      rowCode: r.rowCode,
+      totalEggs: String(r.totalEggs ?? 0),
+      starterEggs: String(r.starterEggs ?? 0),
+      brokenSellable: String(r.brokenSellable ?? 0),
+      brokenUnsellable: String(r.brokenUnsellable ?? 0),
+      softShell: String(r.softShell ?? 0),
+      deformed: String(r.deformed ?? 0),
+      weightKg: String(r.weightKg ?? 0),
+      attendantName: r.attendantName ?? '',
+    })));
     setIsEditing(true);
   };
 
-  const updateEditRow = (idx: number, field: keyof RowData, value: string) => {
-    setEditRows(prev => prev.map((r, i) => i === idx ? { ...r, [field]: field === 'attendantName' ? value : Number(value) } : r));
+  const updateEditRow = (idx: number, field: string, value: string) => {
+    setEditRows(prev => prev.map((r, i) => i === idx ? { ...r, [field]: value } : r));
   };
+
+  // Convert string edit rows back to numbers for the API call
+  const buildRowDataForSave = () =>
+    editRows.map(r => ({
+      rowCode: r.rowCode as string,
+      totalEggs: Number(r.totalEggs) || 0,
+      starterEggs: Number(r.starterEggs) || 0,
+      brokenSellable: Number(r.brokenSellable) || 0,
+      brokenUnsellable: Number(r.brokenUnsellable) || 0,
+      softShell: Number(r.softShell) || 0,
+      deformed: Number(r.deformed) || 0,
+      weightKg: Number(r.weightKg) || 0,
+      attendantName: r.attendantName as string,
+    }));
 
   const shiftLabel = session?.shift ?? '—';
   const shiftColor = shiftLabel === 'AM'
@@ -234,7 +262,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
             )}
             {isPM && isEditing && (
               <div className="flex gap-2">
-                <button onClick={() => editMutation.mutate(editRows)} disabled={editMutation.isPending}
+                <button onClick={() => editMutation.mutate(buildRowDataForSave())} disabled={editMutation.isPending}
                   className="flex items-center gap-1 text-xs bg-brand-green text-white px-2 py-1 rounded-lg font-semibold disabled:opacity-50">
                   <Save className="w-3 h-3" /> {editMutation.isPending ? 'Saving…' : 'Save & Update All'}
                 </button>
@@ -264,15 +292,19 @@ function TallyCard({ tally }: { tally: TallySession }) {
                   {editRows.map((row, i) => (
                     <tr key={i} className="border-b border-gray-50 dark:border-dark-border/50">
                       <td className="py-1.5 pr-2">
-                        <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5">{row.rowCode}</span>
+                        <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5">{row.rowCode as string}</span>
                       </td>
                       {(['totalEggs', 'starterEggs', 'brokenSellable', 'brokenUnsellable', 'softShell', 'deformed'] as const).map(field => (
                         <td key={field} className="px-1 py-1">
                           <input
                             type="number"
-                            value={editRows[i][field] as number}
+                            min="0"
+                            inputMode="numeric"
+                            value={row[field] as string}
                             onChange={e => updateEditRow(i, field, e.target.value)}
-                            className="w-16 text-right rounded border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-xs px-1.5 py-1"
+                            onFocus={e => e.target.select()}
+                            placeholder="0"
+                            className="w-16 text-right rounded border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-xs px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-green"
                           />
                         </td>
                       ))}
@@ -280,9 +312,13 @@ function TallyCard({ tally }: { tally: TallySession }) {
                         <input
                           type="number"
                           step="0.1"
-                          value={editRows[i].weightKg}
+                          min="0"
+                          inputMode="decimal"
+                          value={row.weightKg as string}
                           onChange={e => updateEditRow(i, 'weightKg', e.target.value)}
-                          className="w-16 text-right rounded border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-xs px-1.5 py-1"
+                          onFocus={e => e.target.select()}
+                          placeholder="0"
+                          className="w-16 text-right rounded border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-xs px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-green"
                         />
                       </td>
                     </tr>
