@@ -1,28 +1,17 @@
 // src/pages/attendant/AttendantHome.tsx
 //
 // Lead Attendant home — task cards driven entirely by server session state,
-// mirroring the exact pageMode logic in EggCollectionPage.tsx:
+// mirroring the exact pageMode logic in EggCollectionPage.tsx.
 //
-//   AM card states:
-//     • AM_FORM     → not yet submitted, clickable
-//     • AM_PENDING  → submitted, awaiting PM verification
-//     • AM_RETURNED → returned for recount, action required (clickable)
-//     • AM_APPROVED → verified; PM session is now unlocked
-//
-//   PM card states:
-//     • Blocked     → AM not yet approved (not submitted or still pending)
-//     • PM_FORM     → AM approved, PM not yet submitted, clickable
-//     • PM_PENDING  → submitted, awaiting PM verification
-//     • PM_RETURNED → returned for recount, action required (clickable)
-//     • DAY_LOCKED  → both sessions approved, day complete
-//
-// Session state is the single source of truth — no time-based window logic.
-// Returned egg-collection sessions come from todaySessions, not the flock hook.
+// Session states now visually differentiate three distinct phases:
+//   1. "Awaiting PM verification" — session is PENDING
+//   2. "Awaiting next-morning 3-party tally" — session is APPROVED but tally not yet locked
+//   3. "Tally complete" — session is APPROVED and tally is locked (DAY_LOCKED)
 
 import { useNavigate } from 'react-router-dom';
 import {
   Egg, Clock, AlertCircle, ChevronRight, Sun, Moon,
-  CheckCircle, Lock, Flame, RefreshCw,
+  CheckCircle, Lock, Flame, RefreshCw, ClipboardCheck,
 } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth.store';
 import { useQuery } from '@tanstack/react-query';
@@ -69,6 +58,22 @@ export function AttendantHome() {
   const pmSession = (todaySessions as any[]).find((s: any) => s.shift === 'PM');
   const pageMode  = resolvePageMode(amSession, pmSession);
 
+  // Fetch pending tallies so we can show "awaiting next-morning tally" vs
+  // "awaiting PM verification" as distinct states on the dashboard cards.
+  const { data: pendingTallies = [] } = useQuery({
+    queryKey: ['attendant', 'pending-tallies'],
+    queryFn: () =>
+      api.get('/tally-verifications/pending').then(r => r.data).catch(() => []),
+    refetchInterval: 60_000,
+  });
+  const tallySessionIds = new Set(
+    (pendingTallies as any[]).map((t: any) => t.sessionId),
+  );
+  // A session is "awaiting tally" when it's APPROVED but the morning sign-off
+  // tally is still pending (not yet locked by all 3 parties).
+  const amAwaitingTally = amSession?.status === 'APPROVED' && tallySessionIds.has(amSession.id);
+  const pmAwaitingTally = pmSession?.status === 'APPROVED' && tallySessionIds.has(pmSession.id);
+
   // Returned sessions — sourced from todaySessions, not the flock hook
   const returnedSessions = (todaySessions as any[]).filter(
     (s: any) => s.status === 'RETURNED',
@@ -91,19 +96,25 @@ export function AttendantHome() {
     const isClickable = pageMode === 'AM_FORM' || isReturned;
 
     let iconBg   = 'bg-amber-500';
-    let IconComp = <Sun className="w-7 h-7 text-white" />;
+    let IconComp: React.ReactNode = <Sun className="w-7 h-7 text-white" />;
     let statusTag: React.ReactNode = null;
     let subText = 'Egg counts · Feed · Environment · Vaccines';
 
-    if (isApproved) {
+    if (isApproved && amAwaitingTally) {
+      // PM verified — now sitting in next-morning tally queue
+      iconBg   = 'bg-purple-100 dark:bg-purple-900/30';
+      IconComp = <ClipboardCheck className="w-7 h-7 text-purple-600" />;
+      statusTag = <span className="text-xs font-normal text-purple-600 ml-1">· Awaiting morning tally</span>;
+      subText = 'PM-verified ✓ — awaiting next-morning 3-party sign-off';
+    } else if (isApproved) {
       iconBg   = 'bg-green-100 dark:bg-green-900/30';
       IconComp = <CheckCircle className="w-7 h-7 text-green-600" />;
       statusTag = <span className="text-xs font-normal text-green-600 ml-1">· Approved ✓</span>;
-      subText = 'Verified by Production Manager';
+      subText = 'Verified by Production Manager — tally complete';
     } else if (isPending) {
       iconBg   = 'bg-amber-100 dark:bg-amber-900/30';
       IconComp = <Clock className="w-7 h-7 text-amber-500" />;
-      statusTag = <span className="text-xs font-normal text-amber-600 ml-1">· Awaiting verification</span>;
+      statusTag = <span className="text-xs font-normal text-amber-600 ml-1">· Awaiting PM verification</span>;
       subText = 'Submitted — awaiting Production Manager verification';
     } else if (isReturned) {
       iconBg   = 'bg-red-100 dark:bg-red-900/30';
@@ -115,13 +126,16 @@ export function AttendantHome() {
     }
 
     const cardBase = `w-full rounded-2xl p-5 shadow-sm border flex items-center gap-4 text-left transition-all`;
-    const cardVariant = isApproved || isPending
-      ? isApproved
-        ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800 cursor-default'
-        : 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-700 cursor-default'
-      : isReturned
-        ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-700 hover:shadow-md active:scale-[0.98] cursor-pointer group'
-        : 'bg-white dark:bg-dark-card border-gray-100 dark:border-dark-border hover:shadow-md active:scale-[0.98] cursor-pointer group';
+    const cardVariant =
+      isApproved && amAwaitingTally
+        ? 'bg-purple-50 dark:bg-purple-900/10 border-purple-200 dark:border-purple-700 cursor-default'
+        : isApproved
+          ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800 cursor-default'
+          : isPending
+            ? 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-700 cursor-default'
+            : isReturned
+              ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-700 hover:shadow-md active:scale-[0.98] cursor-pointer group'
+              : 'bg-white dark:bg-dark-card border-gray-100 dark:border-dark-border hover:shadow-md active:scale-[0.98] cursor-pointer group';
 
     return (
       <button
@@ -140,6 +154,7 @@ export function AttendantHome() {
           <p className={`text-sm mt-0.5 ${
             isReturned ? 'text-red-500 dark:text-red-400'
             : isPending ? 'text-amber-600 dark:text-amber-400'
+            : (isApproved && amAwaitingTally) ? 'text-purple-600 dark:text-purple-400'
             : 'text-gray-500 dark:text-gray-400'
           }`}>
             {subText}
@@ -154,7 +169,6 @@ export function AttendantHome() {
 
   // ── PM card ───────────────────────────────────────────────────────────────
   function PMCard() {
-    // PM is blocked until AM is APPROVED
     const amApproved = amSession?.status === 'APPROVED';
 
     const isBlocked  = !amApproved;
@@ -172,7 +186,12 @@ export function AttendantHome() {
       ? 'Available once AM session is approved'
       : 'Egg counts · Feed · Environment · Vaccines';
 
-    if (isApproved) {
+    if (isApproved && pmAwaitingTally) {
+      iconBg   = 'bg-purple-100 dark:bg-purple-900/30';
+      IconComp = <ClipboardCheck className="w-7 h-7 text-purple-600" />;
+      statusTag = <span className="text-xs font-normal text-purple-600 ml-1">· Awaiting morning tally</span>;
+      subText = 'PM-verified ✓ — awaiting next-morning 3-party sign-off';
+    } else if (isApproved) {
       iconBg   = 'bg-green-100 dark:bg-green-900/30';
       IconComp = <CheckCircle className="w-7 h-7 text-green-600" />;
       statusTag = <span className="text-xs font-normal text-green-600 ml-1">· Approved ✓</span>;
@@ -180,7 +199,7 @@ export function AttendantHome() {
     } else if (isPending) {
       iconBg   = 'bg-indigo-100 dark:bg-indigo-900/30';
       IconComp = <Clock className="w-7 h-7 text-indigo-500" />;
-      statusTag = <span className="text-xs font-normal text-indigo-500 ml-1">· Awaiting verification</span>;
+      statusTag = <span className="text-xs font-normal text-indigo-500 ml-1">· Awaiting PM verification</span>;
       subText = 'Submitted — awaiting Production Manager verification';
     } else if (isReturned) {
       iconBg   = 'bg-red-100 dark:bg-red-900/30';
@@ -194,13 +213,15 @@ export function AttendantHome() {
     const cardBase = `w-full rounded-2xl p-5 shadow-sm border flex items-center gap-4 text-left transition-all`;
     const cardVariant = isBlocked
       ? 'bg-gray-50 dark:bg-dark-bg/60 border-gray-200 dark:border-dark-border opacity-60 cursor-not-allowed'
-      : isApproved
-        ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800 cursor-default'
-        : isPending
-          ? 'bg-indigo-50 dark:bg-indigo-900/10 border-indigo-200 dark:border-indigo-700 cursor-default'
-          : isReturned
-            ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-700 hover:shadow-md active:scale-[0.98] cursor-pointer group'
-            : 'bg-white dark:bg-dark-card border-gray-100 dark:border-dark-border hover:shadow-md active:scale-[0.98] cursor-pointer group';
+      : (isApproved && pmAwaitingTally)
+        ? 'bg-purple-50 dark:bg-purple-900/10 border-purple-200 dark:border-purple-700 cursor-default'
+        : isApproved
+          ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800 cursor-default'
+          : isPending
+            ? 'bg-indigo-50 dark:bg-indigo-900/10 border-indigo-200 dark:border-indigo-700 cursor-default'
+            : isReturned
+              ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-700 hover:shadow-md active:scale-[0.98] cursor-pointer group'
+              : 'bg-white dark:bg-dark-card border-gray-100 dark:border-dark-border hover:shadow-md active:scale-[0.98] cursor-pointer group';
 
     return (
       <button
@@ -219,6 +240,7 @@ export function AttendantHome() {
           <p className={`text-sm mt-0.5 ${
             isReturned ? 'text-red-500 dark:text-red-400'
             : isPending ? 'text-indigo-500 dark:text-indigo-400'
+            : (isApproved && pmAwaitingTally) ? 'text-purple-600 dark:text-purple-400'
             : isBlocked ? 'text-gray-400 dark:text-gray-500'
             : 'text-gray-500 dark:text-gray-400'
           }`}>
@@ -299,17 +321,33 @@ export function AttendantHome() {
         </button>
       </div>
 
-      {/* Awaiting-approval banner — egg sessions only */}
+      {/* Awaiting PM verification banner */}
       {awaitingApproval > 0 && (
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700
           rounded-2xl p-4 flex items-center gap-3">
           <Clock className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
           <div className="flex-1">
             <p className="text-amber-700 dark:text-amber-400 text-sm font-semibold">
-              {awaitingApproval} {awaitingApproval === 1 ? 'session' : 'sessions'} pending Production Manager verification
+              {awaitingApproval} {awaitingApproval === 1 ? 'session' : 'sessions'} awaiting Production Manager verification
             </p>
             <p className="text-xs text-amber-500 dark:text-amber-500 mt-0.5">
               You'll be notified if any are returned for correction.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Awaiting morning tally banner — shown when at least one session is in the tally queue */}
+      {(amAwaitingTally || pmAwaitingTally) && (
+        <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700
+          rounded-2xl p-4 flex items-center gap-3">
+          <ClipboardCheck className="w-5 h-5 text-purple-600 dark:text-purple-400 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-purple-700 dark:text-purple-400 text-sm font-semibold">
+              Next-morning 3-party tally in progress
+            </p>
+            <p className="text-xs text-purple-500 dark:text-purple-400 mt-0.5">
+              PM-verified session(s) are awaiting sign-off by Production Manager, Sales and Store.
             </p>
           </div>
         </div>

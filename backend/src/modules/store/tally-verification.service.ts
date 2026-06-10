@@ -129,25 +129,33 @@ export class TallyVerificationService {
     if (!tally) throw new NotFoundException('Tally not found');
     if (tally.isLocked) throw new BadRequestException('Tally already locked');
 
-    let totalFullTrays = 0, totalLooseEggs = 0, totalBrokenEggs = 0;
+    // Row fields match what the frontend (EggCollectionPage) sends:
+    // totalEggs, starterEggs, brokenSellable, brokenUnsellable, softShell, deformed, weightKg
+    let totalEggs = 0, totalStarterEggs = 0, totalBrokenSellable = 0, totalBrokenUnsellable = 0;
     let totalSoftShell = 0, totalDeformed = 0, totalWeightKg = 0;
     for (const r of rowData) {
-      totalFullTrays  += r.fullTrays  ?? 0;
-      totalLooseEggs  += r.looseEggs  ?? 0;
-      totalBrokenEggs += r.brokenEggs ?? 0;
-      totalSoftShell  += r.softShell  ?? 0;
-      totalDeformed   += r.deformed   ?? 0;
-      totalWeightKg   += r.weightKg   ?? 0;
+      totalEggs              += Number(r.totalEggs        ?? 0);
+      totalStarterEggs       += Number(r.starterEggs      ?? 0);
+      totalBrokenSellable    += Number(r.brokenSellable   ?? 0);
+      totalBrokenUnsellable  += Number(r.brokenUnsellable ?? 0);
+      totalSoftShell         += Number(r.softShell        ?? 0);
+      totalDeformed          += Number(r.deformed         ?? 0);
+      totalWeightKg          += Number(r.weightKg         ?? 0);
     }
-    const totalGoodEggs = totalFullTrays * 30 + totalLooseEggs;
+    // goodEggs = total eggs minus starter eggs (mirrors production.service logic)
+    const totalGoodEggs = Math.max(0, totalEggs - totalStarterEggs);
+    const totalFullTrays = Math.floor(totalGoodEggs / 30);
+    const totalLooseEggs = totalGoodEggs % 30;
+    const totalBrokenEggs = totalBrokenSellable + totalBrokenUnsellable;
 
     return this.prisma.$transaction(async (tx) => {
       await tx.eggCollectionSession.update({
         where: { id: sessionId },
         data: {
           rowData: rowData as any,
-          totalFullTrays, totalLooseEggs, totalBrokenEggs, totalSoftShell, totalDeformed,
-          totalWeightKg, totalGoodEggs,
+          totalFullTrays, totalLooseEggs, totalBrokenEggs,
+          totalSoftShell, totalDeformed, totalWeightKg, totalGoodEggs,
+          totalStarterEggs, totalBrokenSellable, totalBrokenUnsellable,
           editedAt: new Date(),
           editedById: user.id,
         },
@@ -166,7 +174,7 @@ export class TallyVerificationService {
       });
 
       const targets = await tx.user.findMany({
-        where: { role: { in: ['SALES', 'STORE'] }, isActive: true },
+        where: { role: { in: ['SALES', 'STORE', 'MANAGER', 'OWNER'] }, isActive: true },
         select: { id: true },
       });
       for (const t of targets) {
@@ -175,7 +183,7 @@ export class TallyVerificationService {
             userId: t.id,
             type: 'EGG_TALLY_TRIGGERED' as any,
             title: 'Tally edited — re-sign required',
-            message: 'Production Manager edited the tally. Please review and re-sign.',
+            message: 'Production Manager edited the tally row data. All parties must review and re-sign.',
             entityId: sessionId,
             entityType: 'EggCollectionSession',
           },
