@@ -211,18 +211,36 @@ export class DashboardController {
         where: { isLocked: true },
         orderBy: { verificationDate: 'desc' },
         include: {
-          session: { select: { totalGoodEggs: true, totalStarterEggs: true, totalBrokenEggs: true } },
+          session: {
+            select: {
+              totalGoodEggs: true,
+              totalStarterEggs: true,
+              totalBrokenSellable: true,
+              totalBrokenUnsellable: true,
+              totalSoftShell: true,
+              totalDeformed: true,
+            },
+          },
         },
       });
       if (latestTally && todayPricing) {
-        const stdEggs        = latestTally.finalGoodEggs ?? latestTally.session?.totalGoodEggs ?? 0;
-        const strtEggs       = (latestTally.session as any)?.totalStarterEggs ?? 0;
-        const latestAdj      = await this.prisma.eggBreakageAdjustment.findFirst({ orderBy: { adjustmentDate: 'desc' } });
-        const sellableBroken = latestAdj?.newConsumable ?? 0;
-        expectedRevenueKes =
-          stdEggs        * Number(todayPricing.pricePerEgg) +
-          strtEggs       * Number(todayPricing.pricePerEggStarter ?? 0) +
-          sellableBroken * Number(todayPricing.pricePerEggBroken  ?? 0);
+        const sess             = latestTally.session as any;
+        const starterEggs      = sess?.totalStarterEggs      ?? 0;
+        const brokenSellable   = sess?.totalBrokenSellable   ?? 0;
+        const brokenUnsellable = sess?.totalBrokenUnsellable ?? 0;
+        const softShell        = sess?.totalSoftShell        ?? 0;
+        const deformed         = sess?.totalDeformed         ?? 0;
+        const totalGoodEggs    = latestTally.finalGoodEggs   ?? sess?.totalGoodEggs ?? 0;
+
+        // Per-spec: if no starter eggs, all eggs at standard price;
+        // if starter eggs exist, starter at starter price + remaining at standard price.
+        if (starterEggs === 0) {
+          expectedRevenueKes = totalGoodEggs * Number(todayPricing.pricePerEgg);
+        } else {
+          expectedRevenueKes =
+            starterEggs * Number(todayPricing.pricePerEggStarter ?? todayPricing.pricePerEgg) +
+            (brokenSellable + brokenUnsellable + softShell + deformed) * Number(todayPricing.pricePerEgg);
+        }
       }
     } catch (_) { /* best-effort */ }
 
