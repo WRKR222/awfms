@@ -165,6 +165,16 @@ function TallyCard({ tally }: { tally: TallySession }) {
       return api.post(`/tally-verifications/${tally.sessionId}/sign`, body);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tally-pending'] }),
+    onError: (err: any) => {
+      // Surface the backend's rejection message (e.g. "Sales must sign off before
+      // Store can sign") so the user knows exactly what went wrong instead of
+      // seeing the button silently stop spinning with no explanation.
+      const msg =
+        err?.response?.data?.message ??
+        err?.message ??
+        'Sign-off failed. Please try again.';
+      alert(msg);
+    },
   });
 
   const setRevenue = useMutation({

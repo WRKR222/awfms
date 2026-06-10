@@ -28,9 +28,19 @@ export class StoreService {
     const totalLockedEggs  = lockedBookings.reduce((s, b) => s + b.quantityEggs, 0);
     const totalLockedTrays = lockedBookings.reduce((s, b) => s + b.quantityTrays, 0);
 
-    // Pending tallies awaiting Store signature
+    // Pending tallies awaiting Store signature.
+    // Only count tallies where PM and Sales have already signed — those are the
+    // ones actually in Store's queue. Tallies where PM/Sales haven't signed yet
+    // are not yet Store's turn, so they must not inflate this badge count or
+    // lure the Store user into clicking Sign before their prerequisites are met
+    // (which would produce a silent 400 error from the backend).
     const pendingTallies = await this.prisma.eggTallyVerification.count({
-      where: { isLocked: false, storeSignedById: null },
+      where: {
+        isLocked:        false,
+        storeSignedById: null,
+        pmSignedById:    { not: null },
+        salesSignedById: { not: null },
+      },
     });
 
     return {
