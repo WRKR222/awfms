@@ -356,6 +356,7 @@ model Batch {
   healthEvents          HealthEvent[]
   eggCollectionSessions EggCollectionSession[]
   cageAssignments       BatchCageAssignment[]
+  dailyEggAggregates    DailyEggAggregate[]
   
   @@index([houseId])
   @@index([stage])
