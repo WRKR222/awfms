@@ -90,7 +90,7 @@ export class TallyVerificationService {
         session: {
           select: {
             id: true, sessionDate: true, shift: true, status: true,
-            houseId: true, totalEggs: true, totalGoodEggs: true,
+            houseId: true, totalGoodEggs: true,
             totalFullTrays: true, totalLooseEggs: true,
             totalStarterEggs: true, totalBrokenSellable: true,
             totalBrokenUnsellable: true, totalSoftShell: true,
@@ -114,7 +114,7 @@ export class TallyVerificationService {
       : [];
     const batchMap = Object.fromEntries(batches.map(b => [b.id, b.batchCode]));
 
-    return tallies.map(t => ({
+    return (tallies as any[]).map((t: any) => ({
       ...t,
       session: t.session
         ? { ...t.session, batch: { batchCode: batchMap[t.session.batchId] ?? '[Batch Removed]' } }

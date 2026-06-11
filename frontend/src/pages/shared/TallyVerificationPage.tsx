@@ -54,7 +54,6 @@ interface TallySession {
     houseId: string;
     shift: string;
     sessionDate: string;
-    totalEggs?: number;
     totalGoodEggs: number;
     totalFullTrays: number;
     totalLooseEggs: number;
@@ -267,19 +266,16 @@ function TallyCard({ tally }: { tally: TallySession }) {
         </p>
         {(() => {
           // ── Derive values ────────────────────────────────────────────────────
-          // Raw collected eggs: (fullTrays × 30) + loose eggs.
-          // totalEggs is now returned by listPending; fall back to deriving it
-          // from the stored breakdown if the field is absent (older cached data).
-          const goodEggs     = tally.isLocked ? (tally.finalGoodEggs ?? 0) : originalGood;
-          const trays        = tally.isLocked ? (tally.finalFullTrays ?? 0) : originalTrays;
-          const loose        = tally.isLocked
+          // Raw collected eggs = goodEggs + all deduction categories.
+          // totalEggs is not a stored session column — derive it from the breakdown.
+          const goodEggs  = tally.isLocked ? (tally.finalGoodEggs ?? 0) : originalGood;
+          const trays     = tally.isLocked ? (tally.finalFullTrays ?? 0) : originalTrays;
+          const loose     = tally.isLocked
             ? Math.max(0, (tally.finalGoodEggs ?? 0) - (tally.finalFullTrays ?? 0) * 30)
             : originalLoose;
-          const rawTotal     = session?.totalEggs != null
-            ? session.totalEggs
-            : goodEggs + starterEggs + brokenSell + brokenUnsell + softShellCt + deformedCt;
-          const attdTrays    = Math.floor(rawTotal / 30);
-          const attdLoose    = rawTotal % 30;
+          const rawTotal  = goodEggs + starterEggs + brokenSell + brokenUnsell + softShellCt + deformedCt;
+          const attdTrays = Math.floor(rawTotal / 30);
+          const attdLoose = rawTotal % 30;
 
           type LedgerRow = { label: string; value: number; isDeduction?: boolean; isResult?: boolean; isSeparator?: boolean };
           const rows: LedgerRow[] = [
