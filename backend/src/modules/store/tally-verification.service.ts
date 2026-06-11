@@ -90,8 +90,8 @@ export class TallyVerificationService {
         session: {
           select: {
             id: true, sessionDate: true, shift: true, status: true,
-            houseId: true, totalGoodEggs: true, totalFullTrays: true,
-            totalLooseEggs: true,
+            houseId: true, totalEggs: true, totalGoodEggs: true,
+            totalFullTrays: true, totalLooseEggs: true,
             totalStarterEggs: true, totalBrokenSellable: true,
             totalBrokenUnsellable: true, totalSoftShell: true,
             totalDeformed: true, totalWeightKg: true,

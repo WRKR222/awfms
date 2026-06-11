@@ -54,6 +54,7 @@ interface TallySession {
     houseId: string;
     shift: string;
     sessionDate: string;
+    totalEggs?: number;
     totalGoodEggs: number;
     totalFullTrays: number;
     totalLooseEggs: number;
@@ -91,19 +92,6 @@ function SignoffBadge({ label, signed, signedAt }: { label: string; signed: bool
       {signed ? <CheckCircle className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
       {label}
       {signed && signedAt && <span className="opacity-60 text-[10px]">{dayjs(signedAt).format('HH:mm')}</span>}
-    </div>
-  );
-}
-
-function StatCell({ label, value, highlight = false, blue = false }: { label: string; value: string | number; highlight?: boolean; blue?: boolean }) {
-  return (
-    <div className="text-center">
-      <p className={`text-xl font-bold ${
-        blue      ? 'text-blue-600 dark:text-blue-400' :
-        highlight ? 'text-brand-green' :
-                    'text-gray-800 dark:text-gray-200'
-      }`}>{value}</p>
-      <p className="text-xs text-gray-400">{label}</p>
     </div>
   );
 }
@@ -268,34 +256,94 @@ function TallyCard({ tally }: { tally: TallySession }) {
         }
       </div>
 
-      {/* Session totals grid */}
+      {/* Tally Verification Ledger
+           Formula: Total Good Eggs = (Attd. Full Trays × 30 + Loose Eggs)
+                                    − Starter − Broken(Sell) − Broken(Unsell) − Soft-Shell − Deformed
+           The ledger makes the calculation explicit so all three parties can
+           independently verify each deduction line before signing. */}
       <div className="px-4 py-4 border-b border-gray-100 dark:border-dark-border">
-        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">Egg Collection Totals</p>
-        <div className="grid grid-cols-3 md:grid-cols-5 gap-3">
-          <StatCell label={tally.isLocked ? 'Final Full Trays' : 'Attd. Full Trays'} value={tally.isLocked ? (tally.finalFullTrays ?? 0) : originalTrays} highlight />
-          <StatCell label="Loose Eggs" value={tally.isLocked ? ((tally.finalGoodEggs ?? 0) - (tally.finalFullTrays ?? 0) * 30) : originalLoose} />
-          {/* All-starter-only: totalEggs === starterEggs → good = 0, but display starter count as
-              the effective good-egg equivalent, clearly labelled so 3-party signers understand */}
-          {(() => {
-            const lockedGood   = tally.finalGoodEggs ?? 0;
-            const lockedStart  = tally.finalStarterEggs ?? 0;
-            const allStarterLocked  = tally.isLocked && lockedGood === 0 && lockedStart > 0;
-            const allStarterLive    = !tally.isLocked && isAllStarterLive;
-            if (allStarterLocked) {
-              return <StatCell label="All Starter Eggs" value={lockedStart} highlight blue />;
-            }
-            if (allStarterLive) {
-              return <StatCell label="All Starter Eggs" value={starterEggs} highlight blue />;
-            }
-            return <StatCell label="Total Good" value={tally.isLocked ? lockedGood : originalGood} highlight />;
-          })()}
-          {session?.totalStarterEggs != null && !isAllStarterLive && <StatCell label="Starter Eggs" value={session.totalStarterEggs} />}
-          {session?.totalBrokenSellable != null && <StatCell label="Broken (Sell)" value={session.totalBrokenSellable} />}
-          {session?.totalBrokenUnsellable != null && <StatCell label="Broken (Unsell)" value={session.totalBrokenUnsellable} />}
-          {session?.totalSoftShell != null && <StatCell label="Soft Shell" value={session.totalSoftShell} />}
-          {session?.totalDeformed != null && <StatCell label="Deformed" value={session.totalDeformed} />}
-          {session?.totalWeightKg != null && <StatCell label="Weight (kg)" value={Number(session.totalWeightKg).toFixed(1)} />}
-        </div>
+        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3">
+          Egg Collection Ledger
+        </p>
+        {(() => {
+          // ── Derive values ────────────────────────────────────────────────────
+          // Raw collected eggs: (fullTrays × 30) + loose eggs.
+          // totalEggs is now returned by listPending; fall back to deriving it
+          // from the stored breakdown if the field is absent (older cached data).
+          const goodEggs     = tally.isLocked ? (tally.finalGoodEggs ?? 0) : originalGood;
+          const trays        = tally.isLocked ? (tally.finalFullTrays ?? 0) : originalTrays;
+          const loose        = tally.isLocked
+            ? Math.max(0, (tally.finalGoodEggs ?? 0) - (tally.finalFullTrays ?? 0) * 30)
+            : originalLoose;
+          const rawTotal     = session?.totalEggs != null
+            ? session.totalEggs
+            : goodEggs + starterEggs + brokenSell + brokenUnsell + softShellCt + deformedCt;
+          const attdTrays    = Math.floor(rawTotal / 30);
+          const attdLoose    = rawTotal % 30;
+
+          type LedgerRow = { label: string; value: number; isDeduction?: boolean; isResult?: boolean; isSeparator?: boolean };
+          const rows: LedgerRow[] = [
+            { label: `Attd. Full Trays (${attdTrays} × 30)`, value: attdTrays * 30 },
+            { label: 'Loose Eggs',                            value: attdLoose },
+            { label: '───',                                   value: 0, isSeparator: true },
+          ];
+          if (starterEggs   > 0) rows.push({ label: '− Starter Eggs',        value: starterEggs,   isDeduction: true });
+          if (brokenSell    > 0) rows.push({ label: '− Broken (Sellable)',    value: brokenSell,    isDeduction: true });
+          if (brokenUnsell  > 0) rows.push({ label: '− Broken (Unsellable)',  value: brokenUnsell,  isDeduction: true });
+          if (softShellCt   > 0) rows.push({ label: '− Soft-Shell',           value: softShellCt,   isDeduction: true });
+          if (deformedCt    > 0) rows.push({ label: '− Deformed',             value: deformedCt,    isDeduction: true });
+          rows.push({ label: '───', value: 0, isSeparator: true });
+          rows.push({ label: tally.isLocked ? 'Final Good Eggs' : 'Total Good Eggs', value: goodEggs, isResult: true });
+
+          return (
+            <div className="space-y-0.5">
+              {rows.map((r, i) => {
+                if (r.isSeparator) {
+                  return <div key={i} className="border-t border-gray-100 dark:border-dark-border my-1.5" />;
+                }
+                return (
+                  <div key={i} className={`flex items-center justify-between px-2 py-1 rounded-lg text-sm ${
+                    r.isResult
+                      ? 'bg-brand-green/10 dark:bg-brand-green/20'
+                      : r.isDeduction
+                      ? ''
+                      : 'bg-gray-50 dark:bg-gray-800/40'
+                  }`}>
+                    <span className={`text-xs ${
+                      r.isResult
+                        ? 'font-bold text-brand-green'
+                        : r.isDeduction
+                        ? 'text-gray-400 dark:text-gray-500'
+                        : 'font-semibold text-gray-600 dark:text-gray-300'
+                    }`}>
+                      {r.label}
+                    </span>
+                    <span className={`font-mono text-sm tabular-nums ${
+                      r.isResult
+                        ? 'font-bold text-brand-green'
+                        : r.isDeduction
+                        ? 'text-red-400 dark:text-red-400'
+                        : 'font-semibold text-gray-700 dark:text-gray-200'
+                    }`}>
+                      {r.isDeduction ? `(${r.value})` : r.value.toLocaleString()}
+                    </span>
+                  </div>
+                );
+              })}
+              {session?.totalWeightKg != null && (
+                <div className="flex items-center justify-between px-2 py-1 text-xs text-gray-400 mt-1">
+                  <span>Weight</span>
+                  <span className="font-mono">{Number(session.totalWeightKg).toFixed(1)} kg</span>
+                </div>
+              )}
+              {isAllStarterLive && (
+                <p className="text-[10px] text-blue-500 dark:text-blue-400 px-2 mt-1">
+                  ⓘ All eggs this session are starter-grade — no standard good eggs produced.
+                </p>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Per-row breakdown */}
