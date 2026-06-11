@@ -296,6 +296,8 @@ export class SalesService {
                 totalGoodEggs: true,
                 totalBrokenEggs: true,
                 totalStarterEggs: true,
+                totalBrokenSellable: true,
+                totalBrokenUnsellable: true,
               },
             },
           },
