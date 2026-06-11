@@ -33,7 +33,11 @@ export class CageMapService {
               // FIX: was row_code (DB column name) — Prisma uses camelCase field name
               orderBy: { rowCode: 'asc' },
               include: {
-                assignments: true,
+                assignments: {
+                  select: {
+                    id: true, batchId: true, birdCount: true, transferDate: true,
+                  },
+                },
               },
             },
           },
@@ -119,10 +123,14 @@ export class CageMapService {
         const batch = assignment ? batchMap[assignment.batchId] : null;
         const ageWeeks = batch ? dayjs().diff(dayjs(batch.dateOfHatch), 'week') : null;
 
-        // birdsInRow = currentBirdCount divided evenly across all rows this
-        // batch occupies in the block (floored so the sum never exceeds total).
+        // birdsInRow: prefer the stored bird_count on the assignment record
+        // (set at registration time and updated by culling events).
+        // Fall back to evenly dividing currentBirdCount only if stored value is 0 or missing.
+        const storedBirdCount = assignment?.birdCount ?? 0;
         const birdsInRow = batch
-          ? Math.floor(batch.currentBirdCount / (rowsPerBatch[batch.id] ?? 1))
+          ? (storedBirdCount > 0
+              ? storedBirdCount
+              : Math.floor(batch.currentBirdCount / (rowsPerBatch[batch.id] ?? 1)))
           : null;
 
         return {
