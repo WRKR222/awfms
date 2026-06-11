@@ -150,4 +150,20 @@ export class CageMapService {
     this.eventEmitter.emit(DASHBOARD_REFRESH_EVENT, { roles: ['MANAGER', 'OWNER'] });
     return result;
   }
+  // Returns all cage-row assignments for a given batch.
+  // Used by the controller to power the batch-detail cage overlay.
+  async getAssignmentsByBatch(batchId: string) {
+    return this.prisma.batchCageAssignment.findMany({
+      where: { batchId },
+      include: {
+        row: {
+          select: {
+            rowCode: true,
+            isActive: true,
+            assignments: false,
+          },
+        },
+      },
+    });
+  }
 }
