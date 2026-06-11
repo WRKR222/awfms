@@ -93,19 +93,44 @@ export class CageMapService {
 
     const batchMap = Object.fromEntries(batches.map(b => [b.id, b]));
 
+    // Count how many rows in this block are assigned to each batch.
+    // This is needed so we can split currentBirdCount proportionally across rows
+    // (culling decrements the total; we must divide by row-count to avoid
+    //  showing the full batch total on every individual row).
+    const allRows = (block as any).farm_sections.flatMap((s: any) => s.farm_rows);
+    const rowsPerBatch: Record<string, number> = {};
+    for (const row of allRows) {
+      if (row.assignments?.batchId) {
+        const bid = row.assignments.batchId;
+        rowsPerBatch[bid] = (rowsPerBatch[bid] ?? 0) + 1;
+      }
+    }
+
     const sections = (block as any).farm_sections.map((section: any) => ({
       code: section.code,
       rows: section.farm_rows.map((row: any) => {
         const assignment = row.assignments;
         const batch = assignment ? batchMap[assignment.batchId] : null;
         const ageWeeks = batch ? dayjs().diff(dayjs(batch.dateOfHatch), 'week') : null;
+
+        // birdsInRow = currentBirdCount divided evenly across all rows this
+        // batch occupies in the block (floored so the sum never exceeds total).
+        const birdsInRow = batch
+          ? Math.floor(batch.currentBirdCount / (rowsPerBatch[batch.id] ?? 1))
+          : null;
+
         return {
           rowCode: row.rowCode,
           isActive: row.isActive,
           batch: batch
             ? {
                 batchCode: batch.batchCode, strain: batch.strain, stage: batch.stage,
-                birdCount: batch.currentBirdCount, ageWeeks, // FIX: always authoritative currentBirdCount (culling always decrements this)
+                // birdCount reflects birds in THIS row only; totalBirdCount is
+                // the authoritative whole-batch figure (post-cull).
+                birdCount: birdsInRow!,
+                totalBirdCount: batch.currentBirdCount,
+                rowCount: rowsPerBatch[batch.id] ?? 1,
+                ageWeeks,
                 hdpPercent: hdpMap[batch.id] ?? null,
                 transferDate: assignment!.transferDate,
               }

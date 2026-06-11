@@ -12,7 +12,12 @@ interface BatchInfo {
   batchCode: string;
   strain: string;
   stage: string;
+  /** Birds assigned to THIS row only (currentBirdCount ÷ rowCount). */
   birdCount: number;
+  /** Authoritative total birds in the batch across all rows. */
+  totalBirdCount: number;
+  /** Number of rows this batch occupies in the block. */
+  rowCount: number;
   ageWeeks: number | null;
   hdpPercent: number | null;
   transferDate: string;
@@ -82,8 +87,8 @@ interface TooltipProps {
 }
 
 function Tooltip({ row, color, anchorRect, containerRect }: TooltipProps) {
-  const TIP_W = 230;
-  const TIP_H = 180;
+  const TIP_W = 240;
+  const TIP_H = 200;
   const MARGIN = 8;
 
   let left = anchorRect.left - containerRect.left + anchorRect.width / 2 - TIP_W / 2;
@@ -124,9 +129,15 @@ function Tooltip({ row, color, anchorRect, containerRect }: TooltipProps) {
           </div>
           <div style={{ fontSize: 11, color: '#9ca3af', lineHeight: 1.8 }}>
             <div><span style={{ color: '#6b7280' }}>Strain:  </span>{batch.strain}</div>
-            <div><span style={{ color: '#6b7280' }}>Birds:   </span>
+            <div><span style={{ color: '#6b7280' }}>Birds (row): </span>
               <span style={{ color: '#e5e7eb', fontWeight: 600 }}>{batch.birdCount.toLocaleString()}</span>
             </div>
+            {batch.rowCount > 1 && (
+              <div><span style={{ color: '#6b7280' }}>Birds (batch): </span>
+                <span style={{ color: '#9ca3af' }}>{batch.totalBirdCount.toLocaleString()}</span>
+                <span style={{ color: '#4b5563', fontSize: 9, marginLeft: 4 }}>({batch.rowCount} rows)</span>
+              </div>
+            )}
             <div><span style={{ color: '#6b7280' }}>Age:     </span>
               {batch.ageWeeks !== null ? `Wk ${batch.ageWeeks}` : '—'}
             </div>
@@ -253,6 +264,8 @@ function StatsBar({ sections }: { sections: SectionData[] }) {
       if (!row.isActive) { inactiveRows++; return; }
       if (row.batch) {
         occupiedRows++;
+        // birdCount is already divided per-row by the backend, so summing
+        // across rows gives the correct block-wide total without double-counting.
         totalBirds += row.batch.birdCount;
         batches.add(row.batch.batchCode);
       } else {
