@@ -8,7 +8,7 @@ import { useBatches } from '../../hooks/useFlock';
 import {
   AlertTriangle, Plus, CheckCircle, Trash2, Scale, ShieldOff,
   ShieldCheck, Scissors, Bug, Stethoscope, Package, Archive,
-  Activity, Syringe, ClipboardList, HeartCrash,
+  Activity, Syringe, ClipboardList, HeartCrack,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 
@@ -42,7 +42,7 @@ const EVENT_ICONS: Record<string, React.ElementType> = {
   QUARANTINE_IMPOSED: ShieldOff,
   QUARANTINE_LIFTED:  ShieldCheck,
   CULLING:            Scissors,
-  BIRD_MORTALITY:     HeartCrash,
+  BIRD_MORTALITY:     HeartCrack,
   BATCH_SOLD:         Package,
   BATCH_DISCARDED:    Archive,
   WEIGHING:           Scale,
