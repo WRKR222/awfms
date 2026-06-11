@@ -74,13 +74,18 @@ export class HealthService {
       ).catch(() => { /* best-effort */ });
     }
 
-    // When birds are culled, subtract affected count from batch's currentBirdCount
-    if (dto.eventType === 'CULLING' && dto.affectedCount > 0) {
+    // When birds are culled OR mortality is logged, subtract affected count from
+    // batch's currentBirdCount and update the specific cage-map row if one was given.
+    // BIRD_MORTALITY behaves identically to CULLING — the only difference is semantic
+    // (unintentional death vs deliberate cull). Both support a row selector when the
+    // batch is in the Production House.
+    if ((dto.eventType === 'CULLING' || dto.eventType === 'BIRD_MORTALITY') && dto.affectedCount > 0) {
       await this.prisma.batch.update({
         where: { id: dto.batchId },
         data: { currentBirdCount: { decrement: dto.affectedCount } },
       });
-      // Update cage map row if row specified in notes (e.g. "Culled from row A1")
+
+      // Parse row code from notes (e.g. "Culled from row A1" / "Mortality in row B2")
       const rowMatch = (dto.notes ?? '').match(/row\s+(\w+)/i);
       if (rowMatch) {
         const rowCode = rowMatch[1].toUpperCase();
@@ -90,9 +95,10 @@ export class HealthService {
         });
         const match = assignments.find((a: any) => a.row?.rowCode === rowCode);
         if (match) {
+          const newCount = Math.max(0, match.birdCount - dto.affectedCount);
           await this.prisma.batchCageAssignment.update({
             where: { id: match.id },
-            data: { birdCount: Math.max(0, match.birdCount - dto.affectedCount) },
+            data: { birdCount: newCount },
           });
         }
       }

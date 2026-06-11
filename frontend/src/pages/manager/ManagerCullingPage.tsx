@@ -8,7 +8,7 @@ import { useBatches } from '../../hooks/useFlock';
 import {
   AlertTriangle, Plus, CheckCircle, Trash2, Scale, ShieldOff,
   ShieldCheck, Scissors, Bug, Stethoscope, Package, Archive,
-  Activity, Syringe, ClipboardList,
+  Activity, Syringe, ClipboardList, HeartCrash,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 
@@ -28,6 +28,7 @@ const EVENT_TYPES = [
   { value: 'QUARANTINE_LIFTED',   label: 'Quarantine Lifted',   showDisease: false, showWeight: false },
   // ── Batch / physical events ────────────────────────────────────────────────
   { value: 'CULLING',             label: 'Bird Culling',        showDisease: false, showWeight: false },
+  { value: 'BIRD_MORTALITY',      label: 'Bird Mortality',      showDisease: false, showWeight: false },
   { value: 'BATCH_SOLD',          label: 'Batch Sold',          showDisease: false, showWeight: false },
   { value: 'BATCH_DISCARDED',     label: 'Batch Discarded',     showDisease: false, showWeight: false },
   { value: 'WEIGHING',            label: 'Bird Weighing',       showDisease: false, showWeight: true  },
@@ -41,6 +42,7 @@ const EVENT_ICONS: Record<string, React.ElementType> = {
   QUARANTINE_IMPOSED: ShieldOff,
   QUARANTINE_LIFTED:  ShieldCheck,
   CULLING:            Scissors,
+  BIRD_MORTALITY:     HeartCrash,
   BATCH_SOLD:         Package,
   BATCH_DISCARDED:    Archive,
   WEIGHING:           Scale,
@@ -60,6 +62,8 @@ interface EventForm {
   sampleCount?: number;
   totalWeightG?: number;
   notes?: string;
+  // Row selector for CULLING / BIRD_MORTALITY in production house
+  selectedRow?: string;
 }
 
 export function ManagerCullingPage() {
@@ -76,11 +80,12 @@ export function ManagerCullingPage() {
   const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<EventForm>({
     defaultValues: {
       batchId: '', eventType: 'CULLING', eventDate: dayjs().format('YYYY-MM-DD'),
-      affectedCount: 1, notes: '',
+      affectedCount: 1, notes: '', selectedRow: '',
     },
   });
 
   const selectedType = watch('eventType');
+  const selectedBatchId = watch('batchId');
   const eventCfg = EVENT_TYPES.find(e => e.value === selectedType);
   const sampleCount = watch('sampleCount');
   const totalWeightG = watch('totalWeightG');
@@ -88,17 +93,46 @@ export function ManagerCullingPage() {
     ? (Number(totalWeightG) / Number(sampleCount)).toFixed(1)
     : null;
 
+  // Determine if selected batch is in production house
+  const selectedBatch = (batches as any[]).find((b: any) => b.id === selectedBatchId);
+  const isProductionHouse = selectedBatch?.location === 'PRODUCTION_HOUSE';
+
+  // Whether this event type supports row-level selection
+  const supportsRowSelect = (selectedType === 'CULLING' || selectedType === 'BIRD_MORTALITY') && isProductionHouse;
+
+  // Fetch cage assignments (rows) for the selected production-house batch
+  const { data: cageAssignments = [] } = useQuery({
+    queryKey: ['cage-assignments', selectedBatchId],
+    queryFn: () => isProductionHouse && selectedBatchId
+      ? api.get(`/cage-map/assignments?batchId=${selectedBatchId}`).then(r => r.data).catch(() => [])
+      : Promise.resolve([]),
+    enabled: isProductionHouse && !!selectedBatchId,
+  });
+
   const create = useMutation({
-    mutationFn: (data: EventForm) => api.post('/health/events', {
-      ...data,
-      affectedCount: Number(data.affectedCount),
-      sampleCount: data.sampleCount ? Number(data.sampleCount) : undefined,
-      totalWeightG: data.totalWeightG ? Number(data.totalWeightG) : undefined,
-    }).then(r => r.data),
+    mutationFn: (data: EventForm) => {
+      // Build notes: prepend row info for culling/mortality in production house
+      let notes = data.notes ?? '';
+      if (supportsRowSelect && data.selectedRow) {
+        const prefix = data.eventType === 'BIRD_MORTALITY'
+          ? `Mortality in row ${data.selectedRow}`
+          : `Culled from row ${data.selectedRow}`;
+        notes = notes ? `${prefix}. ${notes}` : prefix;
+      }
+      return api.post('/health/events', {
+        ...data,
+        notes,
+        selectedRow: undefined, // don't send this extra field
+        affectedCount: Number(data.affectedCount),
+        sampleCount: data.sampleCount ? Number(data.sampleCount) : undefined,
+        totalWeightG: data.totalWeightG ? Number(data.totalWeightG) : undefined,
+      }).then(r => r.data);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['health-events'] });
       qc.invalidateQueries({ queryKey: ['batches'] });
       qc.invalidateQueries({ queryKey: ['cage-map'] });
+      qc.invalidateQueries({ queryKey: ['cage-assignments'] });
       setSubmitted(true);
       reset();
       setTimeout(() => { setSubmitted(false); setShowForm(false); }, 2000);
@@ -169,24 +203,39 @@ export function ManagerCullingPage() {
             </div>
           </div>
 
-          {/* Row selector for production house culling */}
-          {selectedType === 'CULLING' && (() => {
-            const selectedBatch = batches.find((b: any) => b.id === watch('batchId'));
-            if (selectedBatch?.location === 'PRODUCTION_HOUSE') {
-              return (
-                <div className="bg-brand-green/5 dark:bg-brand-green/10 border border-brand-green/30 rounded-xl p-3">
-                  <label className={lCls}>Unit / Row (Production House)</label>
-                  <select className={iCls} {...register('notes')}>
-                    <option value="">Select row where culling occurred…</option>
-                    {['A1', 'A2', 'B1', 'B2', 'C1', 'C2'].map(row => (
-                      <option key={row} value={`Culled from row ${row}`}>Row {row}</option>
-                    ))}
-                  </select>
-                  <p className="text-[10px] text-gray-400 mt-1">Bird count will be subtracted from this row in the cage map.</p>
-                </div>
-              );
-            }
-            return null;
+          {/* Row selector for CULLING / BIRD_MORTALITY in production house */}
+          {supportsRowSelect && (() => {
+            // Use live cage assignments if available, fall back to hardcoded rows
+            const rows: string[] = (cageAssignments as any[]).length
+              ? (cageAssignments as any[]).map((a: any) => a.rowCode ?? a.row?.rowCode).filter(Boolean)
+              : ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+
+            const label = selectedType === 'BIRD_MORTALITY'
+              ? 'Row where mortality occurred'
+              : 'Unit / Row (Production House)';
+            const placeholder = selectedType === 'BIRD_MORTALITY'
+              ? 'Select row where mortality occurred…'
+              : 'Select row where culling occurred…';
+            const hint = selectedType === 'BIRD_MORTALITY'
+              ? 'Bird count will be subtracted from this row and the batch total will be recalculated.'
+              : 'Bird count will be subtracted from this row in the cage map.';
+            const color = selectedType === 'BIRD_MORTALITY'
+              ? 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-800/40'
+              : 'bg-brand-green/5 dark:bg-brand-green/10 border-brand-green/30';
+
+            return (
+              <div className={`${color} border rounded-xl p-3`}>
+                <label className={lCls}>{label}</label>
+                <select className={iCls} {...register('selectedRow', { required: supportsRowSelect })}>
+                  <option value="">{placeholder}</option>
+                  {rows.map(row => (
+                    <option key={row} value={row}>Row {row}</option>
+                  ))}
+                </select>
+                {errors.selectedRow && <p className="text-xs text-red-500 mt-1">Please select a row</p>}
+                <p className="text-[10px] text-gray-400 mt-1">{hint}</p>
+              </div>
+            );
           })()}
 
           {eventCfg?.showDisease && (
