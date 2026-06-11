@@ -122,6 +122,9 @@ export function ManagerCullingPage() {
       return api.post('/health/events', {
         ...data,
         notes,
+        // Send rowCode explicitly so the backend can reliably identify the row
+        // without having to regex-parse the notes string.
+        rowCode: (supportsRowSelect && data.selectedRow) ? data.selectedRow : undefined,
         selectedRow: undefined, // don't send this extra field
         affectedCount: Number(data.affectedCount),
         sampleCount: data.sampleCount ? Number(data.sampleCount) : undefined,

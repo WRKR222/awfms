@@ -93,17 +93,23 @@ export class CageMapService {
 
     const batchMap = Object.fromEntries(batches.map(b => [b.id, b]));
 
-    // Count how many rows in this block are assigned to each batch.
-    // This is needed so we can split currentBirdCount proportionally across rows
-    // (culling decrements the total; we must divide by row-count to avoid
-    //  showing the full batch total on every individual row).
-    const allRows = (block as any).farm_sections.flatMap((s: any) => s.farm_rows);
+    // Count how many rows ACROSS ALL BLOCKS are assigned to each batch.
+    // IMPORTANT: A batch can span multiple blocks (e.g. 6 rows in Block A + Block B).
+    // If we only counted rows in the currently-viewed block the divisor would be wrong,
+    // producing inflated per-row bird counts (e.g. 3952 ÷ 3 = 1317 instead of 3952 ÷ 6 = 658).
+    // After a cull, currentBirdCount is the authoritative total — we must divide by the
+    // GLOBAL row count so every row reflects (post-cull total ÷ total rows), not
+    // (post-cull total ÷ rows in this block only).
+    const globalAssignments = batchIds.length
+      ? await this.prisma.batchCageAssignment.findMany({
+          where: { batchId: { in: batchIds } },
+          select: { batchId: true },
+        })
+      : [];
+
     const rowsPerBatch: Record<string, number> = {};
-    for (const row of allRows) {
-      if (row.assignments?.batchId) {
-        const bid = row.assignments.batchId;
-        rowsPerBatch[bid] = (rowsPerBatch[bid] ?? 0) + 1;
-      }
+    for (const a of globalAssignments) {
+      rowsPerBatch[a.batchId] = (rowsPerBatch[a.batchId] ?? 0) + 1;
     }
 
     const sections = (block as any).farm_sections.map((section: any) => ({

@@ -22,6 +22,7 @@ export class HealthService {
     diagnosis?: string;
     treatment?: string;
     notes?: string;
+    rowCode?: string; // optional: explicit row code for CULLING/BIRD_MORTALITY events
   }, recordedById: string) {
     // Only pass fields that exist on HealthEvent model — avoids Prisma "Unknown arg" errors.
     // HealthEvent has: batchId, eventType, eventDate, affectedCount, symptoms, diagnosis,
@@ -86,9 +87,13 @@ export class HealthService {
       // If a specific row was selected, subtract from that row's birdCount only.
       // If no row was selected, leave all per-row birdCounts untouched —
       // the cage map reads currentBirdCount directly so it will still update.
-      const rowMatch = (dto.notes ?? '').match(/row\s+(\w+)/i);
-      if (rowMatch) {
-        const rowCode = rowMatch[1].toUpperCase();
+      // Identify which row to subtract from.
+      // Prefer the explicit rowCode field sent by the frontend; fall back to
+      // parsing "row <CODE>" from the notes string for backwards compatibility.
+      const rowCode = (dto.rowCode as string | undefined)?.toUpperCase()
+        ?? (dto.notes ?? '').match(/row\s+(\w+)/i)?.[1]?.toUpperCase();
+
+      if (rowCode) {
         const assignments = await this.prisma.batchCageAssignment.findMany({
           where: { batchId: dto.batchId },
           include: { row: { select: { rowCode: true } } },
