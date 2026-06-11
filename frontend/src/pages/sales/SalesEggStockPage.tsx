@@ -75,12 +75,21 @@ export function SalesEggStockPage() {
   // FIX: Prefer DailyEggAggregate for starter eggs (AM+PM combined total).
   // Falls back to /sales/stock for legacy compatibility.
   const origStarter    = aggregate?.totalStarterEggs ?? stock?.starterEggs ?? 0;
-  const origConsumable = aggregate?.totalBrokenSellable ?? stock?.consumableEggs ?? 0;
+  // Consumable broken = broken SELLABLE eggs; Non-consumable broken = broken
+  // UNSELLABLE eggs (per next-morning 3-party tally data).
+  const origConsumable    = aggregate?.totalBrokenSellable   ?? stock?.consumableEggs    ?? 0;
+  const origNonConsumable = aggregate?.totalBrokenUnsellable ?? stock?.nonConsumableEggs ?? 0;
 
   const currentStandard   = stock?.standardEggs ?? 0;
   const currentStarter    = aggregate?.totalStarterEggs ?? stock?.starterEggs ?? 0;
   const currentConsumable = stock?.consumableEggs ?? 0;
+  const currentNonConsumable = stock?.nonConsumableEggs ?? 0;
   const currentTotal = currentStandard + currentStarter + currentConsumable;
+
+  // FIX: When standard (good) eggs are zero/negative because the day's
+  // collection was all starter eggs, the dashboard shows starter eggs as its
+  // own KPI in place of/alongside Standard Eggs.
+  const isStarterOnly = (stock?.isStarterOnly ?? (currentStandard <= 0 && currentStarter > 0));
 
   const expectedRev = summary?.expectedRevenue ?? latestTally?.expectedRevenueKes;
 
@@ -113,21 +122,26 @@ export function SalesEggStockPage() {
           <p className="text-xs text-gray-400 mb-3">
             Tally from {dayjs(latestTally.verificationDate).format('D MMM YYYY')} · Batch {latestTally.session?.batch?.batchCode ?? '—'}
           </p>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            <div className="bg-emerald-50 dark:bg-emerald-900/20 rounded-xl p-3 text-center">
-              <p className="text-xs text-gray-500 mb-1">Standard Eggs</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className={`bg-emerald-50 dark:bg-emerald-900/20 rounded-xl p-3 text-center ${isStarterOnly ? 'col-span-2 md:col-span-1' : ''}`}>
+              <p className="text-xs text-gray-500 mb-1">{isStarterOnly ? 'Standard Eggs (none — starter only)' : 'Standard Eggs'}</p>
               <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-400">{origStandard.toLocaleString()}</p>
               <p className="text-xs text-gray-400 mt-0.5">{traysLabel(origStandard)}</p>
             </div>
-            <div className="bg-amber-50 dark:bg-amber-900/20 rounded-xl p-3 text-center">
+            <div className={`bg-amber-50 dark:bg-amber-900/20 rounded-xl p-3 text-center ${isStarterOnly ? 'ring-2 ring-amber-400' : ''}`}>
               <p className="text-xs text-gray-500 mb-1">Starter Eggs</p>
               <p className="text-2xl font-bold text-amber-600 dark:text-amber-400">{origStarter.toLocaleString()}</p>
               <p className="text-xs text-gray-400 mt-0.5">{traysLabel(origStarter)}</p>
             </div>
-            <div className="bg-orange-50 dark:bg-orange-900/20 rounded-xl p-3 text-center col-span-2 md:col-span-1">
+            <div className="bg-orange-50 dark:bg-orange-900/20 rounded-xl p-3 text-center">
               <p className="text-xs text-gray-500 mb-1">Consumable Broken</p>
               <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">{origConsumable.toLocaleString()}</p>
               <p className="text-xs text-gray-400 mt-0.5">{traysLabel(origConsumable)}</p>
+            </div>
+            <div className="bg-red-50 dark:bg-red-900/20 rounded-xl p-3 text-center">
+              <p className="text-xs text-gray-500 mb-1">Non-Consumable Broken</p>
+              <p className="text-2xl font-bold text-red-600 dark:text-red-400">{origNonConsumable.toLocaleString()}</p>
+              <p className="text-xs text-gray-400 mt-0.5">{traysLabel(origNonConsumable)}</p>
             </div>
           </div>
         </div>
@@ -144,21 +158,26 @@ export function SalesEggStockPage() {
           <p className="text-sm text-gray-400 text-center py-4">No stock data available</p>
         ) : (
           <>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
-              <div className="bg-brand-green/5 dark:bg-brand-green/10 rounded-xl p-3 text-center border border-brand-green/20">
-                <p className="text-xs text-gray-500 mb-1">Standard Eggs</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+              <div className={`bg-brand-green/5 dark:bg-brand-green/10 rounded-xl p-3 text-center border border-brand-green/20 ${isStarterOnly ? 'col-span-2 md:col-span-1' : ''}`}>
+                <p className="text-xs text-gray-500 mb-1">{isStarterOnly ? 'Standard Eggs (none — starter only)' : 'Standard Eggs'}</p>
                 <p className="text-2xl font-bold text-brand-green">{currentStandard.toLocaleString()}</p>
                 <p className="text-xs text-gray-400 mt-0.5">{traysLabel(currentStandard)}</p>
               </div>
-              <div className="bg-amber-50 dark:bg-amber-900/20 rounded-xl p-3 text-center">
+              <div className={`bg-amber-50 dark:bg-amber-900/20 rounded-xl p-3 text-center ${isStarterOnly ? 'ring-2 ring-amber-400' : ''}`}>
                 <p className="text-xs text-gray-500 mb-1">Starter Eggs</p>
                 <p className="text-2xl font-bold text-amber-600 dark:text-amber-400">{currentStarter.toLocaleString()}</p>
                 <p className="text-xs text-gray-400 mt-0.5">{traysLabel(currentStarter)}</p>
               </div>
-              <div className="bg-orange-50 dark:bg-orange-900/20 rounded-xl p-3 text-center col-span-2 md:col-span-1">
+              <div className="bg-orange-50 dark:bg-orange-900/20 rounded-xl p-3 text-center">
                 <p className="text-xs text-gray-500 mb-1">Consumable Broken</p>
                 <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">{currentConsumable.toLocaleString()}</p>
                 <p className="text-xs text-gray-400 mt-0.5">{traysLabel(currentConsumable)}</p>
+              </div>
+              <div className="bg-red-50 dark:bg-red-900/20 rounded-xl p-3 text-center">
+                <p className="text-xs text-gray-500 mb-1">Non-Consumable Broken</p>
+                <p className="text-2xl font-bold text-red-600 dark:text-red-400">{currentNonConsumable.toLocaleString()}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{traysLabel(currentNonConsumable)}</p>
               </div>
             </div>
             <div className="flex items-center justify-between bg-gray-50 dark:bg-dark-bg rounded-xl p-3">

@@ -76,14 +76,20 @@ export class TallyVerificationService {
   }
 
   async listPending() {
-    // Tallies only exist once both AM+PM are approved (created in createTallyForSession),
-    // so no additional filter is needed here.
+    // NOTE: A placeholder EggTallyVerification row is created at submission time
+    // (in production.service.createEggCollection), while the session is still
+    // PENDING. That placeholder must NOT show up in the sign-off queue yet —
+    // only once BOTH AM+PM sessions are APPROVED and createTallyForSession()
+    // has corrected the verificationDate does a tally become eligible for
+    // signing. Without this filter, the PM/Sales/Store could see and attempt
+    // to sign a tally whose session.status is still PENDING, causing
+    // sign() to reject with "Session must be Manager-verified before tally signing".
     const tallies = await this.prisma.eggTallyVerification.findMany({
-      where: { isLocked: false },
+      where: { isLocked: false, session: { status: 'APPROVED' } },
       include: {
         session: {
           select: {
-            id: true, sessionDate: true, shift: true,
+            id: true, sessionDate: true, shift: true, status: true,
             houseId: true, totalGoodEggs: true, totalFullTrays: true,
             totalLooseEggs: true,
             totalStarterEggs: true, totalBrokenSellable: true,
@@ -305,13 +311,21 @@ export class TallyVerificationService {
             },
           });
 
+          // FIX: totalGoodEggs already excludes starter, brokenSellable,
+          // brokenUnsellable, softShell, and deformed eggs (see editAndResubmit:
+          // totalGoodEggs = totalEggs - (starter + brokenSellable + brokenUnsellable
+          // + softShell + deformed)). Subtracting starter/brokenSellable again here
+          // double-counted them, undercounting standard eggs. "Standard eggs" is
+          // simply the sum of totalGoodEggs across both sessions.
           const totalStdEggs = bothSessions.reduce((s, sess) =>
-            s + (sess.totalGoodEggs ?? 0) - ((sess as any).totalStarterEggs ?? 0) -
-            ((sess as any).totalBrokenSellable ?? 0), 0);
+            s + (sess.totalGoodEggs ?? 0), 0);
           const totalStarterEggs = bothSessions.reduce((s, sess) =>
             s + ((sess as any).totalStarterEggs ?? 0), 0);
           const totalBrokenSell = bothSessions.reduce((s, sess) =>
             s + ((sess as any).totalBrokenSellable ?? 0), 0);
+          // FIX: was hardcoded to 0 — now sums broken-unsellable across both sessions.
+          const totalBrokenUnsell = bothSessions.reduce((s, sess) =>
+            s + ((sess as any).totalBrokenUnsellable ?? 0), 0);
 
           const expectedRevenue = dailyPrice
             ? (totalStdEggs     * Number(dailyPrice.pricePerEgg)) +
@@ -350,13 +364,14 @@ export class TallyVerificationService {
               totalStdEggs,
               totalStarterEggs,
               totalBrokenSellable: totalBrokenSell,
-              totalBrokenUnsellable: 0,
+              totalBrokenUnsellable: totalBrokenUnsell,
               expectedRevenueKes: expectedRevenue,
             },
             update: {
               totalStdEggs,
               totalStarterEggs,
               totalBrokenSellable: totalBrokenSell,
+              totalBrokenUnsellable: totalBrokenUnsell,
               expectedRevenueKes: expectedRevenue,
               updatedAt: now,
             },
@@ -369,7 +384,7 @@ export class TallyVerificationService {
             totalStdEggs,
             totalStarterEggs,
             totalBrokenSellable: totalBrokenSell,
-            totalBrokenUnsellable: 0,
+            totalBrokenUnsellable: totalBrokenUnsell,
             expectedRevenue,
           });
         }

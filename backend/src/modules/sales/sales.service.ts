@@ -333,6 +333,10 @@ export class SalesService {
     });
 
     // ── Derive base stock from aggregate (preferred) or single tally (fallback) ──
+    // FIX: "standard eggs" = totalGoodEggs as computed at tally time (which
+    // already nets out starter/broken-sellable/broken-unsellable/soft-shell/
+    // deformed from the raw total). totalStdEggs on the aggregate already
+    // represents this correctly (see tally-verification.service fix).
     const baseStandardEggs = latestAggregate
       ? (latestAggregate.totalStdEggs ?? 0)
       : (latestTally!.finalGoodEggs ?? latestTally!.session?.totalGoodEggs ?? 0);
@@ -341,9 +345,23 @@ export class SalesService {
       ? (latestAggregate.totalStarterEggs ?? 0)
       : (latestTally!.session?.totalStarterEggs ?? 0);
 
-    const baseNonConsumableEggs = latestAggregate
+    // FIX: "Consumable broken" = broken SELLABLE eggs; "Non-consumable broken"
+    // = broken UNSELLABLE eggs (per next-morning 3-party tally data). The
+    // previous code read totalBrokenSellable into nonConsumableEggs and left
+    // consumableEggs hardcoded at 0, swapping the two categories.
+    const baseConsumableEggs = latestAggregate
       ? ((latestAggregate as any).totalBrokenSellable ?? 0)
-      : (latestAdj?.newNonConsumable ?? latestTally!.session?.totalBrokenEggs ?? 0);
+      : (latestTally!.session?.totalBrokenSellable ?? 0);
+
+    const baseNonConsumableEggs = latestAggregate
+      ? ((latestAggregate as any).totalBrokenUnsellable ?? 0)
+      : (latestTally!.session?.totalBrokenUnsellable ?? 0);
+
+    // FIX: If standard (good) eggs are zero or below because the day's
+    // collection was all starter eggs, surface that via a dedicated flag/value
+    // so the Sales dashboard can show a "Starter Eggs" KPI card of its own
+    // instead of (or alongside) the Standard Eggs card.
+    const isStarterOnly = baseStandardEggs <= 0 && baseStarterEggs > 0;
 
     const lastVerifiedDate = latestAggregate
       ? latestAggregate.aggregateDate
@@ -353,7 +371,7 @@ export class SalesService {
       standardEggs:      baseStandardEggs,
       starterEggs:       baseStarterEggs,
       nonConsumableEggs: latestAdj?.newNonConsumable ?? baseNonConsumableEggs,
-      consumableEggs:    latestAdj?.newConsumable    ?? 0,
+      consumableEggs:    latestAdj?.newConsumable    ?? baseConsumableEggs,
       lastVerifiedDate,
     };
 
@@ -394,10 +412,11 @@ export class SalesService {
     const originalStandardEggs      = baseStandardEggs;
     const originalStarterEggs       = baseStarterEggs;
     const originalNonConsumableEggs = baseNonConsumableEggs;
-    const originalConsumableEggs    = 0; // consumable starts at 0 at tally time
+    const originalConsumableEggs    = baseConsumableEggs;
 
     return {
       ...stockResult,
+      isStarterOnly,
       originalStandardEggs,
       originalStarterEggs,
       originalNonConsumableEggs,
