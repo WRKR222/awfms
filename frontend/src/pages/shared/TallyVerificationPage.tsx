@@ -172,37 +172,34 @@ function TallyCard({ tally }: { tally: TallySession }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tally-pending'] }),
   });
 
-  const originalTrays = session?.totalFullTrays ?? 0;
-  // totalGoodEggs = total - brokenSell - brokenUnsell - softShell - deformed
-  // (starter eggs are tracked separately and never count as "good")
-  const starterEggs   = session?.totalStarterEggs    ?? 0;
-  const brokenSell    = tally.session?.rowData
-    ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.brokenSellable)   || 0), 0) : 0;
-  const brokenUnsell  = tally.session?.rowData
-    ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.brokenUnsellable) || 0), 0) : 0;
-  const softShellCt   = tally.session?.rowData
-    ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.softShell)        || 0), 0) : 0;
-  const deformedCt    = tally.session?.rowData
-    ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.deformed)         || 0), 0) : 0;
-  // totalEggs is not a stored column on EggCollectionSession; derive it
-  // by summing per-row totalEggs from rowData (always present in listPending).
-  const totalRaw = tally.session?.rowData
-    ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.totalEggs) || 0), 0)
-    : (session?.totalGoodEggs ?? 0) + starterEggs + brokenSell + brokenUnsell + softShellCt + deformedCt;
-  // All-starter special case:
-  // totalEggs === starterEggs + brokenSell + brokenUnsell + softShell + deformed
-  // → every non-broken egg is a starter; no standard good eggs exist.
-  const nonStandardTotal = starterEggs + brokenSell + brokenUnsell + softShellCt + deformedCt;
-  const isAllStarterLive = starterEggs > 0 && totalRaw > 0 && totalRaw === nonStandardTotal;
-  const originalGood     = isAllStarterLive
-    ? 0
-    : Math.max(0, totalRaw - nonStandardTotal);
-  // Derive loose eggs from the authoritative formula (goodEggs % 30) rather than
-  // relying on totalLooseEggs alone — the listPending select previously omitted
-  // that field so it arrived as undefined and rendered as 0.
-  const originalLoose = session?.totalLooseEggs != null
-    ? session.totalLooseEggs
-    : originalGood - originalTrays * 30;
+  // FIX: Use backend-computed authoritative values directly instead of
+  // re-deriving them on the frontend. The backend (editAndResubmit / createEggCollection)
+  // applies the correct formula:
+  //   totalGoodEggs = (fullTrays × 30) + looseEggs
+  //                 = totalEggs - starter - brokenSell - brokenUnsell - softShell - deformed
+  // Re-deriving on the frontend from per-row rowData caused drift whenever
+  // the PM edited values through the tally edit form (the re-derive used the
+  // live rowData sums but the stored session fields were already authoritative).
+  // Reading session.totalGoodEggs / totalFullTrays / totalLooseEggs directly
+  // guarantees the three parties see exactly what the backend computed and stored.
+
+  const originalTrays  = session?.totalFullTrays  ?? 0;
+  const originalLoose  = session?.totalLooseEggs  ?? 0;
+  // FIX: session.totalGoodEggs IS the authoritative good-egg count computed as
+  //   (fullTrays × 30) + looseEggs  (which equals totalEggs - starter - brokenSell
+  //   - brokenUnsell - softShell - deformed). Do NOT re-derive from rowData sums.
+  const originalGood   = session?.totalGoodEggs   ?? 0;
+
+  // Per-row aggregates are still needed for the display table and the
+  // all-starter special-case detection (starter only, no standard eggs).
+  const starterEggs  = session?.totalStarterEggs    ?? 0;
+  const brokenSell   = session?.totalBrokenSellable  ?? 0;
+  const brokenUnsell = session?.totalBrokenUnsellable ?? 0;
+  const softShellCt  = session?.totalSoftShell        ?? 0;
+  const deformedCt   = session?.totalDeformed         ?? 0;
+
+  // All-starter special case: every collected egg is a starter (no standard good eggs).
+  const isAllStarterLive = starterEggs > 0 && originalGood === 0;
 
   const startEdit = () => {
     // Store all numeric fields as strings so inputs start empty-able

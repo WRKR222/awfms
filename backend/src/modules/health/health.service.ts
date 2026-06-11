@@ -74,32 +74,50 @@ export class HealthService {
       ).catch(() => { /* best-effort */ });
     }
 
-    // When birds are culled OR mortality is logged, subtract affected count from
-    // batch's currentBirdCount and update the specific cage-map row if one was given.
-    // BIRD_MORTALITY behaves identically to CULLING — the only difference is semantic
-    // (unintentional death vs deliberate cull). Both support a row selector when the
-    // batch is in the Production House.
-    if ((dto.eventType === 'CULLING' || dto.eventType === 'BIRD_MORTALITY') && dto.affectedCount > 0) {
-      await this.prisma.batch.update({
+    // When birds are culled, subtract affected count from batch's currentBirdCount
+    if (dto.eventType === 'CULLING' && dto.affectedCount > 0) {
+      // FIX: Decrement currentBirdCount on the batch — this is ALWAYS the
+      // authoritative live bird count and the cage map now reads it directly.
+      const updatedBatch = await this.prisma.batch.update({
         where: { id: dto.batchId },
         data: { currentBirdCount: { decrement: dto.affectedCount } },
+        select: { currentBirdCount: true },
       });
 
-      // Parse row code from notes (e.g. "Culled from row A1" / "Mortality in row B2")
+      // Fetch all row assignments for this batch so we can keep per-row
+      // birdCount values in sync with the new currentBirdCount.
+      const allAssignments = await this.prisma.batchCageAssignment.findMany({
+        where: { batchId: dto.batchId },
+        include: { row: { select: { rowCode: true } } },
+      });
+
       const rowMatch = (dto.notes ?? '').match(/row\s+(\w+)/i);
       if (rowMatch) {
+        // PM selected a specific row — subtract from that row only.
         const rowCode = rowMatch[1].toUpperCase();
-        const assignments = await this.prisma.batchCageAssignment.findMany({
-          where: { batchId: dto.batchId },
-          include: { row: { select: { rowCode: true } } },
-        });
-        const match = assignments.find((a: any) => a.row?.rowCode === rowCode);
+        const match = allAssignments.find((a: any) => a.row?.rowCode === rowCode);
         if (match) {
-          const newCount = Math.max(0, match.birdCount - dto.affectedCount);
           await this.prisma.batchCageAssignment.update({
             where: { id: match.id },
-            data: { birdCount: newCount },
+            data: { birdCount: Math.max(0, match.birdCount - dto.affectedCount) },
           });
+        }
+      } else if (allAssignments.length > 0) {
+        // FIX: No specific row chosen — distribute the decrement proportionally
+        // across all row assignments so their sum stays equal to currentBirdCount.
+        // Without this, the stored per-row birdCounts diverge from currentBirdCount
+        // and any future row-specific culling would start from a wrong baseline.
+        const totalAssigned = allAssignments.reduce((s: number, a: any) => s + (a.birdCount ?? 0), 0);
+        const newTotal = updatedBatch.currentBirdCount;
+        if (totalAssigned > 0) {
+          for (const a of allAssignments) {
+            const ratio = (a.birdCount ?? 0) / totalAssigned;
+            const newCount = Math.round(newTotal * ratio);
+            await this.prisma.batchCageAssignment.update({
+              where: { id: a.id },
+              data: { birdCount: Math.max(0, newCount) },
+            });
+          }
         }
       }
     }

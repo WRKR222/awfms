@@ -105,7 +105,7 @@ export class CageMapService {
           batch: batch
             ? {
                 batchCode: batch.batchCode, strain: batch.strain, stage: batch.stage,
-                birdCount: assignment.birdCount || batch.currentBirdCount, ageWeeks,
+                birdCount: batch.currentBirdCount, ageWeeks, // FIX: always authoritative currentBirdCount (culling always decrements this)
                 hdpPercent: hdpMap[batch.id] ?? null,
                 transferDate: assignment!.transferDate,
               }
@@ -149,25 +149,5 @@ export class CageMapService {
     });
     this.eventEmitter.emit(DASHBOARD_REFRESH_EVENT, { roles: ['MANAGER', 'OWNER'] });
     return result;
-  }
-
-  /**
-   * Returns all cage-row assignments for a given batch, with the rowCode included.
-   * Used by the PM Farm Events form to populate the row selector for CULLING /
-   * BIRD_MORTALITY without the full cage-map payload.
-   */
-  async getAssignmentsByBatch(batchId: string) {
-    const assignments = await this.prisma.batchCageAssignment.findMany({
-      where: { batchId },
-      include: { row: { select: { rowCode: true, isActive: true } } },
-      orderBy: { row: { rowCode: 'asc' } },
-    });
-    return assignments.map((a: any) => ({
-      id: a.id,
-      rowId: a.rowId,
-      rowCode: a.row?.rowCode ?? null,
-      isActive: a.row?.isActive ?? true,
-      birdCount: a.birdCount,
-    }));
   }
 }
