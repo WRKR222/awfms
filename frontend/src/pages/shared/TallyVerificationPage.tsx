@@ -47,13 +47,15 @@ interface TallySession {
   lockedAt?: string;
   finalGoodEggs?: number;
   finalFullTrays?: number;
+  finalStarterEggs?: number;
   expectedRevenueKes?: number;
   revenueSetAt?: string;
   session?: {
     houseId: string;
     shift: string;
     sessionDate: string;
-    totalGoodEggs: number;
+    totalEggs: number;
+  totalGoodEggs: number;
     totalFullTrays: number;
     totalLooseEggs: number;
     totalStarterEggs?: number;
@@ -94,10 +96,14 @@ function SignoffBadge({ label, signed, signedAt }: { label: string; signed: bool
   );
 }
 
-function StatCell({ label, value, highlight = false }: { label: string; value: string | number; highlight?: boolean }) {
+function StatCell({ label, value, highlight = false, blue = false }: { label: string; value: string | number; highlight?: boolean; blue?: boolean }) {
   return (
     <div className="text-center">
-      <p className={`text-xl font-bold ${highlight ? 'text-brand-green' : 'text-gray-800 dark:text-gray-200'}`}>{value}</p>
+      <p className={`text-xl font-bold ${
+        blue      ? 'text-blue-600 dark:text-blue-400' :
+        highlight ? 'text-brand-green' :
+                    'text-gray-800 dark:text-gray-200'
+      }`}>{value}</p>
       <p className="text-xs text-gray-400">{label}</p>
     </div>
   );
@@ -142,9 +148,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
   // a numeric parse on every keystroke.
   const [editRows, setEditRows] = useState<Record<string, string | number>[]>([]);
 
-  const [correctedTrays, setCorrectedTrays]  = useState<string>('');
-  const [correctedLoose, setCorrectedLoose]  = useState<string>('');
-  const [showCorrection, setShowCorrection]  = useState(false);
+  // PM correction fields removed — PM no longer has a "Count is different" option
 
   const [expectedRevenue, setExpectedRevenue] = useState<string>('');
 
@@ -159,22 +163,9 @@ function TallyCard({ tally }: { tally: TallySession }) {
 
   const signoff = useMutation({
     mutationFn: () => {
-      const body: any = {};
-      if (correctedTrays !== '') body.correctedFullTrays = Number(correctedTrays);
-      if (correctedLoose  !== '') body.correctedLooseEggs = Number(correctedLoose);
-      return api.post(`/tally-verifications/${tally.sessionId}/sign`, body);
+      return api.post(`/tally-verifications/${tally.sessionId}/sign`, {});
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tally-pending'] }),
-    onError: (err: any) => {
-      // Surface the backend's rejection message (e.g. "Sales must sign off before
-      // Store can sign") so the user knows exactly what went wrong instead of
-      // seeing the button silently stop spinning with no explanation.
-      const msg =
-        err?.response?.data?.message ??
-        err?.message ??
-        'Sign-off failed. Please try again.';
-      alert(msg);
-    },
   });
 
   const setRevenue = useMutation({
@@ -183,7 +174,26 @@ function TallyCard({ tally }: { tally: TallySession }) {
   });
 
   const originalTrays = session?.totalFullTrays ?? 0;
-  const originalGood  = session?.totalGoodEggs  ?? 0;
+  // totalGoodEggs = total - brokenSell - brokenUnsell - softShell - deformed
+  // (starter eggs are tracked separately and never count as "good")
+  const starterEggs   = session?.totalStarterEggs    ?? 0;
+  const brokenSell    = tally.session?.rowData
+    ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.brokenSellable)   || 0), 0) : 0;
+  const brokenUnsell  = tally.session?.rowData
+    ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.brokenUnsellable) || 0), 0) : 0;
+  const softShellCt   = tally.session?.rowData
+    ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.softShell)        || 0), 0) : 0;
+  const deformedCt    = tally.session?.rowData
+    ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.deformed)         || 0), 0) : 0;
+  const totalRaw       = session?.totalEggs ?? 0;
+  // All-starter special case:
+  // totalEggs === starterEggs + brokenSell + brokenUnsell + softShell + deformed
+  // → every non-broken egg is a starter; no standard good eggs exist.
+  const nonStandardTotal = starterEggs + brokenSell + brokenUnsell + softShellCt + deformedCt;
+  const isAllStarterLive = starterEggs > 0 && totalRaw > 0 && totalRaw === nonStandardTotal;
+  const originalGood     = isAllStarterLive
+    ? 0
+    : Math.max(0, totalRaw - nonStandardTotal);
   // Derive loose eggs from the authoritative formula (goodEggs % 30) rather than
   // relying on totalLooseEggs alone — the listPending select previously omitted
   // that field so it arrived as undefined and rendered as 0.
@@ -264,8 +274,22 @@ function TallyCard({ tally }: { tally: TallySession }) {
         <div className="grid grid-cols-3 md:grid-cols-5 gap-3">
           <StatCell label={tally.isLocked ? 'Final Full Trays' : 'Attd. Full Trays'} value={tally.isLocked ? (tally.finalFullTrays ?? 0) : originalTrays} highlight />
           <StatCell label="Loose Eggs" value={tally.isLocked ? ((tally.finalGoodEggs ?? 0) - (tally.finalFullTrays ?? 0) * 30) : originalLoose} />
-          <StatCell label="Total Good" value={tally.isLocked ? (tally.finalGoodEggs ?? 0) : originalGood} highlight />
-          {session?.totalStarterEggs != null && <StatCell label="Starter Eggs" value={session.totalStarterEggs} />}
+          {/* All-starter-only: totalEggs === starterEggs → good = 0, but display starter count as
+              the effective good-egg equivalent, clearly labelled so 3-party signers understand */}
+          {(() => {
+            const lockedGood   = tally.finalGoodEggs ?? 0;
+            const lockedStart  = tally.finalStarterEggs ?? 0;
+            const allStarterLocked  = tally.isLocked && lockedGood === 0 && lockedStart > 0;
+            const allStarterLive    = !tally.isLocked && isAllStarterLive;
+            if (allStarterLocked) {
+              return <StatCell label="All Starter Eggs" value={lockedStart} highlight blue />;
+            }
+            if (allStarterLive) {
+              return <StatCell label="All Starter Eggs" value={starterEggs} highlight blue />;
+            }
+            return <StatCell label="Total Good" value={tally.isLocked ? lockedGood : originalGood} highlight />;
+          })()}
+          {session?.totalStarterEggs != null && !isAllStarterLive && <StatCell label="Starter Eggs" value={session.totalStarterEggs} />}
           {session?.totalBrokenSellable != null && <StatCell label="Broken (Sell)" value={session.totalBrokenSellable} />}
           {session?.totalBrokenUnsellable != null && <StatCell label="Broken (Unsell)" value={session.totalBrokenUnsellable} />}
           {session?.totalSoftShell != null && <StatCell label="Soft Shell" value={session.totalSoftShell} />}
@@ -436,41 +460,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
       {/* My sign-off action */}
       {canSign && (
         <div className="px-4 pb-4 space-y-3">
-          {isPM && (
             <button
-              onClick={() => setShowCorrection(v => !v)}
-              className="flex items-center gap-1 text-xs text-amber-500 hover:text-amber-600"
-            >
-              <AlertTriangle className="w-3.5 h-3.5" /> Count is different — correct it
-            </button>
-          )}
-
-          {isPM && showCorrection && (
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">Corrected Full Trays</label>
-                <input
-                  type="number"
-                  value={correctedTrays}
-                  onChange={e => setCorrectedTrays(e.target.value)}
-                  placeholder={String(originalTrays)}
-                  className="w-full rounded-xl border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-sm px-3 py-2"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">Corrected Loose Eggs</label>
-                <input
-                  type="number"
-                  value={correctedLoose}
-                  onChange={e => setCorrectedLoose(e.target.value)}
-                  placeholder={String(originalLoose)}
-                  className="w-full rounded-xl border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-sm px-3 py-2"
-                />
-              </div>
-            </div>
-          )}
-
-          <button
             onClick={() => signoff.mutate()}
             disabled={signoff.isPending}
             className="w-full bg-brand-green text-white py-2.5 rounded-xl text-sm font-bold disabled:opacity-50"

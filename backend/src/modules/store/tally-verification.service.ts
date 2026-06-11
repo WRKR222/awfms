@@ -84,7 +84,7 @@ export class TallyVerificationService {
         session: {
           select: {
             id: true, sessionDate: true, shift: true,
-            houseId: true, totalGoodEggs: true, totalFullTrays: true,
+            houseId: true, totalEggs: true, totalGoodEggs: true, totalFullTrays: true,
             totalLooseEggs: true,
             totalStarterEggs: true, totalBrokenSellable: true,
             totalBrokenUnsellable: true, totalSoftShell: true,
@@ -143,8 +143,12 @@ export class TallyVerificationService {
       totalDeformed          += Number(r.deformed         ?? 0);
       totalWeightKg          += Number(r.weightKg         ?? 0);
     }
-    // goodEggs = total eggs minus starter eggs (mirrors production.service logic)
-    const totalGoodEggs = Math.max(0, totalEggs - totalStarterEggs);
+    // All-starter special case: totalEggs === nonStandardTotal means every
+    // non-broken egg is a starter; totalGoodEggs = 0. HDP must use totalStarterEggs
+    // as the effective egg count so hen-day is not falsely reported as 0%.
+    const nonStandardTotal = totalStarterEggs + totalBrokenSellable + totalBrokenUnsellable + totalSoftShell + totalDeformed;
+    const isAllStarter     = totalStarterEggs > 0 && totalEggs > 0 && totalEggs === nonStandardTotal;
+    const totalGoodEggs    = Math.max(0, totalEggs - nonStandardTotal);
     const totalFullTrays = Math.floor(totalGoodEggs / 30);
     const totalLooseEggs = totalGoodEggs % 30;
     const totalBrokenEggs = totalBrokenSellable + totalBrokenUnsellable;

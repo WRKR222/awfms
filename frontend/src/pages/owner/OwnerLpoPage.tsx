@@ -25,7 +25,7 @@ interface LPOItem {
   description?: string;
   quantity: number;
   unitPrice: number;
-  totalPrice: number;
+  subtotal: number;
   storeItem?: { name: string; sku: string; unit: string };
 }
 
@@ -114,7 +114,7 @@ function LpoCard({
                       {item.storeItem?.name ?? item.description ?? 'Item'}
                     </span>
                     <span className="text-gray-500">
-                      {item.quantity} × {fmtKES(item.unitPrice)} = <strong>{fmtKES(item.totalPrice)}</strong>
+                      {item.quantity} × {fmtKES(item.unitPrice)} = <strong>{fmtKES(item.subtotal)}</strong>
                     </span>
                   </div>
                 ))}

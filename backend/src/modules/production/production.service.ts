@@ -50,22 +50,28 @@ function rollupRows(rows: RowDataEntry[]) {
   let totalEggs = 0, totalStarter = 0, totalBrokenUnsellable = 0, totalBrokenSellable = 0;
   let totalSoftShell = 0, totalDeformed = 0, totalWeightKg = 0;
   for (const r of rows) {
-    totalEggs              += r.totalEggs        ?? 0;
-    totalStarter           += r.starterEggs      ?? 0;
+    totalEggs              += r.totalEggs          ?? 0;
+    totalStarter           += r.starterEggs        ?? 0;
     totalBrokenUnsellable  += r.brokenUnsellable ?? 0;
     totalBrokenSellable    += r.brokenSellable   ?? 0;
     totalSoftShell         += r.softShell        ?? 0;
     totalDeformed          += r.deformed         ?? 0;
     totalWeightKg          += Number(r.weightKg ?? 0);
   }
-  // good = standard whole eggs (NOT starter, NOT broken, NOT soft, NOT deformed)
-  const totalGoodEggs = Math.max(0, totalEggs - totalStarter);
-  const totalFullTrays = Math.floor(totalGoodEggs / 30);
-  const totalLooseEggs = totalGoodEggs % 30;
+  // All-starter special case:
+  // totalEggs === starterEggs + brokenSell + brokenUnsell + softShell + deformed
+  // → every non-broken egg is a starter; totalGoodEggs = 0 (starters tracked separately).
+  // isAllStarter is returned so callers (HDP, notifications) can use it without
+  // re-deriving the condition from the stored fields.
+  const nonStandardTotal = totalStarter + totalBrokenSellable + totalBrokenUnsellable + totalSoftShell + totalDeformed;
+  const isAllStarter     = totalStarter > 0 && totalEggs > 0 && totalEggs === nonStandardTotal;
+  const totalGoodEggs    = Math.max(0, totalEggs - nonStandardTotal);
+  const totalFullTrays   = Math.floor(totalGoodEggs / 30);
+  const totalLooseEggs   = totalGoodEggs % 30;
   return {
     totalEggs, totalStarter, totalBrokenUnsellable, totalBrokenSellable,
     totalSoftShell, totalDeformed, totalWeightKg,
-    totalGoodEggs, totalFullTrays, totalLooseEggs,
+    totalGoodEggs, totalFullTrays, totalLooseEggs, isAllStarter,
     // legacy aggregate kept for downstream reads
     totalBrokenEggs: totalBrokenUnsellable + totalBrokenSellable,
   };
@@ -132,8 +138,11 @@ export class ProductionService {
 
     const totals = rollupRows(dto.rowData as RowDataEntry[]);
     const closingStock = dto.openingPop - dto.mortalities;
+    // When all eggs are starters, use totalStarter for HDP so production isn't
+    // reported as 0% hen-day. Standard sessions use totalGoodEggs as normal.
+    const hdpEggs       = totals.isAllStarter ? totals.totalStarter : totals.totalGoodEggs;
     const henDayPercent = closingStock > 0
-      ? Math.round((totals.totalGoodEggs / closingStock) * 10000) / 100
+      ? Math.round((hdpEggs / closingStock) * 10000) / 100
       : null;
 
     const data = {
@@ -314,9 +323,13 @@ export class ProductionService {
     const houseName = houseRecord?.name ?? 'House';
 
     for (const target of targets) {
+      const allStarterSession = (session as any).totalStarterEggs > 0 && session.totalGoodEggs === 0;
+      const eggSummary = allStarterSession
+        ? `${(session as any).totalStarterEggs} starter eggs (all-starter session)`
+        : `${session.totalGoodEggs} good eggs, ${session.totalFullTrays} full trays`;
       const message = target.role === 'STORE'
-        ? `${session.shift} egg collection submitted for ${houseName} (${batch.batchCode}). Please log your egg intake — ${session.totalGoodEggs} good eggs, ${session.totalFullTrays} full trays.`
-        : `${session.shift} egg collection awaiting Manager verification — ${houseName} (${batch.batchCode}). ${session.totalGoodEggs} good eggs · HDP: ${session.henDayPercent ?? '—'}%.`;
+        ? `${session.shift} egg collection submitted for ${houseName} (${batch.batchCode}). Please log your egg intake — ${eggSummary}.`
+        : `${session.shift} egg collection awaiting Manager verification — ${houseName} (${batch.batchCode}). ${eggSummary} · HDP: ${session.henDayPercent ?? '—'}%.`;
       await this.prisma.notification.create({
         data: {
           userId: target.id,

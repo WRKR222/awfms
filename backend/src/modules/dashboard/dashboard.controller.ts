@@ -50,9 +50,10 @@ export class DashboardController {
     });
     const totalBirds = activeBatches.reduce((s, b) => s + b.currentBirdCount, 0);
 
-    // ── Pending verifications ────────────────────────────────────────────
-    const pendingEntries = await (this.prisma as any).flockDailyEntry.count({
-      where: { status: EntryStatus.PENDING },
+    // ── Pending tally sign-offs (Morning Tally Sign-Off card) ────────────
+    // Count unlocked tallies — these are the sessions awaiting 3-party cosign.
+    const pendingEntries = await this.prisma.eggTallyVerification.count({
+      where: { isLocked: false },
     });
 
     // ── Pending LPO approvals (Director Activity Diagram: "Review Pending Approvals")
@@ -60,24 +61,67 @@ export class DashboardController {
       where: { status: 'SUBMITTED' },  // FIX: LPOStatus has no PENDING; SUBMITTED = awaiting approval
     }).catch(() => 0);  // graceful fallback if LPO model not yet migrated
 
-    // ── Egg production for period ────────────────────────────────────────
-    const eggSessions = await this.prisma.eggCollectionSession.findMany({
-      where: {
-        sessionDate: { gte: from },
-        status: EntryStatus.APPROVED,
-      },
-      select: {
-        totalGoodEggs: true,
-        totalFullTrays: true,
-        henDayPercent: true,
-        totalBrokenEggs: true,
-      },
+    // ── Egg production for period — use DailyEggAggregate (AM+PM combined) ──
+    // DailyEggAggregate is written when BOTH AM and PM tallies lock, giving the
+    // true combined total. Falling back to raw session sum only when no aggregate
+    // exists yet (e.g. first day before any tally is fully signed).
+    const aggregates = await this.prisma.dailyEggAggregate.findMany({
+      where: { aggregateDate: { gte: from } },
+      select: { totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true, aggregateDate: true },
     });
-    const periodEggs  = eggSessions.reduce((s, e) => s + e.totalGoodEggs, 0);
-    const periodTrays = eggSessions.reduce((s, e) => s + e.totalFullTrays, 0);
-    const hdpValues   = eggSessions.map(e => Number(e.henDayPercent)).filter(v => v > 0);
-    const avgHdp      = hdpValues.length > 0
-      ? hdpValues.reduce((a, b) => a + b, 0) / hdpValues.length : 0;
+
+    let periodEggs  = 0;
+    let periodTrays = 0;
+    let avgHdp      = 0;
+
+    if (aggregates.length > 0) {
+      // Sum standard eggs from locked aggregates
+      periodEggs  = aggregates.reduce((s, a) => s + (a.totalStdEggs ?? 0), 0);
+      periodTrays = Math.floor(periodEggs / 30);
+      // True daily HDP = (AM good eggs + PM good eggs) / closing bird count × 100.
+      // Averaging per-session henDayPercent values is wrong — it treats AM and PM as
+      // equal-weight denominators when they share the same bird population.
+      const hdpSessions = await this.prisma.eggCollectionSession.findMany({
+        where: { sessionDate: { gte: from }, status: EntryStatus.APPROVED },
+        select: { totalGoodEggs: true, totalStarterEggs: true, closingStock: true, sessionDate: true, shift: true },
+      });
+      // Group by date: sum eggs (using starterEggs when all-starter), use PM closing stock
+      const hdpByDate: Record<string, { eggs: number; closingStock: number }> = {};
+      for (const s of hdpSessions) {
+        const d = s.sessionDate.toISOString().slice(0, 10);
+        if (!hdpByDate[d]) hdpByDate[d] = { eggs: 0, closingStock: 0 };
+        const effectiveEggs = (s.totalGoodEggs === 0 && (s.totalStarterEggs ?? 0) > 0)
+          ? (s.totalStarterEggs ?? 0) : s.totalGoodEggs;
+        hdpByDate[d].eggs += effectiveEggs;
+        // PM closing stock is more accurate; always overwrite with latest available
+        if (s.closingStock > 0) hdpByDate[d].closingStock = s.closingStock;
+      }
+      const dailyHdps = Object.values(hdpByDate)
+        .filter(d => d.closingStock > 0)
+        .map(d => (d.eggs / d.closingStock) * 100);
+      avgHdp = dailyHdps.length > 0 ? dailyHdps.reduce((a,b)=>a+b,0)/dailyHdps.length : 0;
+    } else {
+      // Fallback: raw session totals (pre-tally-lock state) — same correct HDP method
+      const eggSessions = await this.prisma.eggCollectionSession.findMany({
+        where: { sessionDate: { gte: from }, status: EntryStatus.APPROVED },
+        select: { totalGoodEggs: true, totalFullTrays: true, totalStarterEggs: true, closingStock: true, sessionDate: true, shift: true },
+      });
+      periodEggs  = eggSessions.reduce((s, e) => s + e.totalGoodEggs, 0);
+      periodTrays = eggSessions.reduce((s, e) => s + e.totalFullTrays, 0);
+      const fbHdpByDate: Record<string, { eggs: number; closingStock: number }> = {};
+      for (const s of eggSessions) {
+        const d = s.sessionDate.toISOString().slice(0, 10);
+        if (!fbHdpByDate[d]) fbHdpByDate[d] = { eggs: 0, closingStock: 0 };
+        const effectiveEggs = (s.totalGoodEggs === 0 && (s.totalStarterEggs ?? 0) > 0)
+          ? (s.totalStarterEggs ?? 0) : s.totalGoodEggs;
+        fbHdpByDate[d].eggs += effectiveEggs;
+        if (s.closingStock > 0) fbHdpByDate[d].closingStock = s.closingStock;
+      }
+      const fbDailyHdps = Object.values(fbHdpByDate)
+        .filter(d => d.closingStock > 0)
+        .map(d => (d.eggs / d.closingStock) * 100);
+      avgHdp = fbDailyHdps.length > 0 ? fbDailyHdps.reduce((a,b)=>a+b,0)/fbDailyHdps.length : 0;
+    }
 
     // ── Cumulative egg counter (all-time approved + historical offset) ───
     const cumulativeResult = await this.prisma.eggCollectionSession.aggregate({
@@ -121,15 +165,8 @@ export class DashboardController {
       },
     });
 
-    // ── Feed alerts — include items with 0 days remaining (critical) ────
-    const feedAlerts = await this.prisma.feedStockSnapshot.findMany({
-      where: {
-        snapshotDate: { gte: dayjs().startOf('day').toDate() },
-        daysRemaining: { lte: 3 },
-      },
-      distinct: ['feedType'],
-      orderBy: { daysRemaining: 'asc' },
-    });
+    // Feed alerts removed from Director dashboard per product requirement.
+    const feedAlerts: any[] = [];
 
     // ── Live sales feed (last 10 orders) — include full item breakdown ──
     const recentOrders = await this.prisma.salesOrder.findMany({
@@ -204,42 +241,24 @@ export class DashboardController {
       }
     }
 
-    // ── Expected revenue: latest verified tally × accountant pricing ────
+    // ── Expected revenue: today's DailyEggAggregate (AM+PM) × accountant pricing
+    // Uses the aggregate so the Director sees the true combined AM+PM stock value,
+    // not just one session.
     let expectedRevenueKes = 0;
     try {
-      const latestTally = await this.prisma.eggTallyVerification.findFirst({
-        where: { isLocked: true },
-        orderBy: { verificationDate: 'desc' },
-        include: {
-          session: {
-            select: {
-              totalGoodEggs: true,
-              totalStarterEggs: true,
-              totalBrokenSellable: true,
-              totalBrokenUnsellable: true,
-              totalSoftShell: true,
-              totalDeformed: true,
-            },
-          },
-        },
+      const todayAgg = await this.prisma.dailyEggAggregate.findFirst({
+        where: { aggregateDate: todayDate },
+        orderBy: { createdAt: 'desc' },
       });
-      if (latestTally && todayPricing) {
-        const sess             = latestTally.session as any;
-        const starterEggs      = sess?.totalStarterEggs      ?? 0;
-        const brokenSellable   = sess?.totalBrokenSellable   ?? 0;
-        const brokenUnsellable = sess?.totalBrokenUnsellable ?? 0;
-        const softShell        = sess?.totalSoftShell        ?? 0;
-        const deformed         = sess?.totalDeformed         ?? 0;
-        const totalGoodEggs    = latestTally.finalGoodEggs   ?? sess?.totalGoodEggs ?? 0;
-
-        // Per-spec: if no starter eggs, all eggs at standard price;
-        // if starter eggs exist, starter at starter price + remaining at standard price.
+      if (todayAgg && todayPricing) {
+        const stdEggs     = (todayAgg as any).totalStdEggs     ?? 0;
+        const starterEggs = (todayAgg as any).totalStarterEggs ?? 0;
         if (starterEggs === 0) {
-          expectedRevenueKes = totalGoodEggs * Number(todayPricing.pricePerEgg);
+          expectedRevenueKes = stdEggs * Number(todayPricing.pricePerEgg);
         } else {
           expectedRevenueKes =
             starterEggs * Number(todayPricing.pricePerEggStarter ?? todayPricing.pricePerEgg) +
-            (brokenSellable + brokenUnsellable + softShell + deformed) * Number(todayPricing.pricePerEgg);
+            stdEggs     * Number(todayPricing.pricePerEgg);
         }
       }
     } catch (_) { /* best-effort */ }
@@ -269,7 +288,7 @@ export class DashboardController {
       // Birds
       totalBirds,
       activeBatchCount: activeBatches.length,
-      pendingVerifications: pendingEntries,
+      pendingVerifications: pendingEntries,  // unlocked egg tally verifications
       pendingApprovals: pendingLpoCount,
 
       // Eggs
@@ -283,9 +302,9 @@ export class DashboardController {
       totalOutstandingKes,
       overdueInvoices: overdueCount,
 
-      // Feed
-      feedAlertsCount: feedAlerts.length,
-      feedAlerts: feedAlerts.map(f => ({ feedType: f.feedType, daysRemaining: Number(f.daysRemaining) })),
+      // Feed alerts removed from Director dashboard
+      feedAlertsCount: 0,
+      feedAlerts: [],
 
       // Mortality
       periodMortality,
@@ -366,28 +385,37 @@ export class DashboardController {
       select: {
         sessionDate: true,
         totalGoodEggs: true,
+        totalStarterEggs: true,
         totalFullTrays: true,
-        henDayPercent: true,
+        closingStock: true,
+        shift: true,
         totalBrokenEggs: true,
       },
       orderBy: { sessionDate: 'asc' },
     });
 
-    const eggByDate: Record<string, { date: string; eggs: number; trays: number; hdp: number[]; broken: number }> = {};
+    // True daily HDP = (AM eggs + PM eggs) / closing bird count × 100.
+    // Storing per-session henDayPercent values and averaging them is wrong —
+    // AM and PM share the same bird population so the denominator must be used once.
+    const eggByDate: Record<string, { date: string; eggs: number; trays: number; closingStock: number; broken: number }> = {};
     for (const s of eggSessions) {
       const d = dayjs(s.sessionDate).format('YYYY-MM-DD');
-      if (!eggByDate[d]) eggByDate[d] = { date: d, eggs: 0, trays: 0, hdp: [], broken: 0 };
-      eggByDate[d].eggs  += s.totalGoodEggs;
+      if (!eggByDate[d]) eggByDate[d] = { date: d, eggs: 0, trays: 0, closingStock: 0, broken: 0 };
+      // For all-starter sessions, use totalStarterEggs as the effective egg count for HDP
+      const effectiveEggs = (s.totalGoodEggs === 0 && (s.totalStarterEggs ?? 0) > 0)
+        ? (s.totalStarterEggs ?? 0) : s.totalGoodEggs;
+      eggByDate[d].eggs  += effectiveEggs;
       eggByDate[d].trays += s.totalFullTrays;
       eggByDate[d].broken += s.totalBrokenEggs ?? 0;
-      if (s.henDayPercent) eggByDate[d].hdp.push(Number(s.henDayPercent));
+      // PM closing stock overwrites AM — it is the authoritative end-of-day figure
+      if (s.closingStock > 0) eggByDate[d].closingStock = s.closingStock;
     }
     const eggTrend = Object.values(eggByDate).map(d => ({
       date: d.date,
       eggs: d.eggs,
       trays: d.trays,
       broken: d.broken,
-      hdp: d.hdp.length > 0 ? Math.round((d.hdp.reduce((a,b)=>a+b,0)/d.hdp.length)*100)/100 : 0,
+      hdp: d.closingStock > 0 ? Math.round((d.eggs / d.closingStock) * 10000) / 100 : 0,
     }));
 
     const flockEntries = await (this.prisma as any).flockDailyEntry.findMany({

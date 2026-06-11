@@ -160,28 +160,11 @@ export default function OwnerHome() {
         ))}
       </div>
 
-      {/* Feed alerts banner — RETAINED */}
-      {(data?.feedAlertsCount ?? 0) > 0 && (
-        <div className="bg-red-50 dark:bg-red-900/20 border-2 border-red-300 dark:border-red-700 rounded-2xl p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Flame className="w-5 h-5 text-red-600 dark:text-red-400" />
-            <p className="font-bold text-red-700 dark:text-red-400 text-sm">
-              {data!.feedAlertsCount} Feed Type{data!.feedAlertsCount > 1 ? 's' : ''} Running Low
-            </p>
-          </div>
-          <div className="flex gap-2 flex-wrap">
-            {data!.feedAlerts.map(a => (
-              <span key={a.feedType} className="bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 text-xs px-3 py-1 rounded-full font-medium">
-                {a.feedType.replace(/_/g, ' ')} — {Number(a.daysRemaining).toFixed(1)}d left
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Feed alerts banner removed from Director dashboard */}
 
       {/* KPI grid — top row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KpiCard icon={<Bird className="w-5 h-5" />} label="Total Birds" value={data?.totalBirds?.toLocaleString() ?? '—'} sub={`${data?.activeBatchCount ?? 0} active batches`} loading={isLoading} />
+        <KpiCard icon={<Bird className="w-5 h-5" />} label="Total Birds" value={data?.totalBirds?.toLocaleString() ?? '—'} sub={`${data?.activeBatchCount ?? 0} active ${(data?.activeBatchCount ?? 0) === 1 ? 'batch' : 'batches'}`} loading={isLoading} />
         <KpiCard icon={<Egg className="w-5 h-5" />} label={`${data?.periodLabel ?? ''} Eggs`} value={data?.periodEggs?.toLocaleString() ?? '—'} sub={`${data?.periodTrays ?? 0} trays · ${data?.avgHdp ?? 0}% HDP`} loading={isLoading} />
         {/* Revenue — full number, no "K" abbreviation */}
         <KpiCard

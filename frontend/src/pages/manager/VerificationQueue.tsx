@@ -397,10 +397,28 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
 
       {/* Session totals */}
       <div>
+        {/* allStarterOnly: totalEggs === starterEggs + brokenSell + brokenUnsell + softShell + deformed
+             meaning every non-broken egg is a starter — no standard good eggs collected */}
+        {(() => {
+          const _s = session.totalStarterEggs ?? 0;
+          const _nonStd = _s + (session.totalBrokenSellable ?? 0) + (session.totalBrokenUnsellable ?? session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0);
+          const allStarterOnly = _s > 0 && (session.totalEggs ?? (session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0))) === _nonStd;
+          return (
         <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Egg Collection Totals</p>
+          );
+        })()}
+        {(() => {
+          const _s = session.totalStarterEggs ?? 0;
+          const _nonStd = _s + (session.totalBrokenSellable ?? 0) + (session.totalBrokenUnsellable ?? session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0);
+          const allStarterOnly = _s > 0 && (session.totalEggs ?? (session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0))) === _nonStd;
+          return (
         <div className="grid grid-cols-3 md:grid-cols-4 gap-2">
           <StatPill label="Total Eggs" value={(session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0)).toLocaleString()} accent="green" />
-          <StatPill label="Good Eggs" value={session.totalGoodEggs.toLocaleString()} accent="green" />
+          {allStarterOnly
+            ? <StatPill label="All Starter Eggs" value={(session.totalStarterEggs ?? 0).toLocaleString()} accent="blue"
+                tip="Only starter eggs were collected this session — these are the total good eggs" />
+            : <StatPill label="Good Eggs" value={session.totalGoodEggs.toLocaleString()} accent="green" />
+          }
           <StatPill label="Full Trays" value={session.totalFullTrays} accent="green" />
           <StatPill label="Loose Eggs" value={session.totalLooseEggs} accent="gray" />
           <StatPill label="Starter Eggs" value={session.totalStarterEggs ?? 0} accent="blue" />
@@ -410,6 +428,8 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
           <StatPill label="Deformed" value={session.totalDeformed ?? 0} accent="amber" />
           <StatPill label="Weight (kg)" value={Number(session.totalWeightKg).toFixed(1)} accent="blue" />
         </div>
+          );
+        })()}
       </div>
 
       {/* Bird population */}
@@ -696,7 +716,17 @@ function EggSessionRow({ session, allSessions, isExpanded, onToggle, onApprove, 
         <div className="hidden md:flex items-center gap-4">
           <div className="flex items-center gap-1.5 text-sm text-gray-500">
             <Egg className="w-3.5 h-3.5 text-amber-500" />
-            <span className="font-semibold text-gray-700 dark:text-gray-300">{session.totalGoodEggs?.toLocaleString()}</span>
+            {(() => {
+              const _s2 = session.totalStarterEggs ?? 0;
+              const _nonStd2 = _s2 + (session.totalBrokenSellable ?? 0) + (session.totalBrokenUnsellable ?? session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0);
+              const _totalEggs2 = session.totalEggs ?? (session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0));
+              return _s2 > 0 && _totalEggs2 === _nonStd2;
+            })()
+              ? <span className="font-semibold text-blue-600 dark:text-blue-400">
+                  {(session.totalStarterEggs ?? 0).toLocaleString()} starter
+                </span>
+              : <span className="font-semibold text-gray-700 dark:text-gray-300">{session.totalGoodEggs?.toLocaleString()}</span>
+            }
           </div>
           <div className="flex items-center gap-1.5 text-sm text-gray-500">
             <Package className="w-3.5 h-3.5" />
