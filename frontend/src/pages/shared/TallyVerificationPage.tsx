@@ -54,8 +54,7 @@ interface TallySession {
     houseId: string;
     shift: string;
     sessionDate: string;
-    totalEggs: number;
-  totalGoodEggs: number;
+    totalGoodEggs: number;
     totalFullTrays: number;
     totalLooseEggs: number;
     totalStarterEggs?: number;
@@ -185,7 +184,11 @@ function TallyCard({ tally }: { tally: TallySession }) {
     ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.softShell)        || 0), 0) : 0;
   const deformedCt    = tally.session?.rowData
     ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.deformed)         || 0), 0) : 0;
-  const totalRaw       = session?.totalEggs ?? 0;
+  // totalEggs is not a stored column on EggCollectionSession; derive it
+  // by summing per-row totalEggs from rowData (always present in listPending).
+  const totalRaw = tally.session?.rowData
+    ? (tally.session.rowData as any[]).reduce((s: number, r: any) => s + (Number(r.totalEggs) || 0), 0)
+    : (session?.totalGoodEggs ?? 0) + starterEggs + brokenSell + brokenUnsell + softShellCt + deformedCt;
   // All-starter special case:
   // totalEggs === starterEggs + brokenSell + brokenUnsell + softShell + deformed
   // → every non-broken egg is a starter; no standard good eggs exist.
