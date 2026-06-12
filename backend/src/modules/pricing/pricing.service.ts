@@ -164,28 +164,74 @@ export class PricingService {
     return savedPrice;
   }
 
-  // Recalculate DailyEggAggregate.expectedRevenueKes for all aggregates on a
-  // given date. Called every time the accountant saves/updates a daily price.
+  // Recalculate expectedRevenueKes whenever the accountant saves/updates a price.
+  // Two paths:
+  //   A) DailyEggAggregate rows exist (both AM+PM locked) → update stored value.
+  //   B) No aggregate yet (only one session cosigned so far) → update the
+  //      locked EggTallyVerification rows for that date so the Sales and Director
+  //      dashboards can read revenue directly from the tally until the aggregate
+  //      is written when the second session locks.
   private async recalcAggregateRevenue(
     priceDate: Date,
     pricePerEgg: number,
     pricePerEggStarter: number | null,
     pricePerEggBroken:  number | null,
   ): Promise<void> {
+    // ── Path A: update DailyEggAggregate rows ────────────────────────────────
     const aggregates = await this.prisma.dailyEggAggregate.findMany({
       where: { aggregateDate: priceDate },
     });
-    if (!aggregates.length) return;
+
+    if (aggregates.length) {
+      await Promise.all(
+        aggregates.map(agg => {
+          const expectedRevenueKes =
+            agg.totalStdEggs          * pricePerEgg +
+            agg.totalStarterEggs      * (pricePerEggStarter ?? 0) +
+            agg.totalBrokenSellable   * (pricePerEggBroken  ?? 0);
+
+          return this.prisma.dailyEggAggregate.update({
+            where: { id: agg.id },
+            data:  { expectedRevenueKes },
+          });
+        }),
+      );
+      return; // aggregate is authoritative — no need to touch tally rows
+    }
+
+    // ── Path B: no aggregate yet — update locked tally rows for the date ─────
+    // This keeps expectedRevenueKes fresh on tally rows used as the interim
+    // source by getSalesStock and the Director dashboard until the second session
+    // cosigns and DailyEggAggregate is written.
+    const tallies = await this.prisma.eggTallyVerification.findMany({
+      where: {
+        isLocked: true,
+        session: { sessionDate: priceDate, status: 'APPROVED' },
+      },
+      include: {
+        session: {
+          select: {
+            totalGoodEggs:        true,
+            totalStarterEggs:     true,
+            totalBrokenSellable:  true,
+          },
+        },
+      },
+    });
+
+    if (!tallies.length) return;
 
     await Promise.all(
-      aggregates.map(agg => {
+      tallies.map(t => {
+        const s = t.session as any;
+        if (!s) return Promise.resolve();
         const expectedRevenueKes =
-          agg.totalStdEggs          * pricePerEgg +
-          agg.totalStarterEggs      * (pricePerEggStarter ?? 0) +
-          agg.totalBrokenSellable   * (pricePerEggBroken  ?? 0);
+          (s.totalGoodEggs       ?? 0) * pricePerEgg +
+          (s.totalStarterEggs    ?? 0) * (pricePerEggStarter ?? 0) +
+          (s.totalBrokenSellable ?? 0) * (pricePerEggBroken  ?? 0);
 
-        return this.prisma.dailyEggAggregate.update({
-          where: { id: agg.id },
+        return this.prisma.eggTallyVerification.update({
+          where: { id: t.id },
           data:  { expectedRevenueKes },
         });
       }),

@@ -416,32 +416,64 @@ export class SalesService {
     const originalNonConsumableEggs = baseNonConsumableEggs;
     const originalConsumableEggs    = baseConsumableEggs;
 
-    // ── Expected revenue: use stored aggregate value (set by pricing.service
-    // recalcAggregateRevenue whenever the accountant saves/updates a price).
-    // This is the authoritative source — it already accounts for all houses
-    // (AM+PM combined) and the latest pricing, even when price is set after lock.
-    // Sum across all aggregates for today (one row per batch/house combination).
+    // ── Expected revenue calculation ─────────────────────────────────────────
+    // Priority order:
+    //   1. DailyEggAggregate rows for today (only written when BOTH AM+PM lock).
+    //      Uses stored expectedRevenueKes if already set by recalcAggregateRevenue;
+    //      otherwise computes live from egg counts × price.
+    //   2. Fallback: sum egg counts from all locked EggTallyVerification sessions
+    //      for today × today's pricing. This handles the common real-world case
+    //      where only one session has been cosigned (DailyEggAggregate doesn't
+    //      exist yet), which is why egg stock shows correctly but revenue is zero.
     const todayAggregates = await this.prisma.dailyEggAggregate.findMany({
       where: { aggregateDate: today },
       select: { expectedRevenueKes: true, totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
     });
 
     let expectedRevenueKes: number | null = null;
+
     if (todayAggregates.length > 0 && pricing) {
-      // If the aggregate already has a stored expectedRevenueKes (written by
-      // recalcAggregateRevenue), sum those. Otherwise compute live from egg counts × price.
-      const hasStoredRevenue = todayAggregates.some(a => (a.expectedRevenueKes ?? null) !== null);
-      if (hasStoredRevenue) {
-        expectedRevenueKes = todayAggregates.reduce(
-          (sum, a) => sum + Number(a.expectedRevenueKes ?? 0), 0,
-        );
+      // Both AM+PM locked — use stored value if non-zero, else recompute from counts.
+      const storedTotal = todayAggregates.reduce(
+        (sum, a) => sum + Number(a.expectedRevenueKes ?? 0), 0,
+      );
+      if (storedTotal > 0) {
+        expectedRevenueKes = storedTotal;
       } else {
-        // Fallback: compute from egg counts × today's price (price set before both tallies locked)
         expectedRevenueKes = todayAggregates.reduce((sum, a) => {
           return sum
             + (a.totalStdEggs         ?? 0) * Number(pricing.pricePerEgg)
             + (a.totalStarterEggs     ?? 0) * Number((pricing as any).pricePerEggStarter ?? 0)
             + (a.totalBrokenSellable  ?? 0) * Number((pricing as any).pricePerEggBroken  ?? 0);
+        }, 0);
+      }
+    } else if (pricing) {
+      // No DailyEggAggregate yet — only one session cosigned, or aggregate not written yet.
+      // Fall back to locked tally sessions for today directly.
+      const todayTallies = await this.prisma.eggTallyVerification.findMany({
+        where: {
+          isLocked: true,
+          session: { sessionDate: today, status: 'APPROVED' },
+        },
+        include: {
+          session: {
+            select: {
+              totalGoodEggs:        true,
+              totalStarterEggs:     true,
+              totalBrokenSellable:  true,
+            },
+          },
+        },
+      });
+
+      if (todayTallies.length > 0) {
+        expectedRevenueKes = todayTallies.reduce((sum, t) => {
+          const s = t.session as any;
+          if (!s) return sum;
+          return sum
+            + (s.totalGoodEggs        ?? 0) * Number(pricing.pricePerEgg)
+            + (s.totalStarterEggs     ?? 0) * Number((pricing as any).pricePerEggStarter ?? 0)
+            + (s.totalBrokenSellable  ?? 0) * Number((pricing as any).pricePerEggBroken  ?? 0);
         }, 0);
       }
     }
