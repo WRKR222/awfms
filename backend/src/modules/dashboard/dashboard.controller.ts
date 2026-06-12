@@ -130,24 +130,31 @@ export class DashboardController {
     //
     // Primary source: DailyEggAggregate (written when both AM+PM tallies lock).
     // Fallback: raw EggCollectionSession rows for dates with no aggregate yet.
+    // DailyEggAggregate only carries std, starter, brokenSellable, brokenUnsellable.
+    // totalSoftShell and totalDeformed are NOT on the aggregate model — they only
+    // exist on EggCollectionSession, so we always read those from sessions directly.
     const aggCumulativeResult = await this.prisma.dailyEggAggregate.aggregate({
       _sum: {
         totalStdEggs:          true,
         totalStarterEggs:      true,
         totalBrokenSellable:   true,
         totalBrokenUnsellable: true,
-        totalSoftShell:        true,
-        totalDeformed:         true,
       },
     });
-    // For sessions not yet aggregated, add raw session totals.
+    const aggSum = aggCumulativeResult._sum ?? {};
+
+    // Build the set of dates that are already covered by an aggregate row,
+    // so the session fallback below doesn't double-count those days.
     const aggregatedDates = await this.prisma.dailyEggAggregate.findMany({
       select: { aggregateDate: true },
     });
     const aggregatedDateSet = new Set(
       aggregatedDates.map(a => new Date(a.aggregateDate).toISOString().slice(0, 10)),
     );
-    const unaggregatedSessions = await this.prisma.eggCollectionSession.findMany({
+
+    // Read ALL approved sessions to pick up soft-shell + deformed (not on aggregate)
+    // and to cover dates not yet aggregated.
+    const allSessions = await this.prisma.eggCollectionSession.findMany({
       where: { status: EntryStatus.APPROVED },
       select: {
         sessionDate:           true,
@@ -159,32 +166,42 @@ export class DashboardController {
         totalDeformed:         true,
       },
     });
+
+    // softShellTotal + deformedTotal come 100% from sessions (not stored in aggregate).
+    // unaggregatedTotal covers the std/starter/broken fields for days with no aggregate.
     let unaggregatedTotal = 0;
-    for (const s of unaggregatedSessions) {
+    let softShellTotal    = 0;
+    let deformedTotal     = 0;
+
+    for (const s of allSessions) {
       const d = s.sessionDate.toISOString().slice(0, 10);
+
+      // soft-shell and deformed: always from sessions regardless of aggregate
+      softShellTotal += (s.totalSoftShell ?? 0);
+      deformedTotal  += (s.totalDeformed  ?? 0);
+
+      // std/starter/broken: only add from sessions for days not yet aggregated
       if (!aggregatedDateSet.has(d)) {
-        // Use starterEggs when the day is all-starter (good eggs = 0)
         const goodOrStarter = (s.totalGoodEggs === 0 && (s.totalStarterEggs ?? 0) > 0)
           ? (s.totalStarterEggs ?? 0)
           : s.totalGoodEggs;
         unaggregatedTotal += goodOrStarter
-          + ((s as any).totalBrokenSellable   ?? 0)
-          + ((s as any).totalBrokenUnsellable ?? 0)
-          + ((s as any).totalSoftShell        ?? 0)
-          + ((s as any).totalDeformed         ?? 0);
+          + (s.totalBrokenSellable   ?? 0)
+          + (s.totalBrokenUnsellable ?? 0);
       }
     }
+
     const offsetRecord = await this.prisma.systemConfig.findUnique({
       where: { key: 'egg_counter_offset' },
     });
     const historicalOffset = parseInt(offsetRecord?.value ?? '0', 10);
     const cumulativeEggs = (
-      Number(aggCumulativeResult._sum.totalStdEggs          ?? 0) +
-      Number(aggCumulativeResult._sum.totalStarterEggs      ?? 0) +
-      Number(aggCumulativeResult._sum.totalBrokenSellable   ?? 0) +
-      Number(aggCumulativeResult._sum.totalBrokenUnsellable ?? 0) +
-      Number(aggCumulativeResult._sum.totalSoftShell        ?? 0) +
-      Number(aggCumulativeResult._sum.totalDeformed         ?? 0) +
+      Number(aggSum.totalStdEggs          ?? 0) +
+      Number(aggSum.totalStarterEggs      ?? 0) +
+      Number(aggSum.totalBrokenSellable   ?? 0) +
+      Number(aggSum.totalBrokenUnsellable ?? 0) +
+      softShellTotal +
+      deformedTotal  +
       unaggregatedTotal
     ) + historicalOffset;
 
