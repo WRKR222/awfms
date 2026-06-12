@@ -66,6 +66,7 @@ interface DashData {
   todayPricing?: {
     priceDate: string;
     pricePerEgg: number;
+    pricePerEggBulk: number | null;
     pricePerEggStarter: number | null;
     pricePerEggBroken: number | null;
     expectedRevenue: number | null;
