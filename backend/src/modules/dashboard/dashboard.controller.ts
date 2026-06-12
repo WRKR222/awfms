@@ -124,22 +124,23 @@ export class DashboardController {
     }
 
     // ── Cumulative egg counter (all-time approved + historical offset) ───
-    // FIX: Previously only summed totalGoodEggs, which excluded starter eggs
-    // (on all-starter days totalGoodEggs is 0) and broken-sellable eggs, both
-    // of which are real eggs produced and recorded in each row. The cumulative
-    // counter should be the aggregation of ALL eggs in each session row:
-    // good + starter + broken-sellable (broken-unsellable are not saleable so
-    // they are intentionally excluded from the "produced" total).
+    // Counts every egg recorded in each session row:
+    // good (std) + starter + broken-sellable + broken-unsellable + soft-shell + deformed.
+    // This matches the "total eggs collected" definition shown on the card.
     //
-    // We prefer DailyEggAggregate (written when both AM+PM tallies lock) since
-    // it already holds the authoritative combined totals. Falling back to raw
-    // session sums for days where the aggregate hasn't been written yet.
+    // Primary source: DailyEggAggregate (written when both AM+PM tallies lock).
+    // Fallback: raw EggCollectionSession rows for dates with no aggregate yet.
     const aggCumulativeResult = await this.prisma.dailyEggAggregate.aggregate({
-      _sum: { totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
+      _sum: {
+        totalStdEggs:          true,
+        totalStarterEggs:      true,
+        totalBrokenSellable:   true,
+        totalBrokenUnsellable: true,
+        totalSoftShell:        true,
+        totalDeformed:         true,
+      },
     });
-    // For sessions NOT yet aggregated (pending or only one tally locked), add
-    // raw session totals. We identify them by finding sessions whose date has
-    // no corresponding aggregate row.
+    // For sessions not yet aggregated, add raw session totals.
     const aggregatedDates = await this.prisma.dailyEggAggregate.findMany({
       select: { aggregateDate: true },
     });
@@ -148,7 +149,15 @@ export class DashboardController {
     );
     const unaggregatedSessions = await this.prisma.eggCollectionSession.findMany({
       where: { status: EntryStatus.APPROVED },
-      select: { sessionDate: true, totalGoodEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
+      select: {
+        sessionDate:           true,
+        totalGoodEggs:         true,
+        totalStarterEggs:      true,
+        totalBrokenSellable:   true,
+        totalBrokenUnsellable: true,
+        totalSoftShell:        true,
+        totalDeformed:         true,
+      },
     });
     let unaggregatedTotal = 0;
     for (const s of unaggregatedSessions) {
@@ -158,7 +167,11 @@ export class DashboardController {
         const goodOrStarter = (s.totalGoodEggs === 0 && (s.totalStarterEggs ?? 0) > 0)
           ? (s.totalStarterEggs ?? 0)
           : s.totalGoodEggs;
-        unaggregatedTotal += goodOrStarter + ((s as any).totalBrokenSellable ?? 0);
+        unaggregatedTotal += goodOrStarter
+          + ((s as any).totalBrokenSellable   ?? 0)
+          + ((s as any).totalBrokenUnsellable ?? 0)
+          + ((s as any).totalSoftShell        ?? 0)
+          + ((s as any).totalDeformed         ?? 0);
       }
     }
     const offsetRecord = await this.prisma.systemConfig.findUnique({
@@ -166,9 +179,12 @@ export class DashboardController {
     });
     const historicalOffset = parseInt(offsetRecord?.value ?? '0', 10);
     const cumulativeEggs = (
-      Number(aggCumulativeResult._sum.totalStdEggs     ?? 0) +
-      Number(aggCumulativeResult._sum.totalStarterEggs ?? 0) +
-      Number(aggCumulativeResult._sum.totalBrokenSellable ?? 0) +
+      Number(aggCumulativeResult._sum.totalStdEggs          ?? 0) +
+      Number(aggCumulativeResult._sum.totalStarterEggs      ?? 0) +
+      Number(aggCumulativeResult._sum.totalBrokenSellable   ?? 0) +
+      Number(aggCumulativeResult._sum.totalBrokenUnsellable ?? 0) +
+      Number(aggCumulativeResult._sum.totalSoftShell        ?? 0) +
+      Number(aggCumulativeResult._sum.totalDeformed         ?? 0) +
       unaggregatedTotal
     ) + historicalOffset;
 
@@ -197,6 +213,7 @@ export class DashboardController {
       select: {
         priceDate:          true,
         pricePerEgg:        true,
+        pricePerEggBulk:    true,
         pricePerEggStarter: true,
         pricePerEggBroken:  true,
         expectedRevenue:    true,
@@ -418,7 +435,8 @@ export class DashboardController {
       // Today's egg pricing
       todayPricing: todayPricing ? {
         priceDate:          todayPricing.priceDate,
-        pricePerEgg:        Number(todayPricing.pricePerEgg),
+        pricePerEgg:        Number(todayPricing.pricePerEgg),          // Standard < 330 eggs
+        pricePerEggBulk:    (todayPricing as any).pricePerEggBulk != null ? Number((todayPricing as any).pricePerEggBulk) : null, // Standard >= 330 eggs
         pricePerEggStarter: todayPricing.pricePerEggStarter != null ? Number(todayPricing.pricePerEggStarter) : null,
         pricePerEggBroken:  todayPricing.pricePerEggBroken  != null ? Number(todayPricing.pricePerEggBroken)  : null,
         expectedRevenue:    todayPricing.expectedRevenue    != null ? Number(todayPricing.expectedRevenue)    : null,

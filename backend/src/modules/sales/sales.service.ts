@@ -121,7 +121,73 @@ export class SalesService {
       (s, o) => s + o.items.reduce((a, i) => a + (i.quantityTrays ?? 0), 0), 0,
     );
     const avgPerTray = totalTrays > 0 ? totalRevenue / totalTrays : 0;
-    return { totalRevenue, totalTrays, avgPerTray, orderCount: orders.length };
+
+    // ── Today's revenue progress fields (used by Sales dashboard progress bar) ──
+    // FIX: getSummary previously returned no expectedRevenue or todayRevenue,
+    // so the Sales progress card always evaluated summary.expectedRevenue as
+    // undefined (falsy) and never rendered. We now derive:
+    //   expectedRevenue — from the most recent DailyEggAggregate or locked tally
+    //                     × today's pricing (same logic as getSalesStock).
+    //   todayRevenue    — sum of today's non-cancelled order subtotals.
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+
+    const todayOrders = await this.prisma.salesOrder.findMany({
+      where: { deletedAt: null, orderDate: { gte: todayStart }, status: { not: 'CANCELLED' as OrderStatus } },
+      select: { subtotal: true },
+    });
+    const todayRevenue = todayOrders.reduce((s, o) => s + Number(o.subtotal), 0);
+
+    // Derive expectedRevenue using the same refDate logic as getSalesStock
+    let expectedRevenue: number | null = null;
+    try {
+      const mostRecentAgg = await this.prisma.dailyEggAggregate.findFirst({
+        orderBy: { aggregateDate: 'desc' },
+      });
+      const refDate = mostRecentAgg
+        ? (() => { const d = new Date(mostRecentAgg.aggregateDate); d.setHours(0,0,0,0); return d; })()
+        : todayStart;
+
+      const refPricing = (refDate.getTime() !== todayStart.getTime())
+        ? await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: refDate } })
+        : null;
+      const pricing = refPricing ?? await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: todayStart } });
+
+      if (mostRecentAgg && pricing) {
+        const refAggs = await this.prisma.dailyEggAggregate.findMany({
+          where: { aggregateDate: mostRecentAgg.aggregateDate },
+          select: { expectedRevenueKes: true, totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
+        });
+        const stored = refAggs.reduce((s, a) => s + Number(a.expectedRevenueKes ?? 0), 0);
+        if (stored > 0) {
+          expectedRevenue = stored;
+        } else {
+          expectedRevenue = refAggs.reduce((s, a) =>
+            s + (a.totalStdEggs ?? 0) * Number(pricing.pricePerEgg)
+              + (a.totalStarterEggs ?? 0) * Number((pricing as any).pricePerEggStarter ?? 0)
+              + (a.totalBrokenSellable ?? 0) * Number((pricing as any).pricePerEggBroken ?? 0), 0);
+        }
+      } else if (pricing) {
+        const refTallies = await this.prisma.eggTallyVerification.findMany({
+          where: { isLocked: true, session: { sessionDate: refDate, status: 'APPROVED' } },
+          include: { session: { select: { totalGoodEggs: true, totalStarterEggs: true, totalBrokenSellable: true } } },
+        });
+        if (refTallies.length > 0) {
+          expectedRevenue = refTallies.reduce((s, t) => {
+            const sess = t.session as any;
+            if (!sess) return s;
+            return s + (sess.totalGoodEggs ?? 0) * Number(pricing.pricePerEgg)
+                     + (sess.totalStarterEggs ?? 0) * Number((pricing as any).pricePerEggStarter ?? 0)
+                     + (sess.totalBrokenSellable ?? 0) * Number((pricing as any).pricePerEggBroken ?? 0);
+          }, 0);
+        }
+      }
+    } catch (_) { /* best-effort */ }
+
+    return {
+      totalRevenue, totalTrays, avgPerTray, orderCount: orders.length,
+      todayRevenue: Math.round(todayRevenue),
+      expectedRevenue: expectedRevenue !== null ? Math.round(expectedRevenue) : null,
+    };
   }
 
   async confirmOrder(orderId: string, userId: string) {

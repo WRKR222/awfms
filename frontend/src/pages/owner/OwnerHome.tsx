@@ -258,9 +258,11 @@ export default function OwnerHome() {
             </p>
           ) : (
             <>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {/* Standard < 330 — used for expected revenue calculation */}
                 <div className="bg-green-50 dark:bg-green-900/20 rounded-xl p-3">
                   <p className="text-[10px] font-bold text-green-600 dark:text-green-500 uppercase tracking-wider mb-1">Standard</p>
+                  <p className="text-[10px] text-green-500 dark:text-green-600 mb-1">&lt; 330 eggs</p>
                   <p className="text-lg font-extrabold text-green-700 dark:text-green-400">
                     KES {Number(data.todayPricing.pricePerEgg).toFixed(2)}
                     <span className="text-xs font-normal text-green-600 dark:text-green-500">/egg</span>
@@ -270,8 +272,29 @@ export default function OwnerHome() {
                   </p>
                 </div>
 
+                {/* Bulk >= 330 */}
+                <div className={`rounded-xl p-3 ${data.todayPricing.pricePerEggBulk != null ? 'bg-emerald-50 dark:bg-emerald-900/20' : 'bg-gray-50 dark:bg-dark-bg opacity-50'}`}>
+                  <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-500 uppercase tracking-wider mb-1">Bulk</p>
+                  <p className="text-[10px] text-emerald-500 dark:text-emerald-600 mb-1">&ge; 330 eggs</p>
+                  {data.todayPricing.pricePerEggBulk != null ? (
+                    <>
+                      <p className="text-lg font-extrabold text-emerald-700 dark:text-emerald-400">
+                        KES {Number(data.todayPricing.pricePerEggBulk).toFixed(2)}
+                        <span className="text-xs font-normal text-emerald-600 dark:text-emerald-500">/egg</span>
+                      </p>
+                      <p className="text-[11px] text-emerald-600 dark:text-emerald-500 mt-0.5">
+                        = KES {(Number(data.todayPricing.pricePerEggBulk) * 30).toFixed(2)}/tray
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-400 dark:text-dark-muted">Not set</p>
+                  )}
+                </div>
+
+                {/* Starter */}
                 <div className={`rounded-xl p-3 ${data.todayPricing.pricePerEggStarter != null ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-gray-50 dark:bg-dark-bg opacity-50'}`}>
                   <p className="text-[10px] font-bold text-blue-600 dark:text-blue-500 uppercase tracking-wider mb-1">Starter</p>
+                  <p className="text-[10px] text-blue-500 dark:text-blue-600 mb-1">per egg</p>
                   {data.todayPricing.pricePerEggStarter != null ? (
                     <>
                       <p className="text-lg font-extrabold text-blue-700 dark:text-blue-400">
@@ -287,8 +310,10 @@ export default function OwnerHome() {
                   )}
                 </div>
 
+                {/* Broken Sellable */}
                 <div className={`rounded-xl p-3 ${data.todayPricing.pricePerEggBroken != null ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-gray-50 dark:bg-dark-bg opacity-50'}`}>
                   <p className="text-[10px] font-bold text-amber-600 dark:text-amber-500 uppercase tracking-wider mb-1">Broken Sellable</p>
+                  <p className="text-[10px] text-amber-500 dark:text-amber-600 mb-1">per egg</p>
                   {data.todayPricing.pricePerEggBroken != null ? (
                     <>
                       <p className="text-lg font-extrabold text-amber-700 dark:text-amber-400">
