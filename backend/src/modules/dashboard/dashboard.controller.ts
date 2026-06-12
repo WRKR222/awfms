@@ -124,15 +124,54 @@ export class DashboardController {
     }
 
     // ── Cumulative egg counter (all-time approved + historical offset) ───
-    const cumulativeResult = await this.prisma.eggCollectionSession.aggregate({
-      where: { status: EntryStatus.APPROVED },
-      _sum: { totalGoodEggs: true },
+    // FIX: Previously only summed totalGoodEggs, which excluded starter eggs
+    // (on all-starter days totalGoodEggs is 0) and broken-sellable eggs, both
+    // of which are real eggs produced and recorded in each row. The cumulative
+    // counter should be the aggregation of ALL eggs in each session row:
+    // good + starter + broken-sellable (broken-unsellable are not saleable so
+    // they are intentionally excluded from the "produced" total).
+    //
+    // We prefer DailyEggAggregate (written when both AM+PM tallies lock) since
+    // it already holds the authoritative combined totals. Falling back to raw
+    // session sums for days where the aggregate hasn't been written yet.
+    const aggCumulativeResult = await this.prisma.dailyEggAggregate.aggregate({
+      _sum: { totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
     });
+    // For sessions NOT yet aggregated (pending or only one tally locked), add
+    // raw session totals. We identify them by finding sessions whose date has
+    // no corresponding aggregate row.
+    const aggregatedDates = await this.prisma.dailyEggAggregate.findMany({
+      select: { aggregateDate: true },
+    });
+    const aggregatedDateSet = new Set(
+      aggregatedDates.map(a => new Date(a.aggregateDate).toISOString().slice(0, 10)),
+    );
+    const unaggregatedSessions = await this.prisma.eggCollectionSession.findMany({
+      where: { status: EntryStatus.APPROVED },
+      select: { sessionDate: true, totalGoodEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
+    });
+    let unaggregatedTotal = 0;
+    for (const s of unaggregatedSessions) {
+      const d = s.sessionDate.toISOString().slice(0, 10);
+      if (!aggregatedDateSet.has(d)) {
+        // Use starterEggs when the day is all-starter (good eggs = 0)
+        const goodOrStarter = (s.totalGoodEggs === 0 && (s.totalStarterEggs ?? 0) > 0)
+          ? (s.totalStarterEggs ?? 0)
+          : s.totalGoodEggs;
+        unaggregatedTotal += goodOrStarter + ((s as any).totalBrokenSellable ?? 0);
+      }
+    }
     const offsetRecord = await this.prisma.systemConfig.findUnique({
       where: { key: 'egg_counter_offset' },
     });
     const historicalOffset = parseInt(offsetRecord?.value ?? '0', 10);
-    const cumulativeEggs = (Number(cumulativeResult._sum.totalGoodEggs ?? 0)) + historicalOffset;
+    const cumulativeEggs = (
+      Number(aggCumulativeResult._sum.totalStdEggs     ?? 0) +
+      Number(aggCumulativeResult._sum.totalStarterEggs ?? 0) +
+      Number(aggCumulativeResult._sum.totalBrokenSellable ?? 0) +
+      unaggregatedTotal
+    ) + historicalOffset;
+
 
     // ── Revenue & AR for period ─────────────────────────────────────────
     const paymentsInPeriod = await this.prisma.invoicePayment.aggregate({
@@ -242,43 +281,54 @@ export class DashboardController {
     }
 
     // ── Expected revenue ─────────────────────────────────────────────────────
-    // Priority order (same logic as getSalesStock in sales.service):
-    //   1. Sum DailyEggAggregate.expectedRevenueKes for today — only exists once
-    //      BOTH AM+PM tallies have been cosigned and locked.
-    //   2. Fallback: sum egg counts from all locked tally sessions for today ×
-    //      today's pricing. Covers the common case where only one session is cosigned
-    //      (which is when the Director sees zero despite stock being visible).
+    // FIX: Previously used hardcoded `todayDate` for aggregate/tally lookups,
+    // so revenue was zero when eggs were collected yesterday and priced today.
+    // Now: find the most recent aggregate (or tally), use that date as refDate,
+    // and apply today's pricing to it when no pricing exists for refDate itself.
     let expectedRevenueKes = 0;
     try {
-      const todayAggregates = await this.prisma.dailyEggAggregate.findMany({
-        where: { aggregateDate: todayDate },
-        select: {
-          expectedRevenueKes: true,
-          totalStdEggs: true,
-          totalStarterEggs: true,
-          totalBrokenSellable: true,
-        },
+      const mostRecentAgg = await this.prisma.dailyEggAggregate.findFirst({
+        orderBy: { aggregateDate: 'desc' },
+        select: { aggregateDate: true, expectedRevenueKes: true, totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
       });
-      if (todayAggregates.length > 0) {
-        const storedTotal = todayAggregates.reduce(
+
+      // Determine refDate from most recent aggregate or locked tally
+      let revRefDate: Date = todayDate;
+      if (mostRecentAgg) {
+        revRefDate = new Date(mostRecentAgg.aggregateDate);
+        revRefDate.setHours(0, 0, 0, 0);
+      }
+
+      // Try pricing for refDate; fall back to todayPricing
+      const revRefPricing = (revRefDate.getTime() !== todayDate.getTime())
+        ? await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: revRefDate } })
+        : null;
+      const effectivePricing = revRefPricing ?? todayPricing;
+
+      if (mostRecentAgg && effectivePricing) {
+        const refAggregates = await this.prisma.dailyEggAggregate.findMany({
+          where: { aggregateDate: mostRecentAgg.aggregateDate },
+          select: { expectedRevenueKes: true, totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
+        });
+        const storedTotal = refAggregates.reduce(
           (sum, a) => sum + Number(a.expectedRevenueKes ?? 0), 0,
         );
         if (storedTotal > 0) {
           expectedRevenueKes = storedTotal;
-        } else if (todayPricing) {
-          expectedRevenueKes = todayAggregates.reduce((sum, a) => {
+        } else {
+          expectedRevenueKes = refAggregates.reduce((sum, a) => {
             return sum
-              + (a.totalStdEggs         ?? 0) * Number(todayPricing.pricePerEgg)
-              + (a.totalStarterEggs     ?? 0) * Number(todayPricing.pricePerEggStarter ?? 0)
-              + (a.totalBrokenSellable  ?? 0) * Number(todayPricing.pricePerEggBroken  ?? 0);
+              + (a.totalStdEggs         ?? 0) * Number(effectivePricing.pricePerEgg)
+              + (a.totalStarterEggs     ?? 0) * Number(effectivePricing.pricePerEggStarter ?? 0)
+              + (a.totalBrokenSellable  ?? 0) * Number(effectivePricing.pricePerEggBroken  ?? 0);
           }, 0);
         }
-      } else if (todayPricing) {
-        // No DailyEggAggregate yet — fall back to locked tally sessions for today.
-        const todayTallies = await this.prisma.eggTallyVerification.findMany({
+      } else if (effectivePricing) {
+        // No aggregate — fall back to locked tally sessions for refDate.
+        const revRefTallies = await this.prisma.eggTallyVerification.findMany({
           where: {
             isLocked: true,
-            session: { sessionDate: todayDate, status: 'APPROVED' },
+            session: { sessionDate: revRefDate, status: 'APPROVED' },
           },
           include: {
             session: {
@@ -290,18 +340,19 @@ export class DashboardController {
             },
           },
         });
-        if (todayTallies.length > 0) {
-          expectedRevenueKes = todayTallies.reduce((sum, t) => {
+        if (revRefTallies.length > 0) {
+          expectedRevenueKes = revRefTallies.reduce((sum, t) => {
             const s = t.session as any;
             if (!s) return sum;
             return sum
-              + (s.totalGoodEggs        ?? 0) * Number(todayPricing.pricePerEgg)
-              + (s.totalStarterEggs     ?? 0) * Number(todayPricing.pricePerEggStarter ?? 0)
-              + (s.totalBrokenSellable  ?? 0) * Number(todayPricing.pricePerEggBroken  ?? 0);
+              + (s.totalGoodEggs        ?? 0) * Number(effectivePricing.pricePerEgg)
+              + (s.totalStarterEggs     ?? 0) * Number(effectivePricing.pricePerEggStarter ?? 0)
+              + (s.totalBrokenSellable  ?? 0) * Number(effectivePricing.pricePerEggBroken  ?? 0);
           }, 0);
         }
       }
     } catch (_) { /* best-effort */ }
+
 
     // ── Mortality for period ─────────────────────────────────────────────
     const mortalityAgg = await (this.prisma as any).flockDailyEntry.aggregate({

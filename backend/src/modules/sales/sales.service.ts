@@ -417,43 +417,71 @@ export class SalesService {
     const originalConsumableEggs    = baseConsumableEggs;
 
     // ── Expected revenue calculation ─────────────────────────────────────────
-    // Priority order:
-    //   1. DailyEggAggregate rows for today (only written when BOTH AM+PM lock).
-    //      Uses stored expectedRevenueKes if already set by recalcAggregateRevenue;
-    //      otherwise computes live from egg counts × price.
-    //   2. Fallback: sum egg counts from all locked EggTallyVerification sessions
-    //      for today × today's pricing. This handles the common real-world case
-    //      where only one session has been cosigned (DailyEggAggregate doesn't
-    //      exist yet), which is why egg stock shows correctly but revenue is zero.
-    const todayAggregates = await this.prisma.dailyEggAggregate.findMany({
-      where: { aggregateDate: today },
-      select: { expectedRevenueKes: true, totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
+    // FIX: The previous code hardcoded aggregateDate/sessionDate to `today`,
+    // which breaks the common workflow where egg collection is recorded one day
+    // and the accountant sets pricing the next morning — the aggregate/tally
+    // dates no longer match "today" so revenue returned null even though stock
+    // was visible. We now derive a refDate from the most recent aggregate (or
+    // most recent locked tally) and apply today's pricing to that date's egg
+    // counts, so revenue always reflects the latest collection regardless of
+    // which calendar day the accountant priced it.
+    //
+    // Priority:
+    //   1. DailyEggAggregate for refDate (AM+PM combined, both sessions locked).
+    //   2. Locked EggTallyVerification sessions for refDate (single-session day
+    //      or aggregate not yet written).
+    // In both cases, we try pricing for refDate first, then fall back to
+    // today's pricing (accountant prices today for yesterday's collection).
+
+    // Determine refDate: most recent aggregate date, or most recent locked tally session date.
+    const mostRecentAgg = latestAggregate ?? await this.prisma.dailyEggAggregate.findFirst({
+      orderBy: { aggregateDate: 'desc' },
     });
+
+    let refDate: Date = today;
+    if (mostRecentAgg) {
+      refDate = new Date(mostRecentAgg.aggregateDate);
+      refDate.setHours(0, 0, 0, 0);
+    } else if (latestTally) {
+      const rawDate = (latestTally.session as any)?.sessionDate ?? (latestTally as any).verificationDate;
+      if (rawDate) { refDate = new Date(rawDate); refDate.setHours(0, 0, 0, 0); }
+    }
+
+    // Pricing: prefer pricing set for refDate, fall back to today's pricing.
+    const refPricing = (refDate.getTime() !== today.getTime())
+      ? await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: refDate } })
+      : null;
+    const effectivePricing = refPricing ?? pricing;
+
+    const refAggregates = mostRecentAgg
+      ? await this.prisma.dailyEggAggregate.findMany({
+          where: { aggregateDate: mostRecentAgg.aggregateDate },
+          select: { expectedRevenueKes: true, totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
+        })
+      : [];
 
     let expectedRevenueKes: number | null = null;
 
-    if (todayAggregates.length > 0 && pricing) {
-      // Both AM+PM locked — use stored value if non-zero, else recompute from counts.
-      const storedTotal = todayAggregates.reduce(
+    if (refAggregates.length > 0 && effectivePricing) {
+      const storedTotal = refAggregates.reduce(
         (sum, a) => sum + Number(a.expectedRevenueKes ?? 0), 0,
       );
       if (storedTotal > 0) {
         expectedRevenueKes = storedTotal;
       } else {
-        expectedRevenueKes = todayAggregates.reduce((sum, a) => {
+        expectedRevenueKes = refAggregates.reduce((sum, a) => {
           return sum
-            + (a.totalStdEggs         ?? 0) * Number(pricing.pricePerEgg)
-            + (a.totalStarterEggs     ?? 0) * Number((pricing as any).pricePerEggStarter ?? 0)
-            + (a.totalBrokenSellable  ?? 0) * Number((pricing as any).pricePerEggBroken  ?? 0);
+            + (a.totalStdEggs         ?? 0) * Number(effectivePricing.pricePerEgg)
+            + (a.totalStarterEggs     ?? 0) * Number((effectivePricing as any).pricePerEggStarter ?? 0)
+            + (a.totalBrokenSellable  ?? 0) * Number((effectivePricing as any).pricePerEggBroken  ?? 0);
         }, 0);
       }
-    } else if (pricing) {
-      // No DailyEggAggregate yet — only one session cosigned, or aggregate not written yet.
-      // Fall back to locked tally sessions for today directly.
-      const todayTallies = await this.prisma.eggTallyVerification.findMany({
+    } else if (effectivePricing) {
+      // No DailyEggAggregate yet — fall back to locked tally sessions for refDate.
+      const refTallies = await this.prisma.eggTallyVerification.findMany({
         where: {
           isLocked: true,
-          session: { sessionDate: today, status: 'APPROVED' },
+          session: { sessionDate: refDate, status: 'APPROVED' },
         },
         include: {
           session: {
@@ -466,18 +494,17 @@ export class SalesService {
         },
       });
 
-      if (todayTallies.length > 0) {
-        expectedRevenueKes = todayTallies.reduce((sum, t) => {
+      if (refTallies.length > 0) {
+        expectedRevenueKes = refTallies.reduce((sum, t) => {
           const s = t.session as any;
           if (!s) return sum;
           return sum
-            + (s.totalGoodEggs        ?? 0) * Number(pricing.pricePerEgg)
-            + (s.totalStarterEggs     ?? 0) * Number((pricing as any).pricePerEggStarter ?? 0)
-            + (s.totalBrokenSellable  ?? 0) * Number((pricing as any).pricePerEggBroken  ?? 0);
+            + (s.totalGoodEggs        ?? 0) * Number(effectivePricing.pricePerEgg)
+            + (s.totalStarterEggs     ?? 0) * Number((effectivePricing as any).pricePerEggStarter ?? 0)
+            + (s.totalBrokenSellable  ?? 0) * Number((effectivePricing as any).pricePerEggBroken  ?? 0);
         }, 0);
       }
     }
-
     return {
       ...stockResult,
       isStarterOnly,
