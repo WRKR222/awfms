@@ -55,26 +55,34 @@ export class PricingService {
       });
     }
 
-    // ── FIX-03: Sequence Diagram — sendRevenueProjection() + sendExpectedStock() ──
-    // Get the latest locked tally to include per-category egg counts in notifications
-    const latestTally = await this.prisma.eggTallyVerification.findFirst({
-      where: { isLocked: true },
-      include: {
-        session: {
-          select: {
-            totalGoodEggs:       true,
-            totalStarterEggs:    true,
-            totalBrokenSellable: true,
-            sessionDate:         true,
-          },
-        },
-      },
-      orderBy: { lockedAt: 'desc' },
+    // ── FIX-03 (revised): Use DailyEggAggregate for combined AM+PM egg counts ──
+    // Previously queried a single EggTallyVerification (last locked session = PM only).
+    // DailyEggAggregate is written when both AM+PM tallies lock and holds the
+    // true combined totals — use it for accurate notification counts.
+    const priceDay = new Date(dto.priceDate);
+    priceDay.setHours(0, 0, 0, 0);
+
+    const aggregates = await this.prisma.dailyEggAggregate.findMany({
+      where: { aggregateDate: priceDay },
     });
 
-    const standardCount   = (latestTally?.session as any)?.totalGoodEggs       ?? 0;
-    const starterCount    = (latestTally?.session as any)?.totalStarterEggs    ?? 0;
-    const brokenCount     = (latestTally?.session as any)?.totalBrokenSellable ?? 0;
+    let standardCount = 0, starterCount = 0, brokenCount = 0;
+    if (aggregates.length > 0) {
+      standardCount = aggregates.reduce((s, a) => s + (a.totalStdEggs        ?? 0), 0);
+      starterCount  = aggregates.reduce((s, a) => s + (a.totalStarterEggs    ?? 0), 0);
+      brokenCount   = aggregates.reduce((s, a) => s + (a.totalBrokenSellable ?? 0), 0);
+    } else {
+      // Fallback: sum all locked tally sessions for the date
+      const tallies = await this.prisma.eggTallyVerification.findMany({
+        where: { isLocked: true, session: { sessionDate: priceDay } },
+        include: {
+          session: { select: { totalGoodEggs: true, totalStarterEggs: true, totalBrokenSellable: true } },
+        },
+      });
+      standardCount = tallies.reduce((s, t) => s + ((t.session as any)?.totalGoodEggs       ?? 0), 0);
+      starterCount  = tallies.reduce((s, t) => s + ((t.session as any)?.totalStarterEggs    ?? 0), 0);
+      brokenCount   = tallies.reduce((s, t) => s + ((t.session as any)?.totalBrokenSellable ?? 0), 0);
+    }
     const dateLabel       = dayjs(dto.priceDate).format('D MMM YYYY');
     const expectedKes     = dto.expectedRevenue
       ? `KES ${Number(dto.expectedRevenue).toLocaleString()}`
