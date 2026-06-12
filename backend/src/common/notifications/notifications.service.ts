@@ -109,4 +109,21 @@ export class NotificationsService {
       where: { userId, isRead: false },
     });
   }
+
+  /**
+   * Mark all FEED_LOW_STOCK notifications as read for a given user.
+   * Used to clear accumulated stale feed alerts from the DB so they stop
+   * appearing in the login modal.
+   */
+  async dismissFeedLowStockAlerts(userId: string) {
+    const result = await this.prisma.notification.updateMany({
+      where: {
+        userId,
+        type: 'FEED_LOW_STOCK' as any,
+        isRead: false,
+      },
+      data: { isRead: true, readAt: new Date() },
+    });
+    return { dismissed: result.count };
+  }
 }

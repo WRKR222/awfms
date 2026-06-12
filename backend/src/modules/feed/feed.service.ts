@@ -153,14 +153,31 @@ export class FeedService {
     return results;
   }
 
-  /** Runs daily at 6AM — checks feed stock and fires alerts */
+  /** Runs daily at 6AM — checks feed stock and fires alerts.
+   *  NOTE: CHICK_MASH, GROWER_MASH, and LAYER_MASH low-feed alerts are
+   *  intentionally suppressed — no notifications, no alertFired snapshots.
+   *  Only KIENYEJI feed types will generate low-stock alerts.
+   */
   @Cron('0 6 * * *')
   async checkFeedStockAlerts() {
     this.logger.log('Running daily feed stock check...');
-    // Threshold is now checked per-category inside the loop
+
+    // Standard mash types for which low-stock alerts are DISABLED
+    const ALERT_DISABLED_TYPES = new Set<string>([
+      FeedType.CHICK_MASH,
+      FeedType.GROWER_MASH,
+      FeedType.LAYER_MASH,
+    ]);
+
     const stocks = await this.getCurrentStock();
 
     for (const [feedType, stock] of Object.entries(stocks) as any) {
+      // Skip alert for standard mash types — removed per product requirement
+      if (ALERT_DISABLED_TYPES.has(feedType)) {
+        this.logger.debug(`Feed alert suppressed for ${feedType} (disabled for standard mash types)`);
+        continue;
+      }
+
       const alertThreshold = await this.getAlertThreshold(feedType);
       if (stock.currentStockKg <= alertThreshold && stock.avgDailyUsageKg > 0) {
         // Check if alert already fired today

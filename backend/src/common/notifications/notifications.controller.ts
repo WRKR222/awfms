@@ -46,5 +46,13 @@ export class NotificationsController {
     return this.svc.markRead([id], req.user.id);
   }
 
-  
+  /**
+   * PATCH /notifications/dismiss-feed-alerts
+   * One-shot: marks all FEED_LOW_STOCK notifications as read for the current user.
+   * Use this to clear accumulated stale low-feed-stock alerts from the DB.
+   */
+  @Patch('dismiss-feed-alerts')
+  dismissFeedAlerts(@Request() req: any) {
+    return this.svc.dismissFeedLowStockAlerts(req.user.id);
+  }
 }
