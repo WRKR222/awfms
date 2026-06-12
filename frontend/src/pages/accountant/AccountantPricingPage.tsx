@@ -65,10 +65,13 @@ export function AccountantPricingPage() {
   const pricePerEgg        = Number(watch('pricePerEgg')        || 0);
   const pricePerEggStarter = Number(watch('pricePerEggStarter') || 0);
   const pricePerEggBroken  = Number(watch('pricePerEggBroken')  || 0);
+  // Expected revenue = total eggs collected (AM + PM) × price per standard egg.
+  // totalProduction comes from getTallyTotalsForDate which returns the sum of
+  // every row's totalEggs across both locked sessions.
   const totalProduction    = Number(tallyTotals?.productionEggs ?? 0);
   const totalStarter       = Number(tallyTotals?.starterEggs    ?? 0);
   const totalBroken        = Number(tallyTotals?.fullBrokenEggs ?? 0);
-  const expectedRevenue    = (pricePerEgg * totalProduction) + (pricePerEggStarter * totalStarter) + (pricePerEggBroken * totalBroken);
+  const expectedRevenue    = pricePerEgg * totalProduction;
 
   const save = useMutation({
     mutationFn: (d: any) => api.post('/pricing/daily', d).then(r => r.data),
@@ -119,7 +122,7 @@ export function AccountantPricingPage() {
               <input {...register('priceDate')} type="date" className={inputCls} />
             </div>
 
-            <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
+            <div className="space-y-1">
               <label className={labelCls}>Production House Eggs (Standard) — KES/egg *</label>
               <span className={subLbl}>Standard eggs from production house</span>
               <input {...register('pricePerEgg', { required: true })} type="number" min="0" step="0.01" placeholder="e.g. 12.00" className={inputCls} />
@@ -162,19 +165,17 @@ export function AccountantPricingPage() {
                   <p className="text-xs font-semibold text-gray-600 mb-1">Expected Revenue</p>
                   {tallyTotals ? (
                     <>
-                      {[[totalProduction, pricePerEgg, 'Production'], [totalStarter, pricePerEggStarter, 'Starter'], [totalBroken, pricePerEggBroken, 'Broken']].filter(([qty]) => Number(qty) > 0).map(([qty, price, label]) => (
-                        <div key={String(label)} className="flex justify-between text-xs text-gray-500">
-                          <span>{label} ({qty} × KES {Number(price).toFixed(2)})</span>
-                          <span>KES {(Number(qty) * Number(price)).toLocaleString()}</span>
-                        </div>
-                      ))}
+                      <div className="flex justify-between text-xs text-gray-500">
+                        <span>Standard Eggs AM+PM ({totalProduction} × KES {pricePerEgg.toFixed(2)})</span>
+                        <span>KES {(totalProduction * pricePerEgg).toLocaleString()}</span>
+                      </div>
                       <div className="flex justify-between text-sm font-bold border-t border-gray-200 pt-1 mt-1">
                         <span>Total</span>
                         <span className="text-brand-green">KES {expectedRevenue.toLocaleString()}</span>
                       </div>
                     </>
                   ) : (
-                    <p className="text-xs text-gray-400">Tally not yet confirmed — revenue will auto-calculate after morning tally is locked.</p>
+                    <p className="text-xs text-gray-400">Tally not yet confirmed — revenue will auto-calculate once the cosigned AM &amp; PM tally is locked.</p>
                   )}
                 </div>
               </div>

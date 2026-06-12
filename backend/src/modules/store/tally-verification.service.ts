@@ -540,52 +540,18 @@ export class TallyVerificationService {
   // ─────────────────────────────────────────────────────────────────────────
   // Return locked tally egg counts per category for a given date.
   //
-  // FIX: Previously used findFirst on EggTallyVerification which only returned
-  // one session (the last locked one — always PM). This caused the accountant
-  // pricing page to calculate expected revenue from PM eggs only.
-  //
-  // Correct approach:
-  //   1. Primary: read DailyEggAggregate for the date — this is written by
-  //      signAndMaybeLock() only when BOTH AM and PM tallies are fully signed,
-  //      so it always holds the true combined AM+PM totals.
-  //   2. Fallback: if no aggregate exists yet (both tallies not fully locked),
-  //      sum totalGoodEggs and totalBrokenSellable across ALL locked tally
-  //      sessions for that date so partial data is still surfaced.
+  // FIX: Expected revenue = total eggs collected (AM + PM) × price per standard egg.
+  // "Total eggs" per session = sum of every row's totalEggs column, which is
+  // derived from stored session fields as:
+  //   totalGoodEggs + totalStarterEggs + totalBrokenSellable +
+  //   totalBrokenUnsellable + totalSoftShell + totalDeformed
+  // Sum this across both AM and PM locked tally sessions for the date.
   // ─────────────────────────────────────────────────────────────────────────
   async getTallyTotalsForDate(date: string) {
     const targetDate = new Date(date);
     targetDate.setHours(0, 0, 0, 0);
 
-    // ── Primary path: DailyEggAggregate (written when both AM+PM are locked) ──
-    const aggregates = await this.prisma.dailyEggAggregate.findMany({
-      where: { aggregateDate: targetDate },
-    });
-
-    if (aggregates.length > 0) {
-      // Sum across all houses/batches for that date
-      const totalStdEggs      = aggregates.reduce((s, a) => s + (a.totalStdEggs          ?? 0), 0);
-      const totalStarterEggs  = aggregates.reduce((s, a) => s + (a.totalStarterEggs      ?? 0), 0);
-      const totalBrokenSell   = aggregates.reduce((s, a) => s + (a.totalBrokenSellable   ?? 0), 0);
-      const totalFullTrays    = Math.floor(totalStdEggs / 30);
-      const totalLooseEggs    = totalStdEggs % 30;
-
-      return {
-        sessionDate:        targetDate,
-        isLocked:           true,
-        source:             'aggregate',           // diagnostic — not used by frontend
-        standardEggs:       totalStdEggs,
-        starterEggs:        totalStarterEggs,
-        brokenSellableEggs: totalBrokenSell,
-        productionEggs:     totalStdEggs,          // alias kept for frontend compatibility
-        fullBrokenEggs:     totalBrokenSell,       // alias kept for frontend compatibility
-        totalFullTrays,
-        totalLooseEggs,
-      };
-    }
-
-    // ── Fallback path: sum all locked tally sessions for the date ────────────
-    // Covers the window after both tallies are signed but before the aggregate
-    // write completes, or in edge cases where aggregate creation failed.
+    // Fetch all locked tally sessions for this date (AM + PM)
     const tallies = await this.prisma.eggTallyVerification.findMany({
       where: {
         isLocked: true,
@@ -594,13 +560,16 @@ export class TallyVerificationService {
       include: {
         session: {
           select: {
-            sessionDate:         true,
-            shift:               true,
-            totalGoodEggs:       true,
-            totalStarterEggs:    true,
-            totalBrokenSellable: true,
-            totalFullTrays:      true,
-            totalLooseEggs:      true,
+            sessionDate:          true,
+            shift:                true,
+            totalGoodEggs:        true,
+            totalStarterEggs:     true,
+            totalBrokenSellable:  true,
+            totalBrokenUnsellable:true,
+            totalSoftShell:       true,
+            totalDeformed:        true,
+            totalFullTrays:       true,
+            totalLooseEggs:       true,
           },
         },
       },
@@ -608,22 +577,55 @@ export class TallyVerificationService {
 
     if (tallies.length === 0) return null;
 
-    const totalStdEggs     = tallies.reduce((s, t) => s + (t.session?.totalGoodEggs         ?? 0), 0);
-    const totalStarterEggs = tallies.reduce((s, t) => s + ((t.session as any)?.totalStarterEggs    ?? 0), 0);
-    const totalBrokenSell  = tallies.reduce((s, t) => s + ((t.session as any)?.totalBrokenSellable ?? 0), 0);
-    const totalFullTrays   = tallies.reduce((s, t) => s + (t.session?.totalFullTrays         ?? 0), 0);
-    const totalLooseEggs   = tallies.reduce((s, t) => s + (t.session?.totalLooseEggs         ?? 0), 0);
-    const firstDate        = tallies[0].session?.sessionDate ?? targetDate;
+    // Derive totalEggs per session (mirrors editAndResubmit formula):
+    //   totalEggs = totalGoodEggs + totalStarterEggs + totalBrokenSellable
+    //             + totalBrokenUnsellable + totalSoftShell + totalDeformed
+    const totalCollectedEggs = tallies.reduce((sum, t) => {
+      const s = t.session as any;
+      if (!s) return sum;
+      return sum
+        + (s.totalGoodEggs         ?? 0)
+        + (s.totalStarterEggs      ?? 0)
+        + (s.totalBrokenSellable   ?? 0)
+        + (s.totalBrokenUnsellable ?? 0)
+        + (s.totalSoftShell        ?? 0)
+        + (s.totalDeformed         ?? 0);
+    }, 0);
+
+    // FIX: Sum per-category counts across all locked sessions (was hardcoded to 0).
+    // productionEggs = standard (good) eggs only.
+    // starterEggs    = early-lay eggs (own price tier).
+    // fullBrokenEggs = consumable broken (sellable at reduced price).
+    const totalProductionEggs = tallies.reduce((sum, t) => {
+      const s = t.session as any;
+      if (!s) return sum;
+      return sum + (s.totalGoodEggs ?? 0);
+    }, 0);
+    const totalStarterEggs = tallies.reduce((sum, t) => {
+      const s = t.session as any;
+      if (!s) return sum;
+      return sum + (s.totalStarterEggs ?? 0);
+    }, 0);
+    const totalBrokenSellable = tallies.reduce((sum, t) => {
+      const s = t.session as any;
+      if (!s) return sum;
+      return sum + (s.totalBrokenSellable ?? 0);
+    }, 0);
+
+    const totalFullTrays = tallies.reduce((s, t) => s + (t.session?.totalFullTrays ?? 0), 0);
+    const totalLooseEggs = tallies.reduce((s, t) => s + (t.session?.totalLooseEggs ?? 0), 0);
+    const firstDate      = tallies[0].session?.sessionDate ?? targetDate;
 
     return {
       sessionDate:        firstDate,
       isLocked:           true,
-      source:             'tally-fallback',
-      standardEggs:       totalStdEggs,
+      // productionEggs = standard (good) eggs only — used for expected revenue calc
+      productionEggs:     totalProductionEggs,
+      standardEggs:       totalProductionEggs,
+      // starterEggs and fullBrokenEggs now reflect real tally totals
       starterEggs:        totalStarterEggs,
-      brokenSellableEggs: totalBrokenSell,
-      productionEggs:     totalStdEggs,
-      fullBrokenEggs:     totalBrokenSell,
+      brokenSellableEggs: totalBrokenSellable,
+      fullBrokenEggs:     totalBrokenSellable,
       totalFullTrays,
       totalLooseEggs,
     };
