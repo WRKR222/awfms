@@ -1,6 +1,10 @@
 // src/pages/sales/AdvanceBookingsPage.tsx
 // Grade-free. Uses eggType (STANDARD_EGGS / STARTER_EGGS / CONSUMABLE_BROKEN_EGGS).
 // Delivery required checkbox + address + date. Price auto-fetched from accountant.
+// CHANGE: Standard egg pricing has two tiers set by the accountant:
+//   pricePerEgg     — applies when booking qty is 1–329 STANDARD eggs
+//   pricePerEggBulk — applies when booking qty is >= 330 STANDARD eggs
+//   If pricePerEggBulk is not set, pricePerEgg is used for all standard quantities.
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
@@ -29,6 +33,9 @@ const STATUS_CONFIG: Record<BookingStatus, { label: string; color: string; icon:
   CANCELLED: { label: 'Cancelled', color: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',        icon: XCircle     },
 };
 const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green disabled:opacity-60 disabled:cursor-not-allowed';
+
+/** >= this many STANDARD eggs in one booking → bulk price applies */
+const STANDARD_BULK_THRESHOLD = 330;
 function fmtKES(n?: number | string | null) { return `KES ${Number(n ?? 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 
 function BookingCard({ booking, onConfirm, onCancel, onFulfill }: {
@@ -118,14 +125,27 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
   const { data: pricing } = useQuery({ queryKey: ['daily-price-today'], queryFn: () => api.get('/pricing/daily/today').then(r => r.data).catch(() => null) });
   const [form, setForm] = useState({ customerId: '', eggType: 'STANDARD_EGGS' as EggItemType, requestedDate: dayjs().add(1, 'day').format('YYYY-MM-DD'), quantityTrays: 1, quantityEggs: 1, requiresDelivery: false, deliveryAddress: '', deliveryDate: '', notes: '' });
 
-  function getPricePerEgg(et: EggItemType): number {
+  /**
+   * Returns effective price/egg based on egg type and quantity.
+   * For STANDARD_EGGS: uses bulk rate (pricePerEggBulk) when qty >= STANDARD_BULK_THRESHOLD
+   * and a bulk rate has been set; otherwise uses the standard rate (pricePerEgg).
+   */
+  function getPricePerEgg(et: EggItemType, qty: number = 0): number {
     if (!pricing) return 0;
-    if (et === 'STANDARD_EGGS')          return Number(pricing.pricePerEgg ?? 0);
+    if (et === 'STANDARD_EGGS') {
+      if (qty >= STANDARD_BULK_THRESHOLD && pricing.pricePerEggBulk != null) {
+        return Number(pricing.pricePerEggBulk);
+      }
+      return Number(pricing.pricePerEgg ?? 0);
+    }
     if (et === 'STARTER_EGGS')           return Number(pricing.pricePerEggStarter ?? pricing.pricePerEgg ?? 0);
     if (et === 'CONSUMABLE_BROKEN_EGGS') return Number(pricing.pricePerEggBroken  ?? pricing.pricePerEgg ?? 0);
     return 0;
   }
-  const peg = getPricePerEgg(form.eggType);
+  const peg  = getPricePerEgg(form.eggType, form.quantityEggs ?? 0);
+  const isBulk = form.eggType === 'STANDARD_EGGS'
+    && (form.quantityEggs ?? 0) >= STANDARD_BULK_THRESHOLD
+    && pricing?.pricePerEggBulk != null;
   const qty = form.quantityEggs ?? 30;
   const est = qty * peg;
 
@@ -172,7 +192,17 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
           {pricing ? (
             <div className="bg-brand-green/5 border border-brand-green/20 rounded-xl p-3 text-xs space-y-1">
               <p className="font-semibold text-brand-green">Pricing (accountant · read-only)</p>
-              <p className="text-gray-600 dark:text-gray-400">KES <strong>{peg.toFixed(2)}</strong>/egg · Estimated total: <strong className="text-brand-green">{fmtKES(est)}</strong></p>
+              <p className="text-gray-600 dark:text-gray-400">
+                KES <strong>{peg.toFixed(2)}</strong>/egg
+                {isBulk && <span className="ml-1 text-brand-green font-semibold">(bulk rate ≥{STANDARD_BULK_THRESHOLD})</span>}
+                {' · '}Estimated total: <strong className="text-brand-green">{fmtKES(est)}</strong>
+              </p>
+              {form.eggType === 'STANDARD_EGGS' && pricing.pricePerEggBulk != null && (
+                <p className="text-gray-400">
+                  Standard &lt;{STANDARD_BULK_THRESHOLD}: KES {Number(pricing.pricePerEgg).toFixed(2)}/egg ·
+                  Bulk ≥{STANDARD_BULK_THRESHOLD}: KES {Number(pricing.pricePerEggBulk).toFixed(2)}/egg
+                </p>
+              )}
             </div>
           ) : (
             <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">

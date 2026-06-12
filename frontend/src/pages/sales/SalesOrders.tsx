@@ -1,6 +1,10 @@
 // src/pages/sales/SalesOrders.tsx
 // Grade-free version: egg category stored as itemType (STANDARD_EGGS / STARTER_EGGS /
 // CONSUMABLE_BROKEN_EGGS). No grade field anywhere. Prices auto-enforced from accountant.
+// CHANGE: Standard egg pricing now has two tiers set by the accountant:
+//   pricePerEgg     — applies when a single order line has 1–329 STANDARD eggs
+//   pricePerEggBulk — applies when a single order line has >= 330 STANDARD eggs
+//   If pricePerEggBulk is not set, pricePerEgg is used for all standard quantities.
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
@@ -73,21 +77,49 @@ function Fld({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-interface DailyPrice { pricePerEgg: number; pricePerEggStarter: number | null; pricePerEggBroken: number | null; expectedRevenue: number | null; }
+/** >= this many STANDARD eggs in one order line → bulk price applies */
+const STANDARD_BULK_THRESHOLD = 330;
+
+interface DailyPrice {
+  pricePerEgg: number;
+  /** Bulk rate for STANDARD eggs when a single line has >= STANDARD_BULK_THRESHOLD eggs.
+   *  Null means "not set" — fall back to pricePerEgg for all quantities. */
+  pricePerEggBulk: number | null;
+  pricePerEggStarter: number | null;
+  pricePerEggBroken: number | null;
+  expectedRevenue: number | null;
+}
 interface OrderItem  { eggType: EggItemType; quantityEggs: number; }
 
 function fmtKES(n?: number | string | null) {
   return `KES ${Number(n ?? 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
-function getPricePerEgg(eggType: EggItemType, p: DailyPrice | null): number | null {
+
+/**
+ * Returns the effective price per egg for a given type and quantity.
+ * For STANDARD_EGGS:
+ *   - qty >= STANDARD_BULK_THRESHOLD AND pricePerEggBulk is set → bulk price
+ *   - otherwise → standard price (pricePerEgg)
+ */
+function getPricePerEgg(
+  eggType: EggItemType,
+  p: DailyPrice | null,
+  qty: number = 0,
+): number | null {
   if (!p) return null;
-  if (eggType === 'STANDARD_EGGS')          return Number(p.pricePerEgg);
+  if (eggType === 'STANDARD_EGGS') {
+    if (qty >= STANDARD_BULK_THRESHOLD && p.pricePerEggBulk != null) {
+      return Number(p.pricePerEggBulk);
+    }
+    return Number(p.pricePerEgg);
+  }
   if (eggType === 'STARTER_EGGS')           return p.pricePerEggStarter != null ? Number(p.pricePerEggStarter) : null;
   if (eggType === 'CONSUMABLE_BROKEN_EGGS') return p.pricePerEggBroken  != null ? Number(p.pricePerEggBroken)  : null;
   return null;
 }
+
 function calcSubtotal(eggType: EggItemType, eggs: number, p: DailyPrice | null): number {
-  const peg = getPricePerEgg(eggType, p);
+  const peg = getPricePerEgg(eggType, p, eggs);
   return peg == null ? 0 : eggs * peg;
 }
 
@@ -259,7 +291,7 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
     if (!form.items.length) return 'Add at least one item';
     for (const it of form.items) {
       if (it.quantityEggs <= 0) return 'All quantities must be greater than zero';
-      if (getPricePerEgg(it.eggType, pricing) == null) return `No price set for ${EGG_TYPE_LABELS[it.eggType]}. Ask the accountant.`;
+      if (getPricePerEgg(it.eggType, pricing, it.quantityEggs) == null) return `No price set for ${EGG_TYPE_LABELS[it.eggType]}. Ask the accountant.`;
     }
     if (form.requiresDelivery && !form.deliveryAddress.trim()) return 'Enter delivery address';
     return null;
@@ -288,7 +320,10 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
         <div className="px-5 pt-4">
           <div className="bg-brand-green/5 border border-brand-green/20 rounded-xl p-3 text-xs space-y-1">
             <p className="font-semibold text-brand-green">Today's Pricing (auto-applied · set by accountant)</p>
-            <p>Standard: <strong>KES {Number(pricing.pricePerEgg).toFixed(2)}/egg</strong> = KES {(Number(pricing.pricePerEgg) * 30).toFixed(2)}/tray</p>
+            <p>Standard (&lt;{STANDARD_BULK_THRESHOLD}): <strong>KES {Number(pricing.pricePerEgg).toFixed(2)}/egg</strong> = KES {(Number(pricing.pricePerEgg) * 30).toFixed(2)}/tray</p>
+            {pricing.pricePerEggBulk != null && (
+              <p>Standard (≥{STANDARD_BULK_THRESHOLD} eggs): <strong>KES {Number(pricing.pricePerEggBulk).toFixed(2)}/egg</strong> = KES {(Number(pricing.pricePerEggBulk) * 30).toFixed(2)}/tray</p>
+            )}
             {pricing.pricePerEggStarter != null && <p>Starter: <strong>KES {Number(pricing.pricePerEggStarter).toFixed(2)}/egg</strong> = KES {(Number(pricing.pricePerEggStarter) * 30).toFixed(2)}/tray</p>}
             {pricing.pricePerEggBroken  != null && <p>Consumable Broken: <strong>KES {Number(pricing.pricePerEggBroken).toFixed(2)}/egg</strong> = KES {(Number(pricing.pricePerEggBroken) * 30).toFixed(2)}/tray</p>}
           </div>
@@ -326,8 +361,11 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
             </div>
             <div className="space-y-2">
               {form.items.map((item, idx) => {
-                const peg = getPricePerEgg(item.eggType, pricing);
+                const peg = getPricePerEgg(item.eggType, pricing, item.quantityEggs);
                 const sub = calcSubtotal(item.eggType, item.quantityEggs, pricing);
+                const isBulk = item.eggType === 'STANDARD_EGGS'
+                  && item.quantityEggs >= STANDARD_BULK_THRESHOLD
+                  && pricing?.pricePerEggBulk != null;
                 return (
                   <div key={idx} className="bg-gray-50 dark:bg-gray-800 rounded-xl p-3 space-y-2">
                     <div className="flex items-center gap-2">
@@ -335,8 +373,8 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
                         <label className="text-xs text-gray-500 mb-1 block">Egg Category</label>
                         <select value={item.eggType} onChange={e => updateItem(idx, 'eggType', e.target.value as EggItemType)} className={iCls}>
                           {EGG_TYPES.map(g => (
-                            <option key={g.key} value={g.key} disabled={getPricePerEgg(g.key, pricing) == null}>
-                              {g.label}{getPricePerEgg(g.key, pricing) == null ? ' (no price set)' : ''}
+                            <option key={g.key} value={g.key} disabled={getPricePerEgg(g.key, pricing, item.quantityEggs) == null}>
+                              {g.label}{getPricePerEgg(g.key, pricing, item.quantityEggs) == null ? ' (no price set)' : ''}
                             </option>
                           ))}
                         </select>
@@ -348,7 +386,11 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
                       {form.items.length > 1 && <button type="button" onClick={() => removeItem(idx)} className="mt-5 text-gray-400 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>}
                     </div>
                     <div className="flex justify-between text-xs text-gray-500">
-                      <span>{item.quantityEggs} eggs ({Math.ceil(item.quantityEggs / 30)} trays){peg != null ? ` · KES ${peg.toFixed(2)}/egg` : ''}</span>
+                      <span>
+                        {item.quantityEggs} eggs ({Math.ceil(item.quantityEggs / 30)} trays)
+                        {peg != null ? ` · KES ${peg.toFixed(2)}/egg` : ''}
+                        {isBulk && <span className="ml-1 text-brand-green font-semibold">(bulk rate)</span>}
+                      </span>
                       <span className="font-bold text-gray-700 dark:text-gray-300">{fmtKES(sub)}</span>
                     </div>
                   </div>
