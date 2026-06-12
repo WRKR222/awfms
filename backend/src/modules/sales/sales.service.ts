@@ -416,6 +416,36 @@ export class SalesService {
     const originalNonConsumableEggs = baseNonConsumableEggs;
     const originalConsumableEggs    = baseConsumableEggs;
 
+    // ── Expected revenue: use stored aggregate value (set by pricing.service
+    // recalcAggregateRevenue whenever the accountant saves/updates a price).
+    // This is the authoritative source — it already accounts for all houses
+    // (AM+PM combined) and the latest pricing, even when price is set after lock.
+    // Sum across all aggregates for today (one row per batch/house combination).
+    const todayAggregates = await this.prisma.dailyEggAggregate.findMany({
+      where: { aggregateDate: today },
+      select: { expectedRevenueKes: true, totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
+    });
+
+    let expectedRevenueKes: number | null = null;
+    if (todayAggregates.length > 0 && pricing) {
+      // If the aggregate already has a stored expectedRevenueKes (written by
+      // recalcAggregateRevenue), sum those. Otherwise compute live from egg counts × price.
+      const hasStoredRevenue = todayAggregates.some(a => (a.expectedRevenueKes ?? null) !== null);
+      if (hasStoredRevenue) {
+        expectedRevenueKes = todayAggregates.reduce(
+          (sum, a) => sum + Number(a.expectedRevenueKes ?? 0), 0,
+        );
+      } else {
+        // Fallback: compute from egg counts × today's price (price set before both tallies locked)
+        expectedRevenueKes = todayAggregates.reduce((sum, a) => {
+          return sum
+            + (a.totalStdEggs         ?? 0) * Number(pricing.pricePerEgg)
+            + (a.totalStarterEggs     ?? 0) * Number((pricing as any).pricePerEggStarter ?? 0)
+            + (a.totalBrokenSellable  ?? 0) * Number((pricing as any).pricePerEggBroken  ?? 0);
+        }, 0);
+      }
+    }
+
     return {
       ...stockResult,
       isStarterOnly,
@@ -423,6 +453,7 @@ export class SalesService {
       originalStarterEggs,
       originalNonConsumableEggs,
       originalConsumableEggs,
+      expectedRevenueKes: expectedRevenueKes !== null ? Math.round(expectedRevenueKes) : null,
       pricing: pricing ? {
         pricePerEgg:        Number(pricing.pricePerEgg),
         pricePerEggStarter: Number((pricing as any).pricePerEggStarter ?? 0),

@@ -241,24 +241,40 @@ export class DashboardController {
       }
     }
 
-    // ── Expected revenue: today's DailyEggAggregate (AM+PM) × accountant pricing
-    // Uses the aggregate so the Director sees the true combined AM+PM stock value,
-    // not just one session.
+    // ── Expected revenue: sum DailyEggAggregate.expectedRevenueKes for today.
+    // pricing.service.recalcAggregateRevenue() writes the correct value to every
+    // aggregate row whenever the accountant saves/updates a price — even when that
+    // happens AFTER the tally is locked. Summing all today's aggregate rows handles
+    // multi-house farms (one row per batch/house) correctly.
+    // Fallback: compute live from egg counts × pricing if aggregate rows exist but
+    // were written before the accountant set a price (expectedRevenueKes still 0).
     let expectedRevenueKes = 0;
     try {
-      const todayAgg = await this.prisma.dailyEggAggregate.findFirst({
+      const todayAggregates = await this.prisma.dailyEggAggregate.findMany({
         where: { aggregateDate: todayDate },
-        orderBy: { createdAt: 'desc' },
+        select: {
+          expectedRevenueKes: true,
+          totalStdEggs: true,
+          totalStarterEggs: true,
+          totalBrokenSellable: true,
+        },
       });
-      if (todayAgg && todayPricing) {
-        const stdEggs     = (todayAgg as any).totalStdEggs     ?? 0;
-        const starterEggs = (todayAgg as any).totalStarterEggs ?? 0;
-        if (starterEggs === 0) {
-          expectedRevenueKes = stdEggs * Number(todayPricing.pricePerEgg);
-        } else {
-          expectedRevenueKes =
-            starterEggs * Number(todayPricing.pricePerEggStarter ?? todayPricing.pricePerEgg) +
-            stdEggs     * Number(todayPricing.pricePerEgg);
+      if (todayAggregates.length > 0) {
+        const storedTotal = todayAggregates.reduce(
+          (sum, a) => sum + Number(a.expectedRevenueKes ?? 0), 0,
+        );
+        if (storedTotal > 0) {
+          // Use the pre-computed value from recalcAggregateRevenue
+          expectedRevenueKes = storedTotal;
+        } else if (todayPricing) {
+          // Aggregate exists but price hadn't been set yet when tally locked —
+          // compute live so the dashboard shows a value immediately after pricing is saved
+          expectedRevenueKes = todayAggregates.reduce((sum, a) => {
+            return sum
+              + (a.totalStdEggs         ?? 0) * Number(todayPricing.pricePerEgg)
+              + (a.totalStarterEggs     ?? 0) * Number(todayPricing.pricePerEggStarter ?? 0)
+              + (a.totalBrokenSellable  ?? 0) * Number(todayPricing.pricePerEggBroken  ?? 0);
+          }, 0);
         }
       }
     } catch (_) { /* best-effort */ }

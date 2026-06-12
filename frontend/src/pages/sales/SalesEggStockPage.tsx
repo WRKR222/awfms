@@ -91,7 +91,7 @@ export function SalesEggStockPage() {
   // own KPI in place of/alongside Standard Eggs.
   const isStarterOnly = (stock?.isStarterOnly ?? (currentStandard <= 0 && currentStarter > 0));
 
-  const expectedRev = summary?.expectedRevenue ?? latestTally?.expectedRevenueKes;
+  const expectedRev = stock?.expectedRevenueKes ?? summary?.expectedRevenue ?? latestTally?.expectedRevenueKes;
 
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-4xl mx-auto">
