@@ -204,6 +204,95 @@ export class TallyVerificationService {
     });
   }
 
+  /**
+   * Retract (un-sign) for the calling user's role.
+   *
+   * Rules:
+   *  - Tally must NOT be locked (locked = immutable forever).
+   *  - PM (MANAGER/OWNER) can retract their own signature at any time while unlocked.
+   *    Retracting PM also clears the Sales and Store signatures because the sign
+   *    order is PM → Sales → Store; any downstream signature becomes invalid.
+   *  - Sales can retract their own signature only if Store has NOT yet signed
+   *    (Store signing after Sales constitutes a downstream confirmation — clearing
+   *    it silently would mislead the Store party).
+   *    Retracting Sales also clears the Store signature.
+   *  - Store cannot retract — once all three have signed the tally locks
+   *    automatically; if only Store has signed that means PM and Sales haven't
+   *    which is an impossible state, so Store retract is not needed.
+   *
+   * After retracting, PM can edit row data via editAndResubmit() as normal.
+   */
+  async retractSign(sessionId: string, user: RequestUser) {
+    const party = ROLE_TO_PARTY[user.role];
+    if (!party) throw new ForbiddenException('Your role cannot sign or retract the tally');
+    if (party === 'STORE') {
+      throw new ForbiddenException(
+        'Store cannot retract independently. Ask Production Manager to retract — this will clear all signatures.',
+      );
+    }
+
+    const tally = await this.prisma.eggTallyVerification.findUnique({ where: { sessionId } });
+    if (!tally) throw new NotFoundException('Tally not found');
+    if (tally.isLocked) {
+      throw new BadRequestException('Tally is already locked and cannot be changed');
+    }
+
+    if (party === 'PM') {
+      if (!tally.pmSignedById) {
+        throw new BadRequestException('Production Manager has not signed this tally yet');
+      }
+      // PM retract: clear PM + all downstream (Sales, Store)
+      const updated = await this.prisma.eggTallyVerification.update({
+        where: { sessionId },
+        data: {
+          pmSignedById:    null, pmSignedAt:    null, pmRowData:    Prisma.JsonNull,
+          salesSignedById: null, salesSignedAt: null, salesRowData: Prisma.JsonNull,
+          storeSignedById: null, storeSignedAt: null, storeRowData: Prisma.JsonNull,
+        },
+      });
+      // Notify Sales and Store that signatures were cleared
+      await this._notifyRetract(sessionId, 'Production Manager has retracted their sign-off. All signatures cleared — PM may now edit data. Everyone must re-sign after edits.');
+      return updated;
+    }
+
+    // party === 'SALES'
+    if (!tally.salesSignedById) {
+      throw new BadRequestException('Sales has not signed this tally yet');
+    }
+    if (tally.storeSignedById) {
+      throw new BadRequestException(
+        'Store has already signed after Sales. Ask Production Manager to retract to clear all signatures.',
+      );
+    }
+    // Sales retract: clear Sales + downstream Store (Store hasn't signed yet per check above)
+    const updated = await this.prisma.eggTallyVerification.update({
+      where: { sessionId },
+      data: {
+        salesSignedById: null, salesSignedAt: null, salesRowData: Prisma.JsonNull,
+        storeSignedById: null, storeSignedAt: null, storeRowData: Prisma.JsonNull,
+      },
+    });
+    await this._notifyRetract(sessionId, 'Sales has retracted their sign-off. Store signature cleared. Sales must re-sign before Store.');
+    return updated;
+  }
+
+  private async _notifyRetract(sessionId: string, message: string) {
+    const targets = await this.prisma.user.findMany({
+      where: { role: { in: ['SALES', 'STORE', 'MANAGER', 'OWNER'] }, isActive: true },
+      select: { id: true },
+    });
+    await this.prisma.notification.createMany({
+      data: targets.map(t => ({
+        userId: t.id,
+        type: 'EGG_TALLY_TRIGGERED' as any,
+        title: 'Tally sign-off retracted',
+        message,
+        entityId: sessionId,
+        entityType: 'EggCollectionSession',
+      })),
+    });
+  }
+
   /** Sign for the calling user's role. When all 3 signed, locks. */
   async sign(sessionId: string, user: RequestUser) {
     const party = ROLE_TO_PARTY[user.role];

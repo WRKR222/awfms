@@ -41,6 +41,16 @@ export class TallyVerificationController {
   @RequirePermission(Permission.PRODUCTION_SESSION_VIEW)
   sign(@Param('sessionId') sessionId: string, @CurrentUser() user: RequestUser) { return this.service.sign(sessionId, user); }
 
+  /**
+   * POST /tally-verifications/:sessionId/retract
+   * PM or Sales retracts their own signature.
+   * PM retract clears PM + Sales + Store.
+   * Sales retract clears Sales + Store (only if Store hasn't signed yet).
+   */
+  @Post(':sessionId/retract')
+  @RequirePermission(Permission.PRODUCTION_SESSION_VIEW)
+  retract(@Param('sessionId') sessionId: string, @CurrentUser() user: RequestUser) { return this.service.retractSign(sessionId, user); }
+
   @Patch(':sessionId/revenue')
   @RequirePermission(Permission.PRICING_MANAGE)
   setRevenue(@Param('sessionId') sessionId: string, @Body('expectedRevenueKes') expectedRevenueKes: number, @CurrentUser() user: RequestUser) {

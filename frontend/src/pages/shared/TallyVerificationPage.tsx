@@ -154,6 +154,23 @@ function TallyCard({ tally }: { tally: TallySession }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tally-pending'] }),
   });
 
+  // Retract own sign-off (PM clears all; Sales clears Sales+Store if Store hasn't signed)
+  const retract = useMutation({
+    mutationFn: () => api.post(`/tally-verifications/${tally.sessionId}/retract`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tally-pending'] }),
+  });
+
+  // PM can retract when they have signed and tally is not locked
+  const canRetract =
+    !tally.isLocked &&
+    ((isPM && !!tally.pmSignedById) ||
+     (isSales && !!tally.salesSignedById && !tally.storeSignedById));
+
+  const retractLabel =
+    isPM
+      ? 'Retract PM Sign-Off (Clears All)'
+      : 'Retract Sales Sign-Off';
+
   const setRevenue = useMutation({
     mutationFn: () => api.patch(`/tally-verifications/${tally.sessionId}/revenue`, { expectedRevenueKes: Number(expectedRevenue) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tally-pending'] }),
@@ -515,8 +532,24 @@ function TallyCard({ tally }: { tally: TallySession }) {
       )}
 
       {iAlreadySigned && !tally.isLocked && (
-        <div className="px-4 pb-3">
+        <div className="px-4 pb-3 space-y-2">
           <p className="text-xs text-green-600 dark:text-green-400 font-medium">✓ You have signed off — waiting for others</p>
+          {canRetract && (
+            <button
+              onClick={() => {
+                if (window.confirm(
+                  isPM
+                    ? 'Retract your PM sign-off? This will also clear the Sales and Store signatures. Everyone must re-sign after any edits.'
+                    : 'Retract your Sales sign-off? This will also clear the Store signature.'
+                )) retract.mutate();
+              }}
+              disabled={retract.isPending}
+              className="w-full flex items-center justify-center gap-2 border-2 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/40 rounded-xl py-2.5 text-sm font-semibold disabled:opacity-50 transition-colors"
+            >
+              <X className="w-4 h-4" />
+              {retract.isPending ? 'Retracting…' : retractLabel}
+            </button>
+          )}
         </div>
       )}
 
