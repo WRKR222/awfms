@@ -142,6 +142,7 @@ enum NotificationType {
   PURCHASE_REQUEST
   LPO_SUBMITTED
   LPO_APPROVED
+  PRICING_SET
 }
 
 // ─── NEW PHASE 2 ENUMS ────────────────────────────────────────────────────
