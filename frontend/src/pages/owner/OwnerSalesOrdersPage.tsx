@@ -10,23 +10,23 @@ import {
 } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+interface SalesOrderItem {
+  itemType: string;
+  quantityEggs?: number | null;
+  quantityTrays?: number | null;
+  subtotal: number;
+}
+
 interface SalesOrder {
   id: string;
   orderNumber: string;
-  customerName: string;
-  quantityEggs?: number;
-  trays?: number;
-  pricePerEggKes?: number;
-  totalAmountKes: number;
+  customer: { id: string; name: string; phone?: string };
+  items: SalesOrderItem[];
+  subtotal: number;
   status: string;
+  orderDate: string;
   createdAt: string;
-}
-
-interface PricingToday {
-  pricePerEggProduction?: number;
-  pricePerEggStarter?: number;
-  pricePerEggBroken?: number;
-  expectedRevenue?: number;
+  paymentMethod?: string;
 }
 
 // ── Status colours ────────────────────────────────────────────────────────────
@@ -110,29 +110,32 @@ export function OwnerSalesOrdersPage() {
     staleTime: 30_000,
   });
 
-  // Today's pricing for expected revenue
-  const { data: pricing } = useQuery<PricingToday>({
-    queryKey: ['pricing-today'],
-    queryFn: () => api.get('/pricing/daily/today').then(r => r.data).catch(() => ({})),
+  // Use /sales/stock for expectedRevenueKes — this is the computed tally × pricing
+  // figure, not the accountant's manually entered estimate on DailyEggPrice.
+  const { data: stock } = useQuery({
+    queryKey: ['sales-stock'],
+    queryFn: () => api.get('/sales/stock').then(r => r.data).catch(() => null),
     staleTime: 60_000,
   });
 
-  // Compute totals
-  const confirmedOrders = orders.filter(o => o.status === 'CONFIRMED');
-  const totalRealised = confirmedOrders.reduce(
-    (sum, o) => sum + (o.totalAmountKes ?? 0),
-    0
+  // Realised = sum of subtotals for active (non-cancelled) orders
+  const activeOrders = orders.filter(o => o.status !== 'CANCELLED');
+  const confirmedOrders = orders.filter(
+    o => o.status === 'CONFIRMED' || o.status === 'DELIVERING' || o.status === 'DELIVERED'
   );
-  const expectedRevenue = pricing?.expectedRevenue ?? 0;
+  const totalRealised = confirmedOrders.reduce(
+    (sum, o) => sum + Number(o.subtotal ?? 0), 0
+  );
+  const expectedRevenue = stock?.expectedRevenueKes ?? 0;
 
   const filtered = statusFilter
     ? orders.filter(o => o.status === statusFilter)
     : orders;
 
-  // KPI cards
-  const totalEggs = confirmedOrders.reduce(
-    (sum, o) => sum + (o.quantityEggs ?? (o.trays ? o.trays * 30 : 0)),
-    0
+  // Eggs sold — sum across all item types in confirmed/delivered orders
+  const totalEggs = confirmedOrders.reduce((sum, o) =>
+    sum + o.items.reduce((s, i) =>
+      s + (i.quantityEggs ?? (i.quantityTrays ?? 0) * 30), 0), 0
   );
 
   return (
@@ -190,7 +193,7 @@ export function OwnerSalesOrdersPage() {
 
         {/* Status filter pills */}
         <div className="flex gap-2 flex-wrap">
-          {[null, 'CONFIRMED', 'PENDING', 'DRAFT'].map(s => (
+          {([null, 'CONFIRMED', 'PENDING', 'DRAFT', 'DELIVERING', 'DELIVERED', 'CANCELLED'] as (string | null)[]).map(s => (
             <button
               key={s ?? 'all'}
               onClick={() => setStatusFilter(s)}
@@ -200,7 +203,7 @@ export function OwnerSalesOrdersPage() {
                   : 'bg-white dark:bg-dark-card border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 hover:bg-gray-50'
               }`}
             >
-              {s === null ? `All (${orders.length})` : `${STATUS_CONFIG[s]?.label ?? s} (${orders.filter(o => o.status === s).length})`}
+              {s === null ? `All (${orders.length})` : `${STATUS_CONFIG[s]?.label ?? s.charAt(0)+s.slice(1).toLowerCase()} (${orders.filter(o => o.status === s).length})`}
             </button>
           ))}
         </div>
@@ -224,31 +227,52 @@ export function OwnerSalesOrdersPage() {
           <div className="space-y-2">
             {filtered.map(order => {
               const sc = STATUS_CONFIG[order.status] ?? STATUS_CONFIG.DRAFT;
-              const eggs = order.quantityEggs ?? (order.trays ? order.trays * 30 : 0);
+              const eggs = order.items?.reduce((s, i) => s + (i.quantityEggs ?? (i.quantityTrays ?? 0) * 30), 0) ?? 0;
               return (
                 <div
                   key={order.id}
-                  className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-3.5 flex items-center gap-3"
+                  className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-3.5"
                 >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">
-                        {order.customerName}
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">
+                          {order.customer.name}
+                        </p>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold flex items-center gap-1 flex-shrink-0 ${sc.cls}`}>
+                          {sc.icon}
+                          {sc.label}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        {order.orderNumber} · {eggs.toLocaleString()} eggs ·{' '}
+                        {dayjs(order.orderDate ?? order.createdAt).format('D MMM YYYY')}
                       </p>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold flex items-center gap-1 flex-shrink-0 ${sc.cls}`}>
-                        {sc.icon}
-                        {sc.label}
-                      </span>
                     </div>
-                    <p className="text-xs text-gray-400 mt-0.5">
-                      {order.orderNumber} · {eggs.toLocaleString()} eggs
-                      {order.trays ? ` (${order.trays} trays)` : ''} ·{' '}
-                      {dayjs(order.createdAt).format('D MMM YYYY')}
+                    <p className="text-sm font-bold text-brand-green flex-shrink-0">
+                      KES {Number(order.subtotal ?? 0).toLocaleString()}
                     </p>
                   </div>
-                  <p className="text-sm font-bold text-brand-green flex-shrink-0">
-                    KES {(order.totalAmountKes ?? 0).toLocaleString()}
-                  </p>
+                  {order.items?.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-gray-50 dark:border-dark-border">
+                      {order.items.filter(item => (item.quantityEggs ?? (item.quantityTrays ?? 0) * 30) > 0).map((item, idx) => {
+                        const eggQty = item.quantityEggs ?? (item.quantityTrays ?? 0) * 30;
+                        const label =
+                          item.itemType === 'STANDARD_EGGS'          ? 'standard' :
+                          item.itemType === 'STARTER_EGGS'            ? 'starter' :
+                          item.itemType === 'CONSUMABLE_BROKEN_EGGS'  ? 'broken sellable' : item.itemType;
+                        const color =
+                          item.itemType === 'STANDARD_EGGS'          ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400' :
+                          item.itemType === 'STARTER_EGGS'            ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400' :
+                          'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400';
+                        return (
+                          <span key={idx} className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${color}`}>
+                            {eggQty.toLocaleString()} {label}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
