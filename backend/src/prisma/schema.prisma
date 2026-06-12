@@ -723,6 +723,9 @@ model DailyEggPrice {
   id                  String   @id @default(uuid())
   priceDate           DateTime @unique @map("price_date") @db.Date
   pricePerEgg         Decimal  @map("price_per_egg") @db.Decimal(8, 4)
+  /// Bulk price for STANDARD eggs when a single order/booking has >= 330 eggs.
+  /// When null, pricePerEgg is used for ALL standard quantities.
+  pricePerEggBulk     Decimal? @map("price_per_egg_bulk") @db.Decimal(8, 4)
   pricePerEggStarter  Decimal? @map("price_per_egg_starter") @db.Decimal(8, 4)
   pricePerEggBroken   Decimal? @map("price_per_egg_broken") @db.Decimal(8, 4)
   expectedRevenue     Decimal? @map("expected_revenue") @db.Decimal(12, 2)
@@ -736,6 +739,7 @@ model DailyEggPrice {
   @@index([priceDate])
   @@map("daily_egg_prices")
 }
+
 
 // ─── PHASE 3: ADVANCE BOOKING ────────────────────────────────────────────────
 

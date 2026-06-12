@@ -7,6 +7,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RequestUser } from '../../auth/types/request-user.type';
+import { NotificationType } from '@prisma/client';
 import dayjs from 'dayjs';
 
 // Threshold above which the bulk price applies (>= BULK_THRESHOLD)
@@ -101,7 +102,7 @@ export class PricingService {
       await this.prisma.notification.create({
         data: {
           userId:     o.id,
-          type:       'PRICING_SET' as any,
+          type:       NotificationType.PRICING_SET,
           title:      `Revenue Projection — ${dateLabel}`,
           message:    `Egg prices set. Expected revenue: ${expectedKes}. ` +
                       `Standard: KES ${Number(dto.pricePerEgg).toFixed(2)}/egg` +
@@ -137,7 +138,7 @@ export class PricingService {
       await this.prisma.notification.create({
         data: {
           userId:     s.id,
-          type:       'PRICING_SET' as any,
+          type:       NotificationType.PRICING_SET,
           title:      `Egg Stock & Prices Ready — ${dateLabel}`,
           message:    stockLines.join('. ') +
                       (dto.expectedRevenue ? `. Expected revenue: ${expectedKes}.` : '') +
@@ -148,7 +149,47 @@ export class PricingService {
       });
     }
 
+    // ── Recalculate DailyEggAggregate.expectedRevenueKes after price save ──────
+    // The Director dashboard reads expectedRevenueKes from the aggregate.
+    // If the accountant sets/updates price AFTER the tally is locked, the
+    // aggregate still holds the stale value from lock-time. Recalculate here
+    // so the dashboard always shows: locked tally eggs × current price.
+    await this.recalcAggregateRevenue(
+      new Date(dto.priceDate),
+      dto.pricePerEgg,
+      dto.pricePerEggStarter ?? null,
+      dto.pricePerEggBroken  ?? null,
+    );
+
     return savedPrice;
+  }
+
+  // Recalculate DailyEggAggregate.expectedRevenueKes for all aggregates on a
+  // given date. Called every time the accountant saves/updates a daily price.
+  private async recalcAggregateRevenue(
+    priceDate: Date,
+    pricePerEgg: number,
+    pricePerEggStarter: number | null,
+    pricePerEggBroken:  number | null,
+  ): Promise<void> {
+    const aggregates = await this.prisma.dailyEggAggregate.findMany({
+      where: { aggregateDate: priceDate },
+    });
+    if (!aggregates.length) return;
+
+    await Promise.all(
+      aggregates.map(agg => {
+        const expectedRevenueKes =
+          agg.totalStdEggs          * pricePerEgg +
+          agg.totalStarterEggs      * (pricePerEggStarter ?? 0) +
+          agg.totalBrokenSellable   * (pricePerEggBroken  ?? 0);
+
+        return this.prisma.dailyEggAggregate.update({
+          where: { id: agg.id },
+          data:  { expectedRevenueKes },
+        });
+      }),
+    );
   }
 
   async getTodayPrice() {
