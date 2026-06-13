@@ -197,12 +197,12 @@ export function AnalyticsDashboard({ role }: Props) {
         </div>
 
         {/* Period tabs */}
-        <div className="flex gap-1 bg-dark-bg p-1 rounded-xl border border-dark-border">
+        <div className="flex gap-1 bg-dark-bg p-1 rounded-xl border border-dark-border overflow-x-auto w-full sm:w-auto">
           {RANGES.map(r => (
             <button
               key={r.value}
               onClick={() => setRange(r.value)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
                 range === r.value
                   ? 'bg-brand-green text-white shadow'
                   : 'text-dark-muted hover:text-dark-text hover:bg-dark-card'
@@ -213,7 +213,7 @@ export function AnalyticsDashboard({ role }: Props) {
       </div>
 
       {/* ── KPI Strip ───────────────────────────────────────────────────── */}
-      <div className={`grid gap-3 ${isDirector ? 'grid-cols-2 md:grid-cols-5' : 'grid-cols-2 md:grid-cols-4'}`}>
+      <div className={`grid gap-3 grid-cols-1 sm:grid-cols-2 ${isDirector ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
         <KpiCard icon={Egg}           label="Total Eggs" value={kpis.totalEggs.toLocaleString()} sub={`${kpis.totalTrays} trays`}     accent={C.green}  iconBg={`${C.green}22`} />
         <KpiCard icon={Activity}      label="Avg HDP %"  value={`${kpis.avgHdp}%`}               accent={C.teal}   iconBg={`${C.teal}22`} />
         <KpiCard icon={AlertTriangle} label="Mortality"  value={kpis.totalMortality}             accent={C.red}    iconBg={`${C.red}22`} />
@@ -298,7 +298,7 @@ export function AnalyticsDashboard({ role }: Props) {
           {mortalityCauses.length === 0 ? (
             <p className="text-xs text-dark-muted text-center py-8">No mortality data</p>
           ) : (
-            <div className="grid grid-cols-2 gap-4 items-center">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
               <ResponsiveContainer width="100%" height={200}>
                 <PieChart>
                   <Pie data={mortalityCauses} dataKey="count" nameKey="cause"
@@ -311,15 +311,15 @@ export function AnalyticsDashboard({ role }: Props) {
                   <Tooltip formatter={(val: number, name: string) => [val, (name as string).replace(/_/g, ' ')]} />
                 </PieChart>
               </ResponsiveContainer>
-              <div className="space-y-2.5">
+              <div className="space-y-2.5 min-w-0">
                 {mortalityCauses.slice(0, 5).map((c: any, i: number) => {
                   const total = mortalityCauses.reduce((s: number, x: any) => s + x.count, 0);
                   const pct = total > 0 ? (c.count / total) * 100 : 0;
                   return (
                     <div key={i}>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-[11px] text-dark-muted">{c.cause.replace(/_/g, ' ')}</span>
-                        <span className="text-[11px] font-bold text-dark-text">{c.count}</span>
+                      <div className="flex justify-between mb-1 gap-2">
+                        <span className="text-[11px] text-dark-muted truncate">{c.cause.replace(/_/g, ' ')}</span>
+                        <span className="text-[11px] font-bold text-dark-text flex-shrink-0">{c.count}</span>
                       </div>
                       <Bar2 pct={pct} color={CHART_COLORS[i % CHART_COLORS.length]} />
                     </div>
@@ -393,7 +393,7 @@ export function AnalyticsDashboard({ role }: Props) {
           {eggCondition.length === 0 ? (
             <p className="text-xs text-dark-muted text-center py-8">No data</p>
           ) : (
-            <div className="grid grid-cols-2 gap-4 items-center">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
               <ResponsiveContainer width="100%" height={180}>
                 <PieChart>
                   <Pie data={eggCondition} dataKey="value" nameKey="name"
@@ -405,16 +405,16 @@ export function AnalyticsDashboard({ role }: Props) {
                   <Tooltip formatter={(val: number, name: string) => [val.toLocaleString(), name]} />
                 </PieChart>
               </ResponsiveContainer>
-              <div className="space-y-3">
+              <div className="space-y-3 min-w-0">
                 {eggCondition.map((c: any, i: number) => {
                   const total = eggCondition.reduce((s: number, x: any) => s + x.value, 0);
                   const pct = total > 0 ? ((c.value / total) * 100).toFixed(1) : '0';
                   const color = i === 0 ? C.green : C.red;
                   return (
                     <div key={c.name}>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-[11px] text-dark-muted">{c.name}</span>
-                        <span className="text-[11px] font-bold" style={{ color }}>{pct}%</span>
+                      <div className="flex justify-between mb-1 gap-2">
+                        <span className="text-[11px] text-dark-muted truncate">{c.name}</span>
+                        <span className="text-[11px] font-bold flex-shrink-0" style={{ color }}>{pct}%</span>
                       </div>
                       <Bar2 pct={parseFloat(pct)} color={color} />
                     </div>
@@ -430,9 +430,9 @@ export function AnalyticsDashboard({ role }: Props) {
             <p className="text-xs text-dark-muted text-center py-8">No batch data</p>
           ) : (
             <ResponsiveContainer width="100%" height={200}>
-              <ScatterChart margin={{ top: 4, right: 12, left: -16, bottom: 20 }}>
+              <ScatterChart margin={{ top: 4, right: 12, left: -16, bottom: 24 }}>
                 <XAxis dataKey="totalFeedKg" name="Feed (kg)" tick={TICK_STYLE} axisLine={false} tickLine={false}
-                  label={{ value: 'Feed (kg)', position: 'insideBottom', offset: -12, fontSize: 11, fill: '#6b8f74' }} />
+                  label={{ value: 'Feed (kg)', position: 'insideBottom', offset: -16, fontSize: 11, fill: '#6b8f74' }} />
                 <YAxis dataKey="totalEggs" name="Eggs" tick={TICK_STYLE} axisLine={false} tickLine={false} />
                 <Tooltip
                   content={({ payload }: any) => {
@@ -515,7 +515,7 @@ export function AnalyticsDashboard({ role }: Props) {
               {revenueByCustomer.length === 0 ? (
                 <p className="text-xs text-dark-muted text-center py-8">No revenue data</p>
               ) : (
-                <div className="grid grid-cols-2 gap-4 items-center">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
                   <ResponsiveContainer width="100%" height={200}>
                     <PieChart>
                       <Pie data={revenueByCustomer} dataKey="value" nameKey="name"
@@ -528,15 +528,15 @@ export function AnalyticsDashboard({ role }: Props) {
                       <Tooltip formatter={(val: number, name: string) => [`KES ${val.toLocaleString()}`, name]} />
                     </PieChart>
                   </ResponsiveContainer>
-                  <div className="space-y-2">
+                  <div className="space-y-2 min-w-0">
                     {revenueByCustomer.slice(0, 6).map((c: any, i: number) => {
                       const total = revenueByCustomer.reduce((s: number, x: any) => s + x.value, 0);
                       const pct = total > 0 ? ((c.value / total) * 100).toFixed(1) : '0';
                       return (
                         <div key={c.name}>
-                          <div className="flex justify-between mb-1">
-                            <span className="text-[10px] text-dark-muted truncate max-w-[90px]">{c.name}</span>
-                            <span className="text-[10px] font-bold" style={{ color: CHART_COLORS[i % CHART_COLORS.length] }}>{pct}%</span>
+                          <div className="flex justify-between mb-1 gap-2">
+                            <span className="text-[10px] text-dark-muted truncate">{c.name}</span>
+                            <span className="text-[10px] font-bold flex-shrink-0" style={{ color: CHART_COLORS[i % CHART_COLORS.length] }}>{pct}%</span>
                           </div>
                           <Bar2 pct={parseFloat(pct)} color={CHART_COLORS[i % CHART_COLORS.length]} />
                         </div>
