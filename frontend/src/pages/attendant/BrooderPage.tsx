@@ -4,10 +4,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { api } from '../../lib/api';
 import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
 import {
   Bird, Thermometer, Droplets, Sun, XCircle, Plus,
-  X, AlertTriangle, ChevronRight, Flame,
+  X, AlertTriangle, ChevronRight, Flame, Calendar, Clock,
 } from 'lucide-react';
+
+dayjs.extend(relativeTime);
 
 // ── Feed type options & label helper ─────────────────────────────────────────
 
@@ -23,7 +26,7 @@ const FEED_TYPE_LABELS: Record<string, string> = {
   LAYER_MASH:  "Layer's Mash",
 };
 
-function feedLabel(type?: string) {
+function feedLabel(type?: string | null) {
   if (!type) return null;
   return FEED_TYPE_LABELS[type] ?? type;
 }
@@ -62,14 +65,56 @@ interface BrooderLog {
   batchId: string;
   logDate: string;
   waterConsumptionL?: number;
-  feedType?: string;       // ← added
-  feedConsumedKg?: number;
+  feedType?: string | null;
+  feedConsumedKg?: number | null;
   temperature?: number;
   lightingOk: boolean;
   mortalityCount: number;
   vaccineGiven?: string;
   supplement?: string;
   notes?: string;
+  createdAt?: string;
+  loggedBy?: { fullName: string };
+}
+
+// ── Date / time stamp badge ───────────────────────────────────────────────────
+
+function EntryDateBadge({ logDate, createdAt }: { logDate: string; createdAt?: string }) {
+  const today = dayjs().format('YYYY-MM-DD');
+  const entryDay = dayjs(logDate).format('YYYY-MM-DD');
+  const daysBack = dayjs(today).diff(dayjs(entryDay), 'day');
+
+  let label: string;
+  let color: string;
+
+  if (daysBack === 0) {
+    label = 'Today';
+    color = 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400';
+  } else if (daysBack === 1) {
+    label = 'Yesterday';
+    color = 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400';
+  } else {
+    label = `${daysBack}d ago`;
+    color = 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400';
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${color}`}>
+        <Calendar className="w-2.5 h-2.5" />
+        {dayjs(logDate).format('D MMM YYYY')}
+      </span>
+      <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${color}`}>
+        {label}
+      </span>
+      {createdAt && (
+        <span className="inline-flex items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
+          <Clock className="w-2.5 h-2.5" />
+          logged {dayjs(createdAt).format('HH:mm')}
+        </span>
+      )}
+    </div>
+  );
 }
 
 // ── Log Modal ─────────────────────────────────────────────────────────────────
@@ -81,9 +126,12 @@ function LogModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const { register, handleSubmit } = useForm({
+  const today = dayjs().format('YYYY-MM-DD');
+  const minDate = dayjs(batch.dateOfHatch).format('YYYY-MM-DD');
+
+  const { register, handleSubmit, watch, formState: { errors } } = useForm({
     defaultValues: {
-      logDate: dayjs().format('YYYY-MM-DD'),
+      logDate: today,
       waterConsumptionL: '',
       feedType: '',
       feedConsumedKg: '',
@@ -95,6 +143,12 @@ function LogModal({
       notes: '',
     },
   });
+
+  const selectedDate = watch('logDate');
+  const isBackdated = selectedDate && selectedDate < today;
+  const daysBack = selectedDate
+    ? dayjs(today).diff(dayjs(selectedDate), 'day')
+    : 0;
 
   const submit = useMutation({
     mutationFn: (data: any) =>
@@ -111,6 +165,7 @@ function LogModal({
         .then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-logs', batch.id] });
+      qc.invalidateQueries({ queryKey: ['brooder-last-log', batch.id] });
       qc.invalidateQueries({ queryKey: ['batches'] });
       onClose();
     },
@@ -123,6 +178,7 @@ function LogModal({
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
       <div className="bg-white dark:bg-dark-card w-full md:max-w-lg rounded-t-3xl md:rounded-2xl shadow-2xl overflow-y-auto max-h-[95vh]">
+        {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-dark-border sticky top-0 bg-white dark:bg-dark-card z-10">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 bg-amber-500 rounded-xl flex items-center justify-center">
@@ -142,11 +198,36 @@ function LogModal({
         </div>
 
         <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-4">
+
+          {/* ── Date selector with past-date support ── */}
           <div>
-            <label className={lCls}>Log Date</label>
-            <input {...register('logDate')} type="date" className={iCls} />
+            <label className={lCls}>
+              <Calendar className="w-3.5 h-3.5 inline mr-1 text-amber-500" />
+              Entry Date
+              <span className="ml-1 text-gray-400 font-normal">(you can enter past days)</span>
+            </label>
+            <input
+              {...register('logDate', { required: true })}
+              type="date"
+              min={minDate}
+              max={today}
+              className={iCls}
+            />
+            {/* Backdated entry warning banner */}
+            {isBackdated && daysBack > 0 && (
+              <div className="mt-2 flex items-start gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-2.5 text-xs text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                <span>
+                  <strong>Backdated entry</strong> — you're logging for{' '}
+                  <strong>{dayjs(selectedDate).format('dddd D MMMM')}</strong>{' '}
+                  ({daysBack} day{daysBack > 1 ? 's' : ''} ago). This will be timestamped with today's
+                  submission time but recorded against that date.
+                </span>
+              </div>
+            )}
           </div>
 
+          {/* ── Measurements ── */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className={lCls}>Water Consumed (L)</label>
@@ -224,7 +305,11 @@ function LogModal({
               type="submit" disabled={submit.isPending}
               className="flex-1 bg-amber-500 text-white rounded-xl py-3 font-semibold disabled:opacity-60"
             >
-              {submit.isPending ? 'Saving…' : 'Save Entry'}
+              {submit.isPending
+                ? 'Saving…'
+                : isBackdated
+                ? `Save Entry for ${dayjs(selectedDate).format('D MMM')}`
+                : 'Save Entry'}
             </button>
           </div>
         </form>
@@ -249,7 +334,7 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
   const { data: logs = [] } = useQuery<BrooderLog[]>({
     queryKey: ['brooder-logs', batch.id],
     queryFn: () =>
-      api.get(`/flock/brooder-logs?batchId=${batch.id}&limit=5`).then(r => r.data).catch(() => []),
+      api.get(`/flock/brooder-logs?batchId=${batch.id}&limit=10`).then(r => r.data).catch(() => []),
     enabled: expanded,
     staleTime: 30_000,
   });
@@ -263,6 +348,11 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
   });
 
   const lastLog = lastLogArr[0];
+  const today = dayjs().format('YYYY-MM-DD');
+  const daysSinceLastLog = lastLog
+    ? dayjs(today).diff(dayjs(lastLog.logDate).format('YYYY-MM-DD'), 'day')
+    : null;
+  const logOverdue = daysSinceLastLog === null || daysSinceLastLog > 0;
 
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4 space-y-4">
@@ -277,22 +367,31 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
               Brooder
             </span>
+            {/* Overdue badge */}
+            {logOverdue && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 font-semibold flex items-center gap-1">
+                <AlertTriangle className="w-2.5 h-2.5" />
+                {daysSinceLastLog === null ? 'No logs yet' : `${daysSinceLastLog}d overdue`}
+              </span>
+            )}
           </div>
           <p className="text-xs text-gray-400 mt-0.5">
             {batch.supplier?.name ?? batch.supplierName ?? 'Unknown supplier'} ·{' '}
             {ageWeeks} weeks old ({ageDays} days)
           </p>
         </div>
-        {weeksToTransfer <= 2 && weeksToTransfer > 0 && (
-          <span className="text-[10px] px-2 py-1 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 font-semibold flex-shrink-0">
-            Transfer in {weeksToTransfer}wk
-          </span>
-        )}
-        {weeksToTransfer === 0 && (
-          <span className="text-[10px] px-2 py-1 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 font-semibold flex-shrink-0">
-            Ready to transfer!
-          </span>
-        )}
+        <div className="flex flex-col items-end gap-1">
+          {weeksToTransfer <= 2 && weeksToTransfer > 0 && (
+            <span className="text-[10px] px-2 py-1 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 font-semibold flex-shrink-0">
+              Transfer in {weeksToTransfer}wk
+            </span>
+          )}
+          {weeksToTransfer === 0 && (
+            <span className="text-[10px] px-2 py-1 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 font-semibold flex-shrink-0">
+              Ready to transfer!
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Stats grid */}
@@ -314,12 +413,13 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
         </div>
       </div>
 
-      {/* ── Last log summary (now includes feed given + feed type) ── */}
-      {lastLog && (
-        <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 text-xs text-gray-500 dark:text-gray-400">
-          <p className="font-semibold text-gray-600 dark:text-gray-300 mb-1.5">
-            Last log — {dayjs(lastLog.logDate).format('D MMM YYYY')}
-          </p>
+      {/* ── Last log summary ── */}
+      {lastLog ? (
+        <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 text-xs text-gray-500 dark:text-gray-400 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="font-semibold text-gray-600 dark:text-gray-300">Last entry</p>
+            <EntryDateBadge logDate={lastLog.logDate} createdAt={lastLog.createdAt} />
+          </div>
           <div className="flex items-center gap-4 flex-wrap">
             {lastLog.temperature != null && (
               <span className="flex items-center gap-1">
@@ -333,9 +433,8 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
                 {lastLog.waterConsumptionL}L water
               </span>
             )}
-            {/* Feed given + type */}
             {(lastLog.feedConsumedKg != null || lastLog.feedType) && (
-              <span className="flex items-center gap-1">
+              <span className="flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-400">
                 🌾
                 {lastLog.feedConsumedKg != null ? `${lastLog.feedConsumedKg}kg` : ''}
                 {lastLog.feedType
@@ -357,6 +456,14 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
               </span>
             )}
           </div>
+          {lastLog.loggedBy && (
+            <p className="text-[10px] text-gray-400">by {lastLog.loggedBy.fullName}</p>
+          )}
+        </div>
+      ) : (
+        <div className="bg-red-50 dark:bg-red-900/20 rounded-xl p-3 text-xs text-red-500 dark:text-red-400 flex items-center gap-2">
+          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+          No entries logged yet — press "Log Entry" to start.
         </div>
       )}
 
@@ -367,7 +474,9 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
           className="flex-1 bg-amber-500 text-white rounded-xl py-2.5 text-xs font-semibold hover:bg-amber-600 transition-colors flex items-center justify-center gap-1.5"
         >
           <Plus className="w-3.5 h-3.5" />
-          Log Today
+          {logOverdue && daysSinceLastLog !== null && daysSinceLastLog > 0
+            ? `Log Entry (${daysSinceLastLog}d missed)`
+            : 'Log Entry'}
         </button>
         <button
           onClick={() => setExpanded(e => !e)}
@@ -378,32 +487,37 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
         </button>
       </div>
 
-      {/* Log history (shows feed type alongside kg) */}
+      {/* Log history */}
       {expanded && (
         <div className="space-y-2 border-t border-gray-100 dark:border-dark-border pt-3">
           <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
             Recent logs
           </p>
           {logs.length === 0 ? (
-            <p className="text-xs text-gray-400 text-center py-4">No logs yet — press "Log Today" to start.</p>
+            <p className="text-xs text-gray-400 text-center py-4">No logs yet.</p>
           ) : (
             logs.map(log => (
               <div
                 key={log.id}
-                className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 text-xs text-gray-500 dark:text-gray-400"
+                className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 text-xs text-gray-500 dark:text-gray-400 space-y-1.5"
               >
-                <p className="font-semibold text-gray-700 dark:text-gray-200 mb-1">
-                  {dayjs(log.logDate).format('ddd D MMM')}
-                  {log.mortalityCount > 0 && (
-                    <span className="ml-2 text-red-400">· {log.mortalityCount} mortality</span>
-                  )}
-                </p>
+                {/* Date + timestamp row */}
+                <div className="flex items-center justify-between flex-wrap gap-1">
+                  <span className="font-semibold text-gray-700 dark:text-gray-200">
+                    {dayjs(log.logDate).format('ddd D MMM YYYY')}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <EntryDateBadge logDate={log.logDate} createdAt={log.createdAt} />
+                    {log.mortalityCount > 0 && (
+                      <span className="text-red-400 font-semibold">· {log.mortalityCount} mortality</span>
+                    )}
+                  </div>
+                </div>
                 <div className="flex gap-3 flex-wrap">
                   {log.temperature != null && <span>🌡 {log.temperature}°C</span>}
                   {log.waterConsumptionL != null && <span>💧 {log.waterConsumptionL}L</span>}
-                  {/* Feed: show kg + type label */}
                   {(log.feedConsumedKg != null || log.feedType) && (
-                    <span>
+                    <span className="font-semibold text-amber-700 dark:text-amber-400">
                       🌾{' '}
                       {log.feedConsumedKg != null ? `${log.feedConsumedKg}kg` : ''}
                       {log.feedType
@@ -414,7 +528,10 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
                   {log.vaccineGiven && <span>💉 {log.vaccineGiven}</span>}
                   {!log.lightingOk && <span className="text-red-400">⚠ Lighting issue</span>}
                 </div>
-                {log.notes && <p className="mt-1 text-gray-400 italic">{log.notes}</p>}
+                {log.notes && <p className="text-gray-400 italic">{log.notes}</p>}
+                {log.loggedBy && (
+                  <p className="text-[10px] text-gray-400">by {log.loggedBy.fullName}</p>
+                )}
               </div>
             ))
           )}
@@ -464,8 +581,8 @@ export function BrooderPage() {
           <p className="font-semibold">Brooder Management</p>
           <p className="mt-0.5 text-amber-600 dark:text-amber-500">
             Chicks stay in the brooder up to 18 weeks. Log daily entries to track temperature,
-            water, feed, lighting and any mortality. Batches ready for transfer at 18 weeks will
-            be highlighted.
+            water, feed, lighting and any mortality. You can enter data for past days if a
+            day was missed — select the correct date when logging.
           </p>
         </div>
       </div>

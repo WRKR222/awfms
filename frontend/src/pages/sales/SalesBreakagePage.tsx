@@ -477,12 +477,12 @@ export default function SalesBreakagePage() {
                 )}
               </div>
 
-              {/* Consumable — only editable when source is STANDARD and result is CONSUMABLE */}
+              {/* Consumable — always editable. When source=CONSUMABLE the count goes DOWN (eggs destroyed). When source=STANDARD+result=CONSUMABLE the count goes UP. */}
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">
                   New Consumable Broken Count (Sellable)
                   {sourceType === 'CONSUMABLE' && (
-                    <span className="ml-1 text-amber-500">(locked — consumable broken can only become non-consumable)</span>
+                    <span className="ml-1 text-amber-500 font-medium">← enter the reduced count after destruction</span>
                   )}
                 </label>
                 <input
@@ -490,15 +490,17 @@ export default function SalesBreakagePage() {
                   min="0"
                   {...register('newConsumable', { min: 0, valueAsNumber: true })}
                   className={iCls}
-                  disabled={sourceType === 'CONSUMABLE'}
                 />
-                {diffConsumable !== 0 && sourceType !== 'CONSUMABLE' && (
+                {diffConsumable !== 0 && (
                   <p
                     className={`text-xs mt-1 font-medium ${
                       diffConsumable > 0 ? 'text-amber-500' : 'text-green-600'
                     }`}
                   >
-                    {diffConsumable > 0 ? `+${diffConsumable}` : diffConsumable} consumable
+                    {diffConsumable > 0 ? `+${diffConsumable}` : diffConsumable} consumable broken
+                    {sourceType === 'CONSUMABLE' && diffConsumable < 0 && (
+                      <span className="ml-1 text-gray-400">(these become non-consumable)</span>
+                    )}
                   </p>
                 )}
               </div>

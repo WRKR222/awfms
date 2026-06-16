@@ -409,16 +409,18 @@ export class FlockService {
 
     return this.prisma.brooderLog.create({
       data: {
-        batchId: batch.id,
-        logDate: input.logDate ? new Date(input.logDate) : new Date(),
+        batchId:           batch.id,
+        logDate:           input.logDate ? new Date(input.logDate) : new Date(),
         waterConsumptionL: input.waterConsumptionL != null ? Number(input.waterConsumptionL) : null,
-        temperature: input.temperature != null ? Number(input.temperature) : null,
-        lightingOk: input.lightingOk ?? true,
-        mortalityCount: mortality,
-        vaccineGiven: input.vaccineGiven ?? null,
-        supplement: input.supplement ?? null,
-        notes: input.notes ?? null,
-        loggedById: userId,
+        feedType:          input.feedType ?? null,
+        feedConsumedKg:    input.feedConsumedKg != null ? Number(input.feedConsumedKg) : null,
+        temperature:       input.temperature != null ? Number(input.temperature) : null,
+        lightingOk:        input.lightingOk ?? true,
+        mortalityCount:    mortality,
+        vaccineGiven:      input.vaccineGiven ?? null,
+        supplement:        input.supplement ?? null,
+        notes:             input.notes ?? null,
+        loggedById:        userId,
       },
     });
   }

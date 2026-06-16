@@ -481,6 +481,66 @@ export class DashboardController {
     return { pendingCount, approvedToday };
   }
 
+  @Get('brooder-summary')
+  @RequirePermission(Permission.PRODUCTION_VIEW)
+  async brooderSummary() {
+    const brooderBatches = await this.prisma.batch.findMany({
+      where: { isActive: true, deletedAt: null, location: 'BROODER' },
+      select: {
+        id: true,
+        batchCode: true,
+        currentBirdCount: true,
+        quantityReceived: true,
+        dateOfHatch: true,
+        supplier: { select: { name: true } },
+        supplierName: true,
+      },
+    });
+
+    if (brooderBatches.length === 0) return { batches: [] };
+
+    const batchSummaries = await Promise.all(
+      brooderBatches.map(async (batch) => {
+        const lastLog = await (this.prisma as any).brooderLog.findFirst({
+          where: { batchId: batch.id },
+          orderBy: { logDate: 'desc' },
+          select: {
+            logDate:           true,
+            feedType:          true,
+            feedConsumedKg:    true,
+            waterConsumptionL: true,
+            temperature:       true,
+            lightingOk:        true,
+            mortalityCount:    true,
+            vaccineGiven:      true,
+            notes:             true,
+          },
+        });
+
+        const ageDays = dayjs().diff(dayjs(batch.dateOfHatch), 'day');
+        const daysSinceLastLog = lastLog
+          ? dayjs().diff(dayjs(lastLog.logDate), 'day')
+          : null;
+
+        return {
+          batchId:          batch.id,
+          batchCode:        batch.batchCode,
+          currentBirdCount: batch.currentBirdCount,
+          survivalRate: batch.quantityReceived > 0
+            ? +((batch.currentBirdCount / batch.quantityReceived) * 100).toFixed(1)
+            : null,
+          ageWeeks:         Math.floor(ageDays / 7),
+          supplierName:     (batch as any).supplier?.name ?? (batch as any).supplierName ?? null,
+          lastLog:          lastLog ?? null,
+          daysSinceLastLog: daysSinceLastLog,
+          logOverdue:       daysSinceLastLog === null || daysSinceLastLog > 0,
+        };
+      }),
+    );
+
+    return { batches: batchSummaries };
+  }
+
   // ── Phase 5: Analytics time-series data ──────────────────────────────────
   @Get('analytics')
   @RequirePermission(Permission.PRODUCTION_VIEW)

@@ -1,10 +1,12 @@
+// src/pages/manager/ManagerHome.tsx
 import { usePendingEntries, useBatches } from '../../hooks/useFlock';
 import { useAuthStore } from '../../stores/auth.store';
-import { AlertTriangle, Package, ClipboardCheck, Heart, Users, ChevronRight } from 'lucide-react';
+import { AlertTriangle, Package, ClipboardCheck, Heart, Users, ChevronRight, Flame } from 'lucide-react';
 import { useManagerRealtime } from '../../hooks/useRealtime';
 import { CageMap } from '../../components/shared/CageMap';
 import { useNavigate } from 'react-router-dom';
 import { BrooderCageMap } from '../../components/shared/BrooderCageMap';
+import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
 import dayjs from 'dayjs';
 
 export function ManagerHome() {
@@ -42,7 +44,6 @@ export function ManagerHome() {
       color: 'bg-red-500',
       route: '/manager/health',
     },
-
     {
       label: 'Visitors',
       sub: 'Manage visitor approvals',
@@ -51,8 +52,6 @@ export function ManagerHome() {
       route: '/manager/visitors',
     },
   ];
-
-
 
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-5xl mx-auto">
@@ -63,8 +62,6 @@ export function ManagerHome() {
         <p className="text-xl md:text-2xl font-bold mt-1">{greeting}, {firstName}! 👋</p>
         <p className="text-sm opacity-75 mt-0.5">Production Manager Dashboard</p>
       </div>
-
-
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -114,6 +111,20 @@ export function ManagerHome() {
         </div>
       </div>
 
+      {/* ── Brooder Feed & Status Summary ── */}
+      <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-7 h-7 bg-amber-500 rounded-xl flex items-center justify-center flex-shrink-0">
+            <Flame className="w-3.5 h-3.5 text-white" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-gray-800 dark:text-gray-100">Brooder — Feed & Log Status</p>
+            <p className="text-[10px] text-gray-400">Last feed entry per active batch</p>
+          </div>
+        </div>
+        <BrooderFeedSummary />
+      </div>
+
       {/* Production House Cage Map */}
       <div>
         <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Production House — Cage Map</p>
@@ -133,8 +144,5 @@ export function ManagerHome() {
       </div>
 
     </div>
-
-
-    
   );
 }

@@ -20,6 +20,7 @@ import {
 import dayjs from 'dayjs';
 import { CageMap } from '../../components/shared/CageMap';
 import { BrooderCageMap } from '../../components/shared/BrooderCageMap';
+import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
 
 type Range = 'daily' | 'weekly' | 'monthly' | 'quarterly';
 
@@ -545,23 +546,33 @@ function CageMapPanel() {
 }
 
 function BrooderMapPanel() {
-  const [open, setOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
   return (
     <div className="rounded-2xl border border-gray-100 dark:border-dark-border overflow-hidden shadow-sm">
+      {/* Feed & Log Status — always visible */}
+      <div className="bg-white dark:bg-dark-card px-4 py-3 border-b border-gray-100 dark:border-dark-border">
+        <div className="flex items-center gap-2 mb-3">
+          <Flame className="w-4 h-4 text-amber-500" />
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Brooder — Feed & Log Status</span>
+        </div>
+        <BrooderFeedSummary />
+      </div>
+
+      {/* Collapsible live cage map */}
       <button
-        onClick={() => setOpen(v => !v)}
+        onClick={() => setMapOpen(v => !v)}
         className="w-full flex items-center justify-between px-4 py-3 bg-white dark:bg-dark-card hover:bg-gray-50 dark:hover:bg-dark-border transition-colors"
       >
         <div className="flex items-center gap-2">
           <Map className="w-4 h-4 text-blue-500" />
-          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Brooder — Live Map</span>
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Brooder — Live Cage Map</span>
           <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 font-medium">
             Live
           </span>
         </div>
-        <ChevronRight className={`w-4 h-4 text-gray-400 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <ChevronRight className={`w-4 h-4 text-gray-400 transition-transform ${mapOpen ? 'rotate-90' : ''}`} />
       </button>
-      {open && (
+      {mapOpen && (
         <div style={{ background: '#060c08', padding: '16px 20px' }}>
           <BrooderCageMap />
         </div>
