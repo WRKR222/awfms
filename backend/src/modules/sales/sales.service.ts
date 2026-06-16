@@ -382,6 +382,8 @@ export class SalesService {
           adjustmentRef,
           adjustmentDate:              new Date(dto.adjustmentDate),
           adjustmentType:              dto.adjustmentType,
+          sourceType:                  sourceType,
+          grade:                       'N/A',
           tallySessionId:              dto.tallySessionId ?? null,
           quantityStandardBefore:      dto.quantityStandardBefore,
           quantityStarterBefore:       dto.quantityStarterBefore,
