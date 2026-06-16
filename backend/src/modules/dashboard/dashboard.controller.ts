@@ -493,7 +493,6 @@ export class DashboardController {
         quantityReceived: true,
         dateOfHatch: true,
         supplier: { select: { name: true } },
-        supplierName: true,
       },
     });
 
@@ -530,7 +529,7 @@ export class DashboardController {
             ? +((batch.currentBirdCount / batch.quantityReceived) * 100).toFixed(1)
             : null,
           ageWeeks:         Math.floor(ageDays / 7),
-          supplierName:     (batch as any).supplier?.name ?? (batch as any).supplierName ?? null,
+          supplierName:     batch.supplier?.name ?? null,
           lastLog:          lastLog ?? null,
           daysSinceLastLog: daysSinceLastLog,
           logOverdue:       daysSinceLastLog === null || daysSinceLastLog > 0,
