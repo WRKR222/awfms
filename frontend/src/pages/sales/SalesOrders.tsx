@@ -251,6 +251,13 @@ function OrderCard({ order, onConfirm, onMarkDelivering, onMarkDelivered }: {
 function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: DailyPrice | null }) {
   const qc = useQueryClient();
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: () => api.get('/sales/customers').then(r => r.data) });
+  // Fetch live stock so we can warn when consumable broken eggs are available
+  // and should be sold before newer standard stock (FIFO).
+  const { data: stock } = useQuery({
+    queryKey: ['sales-stock'],
+    queryFn: () => api.get('/sales/stock').then(r => r.data).catch(() => null),
+    staleTime: 30_000,
+  });
   const [form, setForm] = useState({
     customerId: '', orderDate: dayjs().format('YYYY-MM-DD'),
     paymentMethod: 'CASH', requiresDelivery: false,
@@ -326,6 +333,13 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
             )}
             {pricing.pricePerEggStarter != null && <p>Starter: <strong>KES {Number(pricing.pricePerEggStarter).toFixed(2)}/egg</strong> = KES {(Number(pricing.pricePerEggStarter) * 30).toFixed(2)}/tray</p>}
             {pricing.pricePerEggBroken  != null && <p>Consumable Broken: <strong>KES {Number(pricing.pricePerEggBroken).toFixed(2)}/egg</strong> = KES {(Number(pricing.pricePerEggBroken) * 30).toFixed(2)}/tray</p>}
+            {/* FIFO nudge: show consumable broken availability so salesperson sells old stock first */}
+            {stock?.consumableEggs > 0 && (
+              <p className="text-orange-600 dark:text-orange-400 font-medium border-t border-brand-green/20 pt-1 mt-1 flex items-center gap-1">
+                <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                {stock.consumableEggs.toLocaleString()} consumable broken eggs in stock — consider selling these before standard eggs.
+              </p>
+            )}
           </div>
         </div>
         <form onSubmit={e => { e.preventDefault(); const err = validate(); if (err) { setError(err); return; } setError(''); createMutation.mutate(form); }} className="p-5 space-y-4">
@@ -469,6 +483,11 @@ function PaymentForm({ invoiceId, balanceDue, onClose }: { invoiceId: string; ba
       qc.invalidateQueries({ queryKey: ['finance-invoices'] });
       qc.invalidateQueries({ queryKey: ['ar-summary'] });
       qc.invalidateQueries({ queryKey: ['owner-dashboard'] });
+      // Re-fetch egg stock so Current Stock + Egg Stock pages update in real-time
+      // when an invoice is marked as paid (stock deduction reflects immediately).
+      qc.invalidateQueries({ queryKey: ['sales-stock'] });
+      qc.invalidateQueries({ queryKey: ['sales-summary'] });
+      qc.invalidateQueries({ queryKey: ['stock-history'] });
       onClose();
     },
   });

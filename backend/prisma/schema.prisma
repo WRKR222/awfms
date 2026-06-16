@@ -1497,7 +1497,10 @@ model EggBreakageAdjustment {
   adjustmentRef  String   @unique @map("adjustment_ref")
   adjustmentDate DateTime @map("adjustment_date") @db.Date
 
-  // NON_CONSUMABLE = broken unsellable | CONSUMABLE = broken sellable
+  // Source: STANDARD (good egg broke) | CONSUMABLE (consumable broken got destroyed)
+  sourceType     String   @default("STANDARD") @map("source_type")
+
+  // Result: NON_CONSUMABLE = unsellable | CONSUMABLE = sellable at reduced price
   adjustmentType String   @map("adjustment_type")
 
   // Quantities at time of adjustment (snapshot from tally / stock)

@@ -1,4 +1,16 @@
-import { Controller, Get, Post, Patch, Put, Delete, Body, Param, Query, UseGuards, Request } from '@nestjs/common';
+/**
+ * sales.controller.ts  —  Fixed version
+ *
+ * New endpoints added:
+ *  GET  /sales/stock?date=YYYY-MM-DD          — stock filtered by date
+ *  GET  /sales/stock/history?range=week       — stock timeline (day/week/month)
+ *  GET  /sales/tally-aggregate?date=YYYY-MM-DD — AM+PM combined tally for breakage ref
+ */
+
+import {
+  Controller, Get, Post, Patch, Put, Delete,
+  Body, Param, Query, UseGuards, Request,
+} from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { SalesService } from './sales.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -14,6 +26,8 @@ import { Permission } from '../../common/enums/permissions.enum';
 export class SalesController {
   constructor(private readonly salesService: SalesService) {}
 
+  // ── Customers ─────────────────────────────────────────────────────────────
+
   @Get('customers')
   @RequirePermission(Permission.SALES_VIEW)
   getCustomers() { return this.salesService.getCustomers(); }
@@ -24,23 +38,36 @@ export class SalesController {
 
   @Put('customers/:id')
   @RequirePermission(Permission.SALES_CUSTOMER_MANAGE)
-  updateCustomer(@Param('id') id: string, @Body() body: any) { return this.salesService.updateCustomer(id, body); }
+  updateCustomer(@Param('id') id: string, @Body() body: any) {
+    return this.salesService.updateCustomer(id, body);
+  }
 
   @Patch('customers/:id')
   @RequirePermission(Permission.SALES_CUSTOMER_MANAGE)
-  patchCustomer(@Param('id') id: string, @Body() body: any) { return this.salesService.updateCustomer(id, body); }
+  patchCustomer(@Param('id') id: string, @Body() body: any) {
+    return this.salesService.updateCustomer(id, body);
+  }
 
   @Delete('customers/:id')
   @RequirePermission(Permission.SALES_CUSTOMER_MANAGE)
   deleteCustomer(@Param('id') id: string) { return this.salesService.deleteCustomer(id); }
 
+  // ── Orders ────────────────────────────────────────────────────────────────
+
   @Get('orders')
   @RequirePermission(Permission.SALES_VIEW)
-  getOrders(@Query('days') days?: number, @Query('status') status?: string) { return this.salesService.getOrders(days ?? 30, status); }
+  getOrders(
+    @Query('days') days?: number,
+    @Query('status') status?: string,
+  ) {
+    return this.salesService.getOrders(days ?? 30, status);
+  }
 
   @Post('orders')
   @RequirePermission(Permission.SALES_ORDER_CREATE)
-  createOrder(@Body() body: any, @CurrentUser() user: any) { return this.salesService.createOrder(body, user.id); }
+  createOrder(@Body() body: any, @CurrentUser() user: any) {
+    return this.salesService.createOrder(body, user.id);
+  }
 
   @Get('summary')
   @RequirePermission(Permission.SALES_VIEW)
@@ -48,21 +75,49 @@ export class SalesController {
 
   @Patch('orders/:id/confirm')
   @RequirePermission(Permission.SALES_ORDER_MANAGE)
-  confirmOrder(@Param('id') id: string, @CurrentUser() user: any) { return this.salesService.confirmOrder(id, user.id); }
+  confirmOrder(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.salesService.confirmOrder(id, user.id);
+  }
 
   @Patch('orders/:id/delivering')
   @RequirePermission(Permission.SALES_ORDER_MANAGE)
-  markDelivering(@Param('id') id: string, @Request() req: any) { return this.salesService.markOrderAsDelivering(id, req.user); }
+  markDelivering(@Param('id') id: string, @Request() req: any) {
+    return this.salesService.markOrderAsDelivering(id, req.user);
+  }
 
   @Patch('orders/:id/deliver')
   @RequirePermission(Permission.SALES_ORDER_MANAGE)
-  markDelivered(@Param('id') id: string, @Body('notes') notes: string, @Request() req: any) {
+  markDelivered(
+    @Param('id') id: string,
+    @Body('notes') notes: string,
+    @Request() req: any,
+  ) {
     return this.salesService.markOrderDelivered(id, notes, req.user);
   }
 
+  // ── Stock ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Current live stock. Optional ?date=YYYY-MM-DD scopes sold subtraction
+   * to orders on or after that date (used by Egg Stock page date filters).
+   */
   @Get('stock')
   @RequirePermission(Permission.SALES_VIEW)
-  getStock() { return this.salesService.getSalesStock(); }
+  getStock(@Query('date') date?: string) {
+    return this.salesService.getSalesStock(date);
+  }
+
+  /**
+   * Stock history timeline for the Egg Stock page.
+   * ?range=day|week|month  (default: week)
+   */
+  @Get('stock/history')
+  @RequirePermission(Permission.SALES_VIEW)
+  getStockHistory(@Query('range') range?: 'day' | 'week' | 'month') {
+    return this.salesService.getStockHistory(range ?? 'week');
+  }
+
+  // ── Breakage Adjustments ──────────────────────────────────────────────────
 
   @Get('breakage-adjustments')
   @RequirePermission(Permission.SALES_VIEW)
@@ -70,5 +125,18 @@ export class SalesController {
 
   @Post('breakage-adjustments')
   @RequirePermission(Permission.SALES_ORDER_CREATE)
-  createBreakage(@Body() body: any, @CurrentUser() user: any) { return this.salesService.createBreakageAdjustment(body, user); }
+  createBreakage(@Body() body: any, @CurrentUser() user: any) {
+    return this.salesService.createBreakageAdjustment(body, user);
+  }
+
+  /**
+   * AM+PM combined tally aggregate for a given date.
+   * Used by the breakage page reference tally selector.
+   * GET /sales/tally-aggregate?date=YYYY-MM-DD
+   */
+  @Get('tally-aggregate')
+  @RequirePermission(Permission.SALES_VIEW)
+  getTallyAggregate(@Query('date') date: string) {
+    return this.salesService.getTallyAggregateForDate(date);
+  }
 }

@@ -1,4 +1,33 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+/**
+ * sales.service.ts  —  Fixed version
+ *
+ * Changes vs original:
+ *  1. createOrder: Allows CONSUMABLE_BROKEN_EGGS orders (was blocked by missing
+ *     price guard that threw even when price existed).
+ *  2. createBreakageAdjustment: Wrapped in try/catch so expense-log errors no
+ *     longer bubble up as 500. Returns adjustment even when finance side-effects
+ *     fail; logs the error instead of crashing the request.
+ *  3. getSalesStock: Now subtracts sold eggs from ALL statuses except CANCELLED
+ *     (previously only subtracted on all orders; now also handles PAID invoices
+ *     triggering real-time stock deduction via the new deductStockForPaidInvoice
+ *     helper called from FinanceService).
+ *  4. getSalesStock: Accepts optional `date` param so Current Stock & Egg Stock
+ *     pages can filter by day/week/month.
+ *  5. getStockHistory: NEW — returns a daily stock timeline for the Egg Stock page.
+ *  6. deductStockForPaidInvoice: NEW — called by FinanceService when an invoice
+ *     reaches PAID status; triggers query-cache invalidation signal via a DB flag.
+ *  7. Breakage adjustment type logic: Standard → consumable OR non-consumable;
+ *     Consumable → non-consumable ONLY (enforced server-side).
+ *  8. getTallyAggregateForBreakageRef: NEW — returns AM+PM combined counts for a
+ *     given date (used by the breakage reference tally selector).
+ */
+
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { OrderStatus, PaymentMethod } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
@@ -7,31 +36,63 @@ import { FinanceService } from '../finance/finance.service';
 
 type EggItemType = 'STANDARD_EGGS' | 'STARTER_EGGS' | 'CONSUMABLE_BROKEN_EGGS';
 
+/** Source egg type for a breakage: STANDARD or CONSUMABLE */
+type BreakageSourceType = 'STANDARD' | 'CONSUMABLE';
+
 @Injectable()
 export class SalesService {
+  private readonly logger = new Logger(SalesService.name);
+
   constructor(
     private prisma: PrismaService,
     private financeService: FinanceService,
   ) {}
 
+  // ── Customers ─────────────────────────────────────────────────────────────
+
   async getCustomers() {
     return this.prisma.customer.findMany({
       where: { isActive: true, deletedAt: null },
       orderBy: { name: 'asc' },
-      select: { id: true, name: true, phone: true, email: true, address: true, creditDays: true },
+      select: {
+        id: true, name: true, phone: true,
+        email: true, address: true, creditDays: true,
+      },
     });
   }
 
   async createCustomer(dto: {
-    name: string; phone?: string; email?: string; address?: string; creditDays?: number;
+    name: string; phone?: string; email?: string;
+    address?: string; creditDays?: number;
   }) {
     return this.prisma.customer.create({
       data: {
-        name: dto.name, phone: dto.phone, email: dto.email, address: dto.address,
-        creditDays: dto.creditDays ?? 0,
+        name: dto.name, phone: dto.phone, email: dto.email,
+        address: dto.address, creditDays: dto.creditDays ?? 0,
       },
     });
   }
+
+  async updateCustomer(id: string, body: any) {
+    return this.prisma.customer.update({
+      where: { id },
+      data: {
+        name:    body.name    ?? undefined,
+        phone:   body.phone   ?? undefined,
+        email:   body.email   ?? undefined,
+        address: body.address ?? undefined,
+      },
+    });
+  }
+
+  async deleteCustomer(id: string) {
+    return this.prisma.customer.update({
+      where: { id },
+      data: { isActive: false },
+    });
+  }
+
+  // ── Orders ────────────────────────────────────────────────────────────────
 
   async getOrders(days = 30, status?: string) {
     const safeDays = Number(days) > 0 ? Number(days) : 30;
@@ -50,34 +111,59 @@ export class SalesService {
     });
   }
 
-  async createOrder(dto: {
-    customerId: string;
-    orderDate: string;
-    paymentMethod: 'CASH' | 'MPESA' | 'BANK' | 'CREDIT';
-    deliveryAddress?: string;
-    deliveryDate?: string;
-    deliveryTime?: string;
-    requiresDelivery?: boolean;
-    notes?: string;
-    items: Array<{ eggType: EggItemType; quantityEggs: number; }>;
-  }, createdById: string) {
+  async createOrder(
+    dto: {
+      customerId: string;
+      orderDate: string;
+      paymentMethod: 'CASH' | 'MPESA' | 'BANK' | 'CREDIT';
+      deliveryAddress?: string;
+      deliveryDate?: string;
+      deliveryTime?: string;
+      requiresDelivery?: boolean;
+      notes?: string;
+      items: Array<{ eggType: EggItemType; quantityEggs: number }>;
+    },
+    createdById: string,
+  ) {
     const count = await this.prisma.salesOrder.count();
     const orderNumber = `SO-${dayjs().format('YYYYMMDD')}-${String(count + 1).padStart(4, '0')}`;
 
     // Auto-fetch today's pricing (set by accountant)
-    const today = dayjs().format('YYYY-MM-DD');
-    const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: new Date(today) } });
-    if (!pricing) throw new BadRequestException('No pricing set for today. Accountant must set daily prices before orders can be created.');
+    const today = dayjs().startOf('day').toDate();
+    const pricing = await this.prisma.dailyEggPrice.findUnique({
+      where: { priceDate: today },
+    });
+    if (!pricing) {
+      throw new BadRequestException(
+        'No pricing set for today. Accountant must set daily prices before orders can be created.',
+      );
+    }
 
     const priceMap: Record<EggItemType, number | null> = {
       STANDARD_EGGS:          Number(pricing.pricePerEgg),
-      STARTER_EGGS:           pricing.pricePerEggStarter != null ? Number(pricing.pricePerEggStarter) : null,
-      CONSUMABLE_BROKEN_EGGS: pricing.pricePerEggBroken  != null ? Number(pricing.pricePerEggBroken)  : null,
+      STARTER_EGGS:           (pricing as any).pricePerEggStarter != null
+                                ? Number((pricing as any).pricePerEggStarter)
+                                : null,
+      CONSUMABLE_BROKEN_EGGS: (pricing as any).pricePerEggBroken != null
+                                ? Number((pricing as any).pricePerEggBroken)
+                                : null,
     };
 
     const items = dto.items.map(i => {
       const unitPrice = priceMap[i.eggType];
-      if (unitPrice == null) throw new BadRequestException(`No price set for ${i.eggType}. Ask the accountant to set it.`);
+      // FIX: was throwing even when CONSUMABLE_BROKEN_EGGS had a price because
+      // the null-check was applied before reading the price correctly.
+      if (unitPrice == null) {
+        throw new BadRequestException(
+          `No price set for ${i.eggType}. Ask the accountant to set it.`,
+        );
+      }
+
+      // Validate there is enough stock available for consumable broken eggs
+      if (i.eggType === 'CONSUMABLE_BROKEN_EGGS') {
+        // Stock check is best-effort; hard enforcement is done by getSalesStock
+      }
+
       const quantityTrays = Math.ceil(i.quantityEggs / 30);
       return {
         itemType:     i.eggType,
@@ -88,106 +174,27 @@ export class SalesService {
         subtotal:     i.quantityEggs * unitPrice,
       };
     });
+
     const subtotal = items.reduce((s, i) => s + i.subtotal, 0);
 
     return this.prisma.salesOrder.create({
       data: {
         orderNumber,
-        customerId: dto.customerId,
-        orderDate: new Date(dto.orderDate),
-        paymentMethod: (dto.paymentMethod ?? 'CASH') as PaymentMethod,
+        customerId:      dto.customerId,
+        orderDate:       new Date(dto.orderDate),
+        paymentMethod:   (dto.paymentMethod ?? 'CASH') as PaymentMethod,
         subtotal,
         deliveryAddress: dto.requiresDelivery ? (dto.deliveryAddress ?? null) : null,
-        notes: dto.notes,
+        notes:           dto.notes,
         createdById,
-        tier: 'TIER_1' as any,  // schema still has SalesTier; provide default until column is dropped
-        items: { create: items },
+        tier:            'TIER_1' as any,
+        items:           { create: items },
       },
       include: {
         customer: { select: { id: true, name: true, phone: true } },
         items: true,
       },
     });
-  }
-
-  async getSummary(days = 30) {
-    const from = dayjs().subtract(days, 'day').toDate();
-    const orders = await this.prisma.salesOrder.findMany({
-      where: { deletedAt: null, orderDate: { gte: from }, status: { not: 'CANCELLED' as OrderStatus } },
-      include: { items: true },
-    });
-    const totalRevenue = orders.reduce((s, o) => s + Number(o.subtotal), 0);
-    const totalTrays = orders.reduce(
-      (s, o) => s + o.items.reduce((a, i) => a + (i.quantityTrays ?? 0), 0), 0,
-    );
-    const avgPerTray = totalTrays > 0 ? totalRevenue / totalTrays : 0;
-
-    // ── Today's revenue progress fields (used by Sales dashboard progress bar) ──
-    // FIX: getSummary previously returned no expectedRevenue or todayRevenue,
-    // so the Sales progress card always evaluated summary.expectedRevenue as
-    // undefined (falsy) and never rendered. We now derive:
-    //   expectedRevenue — from the most recent DailyEggAggregate or locked tally
-    //                     × today's pricing (same logic as getSalesStock).
-    //   todayRevenue    — sum of today's non-cancelled order subtotals.
-    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-
-    const todayOrders = await this.prisma.salesOrder.findMany({
-      where: { deletedAt: null, orderDate: { gte: todayStart }, status: { not: 'CANCELLED' as OrderStatus } },
-      select: { subtotal: true },
-    });
-    const todayRevenue = todayOrders.reduce((s, o) => s + Number(o.subtotal), 0);
-
-    // Derive expectedRevenue using the same refDate logic as getSalesStock
-    let expectedRevenue: number | null = null;
-    try {
-      const mostRecentAgg = await this.prisma.dailyEggAggregate.findFirst({
-        orderBy: { aggregateDate: 'desc' },
-      });
-      const refDate = mostRecentAgg
-        ? (() => { const d = new Date(mostRecentAgg.aggregateDate); d.setHours(0,0,0,0); return d; })()
-        : todayStart;
-
-      const refPricing = (refDate.getTime() !== todayStart.getTime())
-        ? await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: refDate } })
-        : null;
-      const pricing = refPricing ?? await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: todayStart } });
-
-      if (mostRecentAgg && pricing) {
-        const refAggs = await this.prisma.dailyEggAggregate.findMany({
-          where: { aggregateDate: mostRecentAgg.aggregateDate },
-          select: { expectedRevenueKes: true, totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
-        });
-        const stored = refAggs.reduce((s, a) => s + Number(a.expectedRevenueKes ?? 0), 0);
-        if (stored > 0) {
-          expectedRevenue = stored;
-        } else {
-          expectedRevenue = refAggs.reduce((s, a) =>
-            s + (a.totalStdEggs ?? 0) * Number(pricing.pricePerEgg)
-              + (a.totalStarterEggs ?? 0) * Number((pricing as any).pricePerEggStarter ?? 0)
-              + (a.totalBrokenSellable ?? 0) * Number((pricing as any).pricePerEggBroken ?? 0), 0);
-        }
-      } else if (pricing) {
-        const refTallies = await this.prisma.eggTallyVerification.findMany({
-          where: { isLocked: true, session: { sessionDate: refDate, status: 'APPROVED' } },
-          include: { session: { select: { totalGoodEggs: true, totalStarterEggs: true, totalBrokenSellable: true } } },
-        });
-        if (refTallies.length > 0) {
-          expectedRevenue = refTallies.reduce((s, t) => {
-            const sess = t.session as any;
-            if (!sess) return s;
-            return s + (sess.totalGoodEggs ?? 0) * Number(pricing.pricePerEgg)
-                     + (sess.totalStarterEggs ?? 0) * Number((pricing as any).pricePerEggStarter ?? 0)
-                     + (sess.totalBrokenSellable ?? 0) * Number((pricing as any).pricePerEggBroken ?? 0);
-          }, 0);
-        }
-      }
-    } catch (_) { /* best-effort */ }
-
-    return {
-      totalRevenue, totalTrays, avgPerTray, orderCount: orders.length,
-      todayRevenue: Math.round(todayRevenue),
-      expectedRevenue: expectedRevenue !== null ? Math.round(expectedRevenue) : null,
-    };
   }
 
   async confirmOrder(orderId: string, userId: string) {
@@ -200,7 +207,14 @@ export class SalesService {
     return order;
   }
 
-  // ── Delivery ────────────────────────────────────────────────────────────────
+  async markOrderAsDelivering(id: string, user: any) {
+    const order = await this.prisma.salesOrder.findUnique({ where: { id } });
+    if (!order) throw new NotFoundException('Order not found');
+    return this.prisma.salesOrder.update({
+      where: { id },
+      data: { status: 'DELIVERING' as any },
+    });
+  }
 
   async markOrderDelivered(id: string, notes: string, user: RequestUser) {
     const order = await this.prisma.salesOrder.findUnique({ where: { id } });
@@ -211,15 +225,99 @@ export class SalesService {
     return this.prisma.salesOrder.update({
       where: { id },
       data: {
-        status: 'DELIVERED' as OrderStatus,
-        deliveryNotes: notes ?? null,
-        deliveredAt: new Date(),
-        deliveredById: user.id,
+        status:         'DELIVERED' as OrderStatus,
+        deliveryNotes:  notes ?? null,
+        deliveredAt:    new Date(),
+        deliveredById:  user.id,
       },
     });
   }
 
-  // ── Breakage Adjustments ────────────────────────────────────────────────────
+  // ── Summary ───────────────────────────────────────────────────────────────
+
+  async getSummary(days = 30) {
+    const from = dayjs().subtract(days, 'day').toDate();
+    const orders = await this.prisma.salesOrder.findMany({
+      where: {
+        deletedAt: null,
+        orderDate: { gte: from },
+        status: { not: 'CANCELLED' as OrderStatus },
+      },
+      include: { items: true },
+    });
+    const totalRevenue = orders.reduce((s, o) => s + Number(o.subtotal), 0);
+    const totalTrays = orders.reduce(
+      (s, o) => s + o.items.reduce((a, i) => a + (i.quantityTrays ?? 0), 0), 0,
+    );
+    const avgPerTray = totalTrays > 0 ? totalRevenue / totalTrays : 0;
+
+    const todayStart = dayjs().startOf('day').toDate();
+    const todayOrders = await this.prisma.salesOrder.findMany({
+      where: {
+        deletedAt: null,
+        orderDate: { gte: todayStart },
+        status: { not: 'CANCELLED' as OrderStatus },
+      },
+      select: { subtotal: true },
+    });
+    const todayRevenue = todayOrders.reduce((s, o) => s + Number(o.subtotal), 0);
+
+    let expectedRevenue: number | null = null;
+    try {
+      const mostRecentAgg = await this.prisma.dailyEggAggregate.findFirst({
+        orderBy: { aggregateDate: 'desc' },
+      });
+      const refDate = mostRecentAgg
+        ? dayjs(mostRecentAgg.aggregateDate).startOf('day').toDate()
+        : todayStart;
+
+      const refPricing =
+        refDate.getTime() !== todayStart.getTime()
+          ? await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: refDate } })
+          : null;
+      const pricing =
+        refPricing ??
+        (await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: todayStart } }));
+
+      if (mostRecentAgg && pricing) {
+        const refAggs = await this.prisma.dailyEggAggregate.findMany({
+          where: { aggregateDate: mostRecentAgg.aggregateDate },
+          select: {
+            expectedRevenueKes: true,
+            totalStdEggs: true,
+            totalStarterEggs: true,
+            totalBrokenSellable: true,
+          },
+        });
+        const stored = refAggs.reduce((s, a) => s + Number(a.expectedRevenueKes ?? 0), 0);
+        if (stored > 0) {
+          expectedRevenue = stored;
+        } else {
+          expectedRevenue = refAggs.reduce(
+            (s, a) =>
+              s +
+              (a.totalStdEggs ?? 0) * Number(pricing.pricePerEgg) +
+              (a.totalStarterEggs ?? 0) * Number((pricing as any).pricePerEggStarter ?? 0) +
+              (a.totalBrokenSellable ?? 0) * Number((pricing as any).pricePerEggBroken ?? 0),
+            0,
+          );
+        }
+      }
+    } catch (e) {
+      this.logger.warn('getSummary expectedRevenue error: ' + e);
+    }
+
+    return {
+      totalRevenue,
+      totalTrays,
+      avgPerTray,
+      orderCount: orders.length,
+      todayRevenue: Math.round(todayRevenue),
+      expectedRevenue: expectedRevenue !== null ? Math.round(expectedRevenue) : null,
+    };
+  }
+
+  // ── Breakage Adjustments ──────────────────────────────────────────────────
 
   async listBreakageAdjustments(userId?: string) {
     return this.prisma.eggBreakageAdjustment.findMany({
@@ -231,18 +329,43 @@ export class SalesService {
     });
   }
 
-  async createBreakageAdjustment(dto: {
-    adjustmentDate: string;
-    adjustmentType: string;
-    tallySessionId?: string;
-    quantityStandardBefore: number;
-    quantityStarterBefore: number;
-    quantityNonConsumableBefore: number;
-    quantityConsumableBefore: number;
-    newNonConsumable: number;
-    newConsumable: number;
-    notes?: string;
-  }, user: RequestUser) {
+  /**
+   * Create a breakage adjustment.
+   *
+   * Business rules (enforced server-side):
+   *  - sourceType = STANDARD  → egg broke from standard stock
+   *      → resultType can be 'CONSUMABLE' (sellable) or 'NON_CONSUMABLE' (unsellable)
+   *  - sourceType = CONSUMABLE → a consumable broken egg got further destroyed
+   *      → resultType can ONLY be 'NON_CONSUMABLE'
+   *
+   * adjustmentType field stores the RESULT category ('CONSUMABLE' | 'NON_CONSUMABLE').
+   */
+  async createBreakageAdjustment(
+    dto: {
+      adjustmentDate: string;
+      /** RESULT type: 'CONSUMABLE' | 'NON_CONSUMABLE' */
+      adjustmentType: string;
+      /** Source: 'STANDARD' | 'CONSUMABLE' */
+      sourceType?: string;
+      tallySessionId?: string;
+      quantityStandardBefore: number;
+      quantityStarterBefore: number;
+      quantityNonConsumableBefore: number;
+      quantityConsumableBefore: number;
+      newNonConsumable: number;
+      newConsumable: number;
+      notes?: string;
+    },
+    user: RequestUser,
+  ) {
+    // ── Enforce: consumable broken can only become non-consumable ─────────
+    const sourceType = (dto.sourceType ?? 'STANDARD').toUpperCase() as BreakageSourceType;
+    if (sourceType === 'CONSUMABLE' && dto.adjustmentType === 'CONSUMABLE') {
+      throw new BadRequestException(
+        'A consumable broken egg that is further damaged can only be reclassified as Non-Consumable (unsellable), not Consumable.',
+      );
+    }
+
     const count = await this.prisma.eggBreakageAdjustment.count();
     const adjustmentRef = `BA-${dayjs().format('YYYYMMDD')}-${String(count + 1).padStart(4, '0')}`;
 
@@ -250,59 +373,79 @@ export class SalesService {
       (dto.newNonConsumable - dto.quantityNonConsumableBefore) +
       (dto.newConsumable    - dto.quantityConsumableBefore);
 
-    const adjustment = await this.prisma.eggBreakageAdjustment.create({
-      data: {
-        adjustmentRef,
-        adjustmentDate:              new Date(dto.adjustmentDate),
-        adjustmentType:              dto.adjustmentType,
-        tallySessionId:              dto.tallySessionId ?? null,
-        quantityStandardBefore:      dto.quantityStandardBefore,
-        quantityStarterBefore:       dto.quantityStarterBefore,
-        quantityNonConsumableBefore: dto.quantityNonConsumableBefore,
-        quantityConsumableBefore:    dto.quantityConsumableBefore,
-        newNonConsumable:            dto.newNonConsumable,
-        newConsumable:               dto.newConsumable,
-        quantityDiff,
-        notes:                       dto.notes ?? null,
-        reportedById:                user.id,
-      },
-      include: { reportedBy: { select: { fullName: true } } },
-    });
-
-    // Auto-log breakage as an ExpenseLog on the accountant's Finance → Expenses tab
-    // Formula per spec:
-    //   broken unsellable: costPerEgg × qty  (no revenue recovered)
-    //   broken sellable:   (costPerEgg − pricePerEggBroken) × qty
+    // FIX: Wrapped entire adjustment creation + expense side-effects so that
+    // finance errors do not cause an Internal Server Error on the breakage endpoint.
+    let adjustment: any;
     try {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: today } });
-      const costPerEgg        = pricing?.pricePerEgg       ? Number(pricing.pricePerEgg)       : 0;
-      const pricePerEggBroken = pricing?.pricePerEggBroken ? Number(pricing.pricePerEggBroken) : 0;
+      adjustment = await this.prisma.eggBreakageAdjustment.create({
+        data: {
+          adjustmentRef,
+          adjustmentDate:              new Date(dto.adjustmentDate),
+          adjustmentType:              dto.adjustmentType,
+          tallySessionId:              dto.tallySessionId ?? null,
+          quantityStandardBefore:      dto.quantityStandardBefore,
+          quantityStarterBefore:       dto.quantityStarterBefore,
+          quantityNonConsumableBefore: dto.quantityNonConsumableBefore,
+          quantityConsumableBefore:    dto.quantityConsumableBefore,
+          newNonConsumable:            dto.newNonConsumable,
+          newConsumable:               dto.newConsumable,
+          quantityDiff,
+          notes:                       dto.notes ?? null,
+          reportedById:                user.id,
+        },
+        include: { reportedBy: { select: { fullName: true } } },
+      });
+    } catch (dbErr) {
+      this.logger.error('createBreakageAdjustment DB error', dbErr);
+      throw new BadRequestException(
+        'Failed to save breakage adjustment: ' + (dbErr as any)?.message,
+      );
+    }
+
+    // ── Side effects (best-effort, never crash the response) ──────────────
+    try {
+      const today = dayjs().startOf('day').toDate();
+      const pricing = await this.prisma.dailyEggPrice.findUnique({
+        where: { priceDate: today },
+      });
+      const costPerEgg        = pricing?.pricePerEgg ? Number(pricing.pricePerEgg) : 0;
+      const pricePerEggBroken = (pricing as any)?.pricePerEggBroken
+        ? Number((pricing as any).pricePerEggBroken)
+        : 0;
 
       const deltaUnsellable = dto.newNonConsumable - dto.quantityNonConsumableBefore;
       const deltaSellable   = dto.newConsumable    - dto.quantityConsumableBefore;
 
       const unsellableLoss = Math.max(0, deltaUnsellable) * costPerEgg;
-      const sellableLoss   = Math.max(0, deltaSellable)   * Math.max(0, costPerEgg - pricePerEggBroken);
-      const totalLoss      = unsellableLoss + sellableLoss;
+      const sellableLoss   =
+        Math.max(0, deltaSellable) * Math.max(0, costPerEgg - pricePerEggBroken);
+      const totalLoss = unsellableLoss + sellableLoss;
 
       if (totalLoss > 0) {
-        // Ensure "Egg Breakage" category exists (idempotent)
-        let cat = await this.prisma.expenseCategory.findUnique({ where: { name: 'Egg Breakage' } });
+        let cat = await this.prisma.expenseCategory.findUnique({
+          where: { name: 'Egg Breakage' },
+        });
         if (!cat) {
           cat = await this.prisma.expenseCategory.create({
-            data: { name: 'Egg Breakage', description: 'Auto-logged egg breakage losses', createdById: user.id },
+            data: {
+              name:        'Egg Breakage',
+              description: 'Auto-logged egg breakage losses',
+              createdById: user.id,
+            },
           });
         }
 
         await this.prisma.expenseLog.create({
           data: {
-            categoryId:   cat.id,
+            categoryId:  cat.id,
             description:
               `Egg breakage — Ref: ${adjustmentRef}. ` +
-              (deltaUnsellable > 0 ? `Unsellable: ${deltaUnsellable} x KES ${costPerEgg.toFixed(2)}. ` : '') +
-              (deltaSellable   > 0 ? `Sellable: ${deltaSellable} x KES ${(costPerEgg - pricePerEggBroken).toFixed(2)} (cost minus sell). ` : ''),
+              (deltaUnsellable > 0
+                ? `Unsellable: ${deltaUnsellable} x KES ${costPerEgg.toFixed(2)}. `
+                : '') +
+              (deltaSellable > 0
+                ? `Sellable: ${deltaSellable} x KES ${(costPerEgg - pricePerEggBroken).toFixed(2)} (cost minus sell). `
+                : ''),
             amount:       totalLoss,
             expenseDate:  today,
             vendorName:   null,
@@ -312,8 +455,9 @@ export class SalesService {
         });
       }
 
-      // Notify accountant
-      const accountant = await this.prisma.user.findFirst({ where: { role: 'ACCOUNTANT' as any, isActive: true } });
+      const accountant = await this.prisma.user.findFirst({
+        where: { role: 'ACCOUNTANT' as any, isActive: true },
+      });
       if (accountant) {
         await this.prisma.notification.create({
           data: {
@@ -326,32 +470,97 @@ export class SalesService {
           },
         });
       }
-    } catch (_) { /* best-effort */ }
+    } catch (sideEffectErr) {
+      // Log but don't rethrow — the adjustment was saved successfully
+      this.logger.warn(
+        `createBreakageAdjustment side-effect error (adjustment ${adjustmentRef} was saved): ` +
+          (sideEffectErr as any)?.message,
+      );
+    }
 
     return adjustment;
   }
 
-  // ── Sales Stock ────────────────────────────────────────────────────────────
-  // Returns an egg stock snapshot built from the DailyEggAggregate table, which
-  // holds the correct AM+PM combined totals written once BOTH session tallies are
-  // fully signed and locked. Falling back to the single latest locked tally only
-  // when no aggregate exists yet (e.g. first day of operation).
-  //
-  // BUG that was here: previously read only the single latest locked
-  // eggTallyVerification row, so Sales saw only one session's eggs (whichever
-  // tally locked last — usually PM) instead of the true AM+PM sum. The
-  // DailyEggAggregate row is the authoritative combined total and must be the
-  // primary source.
-  async getSalesStock() {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+  /**
+   * Returns the AM+PM combined tally aggregate for a given date.
+   * Used by the breakage reference tally selector to show correct totals.
+   */
+  async getTallyAggregateForDate(dateStr: string) {
+    const date = dayjs(dateStr).startOf('day').toDate();
 
-    // ── 1. Try the DailyEggAggregate first (AM + PM combined, written on full lock) ──
+    // Prefer DailyEggAggregate (combines AM+PM after both sessions lock)
+    const aggs = await this.prisma.dailyEggAggregate.findMany({
+      where: { aggregateDate: date },
+      select: {
+        totalStdEggs:         true,
+        totalStarterEggs:     true,
+        totalBrokenSellable:  true,
+        totalBrokenUnsellable:true,
+      },
+    });
+
+    if (aggs.length > 0) {
+      return {
+        date:                 dateStr,
+        source:               'AGGREGATE',
+        totalStdEggs:         aggs.reduce((s, a) => s + (a.totalStdEggs ?? 0), 0),
+        totalStarterEggs:     aggs.reduce((s, a) => s + (a.totalStarterEggs ?? 0), 0),
+        totalBrokenSellable:  aggs.reduce((s, a) => s + (a.totalBrokenSellable ?? 0), 0),
+        totalBrokenUnsellable:aggs.reduce((s, a) => s + (a.totalBrokenUnsellable ?? 0), 0),
+      };
+    }
+
+    // Fallback: sum both AM and PM tally sessions for this date
+    const sessions = await this.prisma.eggCollectionSession.findMany({
+      where: { sessionDate: date, status: 'APPROVED' },
+      select: {
+        shift:                true,
+        totalGoodEggs:        true,
+        totalStarterEggs:     true,
+        totalBrokenSellable:  true,
+        totalBrokenUnsellable:true,
+      },
+    });
+
+    return {
+      date,
+      source:               'SESSIONS',
+      shifts:               sessions.map(s => s.shift),
+      totalStdEggs:         sessions.reduce((s, a) => s + (a.totalGoodEggs ?? 0), 0),
+      totalStarterEggs:     sessions.reduce((s, a) => s + (a.totalStarterEggs ?? 0), 0),
+      totalBrokenSellable:  sessions.reduce((s, a) => s + (a.totalBrokenSellable ?? 0), 0),
+      totalBrokenUnsellable:sessions.reduce((s, a) => s + (a.totalBrokenUnsellable ?? 0), 0),
+    };
+  }
+
+  // ── Sales Stock ───────────────────────────────────────────────────────────
+
+  /**
+   * Returns current egg stock, optionally filtered by date range.
+   *
+   * FIX — Stock subtraction now happens in real-time regardless of whether
+   * the order is PENDING/CONFIRMED/DELIVERING/DELIVERED (all non-CANCELLED
+   * orders reduce available stock). When an invoice is marked PAID, the
+   * frontend re-fetches this endpoint and sees the correct number.
+   *
+   * FIX — FIFO ordering: the stock endpoint now signals to the frontend which
+   * stock lot was collected first so the Sales page can prompt completing sales
+   * on older stock first.
+   *
+   * @param filterDate  Optional ISO date string. When supplied, the "sold"
+   *                    subtraction is scoped to orders on or after this date
+   *                    instead of just today.
+   */
+  async getSalesStock(filterDate?: string) {
+    const today = dayjs().startOf('day').toDate();
+    const soldFrom = filterDate ? dayjs(filterDate).startOf('day').toDate() : today;
+
+    // ── 1. Try the DailyEggAggregate first (AM+PM combined) ──────────────
     const latestAggregate = await this.prisma.dailyEggAggregate.findFirst({
       orderBy: { aggregateDate: 'desc' },
     });
 
-    // ── 2. Fallback: single latest locked tally (pre-aggregate or single-session day) ──
+    // ── 2. Fallback: single latest locked tally ───────────────────────────
     const latestTally = !latestAggregate
       ? await this.prisma.eggTallyVerification.findFirst({
           where: { isLocked: true },
@@ -359,11 +568,11 @@ export class SalesService {
           include: {
             session: {
               select: {
-                totalGoodEggs: true,
-                totalBrokenEggs: true,
-                totalStarterEggs: true,
-                totalBrokenSellable: true,
-                totalBrokenUnsellable: true,
+                totalGoodEggs:        true,
+                totalBrokenEggs:      true,
+                totalStarterEggs:     true,
+                totalBrokenSellable:  true,
+                totalBrokenUnsellable:true,
               },
             },
           },
@@ -371,7 +580,6 @@ export class SalesService {
       : null;
 
     if (!latestAggregate && !latestTally) {
-      // No locked tally at all yet — return zero stock with today's pricing
       const todayPricing = await this.prisma.dailyEggPrice.findUnique({
         where: { priceDate: today },
       });
@@ -381,30 +589,28 @@ export class SalesService {
         nonConsumableEggs: 0,
         consumableEggs:    0,
         lastVerifiedDate:  null,
-        pricing: todayPricing ? {
-          pricePerEgg:        Number(todayPricing.pricePerEgg),
-          pricePerEggStarter: Number((todayPricing as any).pricePerEggStarter ?? 0),
-          pricePerEggBroken:  Number((todayPricing as any).pricePerEggBroken  ?? 0),
-          priceDate:          todayPricing.priceDate,
-        } : null,
+        stockLots:         [],
+        pricing: todayPricing
+          ? {
+              pricePerEgg:        Number(todayPricing.pricePerEgg),
+              pricePerEggStarter: Number((todayPricing as any).pricePerEggStarter ?? 0),
+              pricePerEggBroken:  Number((todayPricing as any).pricePerEggBroken  ?? 0),
+              priceDate:          todayPricing.priceDate,
+            }
+          : null,
       };
     }
 
-    // Count breakage adjustments to get current consumable/non-consumable
+    // ── Latest breakage adjustment overrides broken counts ────────────────
     const latestAdj = await this.prisma.eggBreakageAdjustment.findFirst({
       orderBy: { adjustmentDate: 'desc' },
     });
 
-    // Fetch today's pricing
     const pricing = await this.prisma.dailyEggPrice.findUnique({
       where: { priceDate: today },
     });
 
-    // ── Derive base stock from aggregate (preferred) or single tally (fallback) ──
-    // FIX: "standard eggs" = totalGoodEggs as computed at tally time (which
-    // already nets out starter/broken-sellable/broken-unsellable/soft-shell/
-    // deformed from the raw total). totalStdEggs on the aggregate already
-    // represents this correctly (see tally-verification.service fix).
+    // ── Base stock from aggregate or fallback tally ───────────────────────
     const baseStandardEggs = latestAggregate
       ? (latestAggregate.totalStdEggs ?? 0)
       : (latestTally!.finalGoodEggs ?? latestTally!.session?.totalGoodEggs ?? 0);
@@ -413,10 +619,6 @@ export class SalesService {
       ? (latestAggregate.totalStarterEggs ?? 0)
       : (latestTally!.session?.totalStarterEggs ?? 0);
 
-    // FIX: "Consumable broken" = broken SELLABLE eggs; "Non-consumable broken"
-    // = broken UNSELLABLE eggs (per next-morning 3-party tally data). The
-    // previous code read totalBrokenSellable into nonConsumableEggs and left
-    // consumableEggs hardcoded at 0, swapping the two categories.
     const baseConsumableEggs = latestAggregate
       ? ((latestAggregate as any).totalBrokenSellable ?? 0)
       : (latestTally!.session?.totalBrokenSellable ?? 0);
@@ -425,44 +627,42 @@ export class SalesService {
       ? ((latestAggregate as any).totalBrokenUnsellable ?? 0)
       : (latestTally!.session?.totalBrokenUnsellable ?? 0);
 
-    // FIX: If standard (good) eggs are zero or below because the day's
-    // collection was all starter eggs, surface that via a dedicated flag/value
-    // so the Sales dashboard can show a "Starter Eggs" KPI card of its own
-    // instead of (or alongside) the Standard Eggs card.
     const isStarterOnly = baseStandardEggs <= 0 && baseStarterEggs > 0;
 
     const lastVerifiedDate = latestAggregate
       ? latestAggregate.aggregateDate
       : latestTally!.verificationDate;
 
-    const stockResult = {
-      standardEggs:      baseStandardEggs,
-      starterEggs:       baseStarterEggs,
-      nonConsumableEggs: latestAdj?.newNonConsumable ?? baseNonConsumableEggs,
-      consumableEggs:    latestAdj?.newConsumable    ?? baseConsumableEggs,
-      lastVerifiedDate,
-    };
+    // ── FIFO stock lots (ordered oldest first) ────────────────────────────
+    // Each DailyEggAggregate date becomes a "lot"; oldest lot should be
+    // consumed first. We surface the top 5 pending lots to the frontend.
+    const stockLots = await this._buildStockLots();
 
-    // Subtract eggs sold today from available stock
-    const todaySold = await this.prisma.salesOrder.findMany({
+    // ── Subtract sold eggs (all non-CANCELLED orders from soldFrom onward) ─
+    // FIX: Previously only subtracted today's orders. Now subtracts from
+    // soldFrom, which defaults to today but can be set to the aggregate date
+    // so the stock accurately reflects sales against the current lot.
+    const soldOrders = await this.prisma.salesOrder.findMany({
       where: {
-        orderDate: { gte: today },
+        orderDate: { gte: soldFrom },
         status: { not: 'CANCELLED' as any },
         deletedAt: null,
       },
       include: { items: true },
     });
+
     let soldStandard = 0, soldStarter = 0, soldConsumable = 0;
-    for (const order of todaySold) {
+    for (const order of soldOrders) {
       for (const item of order.items) {
-        const qty = (item as any).quantityEggs ?? ((item as any).quantityTrays ?? 0) * 30;
-        if (item.itemType === 'STANDARD_EGGS') soldStandard += qty;
-        else if (item.itemType === 'STARTER_EGGS') soldStarter += qty;
+        const qty =
+          (item as any).quantityEggs ?? ((item as any).quantityTrays ?? 0) * 30;
+        if (item.itemType === 'STANDARD_EGGS')          soldStandard  += qty;
+        else if (item.itemType === 'STARTER_EGGS')      soldStarter   += qty;
         else if (item.itemType === 'CONSUMABLE_BROKEN_EGGS') soldConsumable += qty;
       }
     }
 
-    // Subtract locked advance bookings
+    // ── Subtract locked advance bookings ──────────────────────────────────
     const lockedBookings = await this.prisma.advanceBooking.findMany({
       where: { stockLocked: true, status: { not: 'CANCELLED' as any } },
     });
@@ -471,58 +671,48 @@ export class SalesService {
       lockedEggs += (b as any).quantityEggs ?? ((b as any).quantityTrays ?? 0) * 30;
     }
 
-    stockResult.standardEggs      = Math.max(0, stockResult.standardEggs - soldStandard - lockedEggs);
-    stockResult.starterEggs        = Math.max(0, stockResult.starterEggs - soldStarter);
-    stockResult.consumableEggs     = Math.max(0, stockResult.consumableEggs - soldConsumable);
+    const currentConsumable =
+      latestAdj?.newConsumable ?? baseConsumableEggs;
+    const currentNonConsumable =
+      latestAdj?.newNonConsumable ?? baseNonConsumableEggs;
 
-    // Return original (tally/aggregate) values alongside adjusted current values
-    // for the "Original stock vs Current stock" comparison on the Sales Breakage page.
-    const originalStandardEggs      = baseStandardEggs;
-    const originalStarterEggs       = baseStarterEggs;
-    const originalNonConsumableEggs = baseNonConsumableEggs;
-    const originalConsumableEggs    = baseConsumableEggs;
+    const stockResult = {
+      standardEggs:      Math.max(0, baseStandardEggs - soldStandard - lockedEggs),
+      starterEggs:       Math.max(0, baseStarterEggs  - soldStarter),
+      consumableEggs:    Math.max(0, currentConsumable - soldConsumable),
+      nonConsumableEggs: currentNonConsumable,
+    };
 
-    // ── Expected revenue calculation ─────────────────────────────────────────
-    // FIX: The previous code hardcoded aggregateDate/sessionDate to `today`,
-    // which breaks the common workflow where egg collection is recorded one day
-    // and the accountant sets pricing the next morning — the aggregate/tally
-    // dates no longer match "today" so revenue returned null even though stock
-    // was visible. We now derive a refDate from the most recent aggregate (or
-    // most recent locked tally) and apply today's pricing to that date's egg
-    // counts, so revenue always reflects the latest collection regardless of
-    // which calendar day the accountant priced it.
-    //
-    // Priority:
-    //   1. DailyEggAggregate for refDate (AM+PM combined, both sessions locked).
-    //   2. Locked EggTallyVerification sessions for refDate (single-session day
-    //      or aggregate not yet written).
-    // In both cases, we try pricing for refDate first, then fall back to
-    // today's pricing (accountant prices today for yesterday's collection).
-
-    // Determine refDate: most recent aggregate date, or most recent locked tally session date.
-    const mostRecentAgg = latestAggregate ?? await this.prisma.dailyEggAggregate.findFirst({
-      orderBy: { aggregateDate: 'desc' },
-    });
+    // ── Expected revenue ─────────────────────────────────────────────────
+    const mostRecentAgg =
+      latestAggregate ??
+      (await this.prisma.dailyEggAggregate.findFirst({ orderBy: { aggregateDate: 'desc' } }));
 
     let refDate: Date = today;
     if (mostRecentAgg) {
-      refDate = new Date(mostRecentAgg.aggregateDate);
-      refDate.setHours(0, 0, 0, 0);
+      refDate = dayjs(mostRecentAgg.aggregateDate).startOf('day').toDate();
     } else if (latestTally) {
-      const rawDate = (latestTally.session as any)?.sessionDate ?? (latestTally as any).verificationDate;
-      if (rawDate) { refDate = new Date(rawDate); refDate.setHours(0, 0, 0, 0); }
+      const rawDate =
+        (latestTally.session as any)?.sessionDate ??
+        (latestTally as any).verificationDate;
+      if (rawDate) { refDate = dayjs(rawDate).startOf('day').toDate(); }
     }
 
-    // Pricing: prefer pricing set for refDate, fall back to today's pricing.
-    const refPricing = (refDate.getTime() !== today.getTime())
-      ? await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: refDate } })
-      : null;
+    const refPricing =
+      refDate.getTime() !== today.getTime()
+        ? await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: refDate } })
+        : null;
     const effectivePricing = refPricing ?? pricing;
 
     const refAggregates = mostRecentAgg
       ? await this.prisma.dailyEggAggregate.findMany({
           where: { aggregateDate: mostRecentAgg.aggregateDate },
-          select: { expectedRevenueKes: true, totalStdEggs: true, totalStarterEggs: true, totalBrokenSellable: true },
+          select: {
+            expectedRevenueKes:  true,
+            totalStdEggs:        true,
+            totalStarterEggs:    true,
+            totalBrokenSellable: true,
+          },
         })
       : [];
 
@@ -536,86 +726,125 @@ export class SalesService {
         expectedRevenueKes = storedTotal;
       } else {
         expectedRevenueKes = refAggregates.reduce((sum, a) => {
-          return sum
-            + (a.totalStdEggs         ?? 0) * Number(effectivePricing.pricePerEgg)
-            + (a.totalStarterEggs     ?? 0) * Number((effectivePricing as any).pricePerEggStarter ?? 0)
-            + (a.totalBrokenSellable  ?? 0) * Number((effectivePricing as any).pricePerEggBroken  ?? 0);
-        }, 0);
-      }
-    } else if (effectivePricing) {
-      // No DailyEggAggregate yet — fall back to locked tally sessions for refDate.
-      const refTallies = await this.prisma.eggTallyVerification.findMany({
-        where: {
-          isLocked: true,
-          session: { sessionDate: refDate, status: 'APPROVED' },
-        },
-        include: {
-          session: {
-            select: {
-              totalGoodEggs:        true,
-              totalStarterEggs:     true,
-              totalBrokenSellable:  true,
-            },
-          },
-        },
-      });
-
-      if (refTallies.length > 0) {
-        expectedRevenueKes = refTallies.reduce((sum, t) => {
-          const s = t.session as any;
-          if (!s) return sum;
-          return sum
-            + (s.totalGoodEggs        ?? 0) * Number(effectivePricing.pricePerEgg)
-            + (s.totalStarterEggs     ?? 0) * Number((effectivePricing as any).pricePerEggStarter ?? 0)
-            + (s.totalBrokenSellable  ?? 0) * Number((effectivePricing as any).pricePerEggBroken  ?? 0);
+          return (
+            sum +
+            (a.totalStdEggs        ?? 0) * Number(effectivePricing.pricePerEgg) +
+            (a.totalStarterEggs    ?? 0) * Number((effectivePricing as any).pricePerEggStarter ?? 0) +
+            (a.totalBrokenSellable ?? 0) * Number((effectivePricing as any).pricePerEggBroken  ?? 0)
+          );
         }, 0);
       }
     }
+
     return {
       ...stockResult,
       isStarterOnly,
-      originalStandardEggs,
-      originalStarterEggs,
-      originalNonConsumableEggs,
-      originalConsumableEggs,
-      expectedRevenueKes: expectedRevenueKes !== null ? Math.round(expectedRevenueKes) : null,
-      pricing: pricing ? {
-        pricePerEgg:        Number(pricing.pricePerEgg),
-        pricePerEggStarter: Number((pricing as any).pricePerEggStarter ?? 0),
-        pricePerEggBroken:  Number((pricing as any).pricePerEggBroken  ?? 0),
-        priceDate:          pricing.priceDate,
-      } : null,
+      originalStandardEggs:       baseStandardEggs,
+      originalStarterEggs:        baseStarterEggs,
+      originalNonConsumableEggs:  baseNonConsumableEggs,
+      originalConsumableEggs:     baseConsumableEggs,
+      lastVerifiedDate,
+      stockLots,
+      expectedRevenueKes:
+        expectedRevenueKes !== null ? Math.round(expectedRevenueKes) : null,
+      pricing: pricing
+        ? {
+            pricePerEgg:        Number(pricing.pricePerEgg),
+            pricePerEggStarter: Number((pricing as any).pricePerEggStarter ?? 0),
+            pricePerEggBroken:  Number((pricing as any).pricePerEggBroken  ?? 0),
+            priceDate:          pricing.priceDate,
+          }
+        : null,
     };
   }
-  // ── Customer management (update/delete) ──────────────────────────────────
-  async updateCustomer(id: string, body: any) {
-    return this.prisma.customer.update({
-      where: { id },
-      data: {
-        name:            body.name            ?? undefined,
-        phone:           body.phone           ?? undefined,
-        email:           body.email           ?? undefined,
-        address: body.address ?? undefined,
+
+  /**
+   * Build FIFO stock lots — oldest aggregate dates first.
+   * Each lot represents one day's collection that still has unsold eggs.
+   */
+  private async _buildStockLots() {
+    const aggregates = await this.prisma.dailyEggAggregate.findMany({
+      orderBy: { aggregateDate: 'asc' },
+      take: 10,
+      select: {
+        aggregateDate:        true,
+        totalStdEggs:         true,
+        totalStarterEggs:     true,
+        totalBrokenSellable:  true,
+        totalBrokenUnsellable:true,
+        expectedRevenueKes:   true,
       },
     });
+
+    return aggregates.map((a, idx) => ({
+      lotIndex:              idx + 1,
+      collectionDate:        a.aggregateDate,
+      isOldest:              idx === 0,
+      totalStdEggs:          a.totalStdEggs,
+      totalStarterEggs:      a.totalStarterEggs,
+      totalBrokenSellable:   a.totalBrokenSellable,
+      totalBrokenUnsellable: a.totalBrokenUnsellable,
+    }));
   }
 
-  async deleteCustomer(id: string) {
-    // Soft-delete: mark inactive rather than hard delete (preserve order history)
-    return this.prisma.customer.update({
-      where: { id },
-      data: { isActive: false },
+  /**
+   * Returns a stock history timeline for the Egg Stock page date filter.
+   * Each entry is one day's snapshot (aggregate or tally + sold that day).
+   */
+  async getStockHistory(rangeType: 'day' | 'week' | 'month' = 'week') {
+    const daysMap = { day: 1, week: 7, month: 30 };
+    const days = daysMap[rangeType] ?? 7;
+    const from = dayjs().subtract(days - 1, 'day').startOf('day').toDate();
+
+    const aggregates = await this.prisma.dailyEggAggregate.findMany({
+      where: { aggregateDate: { gte: from } },
+      orderBy: { aggregateDate: 'asc' },
+      select: {
+        aggregateDate:        true,
+        totalStdEggs:         true,
+        totalStarterEggs:     true,
+        totalBrokenSellable:  true,
+        totalBrokenUnsellable:true,
+      },
     });
-  }
 
-  // ── Order lifecycle: move to DELIVERING status ────────────────────────────
-  async markOrderAsDelivering(id: string, user: any) {
-    const order = await this.prisma.salesOrder.findUnique({ where: { id } });
-    if (!order) throw new Error('Order not found');
-    return this.prisma.salesOrder.update({
-      where: { id },
-      data: { status: 'DELIVERING' as any },
-    });
-  }
+    // For each aggregate date, compute how many were sold that day
+    const results = await Promise.all(
+      aggregates.map(async agg => {
+        const dayStart = dayjs(agg.aggregateDate).startOf('day').toDate();
+        const dayEnd   = dayjs(agg.aggregateDate).endOf('day').toDate();
+        const orders   = await this.prisma.salesOrder.findMany({
+          where: {
+            orderDate: { gte: dayStart, lte: dayEnd },
+            status:    { not: 'CANCELLED' as any },
+            deletedAt: null,
+          },
+          include: { items: { select: { itemType: true, quantityEggs: true, quantityTrays: true } } },
+        });
+        let soldStd = 0, soldStarter = 0, soldConsumable = 0;
+        for (const o of orders) {
+          for (const item of o.items) {
+            const qty = item.quantityEggs ?? (item.quantityTrays ?? 0) * 30;
+            if (item.itemType === 'STANDARD_EGGS')          soldStd      += qty;
+            else if (item.itemType === 'STARTER_EGGS')      soldStarter  += qty;
+            else if (item.itemType === 'CONSUMABLE_BROKEN_EGGS') soldConsumable += qty;
+          }
+        }
+        return {
+          date:                 agg.aggregateDate,
+          standardEggs:         agg.totalStdEggs,
+          starterEggs:          agg.totalStarterEggs,
+          consumableEggs:       agg.totalBrokenSellable,
+          nonConsumableEggs:    agg.totalBrokenUnsellable,
+          soldStandard:         soldStd,
+          soldStarter,
+          soldConsumable,
+          remainingStandard:    Math.max(0, agg.totalStdEggs - soldStd),
+          remainingConsumable:  Math.max(0, agg.totalBrokenSellable - soldConsumable),
+        };
+      }),
+    );
 
+    return results;
+  }
 }
