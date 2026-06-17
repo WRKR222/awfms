@@ -32,6 +32,8 @@ export class FlockService {
         house: { select: { id: true, name: true, code: true } },
         supplier: { select: { id: true, name: true } },
         _count: { select: { flockEntries: true, brooderLogs: true, eggCollectionSessions: true } },
+      },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
@@ -42,6 +44,9 @@ export class FlockService {
         house: true,
         supplier: true,
         _count: { select: { flockEntries: true, brooderLogs: true, eggCollectionSessions: true } },
+      },
+    });
+    if (!batch) throw new NotFoundException('Batch not found');
     return batch;
   }
 
