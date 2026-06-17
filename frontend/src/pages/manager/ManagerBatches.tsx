@@ -170,14 +170,24 @@ function BatchCard({ batch, onTransfer, onEdit }: { batch: any; onTransfer?: (id
           </div>
         </Tooltip>
 
-        <Tooltip tip="Total number of daily entries logged for this batch">
+        <Tooltip tip={
+          batch.stage === 'BROODING'
+            ? 'Total brooder log entries for this batch'
+            : batch.stage === 'PRODUCTION'
+            ? 'Total egg collection sessions for this batch'
+            : 'Total daily entries logged for this batch'
+        }>
           <div className="rounded-xl bg-gray-50 dark:bg-dark-bg p-3 cursor-default">
             <div className="flex items-center gap-1 mb-0.5">
               <TrendingUp className="w-3 h-3 text-gray-400" />
               <p className="text-[10px] text-gray-400 dark:text-gray-500 uppercase tracking-wide">Entries</p>
             </div>
             <p className="text-xl font-bold text-gray-700 dark:text-gray-300">
-              {batch._count?.flockEntries ?? 0}
+              {batch.stage === 'BROODING'
+                ? (batch._count?.brooderLogs ?? 0)
+                : batch.stage === 'PRODUCTION'
+                ? (batch._count?.eggCollectionSessions ?? 0)
+                : (batch._count?.flockEntries ?? 0)}
             </p>
           </div>
         </Tooltip>
@@ -287,6 +297,7 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
       location: 'BROODER',
       quantityReceived: '',
       dayOfHatch: dayjs().format('YYYY-MM-DD'),
+      dateReceived: dayjs().format('YYYY-MM-DD'),
       houseId: '',
       weightKg: '',
       vaccinatedOnArrival: false,
@@ -317,6 +328,7 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
         location: data.location,
         quantityReceived: Number(data.quantityReceived),
         dateOfHatch: data.dayOfHatch,
+        dateReceived: data.dateReceived,
         houseId: data.houseId,
         arrivalWeightKg: Number(data.weightKg),
         vaccinatedOnArrival: !!data.vaccinatedOnArrival,
@@ -416,6 +428,10 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
             <div>
               <label className={lCls}>Day of Hatch *</label>
               <input {...register('dayOfHatch', { required: true })} type="date" className={iCls} />
+            </div>
+            <div>
+              <label className={lCls}>Date Received *</label>
+              <input {...register('dateReceived', { required: true })} type="date" className={iCls} />
             </div>
             <div>
               <label className={lCls}>House ID *</label>

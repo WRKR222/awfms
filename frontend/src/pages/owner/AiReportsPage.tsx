@@ -101,7 +101,7 @@ export function AiReportsPage() {
         <div>
           <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
             <Brain className="w-5 h-5 text-brand-green" />
-            AI Intelligence Reports
+            AI Reports
           </h1>
           <p className="text-xs text-gray-500 mt-0.5">
             {data?.total ?? 0} reports generated · Auto-updated weekly

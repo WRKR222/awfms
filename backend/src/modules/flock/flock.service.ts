@@ -31,9 +31,7 @@ export class FlockService {
       include: {
         house: { select: { id: true, name: true, code: true } },
         supplier: { select: { id: true, name: true } },
-        _count: { select: { flockEntries: true } },
-      },
-      orderBy: { createdAt: 'desc' },
+        _count: { select: { flockEntries: true, brooderLogs: true, eggCollectionSessions: true } },
     });
   }
 
@@ -43,10 +41,7 @@ export class FlockService {
       include: {
         house: true,
         supplier: true,
-        _count: { select: { flockEntries: true } },
-      },
-    });
-    if (!batch) throw new NotFoundException('Batch not found');
+        _count: { select: { flockEntries: true, brooderLogs: true, eggCollectionSessions: true } },
     return batch;
   }
 
@@ -529,8 +524,6 @@ export class FlockService {
         batchId:           batch.id,
         logDate:           input.logDate ? new Date(input.logDate) : new Date(),
         waterConsumptionL: input.waterConsumptionL != null ? Number(input.waterConsumptionL) : null,
-        feedType:          input.feedType ?? null,
-        feedConsumedKg:    input.feedConsumedKg != null ? Number(input.feedConsumedKg) : null,
         temperature:       input.temperature != null ? Number(input.temperature) : null,
         lightingOk:        input.lightingOk ?? true,
         mortalityCount:    mortality,

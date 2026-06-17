@@ -452,7 +452,7 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
             {lastLog.mortalityCount > 0 && (
               <span className="flex items-center gap-1 text-red-400">
                 <XCircle className="w-3 h-3" />
-                {lastLog.mortalityCount} mortality
+                {lastLog.mortalityCount} {lastLog.mortalityCount === 1 ? 'mortality' : 'mortalities'}
               </span>
             )}
           </div>
@@ -509,7 +509,7 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
                   <div className="flex items-center gap-2">
                     <EntryDateBadge logDate={log.logDate} createdAt={log.createdAt} />
                     {log.mortalityCount > 0 && (
-                      <span className="text-red-400 font-semibold">· {log.mortalityCount} mortality</span>
+                      <span className="text-red-400 font-semibold">· {log.mortalityCount} {log.mortalityCount === 1 ? 'mortality' : 'mortalities'}</span>
                     )}
                   </div>
                 </div>

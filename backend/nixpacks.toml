@@ -2,10 +2,12 @@
 nixPkgs = ["nodejs_20", "npm-9_x"]
 
 [phases.install]
-cmds = ["npm install --omit=dev"]
+# Keep devDependencies during install so @nestjs/cli is available for nest build.
+# Railway discards the node_modules after build, so this does not bloat the image.
+cmds = ["npm install"]
 
 [phases.build]
-cmds = ["npx prisma generate"]
+cmds = ["npx prisma generate", "npx nest build"]
 
 [start]
 cmd = "npx prisma migrate deploy && node dist/main"
