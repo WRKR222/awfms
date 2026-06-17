@@ -199,6 +199,123 @@ export class FlockService {
     }
   }
 
+  // ── Update batch (registration corrections) ──────────────────────────────
+  //
+  // Lets the PM fix mistakes made at registration (typo'd supplier name, wrong
+  // bird type/strain, wrong dates, etc.) WITHOUT touching the two fields that
+  // drive every downstream bird-count calculation:
+  //   - quantityReceived: never editable here, by design (per product request).
+  //   - currentBirdCount: only ever moved by the *delta* of a mortalityOnArrival
+  //     correction, never reset wholesale — so any mortality/culling logged
+  //     after registration is preserved instead of being silently erased.
+  // location/stage are intentionally NOT editable here — moving a batch
+  // between Brooder and Production House has its own dedicated transfer
+  // workflow (row placements, cage assignments) via updateBatchStage().
+  async updateBatch(id: string, input: any, userId: string) {
+    const batch = await this.prisma.batch.findUnique({ where: { id } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const data: Prisma.BatchUpdateInput = {};
+
+    if (input.batchCode !== undefined) {
+      const newCode = String(input.batchCode).trim();
+      if (!newCode) throw new BadRequestException('batchCode cannot be empty');
+      if (newCode !== batch.batchCode) {
+        const dupe = await this.prisma.batch.findUnique({ where: { batchCode: newCode } });
+        if (dupe && dupe.id !== id) {
+          throw new BadRequestException(`Batch code "${newCode}" is already in use`);
+        }
+        data.batchCode = newCode;
+      }
+    }
+
+    if (input.supplierId || input.supplierName) {
+      const supplier = await this.resolveSupplier(input.supplierId, input.supplierName);
+      data.supplier = { connect: { id: supplier.id } };
+    }
+
+    if (input.houseId) {
+      const house = await this.resolveHouse(input.houseId, (input.birdType ?? batch.birdType) as BirdType);
+      data.house = { connect: { id: house.id } };
+    }
+
+    if (input.birdType !== undefined) {
+      if (!Object.values(BirdType).includes(input.birdType as BirdType)) {
+        throw new BadRequestException('Invalid birdType');
+      }
+      data.birdType = input.birdType as BirdType;
+    }
+
+    if (input.strain !== undefined) data.strain = String(input.strain).trim();
+
+    if (input.dateOfHatch !== undefined) {
+      const d = new Date(input.dateOfHatch);
+      if (Number.isNaN(d.getTime())) throw new BadRequestException('Invalid dateOfHatch');
+      data.dateOfHatch = d;
+    }
+
+    if (input.dateReceived !== undefined) {
+      const d = new Date(input.dateReceived);
+      if (Number.isNaN(d.getTime())) throw new BadRequestException('Invalid dateReceived');
+      data.dateReceived = d;
+    }
+
+    if (input.vaccinationOnArrival !== undefined) {
+      data.vaccinationOnArrival = Boolean(input.vaccinationOnArrival);
+    }
+
+    if (input.transportConditions !== undefined) {
+      data.transportConditions = input.transportConditions || null;
+    }
+
+    if (input.notes !== undefined) {
+      data.notes = input.notes || null;
+    }
+
+    // mortalityOnArrival correction — apply only the delta to currentBirdCount.
+    if (input.mortalityOnArrival !== undefined) {
+      const newMortalityOnArrival = Number(input.mortalityOnArrival);
+      if (!Number.isFinite(newMortalityOnArrival) || newMortalityOnArrival < 0) {
+        throw new BadRequestException('mortalityOnArrival must be zero or a positive number');
+      }
+      if (newMortalityOnArrival > batch.quantityReceived) {
+        throw new BadRequestException('mortalityOnArrival cannot exceed Quantity Received');
+      }
+      const delta = newMortalityOnArrival - batch.mortalityOnArrival; // +ve = correcting upward
+      const newCurrentBirdCount = batch.currentBirdCount - delta;
+      if (newCurrentBirdCount < 0) {
+        throw new BadRequestException(
+          'This correction would make the current bird count negative. Check the recorded mortality before saving.',
+        );
+      }
+      data.mortalityOnArrival = newMortalityOnArrival;
+      data.currentBirdCount = newCurrentBirdCount;
+    }
+
+    // quantityReceived is deliberately ignored even if present in the payload —
+    // "Number Received" is locked once a batch is created.
+
+    if (Object.keys(data).length === 0) {
+      return this.getBatch(id);
+    }
+
+    try {
+      return await this.prisma.batch.update({
+        where: { id },
+        data,
+        include: {
+          house: { select: { id: true, name: true, code: true } },
+          supplier: { select: { id: true, name: true } },
+        },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new BadRequestException('A batch with this code already exists');
+      }
+      throw err;
+    }
+  }
+
   // ── Daily entries ──────────────────────────────────────────────────────────
 
   async pendingEntries() {

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Query, UseGuards, ParseIntPipe, DefaultValuePipe } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, UseGuards, ParseIntPipe, DefaultValuePipe } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -37,5 +37,16 @@ export class AiController {
   @RequirePermission(Permission.AI_REPORTS_VIEW)
   triggerReport() {
     return this.ai.triggerWeeklyReport();
+  }
+
+  /**
+   * POST /ai/reports/batch/:batchId/trigger — generate a report for ONE
+   * specific batch (active or recently closed/sold/discarded), Director
+   * on-demand. No age/stage/data-volume gating — works for any existing batch.
+   */
+  @Post('reports/batch/:batchId/trigger')
+  @RequirePermission(Permission.AI_REPORTS_VIEW)
+  triggerBatchReport(@Param('batchId') batchId: string) {
+    return this.ai.generateBatchReport(batchId);
   }
 }

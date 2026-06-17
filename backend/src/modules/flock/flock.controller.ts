@@ -35,6 +35,16 @@ export class FlockController {
   @RequirePermission(Permission.FLOCK_BATCH_MANAGE)
   createBatch(@Body() body: any, @CurrentUser() user: any) { return this.svc.createBatch(body, user.id); }
 
+  // Correct registration details on an existing batch (supplier, bird type,
+  // strain, dates, vaccination/transport notes, etc). quantityReceived ("Number
+  // Received") is never editable here; location/stage changes go through the
+  // dedicated transfer endpoint above.
+  @Patch('batches/:id')
+  @RequirePermission(Permission.FLOCK_BATCH_MANAGE)
+  updateBatch(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    return this.svc.updateBatch(id, body, user.id);
+  }
+
   @Get('batches/:id/entries')
   @RequirePermission(Permission.FLOCK_VIEW)
   getBatchEntries(@Param('id') id: string, @Query('limit') limit?: string) {

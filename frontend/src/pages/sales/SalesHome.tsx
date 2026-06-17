@@ -64,8 +64,8 @@ export default function SalesHome() {
   const greeting   = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const firstName  = user?.fullName?.split(' ')[0] ?? '';
 
-  // New: aggregate from DailyEggAggregate (written on tally lock)
-  const { data: aggregate, isLoading: aggregateLoading } = useQuery({
+  // Aggregate from DailyEggAggregate (written on tally lock) — fallback source
+  const { data: aggregate } = useQuery({
     queryKey: ['daily-aggregate'],
     queryFn: () =>
       api.get(`/production/daily-aggregate?date=${dayjs().format('YYYY-MM-DD')}`).then(r => r.data).catch(() => null),
@@ -73,11 +73,16 @@ export default function SalesHome() {
     refetchInterval: 60_000,
   });
 
-  // Keep for legacy warnings and tally date display
-  const { data: stock } = useQuery({
+  // Primary live stock source — already reflects breakage adjustments
+  // (newStandard / newConsumable / newNonConsumable), sold orders, and
+  // locked advance bookings. Polled so the dashboard updates shortly after
+  // a breakage adjustment is submitted on the Egg Breakage page.
+  const { data: stock, isLoading: stockLoading } = useQuery({
     queryKey: ['sales-stock'],
     queryFn: () => api.get('/sales/stock').then(r => r.data).catch(() => null),
-    staleTime: 2 * 60_000,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
   });
 
   const { data: summary } = useQuery({
@@ -127,15 +132,20 @@ export default function SalesHome() {
       return acc;
     }, {} as Record<string, number>);
 
-  // Stock values — prefer DailyEggAggregate if available, fall back to /sales/stock
-  const stdEggs         = aggregate?.totalStdEggs        ?? stock?.standardEggs  ?? 0;
-  const starterEggs     = aggregate?.totalStarterEggs    ?? stock?.starterEggs   ?? 0;
-  const brokenSellable  = aggregate?.totalBrokenSellable ?? stock?.consumableEggs ?? 0;
-  const brokenUnsellable = aggregate?.totalBrokenUnsellable ?? 0;
-  const expectedRevenue  = aggregate ? Number(aggregate.expectedRevenueKes ?? 0) : null;
-  const aggregateDate    = aggregate?.aggregateDate ?? stock?.tallyDate ?? null;
+  // Stock values — prefer /sales/stock since it already applies breakage
+  // adjustments (newStandard / newConsumable / newNonConsumable) plus sold
+  // and locked-booking deductions. Fall back to the raw DailyEggAggregate
+  // only when /sales/stock has no data yet (e.g. before first tally lock).
+  // FIX: previously aggregate was read FIRST, which meant breakage adjustments
+  // never showed up here once an aggregate existed for the day.
+  const stdEggs          = stock?.standardEggs      ?? aggregate?.totalStdEggs         ?? 0;
+  const starterEggs      = aggregate?.totalStarterEggs ?? stock?.starterEggs           ?? 0;
+  const brokenSellable   = stock?.consumableEggs    ?? aggregate?.totalBrokenSellable  ?? 0;
+  const brokenUnsellable = stock?.nonConsumableEggs ?? aggregate?.totalBrokenUnsellable ?? 0;
+  const expectedRevenue  = stock?.expectedRevenueKes ?? (aggregate ? Number(aggregate.expectedRevenueKes ?? 0) : null);
+  const aggregateDate    = stock?.lastVerifiedDate  ?? aggregate?.aggregateDate ?? null;
 
-  const pricing = aggregate?.pricing ?? null;
+  const pricing = stock?.pricing ?? aggregate?.pricing ?? null;
 
   const { data: pendingTallies = [] } = useQuery({
     queryKey: ['tally-pending'],
@@ -203,7 +213,7 @@ export default function SalesHome() {
             </p>
           )}
         </div>
-        {aggregateLoading ? (
+        {stockLoading ? (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[...Array(4)].map((_,i) => <div key={i} className="rounded-2xl p-4 bg-gray-100 dark:bg-gray-800 animate-pulse h-20"/>)}
           </div>
@@ -238,7 +248,7 @@ export default function SalesHome() {
               value={brokenUnsellable.toLocaleString()}
               sub={brokenUnsellable > 0 ? eggsLabel(brokenUnsellable) : 'None recorded'}
               color={brokenUnsellable > 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-400'}
-              tooltip="This will increase if egg breakage adjustments are recorded on the Egg Breakage page."
+              tooltip="Excluded from available stock. Updates instantly when an egg breakage adjustment is submitted."
             />
           </div>
         )}
@@ -260,12 +270,6 @@ export default function SalesHome() {
           </div>
         )}
 
-        {(stock?.nonConsumableEggs ?? 0) > 0 && (
-          <div className="mt-2 flex items-center gap-2 text-xs text-red-500 dark:text-red-400">
-            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-            <span>{(stock?.nonConsumableEggs ?? 0).toLocaleString()} non-consumable broken eggs recorded — not included in available stock</span>
-          </div>
-        )}
         {!stock?.pricing && (
           <div className="mt-2 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
             <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />

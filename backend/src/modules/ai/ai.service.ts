@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
@@ -121,7 +121,7 @@ HEALTH: ${healthEvents.length} health event(s) logged
 Format: Start with a one-sentence overall summary, then 3 short paragraphs (production, feed & flock health, finance), then "Recommended actions:" as a short bulleted list.`;
 
     const content = await this.callClaude(prompt, 600);
-    if (!content) return;
+    if (!content) return null;
 
     // ── Save and notify ───────────────────────────────────────────────────────
     const report = await this.prisma.aiReport.create({
@@ -141,6 +141,7 @@ Format: Start with a one-sentence overall summary, then 3 short paragraphs (prod
       { entityId: report.id, entityType: 'AiReport' },
     );
     this.logger.log('AI-01: Weekly report generated and Owner notified');
+    return report;
   }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -494,7 +495,106 @@ Provide 3-5 improvement suggestions. Each should be: (a) specific to the data ab
 
   // Manually trigger weekly report (for testing / Director on-demand)
   async triggerWeeklyReport() {
-    await this.generateWeeklyReport();
-    return { triggered: true };
+    if (!this.anthropic) {
+      throw new BadRequestException('AI reporting is not configured on this server (ANTHROPIC_API_KEY is not set). Contact your administrator.');
+    }
+    const report = await this.generateWeeklyReport();
+    if (!report) {
+      throw new BadRequestException('The AI service did not return a report. Please try again in a moment.');
+    }
+    return { triggered: true, reportId: report.id };
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // On-demand: generate a report for ONE specific batch (active or recently
+  // closed/sold/discarded). Unlike the AI-05 cron (generateBatchForecasts),
+  // this has NO age/stage/data-volume gating — it works for any existing
+  // batch, using whatever production/feed data is actually available, and
+  // says so plainly in the report when a metric has no data yet.
+  // ────────────────────────────────────────────────────────────────────────────
+  async generateBatchReport(batchId: string) {
+    if (!this.anthropic) {
+      throw new BadRequestException('AI reporting is not configured on this server (ANTHROPIC_API_KEY is not set). Contact your administrator.');
+    }
+
+    const batch = await this.prisma.batch.findUnique({
+      where: { id: batchId },
+      include: {
+        house: { select: { name: true } },
+        eggCollectionSessions: {
+          where: { status: EntryStatus.APPROVED },
+          select: { sessionDate: true, totalGoodEggs: true, henDayPercent: true },
+          orderBy: { sessionDate: 'desc' },
+          take: 30,
+        },
+        feedIntakeLogs: {
+          where: { status: EntryStatus.APPROVED },
+          select: { quantityDispensedKg: true },
+          orderBy: { entryDate: 'desc' },
+          take: 30,
+        },
+      },
+    });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const ageWeeks = dayjs().diff(dayjs(batch.dateReceived), 'week');
+    const sessions = batch.eggCollectionSessions;
+    const recentHdp = sessions.map(s => Number(s.henDayPercent)).filter(v => v > 0);
+    const avgHdp = recentHdp.length ? recentHdp.reduce((a, b) => a + b, 0) / recentHdp.length : null;
+    const totalFeedKg = batch.feedIntakeLogs.reduce((s, f) => s + Number(f.quantityDispensedKg), 0);
+    const totalEggs = sessions.reduce((s, e) => s + e.totalGoodEggs, 0);
+    const fcr = totalEggs > 0 ? (totalFeedKg / totalEggs).toFixed(3) : null;
+    const survivalRate = batch.quantityReceived > 0
+      ? ((batch.currentBirdCount / batch.quantityReceived) * 100).toFixed(1)
+      : null;
+
+    const statusNote = !batch.isActive
+      ? `This batch is CLOSED (stage: ${batch.stage}).` +
+        (batch.soldAt ? ` Sold ${dayjs(batch.soldAt).format('D MMM YYYY')}.` : '') +
+        (batch.discardedAt ? ` Discarded ${dayjs(batch.discardedAt).format('D MMM YYYY')}.` : '') +
+        (batch.closedAt ? ` Closed ${dayjs(batch.closedAt).format('D MMM YYYY')}.` : '')
+      : `This batch is currently ACTIVE, in the ${batch.stage} stage.`;
+
+    const prompt = `You are a commercial poultry expert reviewing one specific batch for Anza Whole Foods farm in Kenya. Write a clear, comprehensible report for the Director — plain English, specific numbers, no jargon. If a figure below has no data, say so plainly instead of guessing.
+
+BATCH: ${batch.batchCode} (${batch.birdType}, ${batch.strain}) in ${batch.house.name}
+${statusNote}
+AGE: ${ageWeeks} week(s) since arrival (hatched ${dayjs(batch.dateOfHatch).format('D MMM YYYY')}, received ${dayjs(batch.dateReceived).format('D MMM YYYY')})
+BIRDS: started with ${batch.quantityReceived.toLocaleString()}, currently ${batch.currentBirdCount.toLocaleString()}${survivalRate ? ` (${survivalRate}% survival)` : ''}
+EGG PRODUCTION: ${totalEggs > 0 ? `${totalEggs.toLocaleString()} eggs across ${sessions.length} recorded session(s)` : 'no egg collection data recorded for this batch'}${avgHdp != null ? `, average HDP ${avgHdp.toFixed(1)}%` : ''}
+FEED: ${totalFeedKg > 0 ? `${totalFeedKg.toFixed(1)} kg consumed${fcr ? `, FCR ${fcr} kg feed per egg` : ''}` : 'no feed intake data recorded for this batch'}
+
+Write 2-3 short paragraphs covering: (1) an overall assessment of how this batch has performed given its age/stage and the data available, (2) flock health and survival, (3) ${batch.isActive ? 'a recommendation on next steps or what to watch for' : 'a closing assessment of how this batch performed overall'}. End with 1-2 specific, actionable recommendations.`;
+
+    const content = await this.callClaude(prompt, 500);
+    if (!content) {
+      throw new BadRequestException('The AI service did not return a report. Please try again in a moment.');
+    }
+
+    const report = await this.prisma.aiReport.create({
+      data: {
+        reportType: 'BATCH_CLOSURE_FORECAST',
+        content,
+        rawData: {
+          batchId: batch.id,
+          batchCode: batch.batchCode,
+          ageWeeks,
+          avgHdp: avgHdp != null ? avgHdp.toFixed(1) : undefined,
+          fcr: fcr ?? undefined,
+          isActive: batch.isActive,
+          manuallyRequested: true,
+        },
+      },
+    });
+
+    await this.notifications.notifyRole(
+      UserRole.OWNER,
+      NotificationType.AI_REPORT_READY,
+      `Batch Report: ${batch.batchCode}`,
+      `AI report for ${batch.batchCode} (${ageWeeks} week(s), ${batch.isActive ? 'active' : 'closed'}) is ready.`,
+      { entityId: report.id, entityType: 'AiReport' },
+    ).catch(() => { /* best-effort */ });
+
+    return report;
   }
 }

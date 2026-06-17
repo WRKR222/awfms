@@ -134,6 +134,12 @@ export function ManagerCullingPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['health-events'] });
       qc.invalidateQueries({ queryKey: ['batches'] });
+      // FIX: the PM Batches page reads bird counts via useBatches(), which is
+      // keyed ['flock', 'batches', filters] — a different cache entry from the
+      // raw ['batches'] key used by the Brooder pages. Without this, logging a
+      // mortality/culling event here would update the backend but the Batches
+      // page would keep showing the stale count until a hard refresh.
+      qc.invalidateQueries({ queryKey: ['flock', 'batches'] });
       qc.invalidateQueries({ queryKey: ['cage-map'] });
       qc.invalidateQueries({ queryKey: ['cage-assignments'] });
       setSubmitted(true);

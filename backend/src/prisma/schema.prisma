@@ -1245,20 +1245,18 @@ model VisitorAdvanceNotice {
 // ─── BROODER LOG ─────────────────────────────────────────────────────────────
 
 model BrooderLog {
-  id                String    @id @default(uuid())
-  batchId           String    @map("batch_id")
-  logDate           DateTime  @map("log_date") @db.Date
-  waterConsumptionL Float?    @map("water_consumption_l")
-  feedType          String?   @map("feed_type")
-  feedConsumedKg    Float?    @map("feed_consumed_kg")
+  id                String   @id @default(uuid())
+  batchId           String   @map("batch_id")
+  logDate           DateTime @map("log_date") @db.Date
+  waterConsumptionL Float?   @map("water_consumption_l")
   temperature       Float?
-  lightingOk        Boolean   @default(true) @map("lighting_ok")
-  mortalityCount    Int       @default(0)    @map("mortality_count")
-  vaccineGiven      String?   @map("vaccine_given")
+  lightingOk        Boolean  @default(true) @map("lighting_ok")
+  mortalityCount    Int      @default(0) @map("mortality_count")
+  vaccineGiven      String?  @map("vaccine_given")
   supplement        String?
   notes             String?
-  loggedById        String    @map("logged_by_id")
-  createdAt         DateTime  @default(now()) @map("created_at")
+  loggedById        String   @map("logged_by_id")
+  createdAt         DateTime @default(now()) @map("created_at")
 
   batch    Batch @relation(fields: [batchId], references: [id])
   loggedBy User  @relation("BrooderLoggedBy", fields: [loggedById], references: [id])
@@ -1512,6 +1510,7 @@ model EggBreakageAdjustment {
   quantityConsumableBefore    Int @map("quantity_consumable_before")
 
   // New corrected quantities (entered by Sales)
+  newStandard      Int @map("new_standard")
   newNonConsumable Int @map("new_non_consumable")
   newConsumable    Int @map("new_consumable")
 

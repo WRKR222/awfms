@@ -408,8 +408,8 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
           <p className="text-[9px] text-gray-400 uppercase tracking-wide">Survival</p>
         </div>
         <div className="rounded-xl bg-gray-50 dark:bg-dark-bg p-2.5 text-center">
-          <p className="text-xl font-bold text-gray-700 dark:text-gray-300">{ageWeeks}wk</p>
-          <p className="text-[9px] text-gray-400 uppercase tracking-wide">Age</p>
+          <p className="text-xl font-bold text-gray-700 dark:text-gray-300">{ageDays}d</p>
+          <p className="text-[9px] text-gray-400 uppercase tracking-wide">Age ({ageWeeks}wk)</p>
         </div>
       </div>
 

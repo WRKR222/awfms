@@ -29,6 +29,7 @@ type FormData = {
   sourceType: SourceType;
   adjustmentType: ResultType;
   tallySessionId: string;
+  newStandard: number;
   newNonConsumable: number;
   newConsumable: number;
   notes?: string;
@@ -99,6 +100,7 @@ export default function SalesBreakagePage() {
       sourceType:       'STANDARD',
       adjustmentType:   'CONSUMABLE',
       tallySessionId:   '',
+      newStandard:      0,
       newNonConsumable: 0,
       newConsumable:    0,
     },
@@ -142,13 +144,15 @@ export default function SalesBreakagePage() {
 
   const newNonConsumable = Number(watch('newNonConsumable') || 0);
   const newConsumable    = Number(watch('newConsumable')    || 0);
+  const newStandard      = Number(watch('newStandard')      || 0);
   const diffNonConsumable = newNonConsumable - qtyNonConsumable;
   const diffConsumable    = newConsumable    - qtyConsumable;
-  const totalDiff         = diffNonConsumable + diffConsumable;
+  const diffStandard      = newStandard      - qtyStandard;
 
   // Pre-populate new quantities when form opens
   useEffect(() => {
     if (showForm) {
+      setValue('newStandard',      qtyStandard);
       setValue('newNonConsumable', qtyNonConsumable);
       setValue('newConsumable',    qtyConsumable);
     }
@@ -169,6 +173,7 @@ export default function SalesBreakagePage() {
         quantityStarterBefore:       qtyStarter,
         quantityNonConsumableBefore: qtyNonConsumable,
         quantityConsumableBefore:    qtyConsumable,
+        newStandard:                 Number(data.newStandard),
         newNonConsumable:            Number(data.newNonConsumable),
         newConsumable:               Number(data.newConsumable),
         notes:                       data.notes,
@@ -184,6 +189,7 @@ export default function SalesBreakagePage() {
         sourceType:       'STANDARD',
         adjustmentType:   'CONSUMABLE',
         tallySessionId:   '',
+        newStandard:      0,
         newNonConsumable: 0,
         newConsumable:    0,
       });
@@ -454,6 +460,35 @@ export default function SalesBreakagePage() {
               New Quantities After Adjustment
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Standard Eggs — editable when source is STANDARD (eggs leave this pool) */}
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">
+                  New Standard Egg Count
+                  {sourceType === 'STANDARD' && (
+                    <span className="ml-1 text-brand-green font-medium">← enter the reduced count</span>
+                  )}
+                  {sourceType === 'CONSUMABLE' && (
+                    <span className="ml-1 text-gray-400">(unchanged — breakage came from consumable pool)</span>
+                  )}
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  {...register('newStandard', { min: 0, valueAsNumber: true })}
+                  className={iCls}
+                  disabled={sourceType === 'CONSUMABLE'}
+                />
+                {(() => {
+                  const newStd = Number(watch('newStandard') || 0);
+                  const diff = newStd - qtyStandard;
+                  return diff !== 0 ? (
+                    <p className={`text-xs mt-1 font-medium ${diff > 0 ? 'text-amber-500' : 'text-green-600'}`}>
+                      {diff > 0 ? `+${diff}` : diff} standard eggs
+                    </p>
+                  ) : null;
+                })()}
+              </div>
+
               {/* Non-Consumable */}
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">
@@ -477,7 +512,7 @@ export default function SalesBreakagePage() {
                 )}
               </div>
 
-              {/* Consumable — always editable. When source=CONSUMABLE the count goes DOWN (eggs destroyed). When source=STANDARD+result=CONSUMABLE the count goes UP. */}
+              {/* Consumable — always editable */}
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">
                   New Consumable Broken Count (Sellable)
@@ -508,21 +543,37 @@ export default function SalesBreakagePage() {
           </div>
 
           {/* Diff summary */}
-          <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-3 border border-gray-200 dark:border-dark-border flex items-center justify-between">
-            <p className="text-sm font-semibold text-gray-600 dark:text-gray-300">
-              Net Quantity Difference
+          <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-3 border border-gray-200 dark:border-dark-border space-y-1.5">
+            <p className="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-1">
+              Movement Summary
             </p>
-            <p
-              className={`text-base font-bold ${
-                totalDiff > 0
-                  ? 'text-red-500'
-                  : totalDiff < 0
-                  ? 'text-green-600'
-                  : 'text-gray-400'
-              }`}
-            >
-              {totalDiff > 0 ? `+${totalDiff}` : totalDiff} eggs
-            </p>
+            {diffStandard !== 0 && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500">Standard Eggs</span>
+                <span className={`font-bold ${diffStandard < 0 ? 'text-red-500' : 'text-green-600'}`}>
+                  {diffStandard > 0 ? `+${diffStandard}` : diffStandard}
+                </span>
+              </div>
+            )}
+            {diffConsumable !== 0 && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500">Consumable Broken</span>
+                <span className={`font-bold ${diffConsumable > 0 ? 'text-amber-500' : 'text-red-500'}`}>
+                  {diffConsumable > 0 ? `+${diffConsumable}` : diffConsumable}
+                </span>
+              </div>
+            )}
+            {diffNonConsumable !== 0 && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-500">Non-Consumable Broken</span>
+                <span className="font-bold text-red-500">
+                  +{diffNonConsumable}
+                </span>
+              </div>
+            )}
+            {diffStandard === 0 && diffConsumable === 0 && diffNonConsumable === 0 && (
+              <p className="text-xs text-gray-400">No changes entered yet.</p>
+            )}
           </div>
 
           <p className="text-xs text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 rounded-xl px-3 py-2">

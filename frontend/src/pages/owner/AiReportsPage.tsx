@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
+import { useBatches } from '../../hooks/useFlock';
 import {
   Brain, ChevronDown, ChevronUp, RefreshCw, Loader2,
-  TrendingUp, AlertTriangle, BarChart2, Lightbulb, Clipboard,
+  TrendingUp, AlertTriangle, BarChart2, Lightbulb, Clipboard, Bird,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 
@@ -57,6 +58,7 @@ export function AiReportsPage() {
   const [typeFilter, setTypeFilter] = useState('');
   const [page, setPage] = useState(1);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [selectedBatchId, setSelectedBatchId] = useState('');
   const qc = useQueryClient();
 
   const { data, isLoading } = useQuery<ReportsResponse>({
@@ -67,10 +69,25 @@ export function AiReportsPage() {
     staleTime: 2 * 60_000,
   });
 
+  // All batches (active + closed/sold/discarded) for the per-batch report selector.
+  const { data: batches = [] } = useBatches();
+  const batchOptions = [...batches].sort((a: any, b: any) => {
+    if (a.isActive !== b.isActive) return a.isActive ? -1 : 1; // active batches first
+    return dayjs(b.updatedAt ?? b.createdAt).valueOf() - dayjs(a.updatedAt ?? a.createdAt).valueOf();
+  });
+
   const trigger = useMutation({
     mutationFn: () => api.post('/ai/reports/trigger').then(r => r.data),
     onSuccess: () => {
       setTimeout(() => qc.invalidateQueries({ queryKey: ['ai-reports'] }), 3000);
+    },
+  });
+
+  const triggerBatch = useMutation({
+    mutationFn: (batchId: string) => api.post(`/ai/reports/batch/${batchId}/trigger`).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ai-reports'] });
+      setExpandedId(null);
     },
   });
 
@@ -99,16 +116,66 @@ export function AiReportsPage() {
           {trigger.isPending ? (
             <><Loader2 className="w-4 h-4 animate-spin" /> Generating…</>
           ) : (
-            <><RefreshCw className="w-4 h-4" /> Generate Now</>
+            <><RefreshCw className="w-4 h-4" /> Generate Weekly Report</>
           )}
         </button>
       </div>
 
       {trigger.isSuccess && (
         <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl p-3 text-green-700 dark:text-green-400 text-sm">
-          Weekly report generation triggered — it will appear here in about 30 seconds.
+          Weekly report generated — it will appear in the list below.
         </div>
       )}
+      {trigger.isError && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl p-3 text-red-600 dark:text-red-400 text-sm">
+          {(trigger.error as any)?.response?.data?.message ?? 'Failed to generate the weekly report. Please try again.'}
+        </div>
+      )}
+
+      {/* Per-batch report generator */}
+      <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Bird className="w-4 h-4 text-brand-green" />
+          <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">Report on a specific batch</p>
+        </div>
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Generate a report for any existing batch — active or recently closed — using whatever
+          production data is available for it.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <select
+            value={selectedBatchId}
+            onChange={e => setSelectedBatchId(e.target.value)}
+            className="flex-1 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green"
+          >
+            <option value="">Select a batch…</option>
+            {batchOptions.map((b: any) => (
+              <option key={b.id} value={b.id}>
+                {b.batchCode}{b.isActive ? '' : ` (closed${b.stage ? `, ${b.stage.toLowerCase()}` : ''})`}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => selectedBatchId && triggerBatch.mutate(selectedBatchId)}
+            disabled={!selectedBatchId || triggerBatch.isPending}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 bg-brand-green text-white rounded-xl text-sm font-medium hover:bg-brand-mid transition-colors disabled:opacity-60"
+          >
+            {triggerBatch.isPending ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Generating…</>
+            ) : (
+              <><RefreshCw className="w-4 h-4" /> Generate Report</>
+            )}
+          </button>
+        </div>
+        {triggerBatch.isSuccess && (
+          <p className="text-xs text-green-600 dark:text-green-400">Report generated — it will appear in the list below.</p>
+        )}
+        {triggerBatch.isError && (
+          <p className="text-xs text-red-500 dark:text-red-400">
+            {(triggerBatch.error as any)?.response?.data?.message ?? 'Failed to generate the report. Please try again.'}
+          </p>
+        )}
+      </div>
 
       {/* Type filter tabs */}
       <div className="flex gap-1.5 flex-wrap">

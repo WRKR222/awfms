@@ -352,6 +352,7 @@ export class SalesService {
       quantityStarterBefore: number;
       quantityNonConsumableBefore: number;
       quantityConsumableBefore: number;
+      newStandard: number;
       newNonConsumable: number;
       newConsumable: number;
       notes?: string;
@@ -363,6 +364,14 @@ export class SalesService {
     if (sourceType === 'CONSUMABLE' && dto.adjustmentType === 'CONSUMABLE') {
       throw new BadRequestException(
         'A consumable broken egg that is further damaged can only be reclassified as Non-Consumable (unsellable), not Consumable.',
+      );
+    }
+
+    // ── Enforce: standard eggs can only decrease (they leave the pool when they break) ─
+    const fallbackStandard = dto.newStandard ?? dto.quantityStandardBefore;
+    if (sourceType === 'STANDARD' && fallbackStandard > dto.quantityStandardBefore) {
+      throw new BadRequestException(
+        'Standard egg count cannot increase from a breakage adjustment — eggs only leave the standard pool when they break.',
       );
     }
 
@@ -387,6 +396,7 @@ export class SalesService {
           quantityStarterBefore:       dto.quantityStarterBefore,
           quantityNonConsumableBefore: dto.quantityNonConsumableBefore,
           quantityConsumableBefore:    dto.quantityConsumableBefore,
+          newStandard:                 fallbackStandard,
           newNonConsumable:            dto.newNonConsumable,
           newConsumable:               dto.newConsumable,
           quantityDiff,
@@ -671,13 +681,18 @@ export class SalesService {
       lockedEggs += (b as any).quantityEggs ?? ((b as any).quantityTrays ?? 0) * 30;
     }
 
+    const currentStandard =
+      latestAdj?.newStandard ?? baseStandardEggs;
     const currentConsumable =
       latestAdj?.newConsumable ?? baseConsumableEggs;
     const currentNonConsumable =
       latestAdj?.newNonConsumable ?? baseNonConsumableEggs;
 
     const stockResult = {
-      standardEggs:      Math.max(0, baseStandardEggs - soldStandard - lockedEggs),
+      // FIX: standard egg stock now also reflects the latest breakage
+      // adjustment's newStandard value, so a standard egg breaking into
+      // consumable/non-consumable correctly removes it from standard stock.
+      standardEggs:      Math.max(0, currentStandard - soldStandard - lockedEggs),
       starterEggs:       Math.max(0, baseStarterEggs  - soldStarter),
       consumableEggs:    Math.max(0, currentConsumable - soldConsumable),
       nonConsumableEggs: currentNonConsumable,

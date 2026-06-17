@@ -24,6 +24,21 @@ export function useBatch(id: string) {
   });
 }
 
+export function useUpdateBatch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: any }) =>
+      api.patch(`/flock/batches/${id}`, data).then(r => r.data),
+    onSuccess: () => {
+      // Two cache keys are in play across the app for the same batch data —
+      // 'flock'/'batches' (useBatches/useBatch) and the raw 'batches' key used
+      // by the Brooder pages — invalidate both so every screen stays in sync.
+      qc.invalidateQueries({ queryKey: ['flock', 'batches'] });
+      qc.invalidateQueries({ queryKey: ['batches'] });
+    },
+  });
+}
+
 export function useCreateEntry() {
   const qc = useQueryClient();
   return useMutation({

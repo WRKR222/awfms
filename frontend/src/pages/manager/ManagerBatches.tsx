@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
-import { Bird, Calendar, Home, Info, ChevronRight, Plus, CheckCircle, Clock, XCircle, TrendingUp, Hash, Layers, X, AlertTriangle } from 'lucide-react';
-import { useBatches } from '../../hooks/useFlock';
+import { Bird, Calendar, Home, Info, ChevronRight, Plus, CheckCircle, Clock, XCircle, TrendingUp, Hash, Layers, X, AlertTriangle, Pencil } from 'lucide-react';
+import { useBatches, useUpdateBatch } from '../../hooks/useFlock';
 import { api } from '../../lib/api/client';
 import dayjs from 'dayjs';
 
@@ -74,7 +74,7 @@ const BIRD_TYPE_LABELS: Record<string, { label: string; tip: string }> = {
 
 // ── Batch card ────────────────────────────────────────────────────────────────
 
-function BatchCard({ batch, onTransfer }: { batch: any; onTransfer?: (id: string) => void }) {
+function BatchCard({ batch, onTransfer, onEdit }: { batch: any; onTransfer?: (id: string) => void; onEdit?: (id: string) => void }) {
   const navigate = useNavigate();
   // Log Culling removed — culling is a Farm Event handled in Farm Events page (/manager/culling)
   // Determine stage display — use location as fallback (production house ≠ brooding)
@@ -123,6 +123,16 @@ function BatchCard({ batch, onTransfer }: { batch: any; onTransfer?: (id: string
           <span className="text-xs bg-gray-100 dark:bg-gray-800 text-gray-400 px-2 py-1 rounded-full font-medium">
             Inactive
           </span>
+        )}
+        {onEdit && (
+          <Tooltip tip="Correct registration details (Number Received cannot be changed here)">
+            <button
+              onClick={() => onEdit(batch.id)}
+              className="p-2 rounded-xl border border-gray-200 dark:border-dark-border text-gray-400 hover:text-brand-green hover:border-brand-green/40 hover:bg-brand-green/5 transition-colors flex-shrink-0"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          </Tooltip>
         )}
       </div>
 
@@ -506,6 +516,166 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
 }
 
 
+// ── Edit Batch Modal ─────────────────────────────────────────────────────────
+//
+// Lets the PM correct registration details after the fact (typo'd supplier
+// name, wrong bird type/strain, wrong dates, vaccination/transport notes,
+// mortality-on-arrival correction). "Number Received" (quantityReceived) is
+// shown read-only — it can never be changed once the batch is created, since
+// every bird-count calculation in the system is anchored to it. Location/stage
+// changes are not part of this form — use "Transfer to Production" for that.
+
+function EditBatchModal({ batch, onClose }: { batch: any; onClose: () => void }) {
+  const update = useUpdateBatch();
+  const { register, handleSubmit, watch } = useForm({
+    defaultValues: {
+      batchCode: batch.batchCode ?? '',
+      supplierName: batch.supplier?.name ?? batch.supplierName ?? '',
+      birdType: batch.birdType ?? '',
+      strain: batch.strain ?? '',
+      houseId: batch.house?.code ?? batch.houseId ?? '',
+      dateOfHatch: batch.dateOfHatch ? dayjs(batch.dateOfHatch).format('YYYY-MM-DD') : '',
+      dateReceived: batch.dateReceived ? dayjs(batch.dateReceived).format('YYYY-MM-DD') : '',
+      vaccinationOnArrival: !!batch.vaccinationOnArrival,
+      mortalityOnArrival: String(batch.mortalityOnArrival ?? 0),
+      transportConditions: batch.transportConditions ?? '',
+      notes: batch.notes ?? '',
+    },
+  });
+
+  const mortalityOnArrival = Number(watch('mortalityOnArrival') || 0);
+  const mortalityChanged = mortalityOnArrival !== (batch.mortalityOnArrival ?? 0);
+  const projectedCurrentCount = batch.currentBirdCount - (mortalityOnArrival - (batch.mortalityOnArrival ?? 0));
+
+  const onSubmit = (data: any) => {
+    update.mutate(
+      {
+        id: batch.id,
+        data: {
+          batchCode: data.batchCode,
+          supplierName: data.supplierName,
+          birdType: data.birdType,
+          strain: data.strain,
+          houseId: data.houseId,
+          dateOfHatch: data.dateOfHatch,
+          dateReceived: data.dateReceived,
+          vaccinationOnArrival: !!data.vaccinationOnArrival,
+          mortalityOnArrival: Number(data.mortalityOnArrival) || 0,
+          transportConditions: data.transportConditions || undefined,
+          notes: data.notes || undefined,
+        },
+      },
+      { onSuccess: onClose },
+    );
+  };
+
+  const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
+  const lCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1';
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
+      <div className="bg-white dark:bg-dark-card w-full md:max-w-lg rounded-t-3xl md:rounded-2xl shadow-2xl overflow-y-auto max-h-[95vh]">
+        <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-dark-border sticky top-0 bg-white dark:bg-dark-card z-10">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-brand-green rounded-xl flex items-center justify-center"><Pencil className="w-4 h-4 text-white" /></div>
+            <div><p className="font-bold text-gray-800 dark:text-gray-100">Edit Batch</p><p className="text-xs text-gray-400">{batch.batchCode} · Correct registration details</p></div>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg transition-colors"><X className="w-5 h-5 text-gray-500" /></button>
+        </div>
+
+        <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-4">
+
+          {/* Locked field — shown for context only */}
+          <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 flex items-center justify-between">
+            <div>
+              <p className={lCls}>Number Received</p>
+              <p className="text-sm font-bold text-gray-600 dark:text-gray-300">{batch.quantityReceived?.toLocaleString()}</p>
+            </div>
+            <p className="text-[10px] text-gray-400 max-w-[55%] text-right">Locked — cannot be changed after registration.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className={lCls}>Batch Code</label>
+              <input {...register('batchCode', { required: true })} className={iCls} />
+            </div>
+            <div>
+              <label className={lCls}>Supplier Name</label>
+              <input {...register('supplierName', { required: true })} className={iCls} />
+            </div>
+            <div>
+              <label className={lCls}>Bird Type</label>
+              <select {...register('birdType', { required: true })} className={iCls}>
+                <option value="LAYER_COMMERCIAL">Layer (Commercial) — high egg output</option>
+                <option value="KIENYEJI">Kienyeji — indigenous / dual-purpose</option>
+              </select>
+            </div>
+            <div>
+              <label className={lCls}>Strain / Breed</label>
+              <input {...register('strain')} className={iCls} placeholder="e.g. Isa Brown, Lohmann, Kuroiler" />
+            </div>
+            <div>
+              <label className={lCls}>House ID</label>
+              <input {...register('houseId', { required: true })} className={iCls} placeholder="e.g. BROODER-01 or BLK1-A" />
+            </div>
+            <div>
+              <label className={lCls}>Day of Hatch</label>
+              <input {...register('dateOfHatch', { required: true })} type="date" className={iCls} />
+            </div>
+            <div>
+              <label className={lCls}>Date Received</label>
+              <input {...register('dateReceived', { required: true })} type="date" className={iCls} />
+            </div>
+          </div>
+
+          <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 space-y-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input {...register('vaccinationOnArrival')} type="checkbox" className="w-4 h-4 accent-brand-green" />
+              <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Vaccinated on arrival</span>
+            </label>
+            <div>
+              <label className={lCls}>Transport Conditions</label>
+              <input {...register('transportConditions')} className={iCls} placeholder="Optional" />
+            </div>
+          </div>
+
+          <div>
+            <label className={lCls}>Mortality on Arrival</label>
+            <input {...register('mortalityOnArrival', { required: true, min: 0 })} type="number" min="0" className={iCls} />
+            <p className="text-[10px] text-gray-400 mt-1">
+              Only correct this if the number recorded at registration was wrong. Changing it
+              adjusts Current Birds by the difference — it does not erase any mortality logged since then.
+            </p>
+            {mortalityChanged && (
+              <p className={`text-xs mt-1 font-semibold ${projectedCurrentCount < 0 ? 'text-red-500' : 'text-amber-600 dark:text-amber-400'}`}>
+                Current Birds will change from {batch.currentBirdCount?.toLocaleString()} to {projectedCurrentCount.toLocaleString()}.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className={lCls}>Notes</label>
+            <textarea {...register('notes')} rows={3} className={iCls} placeholder="Optional notes…" />
+            <p className="text-[10px] text-gray-400 mt-1">
+              Batch age, breed and arrival weight entered at registration were stored as text here — edit
+              this box if any of those need correcting too.
+            </p>
+          </div>
+
+          {update.isError && <p className="text-red-500 text-sm">{(update.error as any)?.response?.data?.message ?? 'Failed to update batch. Please try again.'}</p>}
+
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-3 font-semibold">Cancel</button>
+            <button type="submit" disabled={update.isPending} className="flex-1 bg-brand-green text-white rounded-xl py-3 font-semibold disabled:opacity-60">
+              {update.isPending ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ── Transfer to Production Modal ────────────────────────────────────────────
 const TRANSFER_ROWS: { unit: string; rows: string[] }[] = [
   { unit: 'A', rows: ['A1', 'A2'] },
@@ -656,6 +826,7 @@ export function ManagerBatches() {
   const [stageFilter, setStageFilter] = useState<string | undefined>(undefined);
   const [showInactive, setShowInactive] = useState(false);
   const [transferBatchId, setTransferBatchId] = useState<string | null>(null);
+  const [editBatchId, setEditBatchId] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Handle ?transfer=<batchId> from URL
@@ -765,7 +936,7 @@ export function ManagerBatches() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {filtered.map((batch: any) => (
-            <BatchCard key={batch.id} batch={batch} onTransfer={setTransferBatchId} />
+            <BatchCard key={batch.id} batch={batch} onTransfer={setTransferBatchId} onEdit={setEditBatchId} />
           ))}
         </div>
       )}
@@ -776,6 +947,13 @@ export function ManagerBatches() {
         if (!batch) return null;
         const hasActiveProduction = batches.some((b: any) => b.location === 'PRODUCTION_HOUSE' && b.isActive && !['SOLD', 'DISCARDED', 'CLOSED'].includes(b.stage));
         return <TransferModal batch={batch} onClose={() => setTransferBatchId(null)} hasActiveProductionBatch={hasActiveProduction} />;
+      })()}
+
+      {/* Edit Batch Modal */}
+      {editBatchId && (() => {
+        const batch = batches.find((b: any) => b.id === editBatchId);
+        if (!batch) return null;
+        return <EditBatchModal batch={batch} onClose={() => setEditBatchId(null)} />;
       })()}
 
       {/* New Batch Modal */}

@@ -75,8 +75,12 @@ export class HealthService {
       ).catch(() => { /* best-effort */ });
     }
 
-    // When birds are culled, subtract affected count from batch's currentBirdCount
-    if (dto.eventType === 'CULLING' && dto.affectedCount > 0) {
+    // When birds are culled OR die (BIRD_MORTALITY), subtract affected count from
+    // batch's currentBirdCount.
+    // FIX: this previously only ran for 'CULLING' — BIRD_MORTALITY events were
+    // recorded in the HealthEvent log but never reflected in currentBirdCount,
+    // so the cage map and batch page kept showing the pre-mortality count.
+    if ((dto.eventType === 'CULLING' || dto.eventType === 'BIRD_MORTALITY') && dto.affectedCount > 0) {
       // Decrement currentBirdCount on the batch — this is the authoritative
       // total live bird count read by the cage map stats bar.
       await this.prisma.batch.update({
