@@ -121,7 +121,7 @@ function BatchRow({ b }: { b: BrooderBatchSummary }) {
               <span className="text-red-500">⚠ Lighting issue</span>
             )}
             {log.mortalityCount > 0 && (
-              <span className="text-red-500">💀 {log.mortalityCount} mortality</span>
+              <span className="text-red-500">💀 {log.mortalityCount} {log.mortalityCount === 1 ? 'mortality' : 'mortalities'}</span>
             )}
           </div>
           {log.vaccineGiven && (
