@@ -20,7 +20,7 @@ const envSchema = z.object({
   R2_BUCKET_NAME: z.string().optional(),
   R2_PUBLIC_URL: z.string().url().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
-  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-20250514'),
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'),
   FEED_ALERT_THRESHOLD_DAYS: z.coerce.number().default(3),
   MORTALITY_ALERT_PCT_ABOVE_AVG: z.coerce.number().default(15),
 });

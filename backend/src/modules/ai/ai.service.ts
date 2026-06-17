@@ -31,14 +31,16 @@ export class AiService {
     if (!this.anthropic) return null;
     try {
       const msg = await this.anthropic.messages.create({
-        model: this.config.get<string>('ANTHROPIC_MODEL') ?? 'claude-sonnet-4-20250514',
+        model: this.config.get<string>('ANTHROPIC_MODEL') ?? 'claude-sonnet-4-6',
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }],
       });
       const block = msg.content[0];
       return block.type === 'text' ? block.text : null;
     } catch (err: any) {
-      this.logger.error(`Claude API error: ${err.message}`);
+      this.logger.error(`Claude API error: ${err.message} (status: ${err.status ?? 'unknown'})`);
+      if (err.status === 401) this.logger.error('Claude API: invalid API key — check ANTHROPIC_API_KEY in Railway env vars');
+      if (err.status === 404) this.logger.error(`Claude API: model not found — check ANTHROPIC_MODEL env var (current: ${this.config.get('ANTHROPIC_MODEL') ?? 'claude-sonnet-4-6'})`);
       return null;
     }
   }
