@@ -500,7 +500,7 @@ export class DashboardController {
 
     const batchSummaries = await Promise.all(
       brooderBatches.map(async (batch) => {
-        const lastLog = await (this.prisma as any).brooderLog.findFirst({
+        const lastLog = await this.prisma.brooderLog.findFirst({
           where: { batchId: batch.id },
           orderBy: { logDate: 'desc' },
           select: {

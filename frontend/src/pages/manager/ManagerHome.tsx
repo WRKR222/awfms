@@ -128,8 +128,10 @@ export function ManagerHome() {
       {/* Production House Cage Map */}
       <div>
         <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Production House — Cage Map</p>
-        <div className="rounded-2xl overflow-hidden shadow-sm border border-dark-border" style={{ background: '#060c08' }}>
-          <CageMap blockCode="BLK1" />
+        <div className="rounded-2xl overflow-hidden shadow-sm border border-dark-border">
+          <div style={{ background: '#060c08', padding: '16px 20px' }}>
+            <CageMap blockCode="BLK1" compact={false} />
+          </div>
         </div>
       </div>
 
@@ -138,8 +140,10 @@ export function ManagerHome() {
         <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">
           Brooder — Live Cage Map
         </p>
-        <div className="rounded-2xl overflow-hidden shadow-sm border border-dark-border" style={{ background: '#060c08' }}>
-          <BrooderCageMap />
+        <div className="rounded-2xl overflow-hidden shadow-sm border border-dark-border">
+          <div style={{ background: '#060c08', padding: '16px 20px' }}>
+            <BrooderCageMap />
+          </div>
         </div>
       </div>
 

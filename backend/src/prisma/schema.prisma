@@ -1248,6 +1248,8 @@ model BrooderLog {
   id                String   @id @default(uuid())
   batchId           String   @map("batch_id")
   logDate           DateTime @map("log_date") @db.Date
+  feedType          String?  @map("feed_type")
+  feedConsumedKg    Float?   @map("feed_consumed_kg")
   waterConsumptionL Float?   @map("water_consumption_l")
   temperature       Float?
   lightingOk        Boolean  @default(true) @map("lighting_ok")

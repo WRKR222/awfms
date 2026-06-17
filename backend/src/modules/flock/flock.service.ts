@@ -528,6 +528,8 @@ export class FlockService {
       data: {
         batchId:           batch.id,
         logDate:           input.logDate ? new Date(input.logDate) : new Date(),
+        feedType:          input.feedType ?? null,
+        feedConsumedKg:    input.feedConsumedKg != null ? Number(input.feedConsumedKg) : null,
         waterConsumptionL: input.waterConsumptionL != null ? Number(input.waterConsumptionL) : null,
         temperature:       input.temperature != null ? Number(input.temperature) : null,
         lightingOk:        input.lightingOk ?? true,
