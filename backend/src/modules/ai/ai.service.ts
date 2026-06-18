@@ -27,6 +27,14 @@ export class AiService {
   }
 
   // ── Helper: call Claude with a structured prompt ────────────────────────────
+  // FIX: reports were getting cut off mid-sentence with no warning anywhere.
+  // The Anthropic API truncates a response once it hits max_tokens and signals
+  // this via stop_reason === 'max_tokens' — but that was never checked, so a
+  // half-finished report was saved and shown to the Director exactly as if it
+  // were complete. This now detects that case, logs it loudly, and retries
+  // ONCE with an explicit instruction to answer more concisely so the saved
+  // report is always a complete (if shorter) piece of writing rather than a
+  // sentence that stops halfway through.
   private async callClaude(prompt: string, maxTokens = 800): Promise<string | null> {
     if (!this.anthropic) return null;
     try {
@@ -36,7 +44,30 @@ export class AiService {
         messages: [{ role: 'user', content: prompt }],
       });
       const block = msg.content[0];
-      return block.type === 'text' ? block.text : null;
+      let text = block.type === 'text' ? block.text : null;
+
+      if (msg.stop_reason === 'max_tokens') {
+        this.logger.warn(`Claude response truncated at max_tokens=${maxTokens} — retrying once with a tighter length cap`);
+        const wordCap = Math.max(120, Math.floor(maxTokens * 0.55));
+        const retryMsg = await this.anthropic.messages.create({
+          model: this.config.get<string>('ANTHROPIC_MODEL') ?? 'claude-sonnet-4-6',
+          max_tokens: maxTokens,
+          messages: [{
+            role: 'user',
+            content: `${prompt}\n\nIMPORTANT: Your previous attempt at this ran out of room and got cut off mid-sentence. This time, keep your ENTIRE response under ${wordCap} words so it finishes completely — be noticeably more concise while still briefly touching every section asked for above. A short, complete report is much better than a long, unfinished one.`,
+          }],
+        });
+        const retryBlock = retryMsg.content[0];
+        const retryText = retryBlock.type === 'text' ? retryBlock.text : null;
+        if (retryText) {
+          if (retryMsg.stop_reason === 'max_tokens') {
+            this.logger.error('Claude response still truncated after the concise retry — saving it anyway, but consider raising maxTokens for this report type');
+          }
+          text = retryText;
+        }
+      }
+
+      return text;
     } catch (err: any) {
       this.logger.error(`Claude API error: ${err.message} (status: ${err.status ?? 'unknown'})`);
       if (err.status === 401) this.logger.error('Claude API: invalid API key — check ANTHROPIC_API_KEY in Railway env vars');
@@ -319,9 +350,9 @@ BREAKAGE ADJUSTMENTS (post-collection, raised by Sales): ${breakages.count} adju
 HEALTH: ${healthEvents.length} health event(s) logged
 DATA COMPLETENESS THIS WEEK — Egg collection: ${completeness.eggCollection.pending} pending approval, ${completeness.eggCollection.returned} returned for correction. Flock entries: ${completeness.flockEntries.pending} pending, ${completeness.flockEntries.returned} returned. Feed logs: ${completeness.feedLogs.pending} pending, ${completeness.feedLogs.returned} returned. Three-way tally sign-off (Manager+Sales+Store): ${completeness.tallySignOff.fullySigned}/${completeness.tallySignOff.total} fully signed.
 
-Format: one-sentence overall summary, then short paragraphs covering production, feed & flock health, finance (sales, receivables, expenses), and — only if something stands out — a brief note on data-entry discipline across roles. End with "Recommended actions:" as a short bulleted list.`;
+Format: one-sentence overall summary, then short paragraphs covering production, feed & flock health, finance (sales, receivables, expenses), and — only if something stands out — a brief note on data-entry discipline across roles. End with "Recommended actions:" as a short bulleted list. Keep the ENTIRE response under 400 words — be concise enough to finish completely rather than running long and getting cut off.`;
 
-    const content = await this.callClaude(prompt, 750);
+    const content = await this.callClaude(prompt, 1100);
     if (!content) return null;
 
     // ── Save and notify ───────────────────────────────────────────────────────
@@ -541,7 +572,7 @@ PLACEMENT DATE: ${dayjs(batch.dateReceived).format('D MMM YYYY')}
 
 Based on this data, provide: (1) whether this batch should be closed now, in 4-8 weeks, or continue beyond 8 weeks, with reasoning, (2) the key metric that will signal when to close (HDP threshold or age milestone), (3) one operational note for the manager. Keep response to 3 short paragraphs. Be direct and specific.`;
 
-      const content = await this.callClaude(prompt, 400);
+      const content = await this.callClaude(prompt, 450);
       if (!content) continue;
 
       const report = await this.prisma.aiReport.create({
@@ -642,9 +673,9 @@ PRODUCTION SUMMARY (last 30 days):
 - Eggs collected: ${totalEggs.toLocaleString()}
 - Data completeness: egg collection ${completeness.eggCollection.pending} pending / ${completeness.eggCollection.returned} returned; flock entries ${completeness.flockEntries.pending} pending / ${completeness.flockEntries.returned} returned; feed logs ${completeness.feedLogs.pending} pending / ${completeness.feedLogs.returned} returned; tally sign-off ${completeness.tallySignOff.fullySigned}/${completeness.tallySignOff.total} fully completed by Manager, Sales and Store
 
-Provide 3-5 improvement suggestions. Each should be: (a) specific to the data above, not generic advice, (b) actionable in the next 2 weeks, (c) one sentence of context + one sentence of recommended action. Where the data shows a role consistently lagging on approvals or sign-offs, include that as one of the suggestions. Format as a numbered list. Do not include suggestions where the data shows no issue.`;
+Provide 3-5 improvement suggestions. Each should be: (a) specific to the data above, not generic advice, (b) actionable in the next 2 weeks, (c) one sentence of context + one sentence of recommended action. Where the data shows a role consistently lagging on approvals or sign-offs, include that as one of the suggestions. Format as a numbered list. Do not include suggestions where the data shows no issue. Keep the ENTIRE response under 350 words — be concise enough to finish completely rather than running long and getting cut off.`;
 
-    const content = await this.callClaude(prompt, 600);
+    const content = await this.callClaude(prompt, 750);
     if (!content) return;
 
     const report = await this.prisma.aiReport.create({
@@ -833,9 +864,9 @@ DATA COMPLETENESS: ${completenessFlags
       ? `${eggPending} egg session(s) pending approval, ${eggReturned} returned for correction; ${feedPending} feed log(s) pending, ${feedReturned} returned; ${flockPending} flock entry pending, ${flockReturned} returned; ${storeDiscrepancies} store-intake discrepancy flag(s) raised.`
       : 'all egg, feed and flock entries for this batch are fully approved with no outstanding store discrepancies.'}
 
-Write 2-3 short paragraphs covering: (1) an overall assessment of how this batch has performed given its age/stage and the data available, (2) flock health and survival, (3) ${batch.isActive ? 'a recommendation on next steps or what to watch for' : 'a closing assessment of how this batch performed overall'}. If data completeness issues are significant, briefly note them. End with 1-2 specific, actionable recommendations.`;
+Write 2-3 short paragraphs covering: (1) an overall assessment of how this batch has performed given its age/stage and the data available, (2) flock health and survival, (3) ${batch.isActive ? 'a recommendation on next steps or what to watch for' : 'a closing assessment of how this batch performed overall'}. If data completeness issues are significant, briefly note them. End with 1-2 specific, actionable recommendations. Keep the ENTIRE response under 280 words — be concise enough to finish completely rather than running long and getting cut off.`;
 
-    const content = await this.callClaude(prompt, 550);
+    const content = await this.callClaude(prompt, 700);
     if (!content) {
       throw new BadRequestException('The AI service did not return a report. Please try again in a moment.');
     }
