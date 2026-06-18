@@ -533,12 +533,55 @@ export class ProductionService {
   }
 
   async getHenDayTrend(batchId: string, days = 14) {
-    return this.prisma.eggCollectionSession.findMany({
-      where: { batchId, shift: 'PM', status: EntryStatus.APPROVED, deletedAt: null },
+    // FIX: this used to only read PM sessions and return their per-shift
+    // henDayPercent / totalGoodEggs — i.e. just one shift's good eggs divided
+    // by that shift's own closing stock. That silently drops every AM
+    // session's eggs from the numerator, understating true daily HDP by
+    // roughly half whenever both shifts are recorded, and it skipped any day
+    // where only the AM session has been submitted so far.
+    //
+    // Now pulls BOTH shifts and combines AM+PM per calendar day before
+    // computing HDP — same convention already used in
+    // CageMapService.getBlockWithMap and AiService.aggregateDailyHdp. Fetch
+    // 3x the row count to comfortably cover `days` calendar days even when
+    // some days only have one shift recorded.
+    const sessions = await this.prisma.eggCollectionSession.findMany({
+      where: { batchId, status: EntryStatus.APPROVED, deletedAt: null },
       orderBy: { sessionDate: 'desc' },
-      take: days,
-      select: { sessionDate: true, totalGoodEggs: true, henDayPercent: true },
+      take: days * 3,
+      select: { sessionDate: true, shift: true, totalGoodEggs: true, totalStarterEggs: true, closingStock: true },
     });
+
+    const byDate = new Map<string, typeof sessions>();
+    for (const s of sessions) {
+      const key = s.sessionDate.toISOString().slice(0, 10);
+      const bucket = byDate.get(key) ?? [];
+      bucket.push(s);
+      byDate.set(key, bucket);
+    }
+
+    const trend = Array.from(byDate.values()).map(daySessions => {
+      // A session that is entirely Kienyeji "starter" eggs stores 0 in
+      // totalGoodEggs by design — fall back to totalStarterEggs in that case.
+      const totalGoodEggs = daySessions.reduce(
+        (sum, s) => sum + (s.totalGoodEggs > 0 ? s.totalGoodEggs : s.totalStarterEggs),
+        0,
+      );
+      const pm = daySessions.find(s => s.shift === 'PM');
+      const am = daySessions.find(s => s.shift === 'AM');
+      const closingStock = pm?.closingStock ?? am?.closingStock ?? 0;
+      return {
+        sessionDate: (pm ?? am)!.sessionDate,
+        totalGoodEggs,
+        henDayPercent: closingStock > 0 ? Math.round((totalGoodEggs / closingStock) * 10000) / 100 : 0,
+      };
+    });
+
+    // Chronological order (oldest → newest), matching the convention used by
+    // the dashboard's egg trend — natural for plotting on a line chart.
+    return trend
+      .sort((a, b) => a.sessionDate.getTime() - b.sessionDate.getTime())
+      .slice(-days);
   }
 
   async getTodaySummary(houseId: string) {
