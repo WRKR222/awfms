@@ -1,5 +1,13 @@
-import { IsString, IsOptional, IsArray, ValidateNested, IsNumber, Min, IsDateString, IsEnum } from 'class-validator';
-import { Type } from 'class-transformer';
+import {
+  IsString, IsOptional, IsArray, ValidateNested,
+  IsNumber, Min, IsDateString, IsEnum, IsObject,
+} from 'class-validator';
+import { Type, Transform } from 'class-transformer';
+
+const toNum = ({ value }: { value: unknown }) => {
+  const n = Number(value);
+  return isFinite(n) ? n : 0;
+};
 
 export class IssuancePlanItemDto {
   /** Present when editing an existing line item; omit for new items */
@@ -10,16 +18,16 @@ export class IssuancePlanItemDto {
   @IsString()
   storeItemId: string;
 
-  @IsNumber()
-  @Min(0.001)
-  quantityPlanned: number;
+  @IsOptional()
+  @Transform(toNum) @IsNumber() @Min(0)
+  quantityPlanned?: number;
 
-  @IsNumber()
-  @Min(0)
+  @Transform(toNum) @IsNumber() @Min(0)
   unitPriceKes: number;
 
   /** { MON, TUE, WED, THU, FRI, SAT, SUN } — omit for EMERGENCY items */
   @IsOptional()
+  @IsObject()
   dailyBreakdown?: Record<string, number>;
 
   @IsOptional()
@@ -81,7 +89,6 @@ export class SetFeedConsumptionPlanDto {
   @IsString()
   feedType: string;
 
-  @IsNumber()
-  @Min(0.1)
+  @Transform(toNum) @IsNumber() @Min(0.1)
   gramsPerBirdPerDay: number;
 }

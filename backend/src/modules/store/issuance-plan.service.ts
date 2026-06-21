@@ -130,10 +130,11 @@ export class IssuancePlanService {
     }
 
     const enrichedItems = dto.items.map((item) => {
-      let qtyPlanned = item.quantityPlanned;
+      let qtyPlanned = Number(item.quantityPlanned ?? 0);
       if (item.dailyBreakdown && dto.type === 'WEEKLY') {
-        qtyPlanned = Object.values(item.dailyBreakdown).reduce((s: number, v: number) => s + v, 0);
+        qtyPlanned = Object.values(item.dailyBreakdown).reduce((s: number, v: unknown) => s + Number(v ?? 0), 0);
       }
+      if (!isFinite(qtyPlanned) || qtyPlanned < 0) qtyPlanned = 0;
       return { ...item, quantityPlanned: qtyPlanned };
     });
 
