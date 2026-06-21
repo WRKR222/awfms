@@ -88,6 +88,8 @@ export function ItemsTab() {
 
   const startEdit = (item: StoreItem) => {
     setEditing(item);
+    createMut.reset();
+    updateMut.reset();
     reset({
       name: item.name, sku: item.sku, category: item.category, unit: item.unit,
       description: item.description ?? '', reorderLevel: item.reorderLevel,
@@ -173,14 +175,29 @@ export function ItemsTab() {
             </button>
             {editing && (
               <button type="button"
-                onClick={() => updateMut.mutate({ id: editing.id, data: { isActive: !editing.isActive } })}
-                className="px-4 py-2 rounded-xl text-sm font-semibold border border-gray-200 dark:border-dark-border">
-                {editing.isActive ? 'Deactivate' : 'Activate'}
+                disabled={updateMut.isPending}
+                onClick={() => {
+                  updateMut.reset();
+                  updateMut.mutate(
+                    { id: editing.id, data: { isActive: !editing.isActive } },
+                    { onSuccess: () => {
+                        setEditing(prev => prev ? { ...prev, isActive: !prev.isActive } : prev);
+                        qc.invalidateQueries({ queryKey: ['store-items'] });
+                      }
+                    }
+                  );
+                }}
+                className="px-4 py-2 rounded-xl text-sm font-semibold border border-gray-200 dark:border-dark-border disabled:opacity-60">
+                {updateMut.isPending ? 'Saving…' : editing.isActive ? 'Deactivate' : 'Activate'}
               </button>
             )}
           </div>
           {(createMut.isError || updateMut.isError) && (
-            <p className="text-xs text-red-600">Failed to save item.</p>
+            <p className="text-xs text-red-600">
+              {(createMut.error as any)?.response?.data?.message
+                ?? (updateMut.error as any)?.response?.data?.message
+                ?? 'Failed to save item.'}
+            </p>
           )}
         </form>
       )}

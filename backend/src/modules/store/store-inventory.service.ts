@@ -56,16 +56,16 @@ export class UpdateStoreItemDto {
   @IsOptional() @IsString()
   description?: string;
 
-  @IsOptional() @IsNumber() @Min(0) @Type(() => Number)
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
   reorderLevel?: number;
 
-  @IsOptional() @IsNumber() @Min(0) @Type(() => Number)
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
   unitCostKes?: number;
 
   @IsOptional() @IsString()
   supplierId?: string;
 
-  @IsOptional() @IsBoolean() @Type(() => Boolean)
+  @IsOptional() @Type(() => Boolean) @IsBoolean()
   isActive?: boolean;
 }
 
