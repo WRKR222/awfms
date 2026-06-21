@@ -49,36 +49,46 @@ export function ItemsTab() {
   const { register, handleSubmit, reset, formState: { errors } } = useForm<FormData>();
 
   const createMut = useMutation({
-    mutationFn: (data: FormData) => api.post('/store/inventory/items', {
-      ...data,
-      reorderLevel: Number(data.reorderLevel ?? 0),
-      unitCostKes:  Number(data.unitCostKes ?? 0),
-    }),
+    mutationFn: (data: FormData) =>
+      api.post('/store/inventory/items', {
+        name:         data.name,
+        sku:          data.sku,
+        category:     data.category,
+        unit:         data.unit,
+        description:  data.description ?? '',
+        reorderLevel: Number(data.reorderLevel ?? 0),
+        unitCostKes:  Number(data.unitCostKes ?? 0),
+      }).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['store-items'] });
-      reset(); setShowForm(false);
+      reset();
+      setShowForm(false);
     },
   });
 
   const updateMut = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<FormData> & { isActive?: boolean } }) =>
-      api.patch(`/store/inventory/items/${id}`, data),
+    mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
+      api.patch(`/store/inventory/items/${id}`, payload).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['store-items'] });
-      setEditing(null); reset(); setShowForm(false);
+      setEditing(null);
+      reset();
+      setShowForm(false);
     },
   });
 
   const onSubmit = (data: FormData) => {
     if (editing) {
-      // sku is not updatable — omit it so forbidNonWhitelisted doesn't reject the body
-      const { sku: _sku, ...updateFields } = data;
+      // Only send fields the backend UpdateStoreItemDto accepts — never send sku
       updateMut.mutate({
         id: editing.id,
-        data: {
-          ...updateFields,
-          reorderLevel: Number(updateFields.reorderLevel ?? 0),
-          unitCostKes:  Number(updateFields.unitCostKes  ?? 0),
+        payload: {
+          name:         data.name,
+          category:     data.category,
+          unit:         data.unit,
+          description:  data.description ?? '',
+          reorderLevel: Number(data.reorderLevel ?? 0),
+          unitCostKes:  Number(data.unitCostKes ?? 0),
         },
       });
     } else {
@@ -91,11 +101,23 @@ export function ItemsTab() {
     createMut.reset();
     updateMut.reset();
     reset({
-      name: item.name, sku: item.sku, category: item.category, unit: item.unit,
-      description: item.description ?? '', reorderLevel: item.reorderLevel,
-      unitCostKes: Number(item.unitCostKes),
+      name:         item.name,
+      sku:          item.sku,
+      category:     item.category,
+      unit:         item.unit,
+      description:  item.description ?? '',
+      reorderLevel: item.reorderLevel,
+      unitCostKes:  Number(item.unitCostKes),
     });
     setShowForm(true);
+  };
+
+  const closeForm = () => {
+    setEditing(null);
+    createMut.reset();
+    updateMut.reset();
+    reset();
+    setShowForm(false);
   };
 
   const filtered = items.filter(i => {
@@ -104,11 +126,24 @@ export function ItemsTab() {
     return true;
   });
 
+  const isSaving = createMut.isPending || updateMut.isPending;
+  const saveError =
+    (createMut.error as any)?.response?.data?.message ??
+    (updateMut.error as any)?.response?.data?.message ??
+    null;
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <button
-          onClick={() => { setEditing(null); reset({ name:'', sku:'', category:'', unit:'', description:'', reorderLevel:0, unitCostKes:0 }); setShowForm(v => !v); }}
+          onClick={() => {
+            if (showForm) { closeForm(); return; }
+            setEditing(null);
+            createMut.reset();
+            updateMut.reset();
+            reset({ name: '', sku: '', category: '', unit: '', description: '', reorderLevel: 0, unitCostKes: 0 });
+            setShowForm(true);
+          }}
           className="flex items-center gap-2 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold"
         >
           <Plus className="w-4 h-4" /> {showForm ? 'Cancel' : 'New Item'}
@@ -134,13 +169,19 @@ export function ItemsTab() {
 
       {showForm && (
         <form onSubmit={handleSubmit(onSubmit)} className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border space-y-3">
-          <h3 className="font-semibold text-gray-700 dark:text-gray-200 text-sm">{editing ? `Edit Item — ${editing.sku}` : 'Create New Item'}</h3>
+          <h3 className="font-semibold text-gray-700 dark:text-gray-200 text-sm">
+            {editing ? `Edit Item — ${editing.sku}` : 'Create New Item'}
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Field label="Name *" error={errors.name?.message}>
               <input {...register('name', { required: 'Required' })} className="input" />
             </Field>
             <Field label="Item Code *" error={errors.sku?.message}>
-              <input {...register('sku', { required: 'Required' })} disabled={!!editing} className="input disabled:opacity-60" />
+              <input
+                {...register('sku', { required: 'Required' })}
+                disabled={!!editing}
+                className="input disabled:opacity-60 disabled:cursor-not-allowed"
+              />
             </Field>
             <Field label="Category *">
               <select {...register('category', { required: true })} className="input">
@@ -155,12 +196,11 @@ export function ItemsTab() {
               </select>
             </Field>
             <Field label="Reorder Level">
-              <input type="number" step="any" {...register('reorderLevel')} className="input" />
+              <input type="number" step="any" min="0" {...register('reorderLevel')} className="input" />
             </Field>
             <Field label="Unit Cost (KES)">
-              <input type="number" step="any" {...register('unitCostKes')} className="input" />
+              <input type="number" step="any" min="0" {...register('unitCostKes')} className="input" />
             </Field>
-
             <div className="md:col-span-2">
               <Field label="Description">
                 <textarea {...register('description')} rows={2} className="input" />
@@ -169,34 +209,25 @@ export function ItemsTab() {
           </div>
 
           <div className="flex gap-2">
-            <button type="submit" disabled={createMut.isPending || updateMut.isPending}
-              className="bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60">
-              {editing ? 'Save Changes' : 'Create Item'}
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60"
+            >
+              {isSaving ? 'Saving…' : editing ? 'Save Changes' : 'Create Item'}
             </button>
-            {editing && (
-              <button type="button"
-                disabled={updateMut.isPending}
-                onClick={() => {
-                  updateMut.reset();
-                  updateMut.mutate(
-                    { id: editing.id, data: { isActive: !editing.isActive } },
-                    { onSuccess: () => {
-                        setEditing(prev => prev ? { ...prev, isActive: !prev.isActive } : prev);
-                        qc.invalidateQueries({ queryKey: ['store-items'] });
-                      }
-                    }
-                  );
-                }}
-                className="px-4 py-2 rounded-xl text-sm font-semibold border border-gray-200 dark:border-dark-border disabled:opacity-60">
-                {updateMut.isPending ? 'Saving…' : editing.isActive ? 'Deactivate' : 'Activate'}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={closeForm}
+              className="px-4 py-2 rounded-xl text-sm font-semibold border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300"
+            >
+              Cancel
+            </button>
           </div>
+
           {(createMut.isError || updateMut.isError) && (
             <p className="text-xs text-red-600">
-              {(createMut.error as any)?.response?.data?.message
-                ?? (updateMut.error as any)?.response?.data?.message
-                ?? 'Failed to save item.'}
+              {saveError ?? 'Failed to save item.'}
             </p>
           )}
         </form>
