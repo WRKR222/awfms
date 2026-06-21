@@ -57,16 +57,3 @@ export class FeedController {
     return this.feedService.getAlertThresholdConfig();
   }
 }
-  @RequirePermission(Permission.FEED_VIEW)
-  @ApiOperation({ summary: 'Update low stock alert threshold (days)' })
-  updateAlertThreshold(@Body() body: { days: number }) {
-    return this.feedService.updateAlertThreshold(body.days);
-  }
-
-  @Get('alert-threshold')
-  @RequirePermission(Permission.FEED_VIEW)
-  @ApiOperation({ summary: 'Get current alert threshold' })
-  getAlertThreshold() {
-    return this.feedService.getAlertThresholdConfig();
-  }
-}

@@ -61,8 +61,6 @@ export interface StockOutDto {
 
 // ─── SERVICE ─────────────────────────────────────────────────────────────────
 
-import { IssuancePlanService } from './issuance-plan.service';
-
 @Injectable()
 export class StoreInventoryService {
   constructor(

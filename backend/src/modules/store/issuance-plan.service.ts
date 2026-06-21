@@ -145,19 +145,23 @@ export class IssuancePlanService {
         phase: 'DRAFT',
         notes: dto.notes,
         createdById: userId,
-        items: {
-          create: enrichedItems.map((item) => ({
-            storeItemId: item.storeItemId,
-            quantityPlanned: item.quantityPlanned,
-            unitPriceKes: item.unitPriceKes,
-            dailyBreakdown: item.dailyBreakdown ?? null,
-            notes: item.notes,
-            source: 'MANUAL',
-            status: 'PENDING_ACCOUNTANT',
-          })),
-        },
       },
     });
+
+    if (enrichedItems.length > 0) {
+      await this.prisma.issuancePlanItem.createMany({
+        data: enrichedItems.map((item) => ({
+          planId: plan.id,
+          storeItemId: item.storeItemId,
+          quantityPlanned: item.quantityPlanned,
+          unitPriceKes: item.unitPriceKes,
+          dailyBreakdown: item.dailyBreakdown ?? null,
+          notes: item.notes,
+          source: 'MANUAL',
+          status: 'PENDING_ACCOUNTANT',
+        })),
+      });
+    }
 
     // If this is a new WEEKLY draft, pick up any feed consumption plans the PM
     // already submitted for this week.
