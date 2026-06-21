@@ -3,7 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { useAuthStore } from '../../stores/auth.store';
 import { CheckCircle, XCircle, AlertCircle, ChevronDown, ChevronUp, Save, Clock } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 // ── Static checklist definition (configurable later via Director input) ──────
 const CHECKLIST_SECTIONS = [

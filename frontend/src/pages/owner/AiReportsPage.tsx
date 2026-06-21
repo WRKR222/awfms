@@ -6,7 +6,7 @@ import {
   Brain, ChevronDown, ChevronUp, RefreshCw, Loader2,
   TrendingUp, AlertTriangle, BarChart2, Lightbulb, Clipboard, Bird,
 } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface AiReport {

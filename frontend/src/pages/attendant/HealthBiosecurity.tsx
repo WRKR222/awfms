@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { api } from '../../lib/api';
 import { useBatches } from '../../hooks/useFlock';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 import {
   Syringe, Plus, X, ChevronDown, ChevronUp,
   Info, CheckCircle, Clock,

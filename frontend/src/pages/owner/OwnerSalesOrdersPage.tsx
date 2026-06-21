@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../lib/api/client';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 import {
   ArrowLeft, TrendingUp, Egg, DollarSign,
   CheckCircle, Clock, Package,

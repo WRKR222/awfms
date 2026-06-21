@@ -4,11 +4,8 @@ import { api } from '../../lib/api/client';
 import {
   Bell, AlertTriangle, CheckCircle, Clock, Zap, Info, CheckCheck,
 } from 'lucide-react';
-import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
+import dayjs from '../../lib/dayjs';
 import { useState } from 'react';
-
-dayjs.extend(relativeTime);
 
 interface Notification {
   id: string;

@@ -10,9 +10,7 @@ import { AlertCircle, ChevronRight, CheckCircle, XCircle, AlertTriangle,
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';           // GAP-10 FIX: was ../../lib/api
 import { useAuthStore } from '../../stores/auth.store';
-import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
-dayjs.extend(relativeTime);
+import dayjs from '../../lib/dayjs';
 
 type AnyInvoiceStatus = 'PAID' | 'OVERDUE' | 'UNPAID' | 'PARTIAL';
 

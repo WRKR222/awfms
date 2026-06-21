@@ -17,7 +17,7 @@ import {
   TrendingUp, AlertTriangle, Bird, Egg, DollarSign, Flame,
   Activity, Users, ChevronRight, Lock, Brain, ArrowRight, Map,
 } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 import { CageMap } from '../../components/shared/CageMap';
 import { BrooderCageMap } from '../../components/shared/BrooderCageMap';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';

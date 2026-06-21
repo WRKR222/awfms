@@ -3,7 +3,7 @@
 // Used on PM (ManagerHome) and Director (OwnerHome) dashboards.
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 import { Flame, AlertTriangle, Calendar, CheckCircle2 } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────

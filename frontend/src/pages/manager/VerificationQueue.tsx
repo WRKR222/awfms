@@ -17,9 +17,7 @@ import {
 import { usePendingEntries, useVerifyEntry } from '../../hooks/useFlock';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
-import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
-dayjs.extend(relativeTime);
+import dayjs from '../../lib/dayjs';
 
 // ─── Shared helpers ────────────────────────────────────────────────────────────
 

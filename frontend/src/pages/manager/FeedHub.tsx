@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { api } from '../../lib/api';
 import { useFeedStock } from '../../hooks/useFeed';
 import { useBatches } from '../../hooks/useFlock';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 import {
   AlertTriangle, CheckCircle, Package, X, ChevronDown,
   ChevronUp, Truck, Info, Calendar, Hash, DollarSign, FileText,

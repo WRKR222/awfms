@@ -6,9 +6,7 @@ import {
   Users, Plus, CheckCircle, Clock, LogOut, Calendar, AlertCircle,
   ChevronDown, ChevronUp, X, Check,
 } from 'lucide-react';
-import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
-dayjs.extend(relativeTime);
+import dayjs from '../../lib/dayjs';
 
 // ── Biosecurity checks for walk-in visitor log entry ─────────────────────────
 // changes.pdf — Production Manager → Visitors: add a "PPE" check using the

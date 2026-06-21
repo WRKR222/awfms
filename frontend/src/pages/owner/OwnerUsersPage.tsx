@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { Shield, Lock, Unlock, RefreshCw, CheckCircle, XCircle, Key } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 interface UserRecord {
   id: string; username: string; fullName: string; role: string; isActive: boolean;

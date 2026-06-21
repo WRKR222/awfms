@@ -3,14 +3,11 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { api } from '../../lib/api';
-import dayjs from 'dayjs';
-import relativeTime from 'dayjs/plugin/relativeTime';
+import dayjs from '../../lib/dayjs';
 import {
   Bird, Thermometer, Droplets, Sun, XCircle, Plus,
   X, AlertTriangle, ChevronRight, Flame, Calendar, Clock,
 } from 'lucide-react';
-
-dayjs.extend(relativeTime);
 
 // ── Feed type options & label helper ─────────────────────────────────────────
 

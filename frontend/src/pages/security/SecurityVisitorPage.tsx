@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { Users, LogIn, LogOut as LogOutIcon, Clock, CheckCircle, Search } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 interface SecurityVisitorPageProps {
   role: 'SECURITY1' | 'SECURITY2';

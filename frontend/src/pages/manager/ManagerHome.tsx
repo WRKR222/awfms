@@ -7,7 +7,7 @@ import { CageMap } from '../../components/shared/CageMap';
 import { useNavigate } from 'react-router-dom';
 import { BrooderCageMap } from '../../components/shared/BrooderCageMap';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 export function ManagerHome() {
   useManagerRealtime();

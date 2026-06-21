@@ -9,7 +9,7 @@ import { useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle, TrendingUp, DollarSign, Calendar, Info } from 'lucide-react';
 import { api } from '../../lib/api/client';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 const inputCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-4 py-3 text-base bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
 const cardCls  = 'bg-white dark:bg-dark-card rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-dark-border';

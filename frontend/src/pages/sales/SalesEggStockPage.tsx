@@ -16,7 +16,7 @@ import {
   Package, Egg, TrendingDown, DollarSign, ArrowLeft,
   RefreshCw, Calendar, AlertCircle, Clock,
 } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 const cardCls =
   'bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-dark-border';

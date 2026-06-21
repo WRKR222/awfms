@@ -15,7 +15,7 @@ import {
   EggOff, Truck, AlertTriangle, ArrowRight, RefreshCw, Package,
   Info,
 } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 const EGG_TYPE_LABELS: Record<string, string> = {
   STANDARD_EGGS:          'Standard Eggs',

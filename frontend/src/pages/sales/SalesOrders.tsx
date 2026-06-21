@@ -8,7 +8,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 import {
   ShoppingCart, Plus, X, ChevronDown, ChevronUp, CheckCircle, Clock,
   XCircle, Truck, Package, AlertCircle, TrendingUp, Trash2,

@@ -8,7 +8,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 import {
   BookOpen, Plus, X, CheckCircle, XCircle, Clock,
   ChevronDown, ChevronUp, Package, AlertCircle, RefreshCw,

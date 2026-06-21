@@ -4,14 +4,11 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { useAuthStore } from '../../stores/auth.store';
-import dayjs from 'dayjs';
-import isoWeek from 'dayjs/plugin/isoWeek';
+import dayjs from '../../lib/dayjs';
 import {
   ClipboardList, Plus, X, CheckCircle, XCircle, FileDown,
   ChevronDown, ChevronUp, AlertTriangle, Zap, Calendar, Pencil,
 } from 'lucide-react';
-
-dayjs.extend(isoWeek);
 
 const DAY_KEYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] as const;
 type DayKey = typeof DAY_KEYS[number];

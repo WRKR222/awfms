@@ -8,7 +8,7 @@ import {
   Upload, FileText, ChevronRight, CheckCircle, AlertCircle,
   Trash2, Clock, Database, ArrowLeft, Save,
 } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

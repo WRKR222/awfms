@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form';
 import { Bird, Calendar, Home, Info, ChevronRight, Plus, CheckCircle, Clock, XCircle, TrendingUp, Hash, Layers, X, AlertTriangle, Pencil } from 'lucide-react';
 import { useBatches, useUpdateBatch } from '../../hooks/useFlock';
 import { api } from '../../lib/api/client';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
 function Tooltip({ children, tip }: { children: React.ReactNode; tip: string }) {

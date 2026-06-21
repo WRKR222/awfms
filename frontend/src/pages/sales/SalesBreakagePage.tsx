@@ -13,7 +13,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { Plus, EggOff, AlertTriangle, Info, ChevronDown, ChevronUp } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 import { api } from '../../lib/api/client';
 
 const iCls =

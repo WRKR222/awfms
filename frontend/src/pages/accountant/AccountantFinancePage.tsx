@@ -14,7 +14,7 @@ import {
   Upload, FileUp, X, CreditCard, Settings2, ChevronDown, ChevronRight,
   TrendingUp, BarChart2, ShoppingCart,
 } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 

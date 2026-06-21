@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { useAuthStore } from '../../stores/auth.store';
 import { CheckCircle, XCircle, Clock, User, CalendarDays, Info } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 interface AdvanceNotice {
   id: string;

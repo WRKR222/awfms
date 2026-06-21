@@ -10,7 +10,7 @@ import {
   ShieldCheck, Scissors, Bug, Stethoscope, Package, Archive,
   Activity, Syringe, ClipboardList, HeartCrack,
 } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 // changes.pdf — Production Manager → Events:
 // Remove DISEASE_OUTBREAK, INJURY, QUARANTINE_IMPOSED, QUARANTINE_LIFTED.

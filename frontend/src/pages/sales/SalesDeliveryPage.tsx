@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Truck, CheckCircle, Phone, MapPin, Package, AlertCircle, ChevronDown, ChevronUp, Clock } from 'lucide-react';
 import { api } from '../../lib/api/client';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 type EggItemType = 'STANDARD_EGGS' | 'STARTER_EGGS' | 'CONSUMABLE_BROKEN_EGGS';
 const EGG_TYPE_LABELS: Record<string, string> = {

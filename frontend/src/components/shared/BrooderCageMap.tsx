@@ -5,7 +5,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { Flame, Bird, Syringe, Thermometer, Droplets, Sun, AlertTriangle, Wheat } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 interface BrooderBatch {
   id: string;

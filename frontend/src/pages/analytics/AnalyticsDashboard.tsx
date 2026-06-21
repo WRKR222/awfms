@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, ScatterChart, Scatter,
   ComposedChart, Area,

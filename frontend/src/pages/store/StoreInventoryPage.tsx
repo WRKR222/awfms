@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 import { Package, ArrowDownToLine, ArrowUpFromLine, AlertTriangle, Clock } from 'lucide-react';
 import { ItemsTab } from './ItemsTab';
 import { StockInTab } from './StockInTab';

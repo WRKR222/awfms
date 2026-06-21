@@ -16,7 +16,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { useAuthStore } from '../../stores/auth.store';
 import { CheckCircle, Clock, Lock, AlertTriangle, Edit2, Save, X } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 interface RowData {
   rowCode: string;

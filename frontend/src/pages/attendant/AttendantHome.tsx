@@ -16,7 +16,7 @@ import {
 import { useAuthStore } from '../../stores/auth.store';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 // ── Mirrors resolvePageMode in EggCollectionPage exactly ──────────────────────
 type PageMode =

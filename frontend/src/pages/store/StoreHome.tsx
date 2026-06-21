@@ -9,7 +9,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth.store';
 import api from '../../lib/api/client';
 import { CheckSquare, Package, ClipboardList, Users, UserCheck, ChevronRight, Lock, AlertTriangle, Clock } from 'lucide-react';
-import dayjs from 'dayjs';
+import dayjs from '../../lib/dayjs';
 
 export default function StoreHome() {
   const navigate = useNavigate();
