@@ -269,7 +269,10 @@ export class IssuancePlanService {
         for (const item of dto.items as any[]) {
           let qtyPlanned = Number(item.quantityPlanned ?? 0);
           if (item.dailyBreakdown && plan.type === 'WEEKLY') {
-            qtyPlanned = Object.values(item.dailyBreakdown).reduce((s: number, v: number) => s + Number(v ?? 0), 0);
+            qtyPlanned = Object.values(item.dailyBreakdown as Record<string, number>).reduce(
+              (s: number, v: number) => s + Number(v ?? 0),
+              0,
+            );
           }
           if (!isFinite(qtyPlanned) || qtyPlanned < 0) qtyPlanned = 0;
 
