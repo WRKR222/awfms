@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { NotificationType, UserRole, BatchStage } from '@prisma/client';
+import { NotificationType, UserRole, BatchStage, Prisma } from '@prisma/client';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
 import PDFDocument from 'pdfkit';
@@ -155,7 +155,7 @@ export class IssuancePlanService {
           storeItemId: item.storeItemId,
           quantityPlanned: item.quantityPlanned,
           unitPriceKes: item.unitPriceKes,
-          dailyBreakdown: item.dailyBreakdown ?? null,
+          dailyBreakdown: item.dailyBreakdown ?? Prisma.JsonNull,
           notes: item.notes,
           source: 'MANUAL',
           status: 'PENDING_ACCOUNTANT',
@@ -278,7 +278,7 @@ export class IssuancePlanService {
                 storeItemId: item.storeItemId,
                 quantityPlanned: qtyPlanned,
                 unitPriceKes: item.unitPriceKes,
-                dailyBreakdown: item.dailyBreakdown ?? null,
+                dailyBreakdown: item.dailyBreakdown ?? Prisma.JsonNull,
                 notes: item.notes,
                 source: item.source ?? prior.source,
                 ...(willReopenItem
@@ -302,7 +302,7 @@ export class IssuancePlanService {
                 storeItemId: item.storeItemId,
                 quantityPlanned: qtyPlanned,
                 unitPriceKes: item.unitPriceKes,
-                dailyBreakdown: item.dailyBreakdown ?? null,
+                dailyBreakdown: item.dailyBreakdown ?? Prisma.JsonNull,
                 notes: item.notes,
                 source: item.source ?? 'MANUAL',
                 status: 'PENDING_ACCOUNTANT',
