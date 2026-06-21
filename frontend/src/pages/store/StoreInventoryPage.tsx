@@ -3,19 +3,17 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from 'dayjs';
-import { Package, ArrowDownToLine, ArrowUpFromLine, ClipboardList, AlertTriangle, Clock } from 'lucide-react';
+import { Package, ArrowDownToLine, ArrowUpFromLine, AlertTriangle, Clock } from 'lucide-react';
 import { ItemsTab } from './ItemsTab';
 import { StockInTab } from './StockInTab';
 import { StockOutTab } from './StockOutTab';
-import { IssuancePlanTab } from './IssuancePlanTab';
 
-type TabKey = 'items' | 'stock-in' | 'stock-out' | 'issuance-plan';
+type TabKey = 'items' | 'stock-in' | 'stock-out';
 
 const TABS: { key: TabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { key: 'items',          label: 'Items',          icon: Package },
-  { key: 'stock-in',       label: 'Stock In',       icon: ArrowDownToLine },
-  { key: 'stock-out',      label: 'Stock Out',      icon: ArrowUpFromLine },
-  { key: 'issuance-plan',  label: 'Issuance Plans', icon: ClipboardList },
+  { key: 'items',     label: 'Items',     icon: Package },
+  { key: 'stock-in',  label: 'Stock In',  icon: ArrowDownToLine },
+  { key: 'stock-out', label: 'Stock Out', icon: ArrowUpFromLine },
 ];
 
 
@@ -83,7 +81,7 @@ export default function StoreInventoryPage() {
       <header>
         <h1 className="text-xl md:text-2xl font-bold text-gray-800 dark:text-gray-100">Store Inventory</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          Manage catalogue, stock movements, and issuance plans.
+          Manage catalogue and stock movements.
         </p>
       </header>
 
@@ -114,7 +112,6 @@ export default function StoreInventoryPage() {
         {tab === 'items'         && <ItemsTab />}
         {tab === 'stock-in'      && <StockInTab />}
         {tab === 'stock-out'     && <StockOutTab />}
-        {tab === 'issuance-plan' && <IssuancePlanTab />}
       </div>
     </div>
   );

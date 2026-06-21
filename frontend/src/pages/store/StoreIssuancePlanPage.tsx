@@ -11,8 +11,9 @@ export default function StoreIssuancePlanPage() {
           Issuance Plans
         </h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          Build the weekly Mon–Sun issuance plan (submit on Saturday) or raise an emergency
-          issuance plan mid-week. Stock can only be issued against an approved plan.
+          Weekly plans are drafted and submitted on Saturday for the following Mon–Sun cycle.
+          Emergency plans can be raised mid-week for urgent needs.
+          Stock can only be issued against an approved plan.
         </p>
       </header>
       <IssuancePlanTab />

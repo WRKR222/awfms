@@ -10,28 +10,62 @@ import { NotificationsService } from '../../common/notifications/notifications.s
 import { NotificationType, UserRole } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { IssuancePlanService } from './issuance-plan.service';
+import {
+  IsString, IsOptional, IsNumber, IsBoolean, Min, IsNotEmpty,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
-export interface CreateStoreItemDto {
+export class CreateStoreItemDto {
+  @IsString() @IsNotEmpty()
   name: string;
+
+  @IsString() @IsNotEmpty()
   sku: string;
+
+  @IsString() @IsNotEmpty()
   category: string;
+
+  @IsString() @IsNotEmpty()
   unit: string;
+
+  @IsOptional() @IsString()
   description?: string;
+
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number)
   reorderLevel?: number;
+
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number)
   unitCostKes?: number;
+
+  @IsOptional() @IsString()
   supplierId?: string;
 }
 
-export interface UpdateStoreItemDto {
+export class UpdateStoreItemDto {
+  @IsOptional() @IsString() @IsNotEmpty()
   name?: string;
+
+  @IsOptional() @IsString()
   category?: string;
+
+  @IsOptional() @IsString()
   unit?: string;
+
+  @IsOptional() @IsString()
   description?: string;
+
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number)
   reorderLevel?: number;
+
+  @IsOptional() @IsNumber() @Min(0) @Type(() => Number)
   unitCostKes?: number;
+
+  @IsOptional() @IsString()
   supplierId?: string;
+
+  @IsOptional() @IsBoolean() @Type(() => Boolean)
   isActive?: boolean;
 }
 

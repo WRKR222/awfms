@@ -70,8 +70,20 @@ export function ItemsTab() {
   });
 
   const onSubmit = (data: FormData) => {
-    if (editing) updateMut.mutate({ id: editing.id, data: { ...data, reorderLevel: Number(data.reorderLevel ?? 0), unitCostKes: Number(data.unitCostKes ?? 0) } });
-    else         createMut.mutate(data);
+    if (editing) {
+      // sku is not updatable — omit it so forbidNonWhitelisted doesn't reject the body
+      const { sku: _sku, ...updateFields } = data;
+      updateMut.mutate({
+        id: editing.id,
+        data: {
+          ...updateFields,
+          reorderLevel: Number(updateFields.reorderLevel ?? 0),
+          unitCostKes:  Number(updateFields.unitCostKes  ?? 0),
+        },
+      });
+    } else {
+      createMut.mutate(data);
+    }
   };
 
   const startEdit = (item: StoreItem) => {

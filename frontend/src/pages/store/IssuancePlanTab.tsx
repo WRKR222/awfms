@@ -432,9 +432,20 @@ function CreatePlanForm({
     });
   });
 
-  const { data: storeItems = [] } = useQuery<any[]>({
-    queryKey: ['store-items', 'active'],
-    queryFn: () => api.get('/store/inventory/items?isActive=true').then(r => r.data),
+  const {
+    data: storeItems = [],
+    isLoading: storeItemsLoading,
+    isError: storeItemsError,
+  } = useQuery<any[]>({
+    queryKey: ['store-items'],
+    queryFn: () =>
+      api.get('/store/inventory/items', { params: { isActive: 'true' } }).then(r => {
+        if (Array.isArray(r.data) && r.data.length === 0) {
+          return api.get('/store/inventory/items').then(fb => fb.data);
+        }
+        return r.data;
+      }),
+    staleTime: 60_000,
   });
 
   const addItem = () => {
@@ -616,6 +627,7 @@ function CreatePlanForm({
                       <label className={lCls}>Store Item *</label>
                       <select
                         value={it.storeItemId}
+                        disabled={storeItemsLoading}
                         onChange={e => {
                           const found = storeItems.find((s: any) => s.id === e.target.value) as any;
                           updateItem(idx, 'storeItemId', e.target.value);
@@ -623,11 +635,26 @@ function CreatePlanForm({
                         }}
                         className={iCls}
                       >
-                        <option value="">Select item…</option>
-                        {storeItems.map((s: any) => (
-                          <option key={s.id} value={s.id}>{s.name} ({s.unit}) — {Number(s.currentStock).toFixed(2)} in stock</option>
-                        ))}
+                        {storeItemsLoading ? (
+                          <option value="">Loading items…</option>
+                        ) : storeItemsError ? (
+                          <option value="">Failed to load items</option>
+                        ) : storeItems.length === 0 ? (
+                          <option value="">No items in catalogue</option>
+                        ) : (
+                          <>
+                            <option value="">Select item…</option>
+                            {storeItems.map((s: any) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name} ({s.unit}) — {Number(s.currentStock).toFixed(2)} in stock
+                              </option>
+                            ))}
+                          </>
+                        )}
                       </select>
+                      {storeItemsError && (
+                        <p className="text-xs text-red-500 mt-1">Could not load store items. Check your connection.</p>
+                      )}
                     </div>
                     <div>
                       <label className={lCls}>Unit Price (KES)</label>
@@ -752,40 +779,29 @@ export function IssuancePlanTab() {
 
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
-            <ClipboardList className="w-5 h-5 text-brand-green" />
-            Issuance Plans
-          </h2>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-            Weekly and emergency plans controlling what stock can be issued.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {pendingCount > 0 && (
-            <span className="bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 text-xs font-bold px-3 py-1.5 rounded-full">
-              {pendingCount} item{pendingCount > 1 ? 's' : ''} awaiting review
-            </span>
-          )}
-          {canCreate && (
-            <>
-              <button
-                onClick={() => setShowCreate('WEEKLY')}
-                className="flex items-center gap-1.5 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-mid transition-colors"
-              >
-                <Plus className="w-4 h-4" /> Weekly Plan
-              </button>
-              <button
-                onClick={() => setShowCreate('EMERGENCY')}
-                className="flex items-center gap-1.5 bg-amber-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-amber-600 transition-colors"
-              >
-                <Zap className="w-4 h-4" /> Emergency
-              </button>
-            </>
-          )}
-        </div>
+      {/* Actions row */}
+      <div className="flex items-center justify-end gap-2 flex-wrap">
+        {pendingCount > 0 && (
+          <span className="bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 text-xs font-bold px-3 py-1.5 rounded-full">
+            {pendingCount} item{pendingCount > 1 ? 's' : ''} awaiting review
+          </span>
+        )}
+        {canCreate && (
+          <>
+            <button
+              onClick={() => setShowCreate('WEEKLY')}
+              className="flex items-center gap-1.5 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-mid transition-colors"
+            >
+              <Plus className="w-4 h-4" /> Weekly Plan
+            </button>
+            <button
+              onClick={() => setShowCreate('EMERGENCY')}
+              className="flex items-center gap-1.5 bg-amber-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-amber-600 transition-colors"
+            >
+              <Zap className="w-4 h-4" /> Emergency
+            </button>
+          </>
+        )}
       </div>
 
       {/* Phase filter */}
