@@ -11,10 +11,12 @@ import { NotificationsService } from '../../common/notifications/notifications.s
 import { NotificationType, UserRole, BatchStage, Prisma } from '@prisma/client';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
+import utc from 'dayjs/plugin/utc';
 import PDFDocument from 'pdfkit';
 import { Response } from 'express';
 
 dayjs.extend(isoWeek);
+dayjs.extend(utc);
 
 const DAY_KEYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] as const;
 type DayKey = (typeof DAY_KEYS)[number];
@@ -24,7 +26,7 @@ function isSaturday(): boolean {
 }
 
 function sundayOf(monday: Date): Date {
-  return dayjs(monday).add(6, 'day').endOf('day').toDate();
+  return dayjs.utc(monday).add(6, 'day').endOf('day').toDate();
 }
 
 // ─── Feed type labels / SKUs for the PM feed plan auto-injection ──────────────
@@ -117,10 +119,13 @@ export class IssuancePlanService {
     },
     userId: string,
   ) {
-    const monday = dayjs(dto.weekStartDate).startOf('day').toDate();
+    // Parse as UTC noon to avoid timezone shifts (e.g. UTC+3 clients sending
+    // "YYYY-MM-DD" which dayjs would otherwise treat as UTC midnight, potentially
+    // rolling back to the previous day in the server's local time).
+    const monday = dayjs.utc(dto.weekStartDate).startOf('day').toDate();
     const sunday = sundayOf(monday);
 
-    if (dayjs(monday).isoWeekday() !== 1) {
+    if (dayjs.utc(monday).isoWeekday() !== 1) {
       throw new BadRequestException('weekStartDate must be a Monday');
     }
 

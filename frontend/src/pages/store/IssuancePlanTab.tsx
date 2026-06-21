@@ -57,7 +57,9 @@ function fmtKES(n: number) {
 function nextMonday() {
   const today = dayjs();
   const daysUntilMon = (8 - today.day()) % 7 || 7;
-  return today.add(daysUntilMon, 'day').startOf('day');
+  // Use UTC date string directly so the backend can't misparse it as Sunday
+  // due to timezone offset (Nairobi is UTC+3)
+  return today.add(daysUntilMon, 'day');
 }
 
 function isSaturday() {
@@ -509,7 +511,7 @@ function CreatePlanForm({
       return api
         .post('/store/issuance-plans', {
           type,
-          weekStartDate: mon.format('YYYY-MM-DD'),
+          weekStartDate: mon.utc(true).format('YYYY-MM-DD'),
           notes: notes || undefined,
           items: builtItems,
         })
