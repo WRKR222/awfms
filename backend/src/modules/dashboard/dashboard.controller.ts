@@ -56,10 +56,12 @@ export class DashboardController {
       where: { isLocked: false },
     });
 
-    // ── Pending LPO approvals (Director Activity Diagram: "Review Pending Approvals")
-    const pendingLpoCount = await this.prisma.localPurchaseOrder.count({
-      where: { status: 'SUBMITTED' },  // FIX: LPOStatus has no PENDING; SUBMITTED = awaiting approval
-    }).catch(() => 0);  // graceful fallback if LPO model not yet migrated
+    // ── Pending Issuance Plan item approvals (Director Activity Diagram: "Review Pending Approvals")
+    // Counts individual line items awaiting the Director, not whole plans —
+    // a single plan can have some items approved and others still pending.
+    const pendingLpoCount = await this.prisma.issuancePlanItem.count({
+      where: { status: 'PENDING_DIRECTOR' },
+    }).catch(() => 0);  // graceful fallback if not yet migrated
 
     // ── Egg production for period — use DailyEggAggregate (AM+PM combined) ──
     // DailyEggAggregate is written when BOTH AM and PM tallies lock, giving the

@@ -143,6 +143,38 @@ enum NotificationType {
   LPO_SUBMITTED
   LPO_APPROVED
   PRICING_SET
+  // Issuance Plan notifications
+  ISSUANCE_PLAN_SUBMITTED
+  ISSUANCE_PLAN_ACCOUNTANT_APPROVED
+  ISSUANCE_PLAN_APPROVED
+  ISSUANCE_PLAN_REJECTED
+  ISSUANCE_PLAN_PENDING_REMINDER
+  FEED_ISSUANCE_DAILY_ALERT
+}
+
+enum IssuancePlanType {
+  WEEKLY
+  EMERGENCY
+}
+
+/// Plan-level workflow phase — tracks whether the plan as a whole has been
+/// submitted and is in front of the Accountant/Director, independent of each
+/// item's own approval outcome (see IssuancePlanItemStatus).
+enum IssuancePlanPhase {
+  DRAFT
+  PENDING_ACCOUNTANT
+  PENDING_DIRECTOR
+  DECIDED   // Director has acted on every item — plan as a whole is closed out
+}
+
+/// Per-item approval status. Each line item walks the same Accountant →
+/// Director chain independently, so the Director can approve some items on a
+/// plan and reject others without blocking or approving the rest.
+enum IssuancePlanItemStatus {
+  PENDING_ACCOUNTANT
+  PENDING_DIRECTOR
+  APPROVED
+  REJECTED
 }
 
 // ─── NEW PHASE 2 ENUMS ────────────────────────────────────────────────────
@@ -250,6 +282,13 @@ model User {
   simpleStockRequestsRequested SimpleStockRequest[]     @relation("SimpleStockRequestedBy")
   simpleStockRequestsFulfilled SimpleStockRequest[]     @relation("SimpleStockFulfilledBy")
   dataUploadLogs               DataUploadLog[]
+
+  // Issuance Plan relations
+  issuancePlansCreated          IssuancePlan[] @relation("IssuancePlanCreatedBy")
+  issuancePlanItemsAccountantApproved IssuancePlanItem[] @relation("IssuancePlanItemAccountantApproved")
+  issuancePlanItemsDirectorApproved   IssuancePlanItem[] @relation("IssuancePlanItemDirectorApproved")
+  issuancePlanItemsRejected           IssuancePlanItem[] @relation("IssuancePlanItemRejectedBy")
+  feedConsumptionPlans          FeedConsumptionPlan[] @relation("FeedConsumptionPlanSetBy")
 
   @@map("users")
 }
@@ -1293,6 +1332,7 @@ model StoreItem {
   purchaseRequestItems PurchaseRequestItem[]
   lpoItems        LPOItem[]
   simpleStockRequestItems SimpleStockRequestItem[]
+  issuancePlanItems       IssuancePlanItem[]
 
   @@index([category])
   @@index([isActive])
@@ -1338,15 +1378,109 @@ model StoreStockOut {
   purpose       String?
   notes         String?
   issuedById    String   @map("issued_by_id")
+  // Issuance plan traceability
+  issuancePlanId     String? @map("issuance_plan_id")
+  issuancePlanItemId String? @map("issuance_plan_item_id")
   createdAt     DateTime @default(now()) @map("created_at")
 
   storeItem        StoreItem                @relation(fields: [storeItemId], references: [id])
   issuedBy         User                     @relation("StoreStockOutIssuedBy", fields: [issuedById], references: [id])
   stockRequestItem SimpleStockRequestItem?
+  issuancePlan     IssuancePlan?            @relation(fields: [issuancePlanId], references: [id])
+  issuancePlanItem IssuancePlanItem?        @relation(fields: [issuancePlanItemId], references: [id])
 
   @@index([storeItemId, issuedDate])
   @@index([issuedDate])
   @@map("store_stock_outs")
+}
+
+/// Weekly or emergency issuance plan — replaces PurchaseRequest/LPO for stock issuance control
+model IssuancePlan {
+  id            String              @id @default(uuid())
+  planRef       String              @unique @map("plan_ref")
+  type          IssuancePlanType    @default(WEEKLY)
+  weekStartDate DateTime            @map("week_start_date") @db.Date
+  weekEndDate   DateTime            @map("week_end_date") @db.Date
+  /// Plan-level phase: whether it's still a draft, with the Accountant, with
+  /// the Director, or fully decided. Does NOT mean every item was approved —
+  /// check each IssuancePlanItem.status for that. See `phase` computation in
+  /// issuance-plan.service.ts for how this is kept in sync.
+  phase         IssuancePlanPhase   @default(DRAFT)
+  notes         String?
+
+  createdById               String    @map("created_by_id")
+
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  createdBy            User              @relation("IssuancePlanCreatedBy", fields: [createdById], references: [id])
+  items                IssuancePlanItem[]
+  stockOuts            StoreStockOut[]
+
+  @@index([phase])
+  @@index([weekStartDate])
+  @@index([type, phase])
+  @@map("issuance_plans")
+}
+
+/// A single line item on an IssuancePlan. Each item carries its own
+/// Accountant → Director approval chain, independently of its siblings —
+/// the Director can approve some items on a plan and reject others.
+model IssuancePlanItem {
+  id              String  @id @default(uuid())
+  planId          String  @map("plan_id")
+  storeItemId     String  @map("store_item_id")
+  /// Total quantity requested for the week (or for the emergency event)
+  quantityPlanned Decimal @map("quantity_planned") @db.Decimal(10, 3)
+  unitPriceKes    Decimal @map("unit_price_kes") @db.Decimal(10, 2)
+  /// JSON: { MON, TUE, WED, THU, FRI, SAT, SUN } — daily kg requested; null for EMERGENCY items
+  dailyBreakdown  Json?   @map("daily_breakdown")
+  /// Running total issued against this plan line (incremented by each stock-out).
+  /// Only items with status = APPROVED can ever have stock issued against them.
+  quantityIssued  Decimal @default(0) @map("quantity_issued") @db.Decimal(10, 3)
+  /// MANUAL | PM_FEED_PLAN — auto-generated feed lines carry PM_FEED_PLAN
+  source          String  @default("MANUAL") @map("source")
+  notes           String?
+
+  /// Per-item approval status — this is what the stock-out gate actually checks.
+  status                 IssuancePlanItemStatus @default(PENDING_ACCOUNTANT) @map("status")
+  accountantApprovedById String?                @map("accountant_approved_by_id")
+  accountantApprovedAt   DateTime?              @map("accountant_approved_at")
+  directorApprovedById   String?                @map("director_approved_by_id")
+  directorApprovedAt     DateTime?              @map("director_approved_at")
+  rejectedById           String?                @map("rejected_by_id")
+  rejectedAt             DateTime?              @map("rejected_at")
+  rejectionReason        String?                @map("rejection_reason")
+
+  plan      IssuancePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  storeItem StoreItem    @relation(fields: [storeItemId], references: [id])
+  stockOuts StoreStockOut[]
+
+  accountantApprovedBy User? @relation("IssuancePlanItemAccountantApproved", fields: [accountantApprovedById], references: [id])
+  directorApprovedBy   User? @relation("IssuancePlanItemDirectorApproved", fields: [directorApprovedById], references: [id])
+  rejectedBy           User? @relation("IssuancePlanItemRejectedBy", fields: [rejectedById], references: [id])
+
+  @@index([planId])
+  @@index([storeItemId])
+  @@index([status])
+  @@map("issuance_plan_items")
+}
+
+/// PM's weekly grams-per-bird-per-day input, used to auto-generate feed lines in the IssuancePlan
+model FeedConsumptionPlan {
+  id                 String     @id @default(uuid())
+  weekStartDate      DateTime   @map("week_start_date") @db.Date
+  stage              BatchStage @map("stage")
+  feedType           FeedType   @map("feed_type")
+  gramsPerBirdPerDay Decimal    @map("grams_per_bird_per_day") @db.Decimal(8, 2)
+  setById            String     @map("set_by_id")
+  createdAt          DateTime   @default(now()) @map("created_at")
+
+  setBy User @relation("FeedConsumptionPlanSetBy", fields: [setById], references: [id])
+
+  @@unique([weekStartDate, stage, feedType])
+  @@index([weekStartDate])
+  @@map("feed_consumption_plans")
 }
 
 /// Purchase request raised by Store, reviewed by Accountant

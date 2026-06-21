@@ -225,9 +225,10 @@ export default function OwnerHome() {
           icon={<Lock className="w-5 h-5" />}
           label="Pending Approvals"
           value={data?.pendingApprovals?.toLocaleString() ?? '—'}
-          sub="LPOs to approve"
+          sub="issuance plans to approve"
           alert={(data?.pendingApprovals ?? 0) > 0}
           loading={isLoading}
+          onClick={() => navigate('/owner/issuance-plans')}
         />
       </div>
 

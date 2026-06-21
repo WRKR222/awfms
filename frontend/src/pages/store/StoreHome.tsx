@@ -43,18 +43,18 @@ export default function StoreHome() {
     },
     {
       label: 'Inventory',
-      sub: 'Stock in, stock out, items, purchase requests & LPOs',
+      sub: 'Stock in, stock out, items & issuance plans',
       icon: Package,
       color: 'bg-brand-green',
       route: '/store/inventory',
       badge: null,
     },
     {
-      label: 'Purchase Requests',
-      sub: 'Raise and track purchase requests for store items',
+      label: 'Issuance Plans',
+      sub: 'Weekly & emergency issuance plans awaiting approval',
       icon: ClipboardList,
       color: 'bg-indigo-500',
-      route: '/store/purchase-requests',
+      route: '/store/issuance-plans',
       badge: null,
     },
     {

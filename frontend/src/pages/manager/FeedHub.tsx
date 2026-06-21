@@ -8,9 +8,9 @@ import { useFeedStock } from '../../hooks/useFeed';
 import { useBatches } from '../../hooks/useFlock';
 import dayjs from 'dayjs';
 import {
-  AlertTriangle, CheckCircle, Package, Plus, X, ChevronDown,
+  AlertTriangle, CheckCircle, Package, X, ChevronDown,
   ChevronUp, Truck, Info, Calendar, Hash, DollarSign, FileText,
-  BarChart3, Layers, Clock, ArrowRight
+  BarChart3, Layers, Clock
 } from 'lucide-react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -363,8 +363,8 @@ function DeliveryRow({ delivery }: { delivery: any }) {
 // ── Main FeedHub page ─────────────────────────────────────────────────────────
 export function FeedHub() {
   const [showDeliveryForm, setShowDeliveryForm] = useState(false);
-  const [showRequestForm, setShowRequestForm] = useState(false);
-  const [requestSent, setRequestSent] = useState(false);
+  const [showFeedPlanForm, setShowFeedPlanForm] = useState(false);
+  const [feedPlanResult, setFeedPlanResult] = useState<any | null>(null);
   const [deliveryDays, setDeliveryDays] = useState(30);
 
   const { data: stockData, isLoading: stockLoading } = useFeedStock();
@@ -417,25 +417,33 @@ export function FeedHub() {
         <div>
           <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Feed Management</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-            Stock levels · Feed requests · Usage tracking
+            Stock levels · Weekly feed plan · Usage tracking
           </p>
         </div>
         <button
-          onClick={() => setShowRequestForm(true)}
+          onClick={() => setShowFeedPlanForm(true)}
           className="flex items-center gap-2 bg-brand-green text-white px-4 py-2.5
             rounded-xl font-semibold text-sm hover:bg-brand-mid transition-colors
             shadow-sm active:scale-[0.98]"
         >
-          <Plus className="w-4 h-4" />
-          Request Feed
+          <Calendar className="w-4 h-4" />
+          Weekly Feed Plan
         </button>
       </div>
 
-      {/* Feed request sent banner */}
-      {requestSent && (
-        <div className="flex items-center gap-2 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 px-4 py-3 rounded-xl text-sm font-medium border border-green-200 dark:border-green-700">
-          <CheckCircle className="w-4 h-4" />
-          Feed request sent to Store. You'll be notified when it's issued.
+      {/* Feed plan saved banner */}
+      {feedPlanResult && (
+        <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium border ${
+          feedPlanResult.status === 'ATTACHED'
+            ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border-green-200 dark:border-green-700'
+            : 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-700'
+        }`}>
+          {feedPlanResult.status === 'ATTACHED' ? <CheckCircle className="w-4 h-4 flex-shrink-0" /> : <AlertTriangle className="w-4 h-4 flex-shrink-0" />}
+          {feedPlanResult.status === 'ATTACHED' && `Feed plan saved and added to issuance plan ${feedPlanResult.planRef} — ${feedPlanResult.dailyKg?.toFixed(2)} kg/day.`}
+          {feedPlanResult.status === 'NO_DRAFT_PLAN' && "Feed plan saved. It'll be added automatically once Store creates this week's draft issuance plan."}
+          {feedPlanResult.status === 'NO_BIRDS' && 'Feed plan saved, but no active birds were found in that location — nothing was added yet.'}
+          {feedPlanResult.status === 'NO_STORE_ITEM' && 'Feed plan saved, but no matching store item was found for this feed type — ask Store to check the catalogue.'}
+          {!feedPlanResult.status && 'Feed plan saved.'}
         </div>
       )}
 
@@ -569,70 +577,198 @@ export function FeedHub() {
 
       {/* ── Delivery form modal ── */}
       {showDeliveryForm && <DeliveryFormModal onClose={() => setShowDeliveryForm(false)} />}
-      {showRequestForm && <FeedRequestModal
-        onClose={() => setShowRequestForm(false)}
-        onSuccess={() => { setRequestSent(true); setTimeout(() => setRequestSent(false), 5000); }}
+      {showFeedPlanForm && <WeeklyFeedPlanModal
+        onClose={() => setShowFeedPlanForm(false)}
+        onSuccess={(planStatus) => { setFeedPlanResult(planStatus ?? {}); setTimeout(() => setFeedPlanResult(null), 8000); }}
       />}
     </div>
   );
 }
 
-// ── Feed Request Modal (Manager → Stores) ─────────────────────────────────────
-export function FeedRequestModal({ onClose, onSuccess }: { onClose: () => void; onSuccess?: () => void }) {
+// ── Weekly Feed Plan Modal (Production Manager) ───────────────────────────────
+// Replaces the old feed-request flow entirely. PM picks a feed type + whether
+// it's for the brooder or production house, enters grams/bird/day, and the
+// system multiplies by the live bird count for that stage. The resulting
+// daily kg (and weekly total) is shown immediately, then saved and folded
+// into the current week's Issuance Plan as an auto-generated line item.
+const PM_FEED_TYPES: { value: FeedType; label: string }[] = [
+  { value: 'CHICK_MASH',        label: 'Chick & Duckling Mash' },
+  { value: 'GROWER_MASH',       label: "Grower's Mash" },
+  { value: 'LAYER_MASH',        label: "Layer's Mash" },
+  { value: 'KIENYEJI_STARTER',  label: 'Kienyeji Starter' },
+  { value: 'KIENYEJI_GROWER',   label: 'Kienyeji Grower' },
+  { value: 'KIENYEJI_FINISHER', label: 'Kienyeji Finisher' },
+];
+
+const STAGE_OPTIONS: { value: 'BROODING' | 'PRODUCTION'; label: string }[] = [
+  { value: 'BROODING',   label: 'Brooder' },
+  { value: 'PRODUCTION', label: 'Production House' },
+];
+
+/** Monday of the upcoming week — matches the Saturday Issuance Plan cadence */
+function nextMondayDate() {
+  const today = dayjs();
+  const daysUntilMon = (8 - today.day()) % 7 || 7;
+  return today.add(daysUntilMon, 'day').startOf('day');
+}
+
+export function WeeklyFeedPlanModal({ onClose, onSuccess }: { onClose: () => void; onSuccess?: (planStatus?: any) => void }) {
   const qc = useQueryClient();
-  const { register, handleSubmit, watch, formState: { errors } } = useForm({
-    defaultValues: { feedType: '', quantityKg: '', requestDate: dayjs().format('YYYY-MM-DD'), notes: '' }
+  const weekStart = nextMondayDate();
+
+  const [stage, setStage] = useState<'BROODING' | 'PRODUCTION'>('PRODUCTION');
+  const [feedType, setFeedType] = useState<FeedType>('LAYER_MASH');
+  const [gramsPerBird, setGramsPerBird] = useState<string>('');
+
+  // Live bird counts per stage, from active batches
+  const { data: batches = [] } = useQuery<any[]>({
+    queryKey: ['flock', 'batches', { isActive: true }],
+    queryFn: () => api.get('/flock/batches', { params: { isActive: true } }).then(r => r.data),
   });
+
+  const birdCount = (batches as any[])
+    .filter(b => b.stage === stage)
+    .reduce((sum, b) => sum + (b.currentBirdCount ?? 0), 0);
+
+  const grams = Number(gramsPerBird) || 0;
+  const dailyKg = (grams * birdCount) / 1000;
+  const weeklyKg = dailyKg * 7;
+
   const submit = useMutation({
-    mutationFn: (data: any) => api.post('/feed/requests', { ...data, quantityKg: Number(data.quantityKg) }).then(r => r.data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['feed'] }); onSuccess?.(); onClose(); }
+    mutationFn: () =>
+      api.post('/store/issuance-plans/feed-consumption-plan', {
+        weekStartDate: weekStart.format('YYYY-MM-DD'),
+        stage,
+        feedType,
+        gramsPerBirdPerDay: grams,
+      }).then(r => r.data),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: ['issuance-plans'] });
+      onSuccess?.(data?.planStatus);
+      onClose();
+    },
   });
-  const qty = Number(watch('quantityKg') ?? 0);
+
   const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
   const lCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1';
+
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
       <div className="bg-white dark:bg-dark-card w-full md:max-w-md rounded-t-3xl md:rounded-2xl shadow-2xl overflow-y-auto max-h-[92vh]">
         <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-dark-border sticky top-0 bg-white dark:bg-dark-card z-10">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-brand-teal rounded-xl flex items-center justify-center"><ArrowRight className="w-4 h-4 text-white" /></div>
-            <div><p className="font-bold text-gray-800 dark:text-gray-100">Request Feed from Stores</p><p className="text-xs text-gray-400">Stores will issue the feed and log it</p></div>
+            <div className="w-9 h-9 bg-brand-teal rounded-xl flex items-center justify-center"><Calendar className="w-4 h-4 text-white" /></div>
+            <div>
+              <p className="font-bold text-gray-800 dark:text-gray-100">Weekly Feed Plan</p>
+              <p className="text-xs text-gray-400">
+                Week of {weekStart.format('D MMM')} – {weekStart.add(6, 'day').format('D MMM YYYY')}
+              </p>
+            </div>
           </div>
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg"><X className="w-5 h-5 text-gray-500" /></button>
         </div>
-        <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-4">
-          {/* changes.pdf — Production Manager: allow typing the feed type
-              instead of selecting from a fixed list. */}
+
+        <div className="p-5 space-y-4">
+          {/* Stage toggle */}
+          <div>
+            <label className={lCls}>Bird Location *</label>
+            <div className="grid grid-cols-2 gap-2">
+              {STAGE_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setStage(opt.value)}
+                  className={`py-2.5 rounded-xl text-sm font-semibold border transition-colors ${
+                    stage === opt.value
+                      ? 'bg-brand-green text-white border-brand-green'
+                      : 'bg-white dark:bg-dark-bg text-gray-600 dark:text-gray-300 border-gray-200 dark:border-dark-border'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-1.5">
+              {birdCount.toLocaleString()} bird{birdCount !== 1 ? 's' : ''} currently in {stage === 'BROODING' ? 'the brooder' : 'the production house'}
+            </p>
+          </div>
+
+          {/* Feed type */}
           <div>
             <label className={lCls}>Feed Type *</label>
+            <select value={feedType} onChange={e => setFeedType(e.target.value as FeedType)} className={iCls}>
+              {PM_FEED_TYPES.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Grams per bird per day */}
+          <div>
+            <Tooltip tip="How many grams of this feed each bird eats per day. Multiplied by the live bird count above to calculate daily and weekly totals.">
+              <label className={`${lCls} cursor-default flex items-center gap-1`}>
+                Grams per Bird per Day * <Info className="w-3 h-3 opacity-40" />
+              </label>
+            </Tooltip>
             <input
-              {...register('feedType', { required: 'Enter feed type' })}
-              className={iCls}
-              placeholder="e.g. Layer Mash, Chick Starter, Kienyeji Grower…"
-              autoComplete="off"
+              type="number" step="1" min="0" inputMode="decimal"
+              value={gramsPerBird}
+              onChange={e => setGramsPerBird(e.target.value)}
+              className={`${iCls} text-center text-2xl font-bold`}
+              placeholder="0"
             />
-            {errors.feedType && <p className="text-red-500 text-xs mt-1">{(errors.feedType as any).message}</p>}
           </div>
-          <div>
-            <label className={lCls}>Quantity Requested (kg) *</label>
-            <input {...register('quantityKg', { required: 'Required', min: { value: 1, message: 'Must be > 0' } })} type="number" step="0.1" min="0" inputMode="decimal" className={`${iCls} text-center text-2xl font-bold`} placeholder="0" />
-            {qty > 0 && <p className="text-xs text-brand-green mt-1 text-center font-medium">{qty} kg requested</p>}
-            {errors.quantityKg && <p className="text-red-500 text-xs mt-1">{(errors.quantityKg as any).message}</p>}
-          </div>
-          <div>
-            <label className={lCls}>Request Date *</label>
-            <input {...register('requestDate', { required: true })} type="date" className={iCls} />
-          </div>
-          <div>
-            <label className={lCls}>Notes (optional)</label>
-            <textarea {...register('notes')} rows={2} className={`${iCls} resize-none`} placeholder="Any additional notes for the stores team..." />
-          </div>
-          {submit.isError && <p className="text-red-500 text-sm">Failed to send request. Please try again.</p>}
+
+          {/* Live calculation: daily + weekly total */}
+          {grams > 0 && birdCount > 0 && (
+            <div className="bg-brand-green/10 dark:bg-brand-green/20 rounded-xl p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold text-brand-green flex items-center gap-1.5">
+                  <Package className="w-4 h-4" /> Per Day
+                </span>
+                <span className="text-lg font-bold text-brand-green">{dailyKg.toFixed(2)} kg</span>
+              </div>
+              <div className="flex items-center justify-between border-t border-brand-green/20 pt-2">
+                <span className="text-sm font-semibold text-brand-green flex items-center gap-1.5">
+                  <BarChart3 className="w-4 h-4" /> Week Total (×7 days)
+                </span>
+                <span className="text-lg font-bold text-brand-green">{weeklyKg.toFixed(2)} kg</span>
+              </div>
+              <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                {grams}g × {birdCount.toLocaleString()} birds ÷ 1000 = {dailyKg.toFixed(2)} kg/day
+              </p>
+            </div>
+          )}
+
+          {grams > 0 && birdCount === 0 && (
+            <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+              No active birds found in {stage === 'BROODING' ? 'the brooder' : 'the production house'} — this feed line won't be added until there are birds in this stage.
+            </div>
+          )}
+
+          <p className="text-xs text-gray-400 dark:text-gray-500">
+            This will be added to the Saturday Issuance Plan as a daily feed line — Store will be alerted each day to issue {dailyKg > 0 ? dailyKg.toFixed(2) + ' kg' : 'the calculated amount'}, and cannot issue more than that day's approved amount.
+          </p>
+
+          {submit.isError && (
+            <p className="text-red-500 text-sm">
+              {(submit.error as any)?.response?.data?.message ?? 'Failed to save feed plan. Please try again.'}
+            </p>
+          )}
+
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-3 font-semibold">Cancel</button>
-            <button type="submit" disabled={submit.isPending} className="flex-1 bg-brand-teal text-white rounded-xl py-3 font-semibold disabled:opacity-60">{submit.isPending ? 'Sending...' : 'Send Request'}</button>
+            <button
+              type="button"
+              onClick={() => submit.mutate()}
+              disabled={submit.isPending || grams <= 0 || birdCount === 0}
+              className="flex-1 bg-brand-teal text-white rounded-xl py-3 font-semibold disabled:opacity-60"
+            >
+              {submit.isPending ? 'Saving...' : 'Save Feed Plan'}
+            </button>
           </div>
-        </form>
+        </div>
       </div>
     </div>
   );

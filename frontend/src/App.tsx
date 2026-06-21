@@ -30,12 +30,12 @@ import { VerificationQueue } from './pages/manager/VerificationQueue';
 import { AccountantHome }   from './pages/accountant/AccountantHome';
 import { AccountantPricingPage } from './pages/accountant/AccountantPricingPage';
 import { AccountantFinancePage } from './pages/accountant/AccountantFinancePage';
-import { AccountantLpoPage } from './pages/accountant/AccountantLpoPage';
+import { AccountantIssuancePlanPage } from './pages/accountant/AccountantIssuancePlanPage';
 
 // Owner pages
 import OwnerVisitorPage from './pages/owner/OwnerVisitorPage';
 import OwnerUsersPage   from './pages/owner/OwnerUsersPage';
-import OwnerLpoPage     from './pages/owner/OwnerLpoPage';
+import OwnerIssuancePlanPage from './pages/owner/OwnerIssuancePlanPage';
 import OwnerHome                 from './pages/owner/OwnerHome';
 import { AiReportsPage }         from './pages/owner/AiReportsPage';
 import { DataUploadPage }        from './pages/owner/DataUploadPage';
@@ -54,7 +54,7 @@ import SalesDeliveryPage   from './pages/sales/SalesDeliveryPage';
 import StoreHome            from './pages/store/StoreHome';
 import StoreInventoryPage   from './pages/store/StoreInventoryPage';
 import StoreHRPage          from './pages/store/StoreHRPage';          // GAP-01
-import StorePRPage          from './pages/store/StorePRPage';          // GAP-02
+import StoreIssuancePlanPage from './pages/store/StoreIssuancePlanPage'; // Issuance Plan (replaces GAP-02 PR page)
 import StoreVisitorsPage    from './pages/store/StoreVisitorsPage';    // GAP-06
 
 // Shared pages
@@ -223,7 +223,8 @@ function AppInner() {
           <Route path="pricing"           element={<AccountantPricingPage />} />
           <Route path="finance"           element={<AccountantFinancePage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
-          <Route path="lpo"               element={<AccountantLpoPage />} />
+          <Route path="lpo"               element={<AccountantIssuancePlanPage />} /> {/* legacy path, now Issuance Plans */}
+          <Route path="issuance-plans"    element={<AccountantIssuancePlanPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="settings"          element={<SettingsPage />} />
         </Route>
@@ -243,10 +244,11 @@ function AppInner() {
           <Route path="data-upload"       element={<DataUploadPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="sales-orders"       element={<OwnerSalesOrdersPage />} />
-          <Route path="lpo"               element={<OwnerLpoPage />} />
+          <Route path="lpo"               element={<OwnerIssuancePlanPage />} /> {/* legacy path, now Issuance Plans */}
           <Route path="visitors"          element={<OwnerVisitorPage />} />
           <Route path="users"             element={<OwnerUsersPage />} />
-          <Route path="lpos"             element={<OwnerLpoPage />} />
+          <Route path="lpos"             element={<OwnerIssuancePlanPage />} /> {/* legacy path, now Issuance Plans */}
+          <Route path="issuance-plans"    element={<OwnerIssuancePlanPage />} />
           <Route path="settings"          element={<SettingsPage />} />
         </Route>
 
@@ -284,7 +286,7 @@ function AppInner() {
           <Route path="inventory"         element={<StoreInventoryPage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="hr"                element={<StoreHRPage />} />           {/* GAP-01 */}
-          <Route path="purchase-requests" element={<StorePRPage />} />           {/* GAP-02 */}
+          <Route path="issuance-plans"    element={<StoreIssuancePlanPage />} /> {/* Issuance Plan (was Purchase Requests, GAP-02) */}
           <Route path="visitors"          element={<StoreVisitorsPage />} />     {/* GAP-06 */}
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="settings"          element={<SettingsPage />} />

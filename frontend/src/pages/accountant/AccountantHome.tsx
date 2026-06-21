@@ -56,7 +56,7 @@ function useFinanceSummary() {
         paidThisMonth: number;
         totalInvoices: number;
         pendingPriceSet: boolean;
-        pendingPRCount: number;     // GAP-15: needed for LPO badge
+        pendingPRCount: number;     // now counts pending issuance plans (was: pending purchase requests)
       };
     },
     staleTime: 60_000,
@@ -91,13 +91,13 @@ export function AccountantHome() {
       badge: summary?.pendingPriceSet ? '!' : null,
       alert: summary?.pendingPriceSet,
     },
-    // GAP-15 FIX: LPO card was missing — core daily task for accountant
+    // Issuance Plans card — Accountant's core daily/weekly approval task
     {
-      label: 'LPO',
-      sub: 'Review purchase requests & generate LPOs',
+      label: 'Issuance Plans',
+      sub: 'Review and approve weekly & emergency issuance plans',
       icon: ClipboardList,
       color: 'bg-purple-500',
-      route: '/accountant/lpo',
+      route: '/accountant/issuance-plans',
       badge: summary?.pendingPRCount && summary.pendingPRCount > 0
         ? summary.pendingPRCount
         : null,
@@ -124,12 +124,12 @@ export function AccountantHome() {
         </div>
       )}
 
-      {/* Pending PR alert */}
+      {/* Pending issuance plan alert */}
       {(summary?.pendingPRCount ?? 0) > 0 && (
         <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700 rounded-2xl px-4 py-3 flex items-center gap-3">
           <ClipboardList className="w-5 h-5 text-purple-600 flex-shrink-0" />
           <p className="text-sm font-semibold text-purple-700 dark:text-purple-400">
-            {summary?.pendingPRCount} purchase request{(summary?.pendingPRCount ?? 0) > 1 ? 's' : ''} awaiting review — generate LPOs for approved items.
+            {summary?.pendingPRCount} issuance plan{(summary?.pendingPRCount ?? 0) > 1 ? 's' : ''} awaiting your approval before they go to the Director.
           </p>
         </div>
       )}

@@ -14,7 +14,7 @@ const navDefs = [
   { label: 'Home',           icon: Home,          to: '/store',                    end: true },
   { label: 'Tally Sign-off', icon: CheckSquare,   to: '/store/tally' },
   { label: 'Inventory',      icon: Package,       to: '/store/inventory' },
-  { label: 'Purchase Req.',  icon: ClipboardList, to: '/store/purchase-requests' },
+  { label: 'Issuance Plans', icon: ClipboardList, to: '/store/issuance-plans' },
   { label: 'HR Records',     icon: Users,         to: '/store/hr' },
   { label: 'Visitors',       icon: UserCheck,     to: '/store/visitors' },
   { label: 'Settings',       icon: Settings,      to: '/store/settings' },

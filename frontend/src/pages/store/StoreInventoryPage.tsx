@@ -3,21 +3,19 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from 'dayjs';
-import { Package, ArrowDownToLine, ArrowUpFromLine, ClipboardList, FileText, AlertTriangle, Clock } from 'lucide-react';
+import { Package, ArrowDownToLine, ArrowUpFromLine, ClipboardList, AlertTriangle, Clock } from 'lucide-react';
 import { ItemsTab } from './ItemsTab';
 import { StockInTab } from './StockInTab';
 import { StockOutTab } from './StockOutTab';
-import { PurchaseRequestsTab } from './PurchaseRequestsTab';
-import { LposTab } from './LposTab';
+import { IssuancePlanTab } from './IssuancePlanTab';
 
-type TabKey = 'items' | 'stock-in' | 'stock-out' | 'requests' | 'lpos';
+type TabKey = 'items' | 'stock-in' | 'stock-out' | 'issuance-plan';
 
 const TABS: { key: TabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { key: 'items',     label: 'Items',             icon: Package },
-  { key: 'stock-in',  label: 'Stock In',          icon: ArrowDownToLine },
-  { key: 'stock-out', label: 'Stock Out',         icon: ArrowUpFromLine },
-  { key: 'requests',  label: 'Purchase Requests', icon: ClipboardList },
-  { key: 'lpos',      label: 'LPOs',              icon: FileText },
+  { key: 'items',          label: 'Items',          icon: Package },
+  { key: 'stock-in',       label: 'Stock In',       icon: ArrowDownToLine },
+  { key: 'stock-out',      label: 'Stock Out',      icon: ArrowUpFromLine },
+  { key: 'issuance-plan',  label: 'Issuance Plans', icon: ClipboardList },
 ];
 
 
@@ -85,7 +83,7 @@ export default function StoreInventoryPage() {
       <header>
         <h1 className="text-xl md:text-2xl font-bold text-gray-800 dark:text-gray-100">Store Inventory</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          Manage catalogue, stock movements, purchase requests and LPOs.
+          Manage catalogue, stock movements, and issuance plans.
         </p>
       </header>
 
@@ -113,11 +111,10 @@ export default function StoreInventoryPage() {
       </div>
 
       <div>
-        {tab === 'items'     && <ItemsTab />}
-        {tab === 'stock-in'  && <StockInTab />}
-        {tab === 'stock-out' && <StockOutTab />}
-        {tab === 'requests'  && <PurchaseRequestsTab />}
-        {tab === 'lpos'      && <LposTab />}
+        {tab === 'items'         && <ItemsTab />}
+        {tab === 'stock-in'      && <StockInTab />}
+        {tab === 'stock-out'     && <StockOutTab />}
+        {tab === 'issuance-plan' && <IssuancePlanTab />}
       </div>
     </div>
   );

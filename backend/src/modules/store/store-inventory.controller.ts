@@ -13,9 +13,6 @@ import {
   UpdateStoreItemDto,
   StockInDto,
   StockOutDto,
-  CreatePurchaseRequestDto,
-  ReviewPurchaseRequestDto,
-  CreateLPODto,
 } from './store-inventory.service';
 
 @ApiTags('store-inventory')
@@ -95,80 +92,6 @@ export class StoreInventoryController {
     @Query('toDate')      toDate?: string,
   ) {
     return this.svc.listStockOuts(storeItemId, fromDate, toDate);
-  }
-
-  // ── Purchase Requests ─────────────────────────────────────────────────────────
-
-  @Post('purchase-requests')
-  @RequirePermission(Permission.INVENTORY_MANAGE)
-  createPR(@Body() dto: CreatePurchaseRequestDto, @Request() req: any) {
-    return this.svc.createPurchaseRequest(dto, req.user);
-  }
-
-  @Patch('purchase-requests/:id/submit')
-  @RequirePermission(Permission.INVENTORY_MANAGE)
-  submitPR(@Param('id') id: string, @Request() req: any) {
-    return this.svc.submitPurchaseRequest(id, req.user);
-  }
-
-  @Patch('purchase-requests/:id/review')
-  @RequirePermission(Permission.INVOICE_MANAGE)   // Accountant permission
-  reviewPR(@Param('id') id: string, @Body() dto: ReviewPurchaseRequestDto, @Request() req: any) {
-    return this.svc.reviewPurchaseRequest(id, dto, req.user);
-  }
-
-  @Get('purchase-requests')
-  @RequirePermission(Permission.INVENTORY_VIEW)
-  listPRs(@Query('status') status?: string) {
-    return this.svc.listPurchaseRequests(status);
-  }
-
-  @Get('purchase-requests/:id')
-  @RequirePermission(Permission.INVENTORY_VIEW)
-  getPR(@Param('id') id: string) {
-    return this.svc.getPurchaseRequestById(id);
-  }
-
-  // ── LPOs ─────────────────────────────────────────────────────────────────────
-
-  @Post('lpos')
-  @RequirePermission(Permission.INVOICE_MANAGE)
-  createLPO(@Body() dto: CreateLPODto, @Request() req: any) {
-    return this.svc.createLPO(dto, req.user);
-  }
-
-  @Patch('lpos/:id/submit')
-  @RequirePermission(Permission.INVOICE_MANAGE)
-  submitLPO(@Param('id') id: string) {
-    return this.svc.submitLPO(id);
-  }
-
-  @Patch('lpos/:id/approve')
-  @RequirePermission(Permission.SETTINGS_MANAGE)   // Owner
-  approveLPO(@Param('id') id: string, @Request() req: any) {
-    return this.svc.approveLPO(id, req.user);
-  }
-
-  @Patch('lpos/:id/reject')
-  @RequirePermission(Permission.SETTINGS_MANAGE)   // Owner
-  rejectLPO(
-    @Param('id') id: string,
-    @Body('rejectionReason') rejectionReason: string,
-    @Request() req: any,
-  ) {
-    return this.svc.rejectLPO(id, rejectionReason, req.user);
-  }
-
-  @Get('lpos')
-  @RequirePermission(Permission.INVENTORY_VIEW)
-  listLPOs(@Query('status') status?: string) {
-    return this.svc.listLPOs(status);
-  }
-
-  @Get('lpos/:id')
-  @RequirePermission(Permission.INVENTORY_VIEW)
-  getLPO(@Param('id') id: string) {
-    return this.svc.getLPOById(id);
   }
 
   @Get('expiring')

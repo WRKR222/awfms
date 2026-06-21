@@ -29,7 +29,7 @@ const navDefs = [
   { label: 'Data Upload', icon: Upload,          to: '/owner/data-upload' },
   { label: 'Visitors',       icon: UserCheck, to: '/owner/visitors' },
   { label: 'User Mgmt',      icon: Shield,    to: '/owner/users' },
-  { label: 'LPO Approvals', icon: FileText,      to: '/owner/lpos' },
+  { label: 'Issuance Plans', icon: FileText,      to: '/owner/issuance-plans' },
   { label: 'Settings',    icon: Settings,        to: '/owner/settings' },
 ];
 

@@ -85,8 +85,12 @@ export class FinanceService {
       }),
     ]);
 
-    const pendingPRCount = await this.prisma.purchaseRequest.count({
-      where: { status: 'SUBMITTED' },
+    // Renamed conceptually to "pending issuance plan items awaiting accountant" —
+    // kept the same response key (pendingPRCount) so existing frontend badges
+    // keep working without a separate migration. Counts items, not whole plans,
+    // since approval now happens per line item.
+    const pendingPRCount = await this.prisma.issuancePlanItem.count({
+      where: { status: 'PENDING_ACCOUNTANT' },
     });
 
     return {

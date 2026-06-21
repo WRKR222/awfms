@@ -14,7 +14,7 @@ const navDefs = [
   { label: 'Home',     icon: Home,       to: '/accountant',          end: true },
   { label: 'Finance',  icon: DollarSign, to: '/accountant/finance' },
   { label: 'Pricing',  icon: Tag,        to: '/accountant/pricing' },
-  { label: 'LPO',      icon: ClipboardList, to: '/accountant/lpo' },
+  { label: 'Issuance Plans', icon: ClipboardList, to: '/accountant/issuance-plans' },
   { label: 'Settings', icon: Settings,   to: '/accountant/settings' },
 ];
 

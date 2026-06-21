@@ -116,6 +116,45 @@ async function main() {
   }
   console.log(`✓ ${users.length} users seeded`);
 
+  // ── Feed Store Items ──────────────────────────────────────────────────────
+  // Feed has historically been tracked only via FeedDelivery/FeedIntakeLog, not
+  // as a StoreItem. The Issuance Plan stock-out gate requires every issuable
+  // item — feed included — to exist as a StoreItem with a currentStock figure.
+  // Names below match FEED_LABELS in issuance-plan.service.ts exactly so the
+  // PM's weekly feed plan can find the right StoreItem to attach to.
+  const storeUser = users.find(u => u.role === UserRole.STORE);
+  const feedItemData = [
+    { sku: 'FEED-CHICK-MASH',        name: 'Chick & Duckling Mash', feedType: 'CHICK_MASH' },
+    { sku: 'FEED-GROWER-MASH',       name: "Grower's Mash",         feedType: 'GROWER_MASH' },
+    { sku: 'FEED-LAYER-MASH',        name: 'Layer Mash',            feedType: 'LAYER_MASH' },
+    { sku: 'FEED-KIENYEJI-STARTER',  name: 'Kienyeji Starter',      feedType: 'KIENYEJI_STARTER' },
+    { sku: 'FEED-KIENYEJI-GROWER',   name: 'Kienyeji Grower',       feedType: 'KIENYEJI_GROWER' },
+    { sku: 'FEED-KIENYEJI-FINISHER', name: 'Kienyeji Finisher',     feedType: 'KIENYEJI_FINISHER' },
+  ];
+  if (storeUser) {
+    for (const f of feedItemData) {
+      await prisma.storeItem.upsert({
+        where: { sku: f.sku },
+        create: {
+          sku: f.sku,
+          name: f.name,
+          category: 'FEED_SUPPLEMENT' as any,
+          unit: 'KG' as any,
+          description: `Auto-created for Issuance Plan feed tracking (${f.feedType})`,
+          reorderLevel: 200,
+          unitCostKes: 0,
+          currentStock: 0,
+          isActive: true,
+          createdById: storeUser.id,
+        },
+        update: {},
+      });
+    }
+    console.log(`✓ ${feedItemData.length} feed store items seeded`);
+  } else {
+    console.warn('⚠️  No STORE user found — skipped feed store item seeding');
+  }
+
   // ── Egg Price Tiers ────────────────────────────────────────────────────────
   await prisma.eggPriceTier.upsert({
     where: { id: 'tier-1-2025' },
