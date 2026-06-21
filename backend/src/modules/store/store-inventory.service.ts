@@ -13,7 +13,13 @@ import { IssuancePlanService } from './issuance-plan.service';
 import {
   IsString, IsOptional, IsNumber, IsBoolean, Min, IsNotEmpty,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
+
+// Coerce to finite number, defaulting to 0 for null/undefined/NaN
+const toFiniteNumber = ({ value }: { value: unknown }) => {
+  const n = Number(value);
+  return isFinite(n) ? n : 0;
+};
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
@@ -33,10 +39,10 @@ export class CreateStoreItemDto {
   @IsOptional() @IsString()
   description?: string;
 
-  @IsOptional() @IsNumber() @Min(0) @Type(() => Number)
+  @IsOptional() @Transform(toFiniteNumber) @IsNumber() @Min(0)
   reorderLevel?: number;
 
-  @IsOptional() @IsNumber() @Min(0) @Type(() => Number)
+  @IsOptional() @Transform(toFiniteNumber) @IsNumber() @Min(0)
   unitCostKes?: number;
 
   @IsOptional() @IsString()
@@ -56,10 +62,10 @@ export class UpdateStoreItemDto {
   @IsOptional() @IsString()
   description?: string;
 
-  @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
+  @IsOptional() @Transform(toFiniteNumber) @IsNumber() @Min(0)
   reorderLevel?: number;
 
-  @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
+  @IsOptional() @Transform(toFiniteNumber) @IsNumber() @Min(0)
   unitCostKes?: number;
 
   @IsOptional() @IsString()

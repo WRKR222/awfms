@@ -77,22 +77,32 @@ export function ItemsTab() {
     },
   });
 
+  // Safely convert form number fields — empty strings become 0, never NaN
+  const safeNum = (v: unknown) => {
+    const n = Number(v);
+    return isNaN(n) ? 0 : n;
+  };
+
   const onSubmit = (data: FormData) => {
     if (editing) {
       // Only send fields the backend UpdateStoreItemDto accepts — never send sku
       updateMut.mutate({
         id: editing.id,
         payload: {
-          name:         data.name,
+          name:         data.name.trim(),
           category:     data.category,
           unit:         data.unit,
-          description:  data.description ?? '',
-          reorderLevel: Number(data.reorderLevel ?? 0),
-          unitCostKes:  Number(data.unitCostKes ?? 0),
+          description:  data.description?.trim() ?? '',
+          reorderLevel: safeNum(data.reorderLevel),
+          unitCostKes:  safeNum(data.unitCostKes),
         },
       });
     } else {
-      createMut.mutate(data);
+      createMut.mutate({
+        ...data,
+        reorderLevel: safeNum(data.reorderLevel),
+        unitCostKes:  safeNum(data.unitCostKes),
+      });
     }
   };
 
@@ -249,7 +259,6 @@ export function ItemsTab() {
                   <th className="text-right px-4 py-2">Stock</th>
                   <th className="text-right px-4 py-2">Reorder</th>
                   <th className="text-right px-4 py-2">Unit Cost</th>
-                  <th className="text-center px-4 py-2">Status</th>
                   <th className="px-4 py-2"></th>
                 </tr>
               </thead>
@@ -267,11 +276,6 @@ export function ItemsTab() {
                       </td>
                       <td className="px-4 py-2 text-right text-gray-500">{Number(i.reorderLevel)}</td>
                       <td className="px-4 py-2 text-right">{fmtKES(i.unitCostKes)}</td>
-                      <td className="px-4 py-2 text-center">
-                        <span className={`px-2 py-0.5 rounded-full text-xs ${i.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-200 text-gray-600'}`}>
-                          {i.isActive ? 'Active' : 'Inactive'}
-                        </span>
-                      </td>
                       <td className="px-4 py-2 text-right">
                         <button onClick={() => startEdit(i)} className="text-brand-green hover:underline text-xs inline-flex items-center gap-1">
                           <Pencil className="w-3 h-3" /> Edit
