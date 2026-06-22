@@ -1,5 +1,4 @@
 // frontend/src/pages/store/StockInTab.tsx
-// Fixes GAP-07 (LPO selector as dropdown) + GAP-08 (show current stock b/d)
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm, useWatch } from 'react-hook-form';
@@ -15,17 +14,8 @@ type FormData = {
   unitCostKes: number;
   supplierName?: string;
   invoiceRef?: string;
-  lpoId?: string;
   notes?: string;
   expiryDate?: string;
-};
-
-// Shape returned by GET /store/inventory/lpos
-type LpoOption = {
-  id: string;
-  lpoNumber: string;
-  supplierName: string;
-  status: string;
 };
 
 export function StockInTab() {
@@ -38,22 +28,9 @@ export function StockInTab() {
   });
 
   // Watch selected item to display current balance (b/d)
-  const watchedItemId   = useWatch({ control, name: 'storeItemId' });
-  const watchedQtyIn    = useWatch({ control, name: 'quantityIn' });
-  const watchedLpoId    = useWatch({ control, name: 'lpoId' });
-  const selectedItem    = items.find(i => i.id === watchedItemId);
-
-  // Auto-fill supplier name when an LPO is selected
-  const { data: lpos = [] } = useQuery({
-    queryKey: ['lpos-approved'],
-    queryFn: async () => {
-      // Fetch all LPOs (status filter in query; show APPROVED + SUBMITTED as valid sources)
-      const res = await api.get('/store/inventory/lpos');
-      return (res.data as LpoOption[]).filter(l => ['APPROVED', 'SUBMITTED'].includes(l.status));
-    },
-    staleTime: 60_000,
-  });
-  const selectedLpo = lpos.find(l => l.id === watchedLpoId);
+  const watchedItemId  = useWatch({ control, name: 'storeItemId' });
+  const watchedQtyIn   = useWatch({ control, name: 'quantityIn' });
+  const selectedItem   = items.find(i => i.id === watchedItemId);
 
   const { data: list = [], isLoading } = useQuery({
     queryKey: ['store-stock-in'],
@@ -63,11 +40,8 @@ export function StockInTab() {
   const create = useMutation({
     mutationFn: (data: FormData) => api.post('/store/inventory/stock-in', {
       ...data,
-      quantityIn:   Number(data.quantityIn),
-      unitCostKes:  Number(data.unitCostKes),
-      // Auto-fill supplier name from selected LPO if not manually entered
-      supplierName: data.supplierName || selectedLpo?.supplierName || undefined,
-      lpoId:        data.lpoId || undefined,
+      quantityIn:  Number(data.quantityIn),
+      unitCostKes: Number(data.unitCostKes),
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['store-stock-in'] });
@@ -128,18 +102,6 @@ export function StockInTab() {
               <input type="number" step="any" min="0" {...register('unitCostKes', { required: true })} className="input" />
             </Field>
 
-            {/* LPO dropdown — replaces free-text lpoId input (GAP-07) */}
-            <Field label="Linked LPO (optional)">
-              <select {...register('lpoId')} className="input">
-                <option value="">— No LPO (manual receipt) —</option>
-                {lpos.map(l => (
-                  <option key={l.id} value={l.id}>
-                    {l.lpoNumber} — {l.supplierName} ({l.status})
-                  </option>
-                ))}
-              </select>
-            </Field>
-
             <Field label="Expiry Date (if applicable)">
               <input type="date" {...register('expiryDate')} className="input" />
             </Field>
@@ -148,7 +110,7 @@ export function StockInTab() {
               <input
                 {...register('supplierName')}
                 className="input"
-                placeholder={selectedLpo ? selectedLpo.supplierName : 'Auto-filled from LPO'}
+                placeholder="Enter supplier name"
               />
             </Field>
             <Field label="Invoice / Delivery Note Reference">
@@ -183,7 +145,7 @@ export function StockInTab() {
                   <th className="text-right px-4 py-2">Unit Cost</th>
                   <th className="text-right px-4 py-2">Total</th>
                   <th className="text-left px-4 py-2">Supplier</th>
-                  <th className="text-left px-4 py-2">Invoice / LPO</th>
+                  <th className="text-left px-4 py-2">Invoice Ref</th>
                   <th className="text-left px-4 py-2">Receiving Officer</th>
                 </tr>
               </thead>
@@ -196,9 +158,7 @@ export function StockInTab() {
                     <td className="px-4 py-2 text-right">{fmtKES(r.unitCostKes)}</td>
                     <td className="px-4 py-2 text-right font-semibold">{fmtKES(r.totalCostKes)}</td>
                     <td className="px-4 py-2 text-gray-600">{r.supplierName ?? '—'}</td>
-                    <td className="px-4 py-2 text-gray-600 font-mono text-xs">
-                      {r.lpo?.lpoNumber ?? r.invoiceRef ?? '—'}
-                    </td>
+                    <td className="px-4 py-2 text-gray-600 font-mono text-xs">{r.invoiceRef ?? '—'}</td>
                     <td className="px-4 py-2 text-gray-600">{r.receivedBy?.fullName ?? '—'}</td>
                   </tr>
                 ))}

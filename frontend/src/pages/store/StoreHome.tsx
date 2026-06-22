@@ -8,7 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth.store';
 import api from '../../lib/api/client';
-import { CheckSquare, Package, ClipboardList, Users, UserCheck, ChevronRight, Lock, AlertTriangle, Clock } from 'lucide-react';
+import { CheckSquare, Package, ClipboardList, Users, UserCheck, ChevronRight, Lock, AlertTriangle, Clock, Calendar } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 
 export default function StoreHome() {
@@ -30,6 +30,7 @@ export default function StoreHome() {
   const firstName = user?.fullName?.split(' ')[0] ?? '';
 
   const pendingTallies: number = summary?.pendingTallies ?? 0;
+  const isSaturday = dayjs().day() === 6;
 
   const tasks = [
     {
@@ -82,6 +83,25 @@ export default function StoreHome() {
         <p className="text-xl md:text-2xl font-bold mt-1">{greeting}, {firstName}!</p>
         <p className="text-sm opacity-75 mt-0.5">Store Management Dashboard</p>
       </div>
+
+      {/* Saturday weekly issuance plan reminder */}
+      {isSaturday && (
+        <div
+          className="bg-indigo-50 dark:bg-indigo-900/20 border-2 border-indigo-300 dark:border-indigo-700 rounded-2xl px-4 py-3 flex items-center gap-3 cursor-pointer hover:shadow-md transition-shadow"
+          onClick={() => navigate('/store/issuance-plans')}
+        >
+          <Calendar className="w-5 h-5 text-indigo-600 dark:text-indigo-400 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-indigo-700 dark:text-indigo-300">
+              📋 It's Saturday — time to create next week's issuance plan!
+            </p>
+            <p className="text-xs text-indigo-500 dark:text-indigo-400 mt-0.5">
+              Draft and submit the weekly issuance plan for the coming Mon–Sun cycle before end of day.
+            </p>
+          </div>
+          <ChevronRight className="w-4 h-4 text-indigo-400 shrink-0" />
+        </div>
+      )}
 
       {/* Tally pending alert — top priority */}
       {pendingTallies > 0 && (

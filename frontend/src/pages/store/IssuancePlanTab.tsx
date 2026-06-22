@@ -409,6 +409,7 @@ function CreatePlanForm({
   const mon = editingPlan ? dayjs(editingPlan.weekStartDate) : nextMonday();
   const isEditing = !!editingPlan;
   const [notes, setNotes] = useState(editingPlan?.notes ?? '');
+  const [emergencyReason, setEmergencyReason] = useState(editingPlan?.emergencyReason ?? '');
   const [items, setItems] = useState<
     { id?: string; source?: string; status?: string; quantityIssued?: number; storeItemId: string; unitPriceKes: number; dailyBreakdown: Record<DayKey, number>; emergencyQty: number }[]
   >(() => {
@@ -502,7 +503,11 @@ function CreatePlanForm({
 
       if (isEditing) {
         return api
-          .patch(`/store/issuance-plans/${editingPlan.id}`, { notes: notes || undefined, items: builtItems })
+          .patch(`/store/issuance-plans/${editingPlan.id}`, {
+            notes: notes || undefined,
+            emergencyReason: type === 'EMERGENCY' ? emergencyReason : undefined,
+            items: builtItems,
+          })
           .then(r => r.data);
       }
       return api
@@ -510,6 +515,7 @@ function CreatePlanForm({
           type,
           weekStartDate: mon.utc(true).format('YYYY-MM-DD'),
           notes: notes || undefined,
+          emergencyReason: type === 'EMERGENCY' ? emergencyReason : undefined,
           items: builtItems,
         })
         .then(r => r.data);
@@ -578,6 +584,23 @@ function CreatePlanForm({
             <label className={lCls}>Notes (optional)</label>
             <textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} className={iCls + ' resize-none'} placeholder="Any notes for this plan…" />
           </div>
+
+          {/* Mandatory reason for emergency plans */}
+          {type === 'EMERGENCY' && (
+            <div>
+              <label className={lCls}>Reason for Emergency Plan <span className="text-red-500">*</span></label>
+              <textarea
+                rows={3}
+                value={emergencyReason}
+                onChange={e => setEmergencyReason(e.target.value)}
+                className={iCls + ' resize-none'}
+                placeholder="Explain why this emergency issuance is needed (required before saving)…"
+              />
+              {!emergencyReason.trim() && (
+                <p className="text-xs text-red-500 mt-1">A reason is required for emergency issuance plans.</p>
+              )}
+            </div>
+          )}
 
           {/* Items */}
           <div className="space-y-4">
@@ -728,7 +751,12 @@ function CreatePlanForm({
             </button>
             <button
               onClick={() => createMutation.mutate()}
-              disabled={createMutation.isPending || items.length === 0 || items.some(i => !i.storeItemId)}
+              disabled={
+                createMutation.isPending ||
+                items.length === 0 ||
+                items.some(i => !i.storeItemId) ||
+                (type === 'EMERGENCY' && !emergencyReason.trim())
+              }
               className="flex-1 bg-brand-green text-white rounded-xl py-3 font-semibold text-sm disabled:opacity-60"
             >
               {createMutation.isPending ? 'Saving…' : isEditing ? 'Save Changes' : 'Save Plan'}
@@ -788,11 +816,18 @@ export function IssuancePlanTab() {
         {canCreate && (
           <>
             <button
-              onClick={() => setShowCreate('WEEKLY')}
-              className="flex items-center gap-1.5 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-mid transition-colors"
+              onClick={() => { if (isSaturday()) setShowCreate('WEEKLY'); }}
+              disabled={!isSaturday()}
+              title={!isSaturday() ? 'Weekly plans can only be created on Saturdays' : 'Create weekly issuance plan for next week'}
+              className="flex items-center gap-1.5 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-mid transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Plus className="w-4 h-4" /> Weekly Plan
             </button>
+            {!isSaturday() && (
+              <span className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5" /> Weekly plan available Saturdays only
+              </span>
+            )}
             <button
               onClick={() => setShowCreate('EMERGENCY')}
               className="flex items-center gap-1.5 bg-amber-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-amber-600 transition-colors"

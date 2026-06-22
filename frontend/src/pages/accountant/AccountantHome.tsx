@@ -176,7 +176,7 @@ export function AccountantHome() {
           </p>
         </div>
         <div className="bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-dark-border">
-          <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Pending PRs</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Pending Issuance Plans</p>
           <p className={`text-xl font-bold ${(summary?.pendingPRCount ?? 0) > 0 ? 'text-purple-600' : 'text-gray-800 dark:text-gray-100'}`}>
             {summary?.pendingPRCount ?? 0}
           </p>

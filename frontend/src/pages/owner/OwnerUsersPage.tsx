@@ -36,7 +36,7 @@ export default function OwnerUsersPage() {
 
   const { data: users = [], isLoading } = useQuery<UserRecord[]>({
     queryKey: ['owner-users'],
-    queryFn: () => api.get('/auth/users').then(r => r.data).catch(() => []),
+    queryFn: () => api.get('/auth/users').then(r => r.data).catch(() => []).then((list: UserRecord[]) => list.filter(u => u.role !== 'OWNER')),
   });
 
   const { data: resetLog = [] } = useQuery<ResetLog[]>({

@@ -1,5 +1,5 @@
 import {
-  Injectable, UnauthorizedException, ConflictException, Logger, NotFoundException
+  Injectable, UnauthorizedException, ConflictException, Logger, NotFoundException, ForbiddenException
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -212,7 +212,7 @@ export class AuthService {
   }
   async getUsers(requesterId: string) {
     return this.prisma.user.findMany({
-      where: { deletedAt: null },
+      where: { deletedAt: null, role: { not: UserRole.OWNER } },
       select: {
         id: true,
         fullName: true,
@@ -228,6 +228,17 @@ export class AuthService {
     });
   }
   async updateUser(id: string, isActive: boolean) {
+    const target = await this.prisma.user.findUnique({
+      where: { id },
+      select: { role: true },
+    });
+
+    if (!target) throw new NotFoundException('User not found');
+
+    if (target.role === UserRole.OWNER) {
+      throw new ForbiddenException('The Director account cannot be disabled.');
+    }
+
     return this.prisma.user.update({
       where: { id },
       data: { isActive },
