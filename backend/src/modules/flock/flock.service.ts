@@ -477,10 +477,10 @@ export class FlockService {
 
   // ── Brooder logs ──────────────────────────────────────────────────────────
 
-  async listBrooderLogs(batchId: string, limit = 50) {
+  async listBrooderLogs(batchId: string, limit = 50, rowId?: string, levelId?: string) {
     if (!batchId) return [];
     return this.prisma.brooderLog.findMany({
-      where: { batchId },
+      where: { batchId, ...(rowId ? { rowId } : {}), ...(levelId ? { levelId } : {}) },
       orderBy: { logDate: 'desc' },
       take: limit,
       include: {
@@ -538,6 +538,10 @@ export class FlockService {
         supplement:        input.supplement ?? null,
         notes:             input.notes ?? null,
         loggedById:        userId,
+        // Optional cage-map pinpoint — lets an attendant tie this entry to
+        // one specific row/level instead of describing the whole batch.
+        rowId:             input.rowId ?? null,
+        levelId:           input.levelId ?? null,
       },
     });
   }

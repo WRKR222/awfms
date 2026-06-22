@@ -234,6 +234,19 @@ enum ConstructionType {
   EXPANSION
 }
 
+// ─── BROODER CAGE MAP (Phase 9) ────────────────────────────────────────────
+// The brooder is a fixed physical grid: 6 rows/decks × 4 levels (bottom→top)
+// per row = 24 addressable cells. Each cell can hold its own slice of a
+// batch's chick population so a problem on one level never has to be
+// described as "somewhere in the brooder" — it is isolated to e.g. Row 3,
+// Level 2. Heating can be charcoal (quantity tracked) or heat-bulb (on/off
+// timer tracked) per row.
+
+enum HeatSourceType {
+  CHARCOAL
+  HEAT_BULB
+}
+
 // ─── AUTHENTICATION & RBAC ─────────────────────────────────────────────────
 
 model User {
@@ -289,6 +302,11 @@ model User {
   issuancePlanItemsDirectorApproved   IssuancePlanItem[] @relation("IssuancePlanItemDirectorApproved")
   issuancePlanItemsRejected           IssuancePlanItem[] @relation("IssuancePlanItemRejectedBy")
   feedConsumptionPlans          FeedConsumptionPlan[] @relation("FeedConsumptionPlanSetBy")
+
+  // Brooder Cage Map (Phase 9)
+  brooderLevelAssignments  BrooderLevelAssignment[] @relation("BrooderLevelAssignedBy")
+  brooderHeatLogs          BrooderHeatLog[]         @relation("BrooderHeatLoggedBy")
+  brooderLevelFeedLogs     BrooderLevelFeedLog[]    @relation("BrooderLevelFeedLoggedBy")
 
   @@map("users")
 }
@@ -399,6 +417,7 @@ model Batch {
   eggCollectionSessions EggCollectionSession[]
   cageAssignments       BatchCageAssignment[]
   dailyEggAggregates    DailyEggAggregate[]
+  brooderLevelAssignments BrooderLevelAssignment[]
   
   @@index([houseId])
   @@index([stage])
@@ -1299,11 +1318,133 @@ model BrooderLog {
   loggedById        String   @map("logged_by_id")
   createdAt         DateTime @default(now()) @map("created_at")
 
-  batch    Batch @relation(fields: [batchId], references: [id])
-  loggedBy User  @relation("BrooderLoggedBy", fields: [loggedById], references: [id])
+  // Optional cage-map pinpoint — when set, this log describes conditions on
+  // one specific row/level rather than the batch as a whole. Nullable so
+  // existing batch-wide entries (pre-cage-map) keep working unchanged.
+  rowId   String? @map("row_id")
+  levelId String? @map("level_id")
+
+  batch    Batch          @relation(fields: [batchId], references: [id])
+  loggedBy User           @relation("BrooderLoggedBy", fields: [loggedById], references: [id])
+  row      BrooderRow?    @relation(fields: [rowId], references: [id])
+  level    BrooderLevel?  @relation(fields: [levelId], references: [id])
 
   @@index([batchId, logDate])
+  @@index([rowId])
+  @@index([levelId])
   @@map("brooder_logs")
+}
+
+/// One of the 6 fixed physical rows/decks in the brooder house.
+model BrooderRow {
+  id        String   @id @default(uuid())
+  rowNumber Int      @unique @map("row_number") // 1-6
+  label     String   // e.g. "Row 1"
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  levels        BrooderLevel[]
+  heatLogs      BrooderHeatLog[]
+  brooderLogs   BrooderLog[]
+
+  @@map("brooder_rows")
+}
+
+/// One of the 4 fixed levels (bottom→top) within a BrooderRow.
+/// levelNumber 1 = bottom, 4 = top. Each level is independently addressable
+/// so an issue (disease, heat failure, etc.) can be isolated to a single
+/// level without affecting the rest of the row or brooder.
+model BrooderLevel {
+  id          String   @id @default(uuid())
+  rowId       String   @map("row_id")
+  levelNumber Int      @map("level_number") // 1 (bottom) - 4 (top)
+  label       String   // e.g. "Level 1 (Bottom)"
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  row              BrooderRow               @relation(fields: [rowId], references: [id], onDelete: Cascade)
+  assignment       BrooderLevelAssignment?
+  brooderLogs      BrooderLog[]
+  feedLogs         BrooderLevelFeedLog[]
+
+  @@unique([rowId, levelNumber])
+  @@map("brooder_levels")
+}
+
+/// Which batch (and how many chicks) currently occupies a given level.
+/// One active assignment per level at a time — mirrors BatchCageAssignment's
+/// pattern for the production-house cage map. The whole batch can be
+/// reconstructed end-to-end by following its assignments from brooder
+/// level(s) through to its production-house BatchCageAssignment rows.
+model BrooderLevelAssignment {
+  id           String   @id @default(uuid())
+  levelId      String   @unique @map("level_id")
+  batchId      String   @map("batch_id")
+  birdCount    Int      @default(0) @map("bird_count")
+  placedDate   DateTime @map("placed_date") @db.Date
+  notes        String?
+  assignedById String   @map("assigned_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  level      BrooderLevel @relation(fields: [levelId], references: [id], onDelete: Cascade)
+  batch      Batch        @relation(fields: [batchId], references: [id])
+  assignedBy User         @relation("BrooderLevelAssignedBy", fields: [assignedById], references: [id])
+
+  @@index([batchId])
+  @@map("brooder_level_assignments")
+}
+
+/// Heating record per row, per day. CHARCOAL entries track quantity (kg)
+/// used; HEAT_BULB entries track how long the bulb(s) were switched on
+/// (minutesOn), captured via a start/stop timer on the attendant UI.
+model BrooderHeatLog {
+  id              String         @id @default(uuid())
+  rowId           String         @map("row_id")
+  logDate         DateTime       @map("log_date") @db.Date
+  sourceType      HeatSourceType @map("source_type")
+
+  // CHARCOAL fields
+  charcoalKg      Float?         @map("charcoal_kg")
+
+  // HEAT_BULB fields — timer-tracked
+  bulbStartedAt   DateTime?      @map("bulb_started_at")
+  bulbStoppedAt   DateTime?      @map("bulb_stopped_at")
+  bulbMinutesOn   Int?           @map("bulb_minutes_on") // derived & frozen when stopped
+  bulbCount       Int?           @map("bulb_count")      // number of bulbs running
+
+  notes           String?
+  loggedById      String         @map("logged_by_id")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  row      BrooderRow @relation(fields: [rowId], references: [id], onDelete: Cascade)
+  loggedBy User       @relation("BrooderHeatLoggedBy", fields: [loggedById], references: [id])
+
+  @@index([rowId, logDate])
+  @@index([sourceType])
+  @@map("brooder_heat_logs")
+}
+
+/// Per-level feed dispensed, logged against the level's required weekly
+/// ration (population × g/bird/week standard) so attendant, PM and Director
+/// dashboards can all see whether the exact required amount was given.
+model BrooderLevelFeedLog {
+  id                  String   @id @default(uuid())
+  levelId             String   @map("level_id")
+  feedType            String   @map("feed_type")
+  entryDate           DateTime @map("entry_date") @db.Date
+  quantityDispensedKg Float    @map("quantity_dispensed_kg")
+  requiredKgForWeek   Float?   @map("required_kg_for_week") // snapshot of the standard at log time
+  notes               String?
+  loggedById          String   @map("logged_by_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  level    BrooderLevel @relation(fields: [levelId], references: [id], onDelete: Cascade)
+  loggedBy User         @relation("BrooderLevelFeedLoggedBy", fields: [loggedById], references: [id])
+
+  @@index([levelId, entryDate])
+  @@map("brooder_level_feed_logs")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

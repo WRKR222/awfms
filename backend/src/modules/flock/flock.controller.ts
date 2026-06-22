@@ -96,8 +96,13 @@ export class FlockController {
 
   @Get('brooder-logs')
   @RequirePermission(Permission.FLOCK_VIEW)
-  listBrooderLogs(@Query('batchId') batchId: string, @Query('limit') limit?: string) {
-    return this.svc.listBrooderLogs(batchId, limit ? Number(limit) : 50);
+  listBrooderLogs(
+    @Query('batchId') batchId: string,
+    @Query('limit') limit?: string,
+    @Query('rowId') rowId?: string,
+    @Query('levelId') levelId?: string,
+  ) {
+    return this.svc.listBrooderLogs(batchId, limit ? Number(limit) : 50, rowId, levelId);
   }
 
   @Post('brooder-logs')

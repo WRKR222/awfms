@@ -250,6 +250,30 @@ async function main() {
   }
   console.log('✓ Farm infrastructure seeded (Block 1: 3 sections × 2 rows, Block 2: under construction)');
 
+  // ── Brooder Cage Map — 6 fixed rows/decks × 4 levels (bottom→top) ──────────
+  // Mirrors what migration 20260621000000_phase9_brooder_cage_map seeds for
+  // `prisma migrate deploy`. Kept here too so `prisma db seed` / local resets
+  // that don't replay raw-SQL migration inserts still get the grid.
+  for (let rowNumber = 1; rowNumber <= 6; rowNumber++) {
+    const row = await prisma.brooderRow.upsert({
+      where: { rowNumber },
+      create: { rowNumber, label: `Row ${rowNumber}`, isActive: true },
+      update: {},
+    });
+    for (let levelNumber = 1; levelNumber <= 4; levelNumber++) {
+      const label =
+        levelNumber === 1 ? 'Level 1 (Bottom)' :
+        levelNumber === 4 ? 'Level 4 (Top)' :
+        `Level ${levelNumber}`;
+      await prisma.brooderLevel.upsert({
+        where: { rowId_levelNumber: { rowId: row.id, levelNumber } },
+        create: { rowId: row.id, levelNumber, label, isActive: true },
+        update: {},
+      });
+    }
+  }
+  console.log('✓ Brooder cage map seeded (6 rows × 4 levels = 24 cells)');
+
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log('\n🎉 AWFMS seed complete!');
   console.log('\nTest login credentials (all users):');

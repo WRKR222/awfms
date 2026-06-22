@@ -6,8 +6,14 @@ import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
 import {
   Bird, Thermometer, Droplets, Sun, XCircle, Plus,
-  X, AlertTriangle, ChevronRight, Flame, Calendar, Clock,
+  X, AlertTriangle, ChevronRight, Flame, Calendar, Clock, Map, ClipboardList,
 } from 'lucide-react';
+import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
+import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
+import { BrooderLevelAssignModal } from '../../components/shared/BrooderLevelAssignModal';
+import { BrooderHeatLogModal } from '../../components/shared/BrooderHeatLogModal';
+import { BrooderLevelFeedLogModal } from '../../components/shared/BrooderLevelFeedLogModal';
+import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
 
 // ── Feed type options & label helper ─────────────────────────────────────────
 
@@ -542,6 +548,8 @@ function BrooderBatchCard({ batch }: { batch: BrooderBatch }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export function BrooderPage() {
+  const [tab, setTab] = useState<'batches' | 'cage-map'>('batches');
+
   const { data: allBatches = [], isLoading } = useQuery<BrooderBatch[]>({
     queryKey: ['batches'],
     queryFn: () => api.get('/flock/batches').then(r => r.data),
@@ -551,11 +559,29 @@ export function BrooderPage() {
   const brooderBatches = allBatches.filter(
     b => b.location === 'BROODER' && b.isActive
   );
+  // Any active batch can be placed on the cage map (not only ones already
+  // marked BROODER — placing chicks on a level is what marks them as such).
+  const placeableBatches = allBatches.filter(b => b.isActive);
 
   const totalBrooderBirds = brooderBatches.reduce(
     (sum, b) => sum + (b.currentBirdCount ?? 0),
     0
   );
+
+  // Cage map interaction state
+  const [assignTarget, setAssignTarget] = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
+  const [feedTarget, setFeedTarget] = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
+  const [heatTarget, setHeatTarget] = useState<BrooderRowData | null>(null);
+
+  const handleSelectLevel = (level: BrooderLevelData, row: BrooderRowData) => {
+    if (level.assignment) {
+      // Occupied — quick action is logging today's feed; long-press-free UX
+      // keeps it to one tap since feed logging is the daily task.
+      setFeedTarget({ level, row });
+    } else {
+      setAssignTarget({ level, row });
+    }
+  };
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
@@ -571,40 +597,111 @@ export function BrooderPage() {
         </p>
       </div>
 
-      {/* Info banner */}
-      <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
-        <Flame className="w-4 h-4 flex-shrink-0 mt-0.5" />
-        <div>
-          <p className="font-semibold">Brooder Management</p>
-          <p className="mt-0.5 text-amber-600 dark:text-amber-500">
-            Chicks stay in the brooder up to 18 weeks. Log daily entries to track temperature,
-            water, feed, lighting and any mortality. You can enter data for past days if a
-            day was missed — select the correct date when logging.
-          </p>
-        </div>
+      {/* Tabs */}
+      <div className="flex gap-2 bg-gray-100 dark:bg-dark-bg rounded-xl p-1">
+        <button
+          onClick={() => setTab('batches')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-semibold transition-colors ${
+            tab === 'batches' ? 'bg-white dark:bg-dark-card text-amber-600 shadow-sm' : 'text-gray-500'
+          }`}
+        >
+          <ClipboardList className="w-4 h-4" /> Daily Logs
+        </button>
+        <button
+          onClick={() => setTab('cage-map')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-semibold transition-colors ${
+            tab === 'cage-map' ? 'bg-white dark:bg-dark-card text-amber-600 shadow-sm' : 'text-gray-500'
+          }`}
+        >
+          <Map className="w-4 h-4" /> Cage Map
+        </button>
       </div>
 
-      {/* Batch cards */}
-      {isLoading ? (
-        <div className="space-y-4">
-          {[1, 2].map(i => (
-            <div key={i} className="bg-gray-100 dark:bg-dark-card rounded-2xl h-48 animate-pulse" />
-          ))}
-        </div>
-      ) : brooderBatches.length === 0 ? (
-        <div className="text-center py-16 text-gray-400 dark:text-gray-500">
-          <Flame className="w-12 h-12 mx-auto mb-3 opacity-20" />
-          <p className="font-semibold">No active brooder batches</p>
-          <p className="text-sm mt-1">
-            Register a new batch and assign it to the Brooder from the Batches page.
-          </p>
-        </div>
+      {tab === 'batches' ? (
+        <>
+          {/* Info banner */}
+          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
+            <Flame className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold">Brooder Management</p>
+              <p className="mt-0.5 text-amber-600 dark:text-amber-500">
+                Chicks stay in the brooder up to 18 weeks. Log daily entries to track temperature,
+                water, feed, lighting and any mortality. You can enter data for past days if a
+                day was missed — select the correct date when logging.
+              </p>
+            </div>
+          </div>
+
+          {/* Batch cards */}
+          {isLoading ? (
+            <div className="space-y-4">
+              {[1, 2].map(i => (
+                <div key={i} className="bg-gray-100 dark:bg-dark-card rounded-2xl h-48 animate-pulse" />
+              ))}
+            </div>
+          ) : brooderBatches.length === 0 ? (
+            <div className="text-center py-16 text-gray-400 dark:text-gray-500">
+              <Flame className="w-12 h-12 mx-auto mb-3 opacity-20" />
+              <p className="font-semibold">No active brooder batches</p>
+              <p className="text-sm mt-1">
+                Register a new batch and assign it to the Brooder from the Batches page.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {brooderBatches.map(batch => (
+                <BrooderBatchCard key={batch.id} batch={batch} />
+              ))}
+            </div>
+          )}
+        </>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {brooderBatches.map(batch => (
-            <BrooderBatchCard key={batch.id} batch={batch} />
-          ))}
-        </div>
+        <>
+          {/* Cage map info banner */}
+          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
+            <Map className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold">6 rows × 4 levels — every chick accounted for</p>
+              <p className="mt-0.5 text-amber-600 dark:text-amber-500">
+                Tap an empty cell to place a batch on it. Tap an occupied cell to log today's feed.
+                Use "Log heat" on a row to track charcoal used or start/stop the heat-bulb timer.
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">
+              Required vs Given Feed — this week
+            </p>
+            <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4">
+              <BrooderFeedRequirement />
+            </div>
+          </div>
+
+          <BrooderCageMapGrid
+            onSelectLevel={handleSelectLevel}
+            onLogHeat={row => setHeatTarget(row)}
+          />
+        </>
+      )}
+
+      {assignTarget && (
+        <BrooderLevelAssignModal
+          level={assignTarget.level}
+          row={assignTarget.row}
+          batches={placeableBatches.map(b => ({ id: b.id, batchCode: b.batchCode, currentBirdCount: b.currentBirdCount }))}
+          onClose={() => setAssignTarget(null)}
+        />
+      )}
+      {feedTarget && (
+        <BrooderLevelFeedLogModal
+          level={feedTarget.level}
+          row={feedTarget.row}
+          onClose={() => setFeedTarget(null)}
+        />
+      )}
+      {heatTarget && (
+        <BrooderHeatLogModal row={heatTarget} onClose={() => setHeatTarget(null)} />
       )}
     </div>
   );

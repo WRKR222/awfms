@@ -5,7 +5,8 @@ import { AlertTriangle, Package, ClipboardCheck, Heart, Users, ChevronRight, Fla
 import { useManagerRealtime } from '../../hooks/useRealtime';
 import { CageMap } from '../../components/shared/CageMap';
 import { useNavigate } from 'react-router-dom';
-import { BrooderCageMap } from '../../components/shared/BrooderCageMap';
+import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
+import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
 import dayjs from '../../lib/dayjs';
 
@@ -125,6 +126,20 @@ export function ManagerHome() {
         <BrooderFeedSummary />
       </div>
 
+      {/* ── Brooder Required vs Dispensed Feed (per row/level, this week) ── */}
+      <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-7 h-7 bg-amber-500 rounded-xl flex items-center justify-center flex-shrink-0">
+            <Flame className="w-3.5 h-3.5 text-white" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-gray-800 dark:text-gray-100">Brooder — Required vs Given Feed</p>
+            <p className="text-[10px] text-gray-400">Population × standard ration · this week, by row/level</p>
+          </div>
+        </div>
+        <BrooderFeedRequirement />
+      </div>
+
       {/* Production House Cage Map */}
       <div>
         <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Production House — Cage Map</p>
@@ -138,13 +153,9 @@ export function ManagerHome() {
       {/* Brooder Live Cage Map */}
       <div>
         <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">
-          Brooder — Live Cage Map
+          Brooder — Cage Map (6 rows × 4 levels)
         </p>
-        <div className="rounded-2xl overflow-hidden shadow-sm border border-dark-border">
-          <div style={{ background: '#060c08', padding: '16px 20px' }}>
-            <BrooderCageMap />
-          </div>
-        </div>
+        <BrooderCageMapGrid />
       </div>
 
     </div>

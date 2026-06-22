@@ -19,7 +19,8 @@ import {
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import { CageMap } from '../../components/shared/CageMap';
-import { BrooderCageMap } from '../../components/shared/BrooderCageMap';
+import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
+import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
 
 type Range = 'daily' | 'weekly' | 'monthly' | 'quarterly';
@@ -559,6 +560,17 @@ function BrooderMapPanel() {
         <BrooderFeedSummary />
       </div>
 
+      {/* Required vs given feed — per row/level, this week — always visible so an
+          exact-match confirmation reaches the Director without needing to expand
+          the map. */}
+      <div className="bg-white dark:bg-dark-card px-4 py-3 border-b border-gray-100 dark:border-dark-border">
+        <div className="flex items-center gap-2 mb-3">
+          <Flame className="w-4 h-4 text-amber-500" />
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Brooder — Required vs Given Feed</span>
+        </div>
+        <BrooderFeedRequirement />
+      </div>
+
       {/* Collapsible live cage map */}
       <button
         onClick={() => setMapOpen(v => !v)}
@@ -566,7 +578,7 @@ function BrooderMapPanel() {
       >
         <div className="flex items-center gap-2">
           <Map className="w-4 h-4 text-blue-500" />
-          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Brooder — Live Cage Map</span>
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Brooder — Cage Map (6 rows × 4 levels)</span>
           <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 font-medium">
             Live
           </span>
@@ -575,7 +587,7 @@ function BrooderMapPanel() {
       </button>
       {mapOpen && (
         <div style={{ background: '#060c08', padding: '16px 20px' }}>
-          <BrooderCageMap />
+          <BrooderCageMapGrid />
         </div>
       )}
     </div>

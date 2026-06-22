@@ -11,6 +11,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { EntryStatus, InvoiceStatus, BookingStatus } from '@prisma/client';
 import dayjs from 'dayjs';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { BrooderService } from '../brooder/brooder.service';
 
 // Phase 5: roles allowed to see revenue/financial fields in analytics
 const REVENUE_ROLES = new Set(['OWNER', 'ACCOUNTANT']);
@@ -36,7 +37,7 @@ function getPeriodBounds(range: DashRange): { from: Date; label: string } {
 @Controller('dashboard')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class DashboardController {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, private brooder: BrooderService) {}
 
   @Get('owner')
   @RequirePermission(Permission.AI_REPORTS_VIEW)
@@ -540,6 +541,19 @@ export class DashboardController {
     );
 
     return { batches: batchSummaries };
+  }
+
+  /**
+   * Cage-map-aware brooder feed status: required (population × standard
+   * g/bird/week) vs dispensed, per row and level, for the current week.
+   * Surfaced on Attendant, PM (Manager) and Director (Owner) dashboards so
+   * everyone sees the same number — including an exact-match flag when a
+   * row/level received precisely the required amount.
+   */
+  @Get('brooder-cage-map-feed')
+  @RequirePermission(Permission.PRODUCTION_VIEW)
+  async brooderCageMapFeed() {
+    return this.brooder.getFeedRequirementSummary();
   }
 
   // ── Phase 5: Analytics time-series data ──────────────────────────────────

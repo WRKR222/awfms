@@ -109,6 +109,15 @@ export class BatchLifecycleService {
         },
       });
 
+      // Leaving BROODING (to GROWER, PRODUCTION, SOLD or DISCARDED) frees up
+      // any brooder cage-map levels this batch was occupying, so the next
+      // batch keyed into the brooder can be placed there. Historical feed
+      // and heat logs are untouched — they remain queryable by level/date
+      // for full from-brooder-to-production-house traceability.
+      if (batch.stage === BatchStage.BROODING && newStage !== BatchStage.BROODING) {
+        await tx.brooderLevelAssignment.deleteMany({ where: { batchId } });
+      }
+
       // When moving to PRODUCTION, write row assignments
       // rowPlacements may contain rowCode strings (e.g. "A1") instead of UUIDs
       // Resolve them to actual FarmRow IDs

@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { NotificationType, UserRole, FeedType } from '@prisma/client';
+import { requiredFeedKg, withTolerance } from '../../common/feed/feed-standard.util';
 import dayjs from 'dayjs';
 
 
@@ -240,25 +241,11 @@ export class FeedService {
     ageWeeks: number,
     feedType: FeedType,
   ): { min: number; max: number } {
-    // Standard intake per bird per day (grams) based on age
-    let gPerBirdPerDay: number;
-    if (feedType === FeedType.LAYER_MASH) {
-      if (ageWeeks < 6) gPerBirdPerDay = 30;
-      else if (ageWeeks < 18) gPerBirdPerDay = 80;
-      else gPerBirdPerDay = 115; // production phase
-    } else if (feedType.startsWith('KIENYEJI')) {
-      if (ageWeeks < 4) gPerBirdPerDay = 25;
-      else if (ageWeeks < 8) gPerBirdPerDay = 60;
-      else gPerBirdPerDay = 100;
-    } else {
-      gPerBirdPerDay = 90; // generic
-    }
-
-    const totalKg = (birdCount * gPerBirdPerDay) / 1000;
-    return {
-      min: Math.round(totalKg * 0.9 * 100) / 100,
-      max: Math.round(totalKg * 1.1 * 100) / 100,
-    };
+    // Delegates to the shared feed-standard util (also used by BrooderService
+    // for the brooder cage map) so production-house and brooder recommendations
+    // never drift apart. Daily total = requiredFeedKg(..., days=1).
+    const dailyKg = requiredFeedKg(birdCount, feedType, ageWeeks, 1);
+    return withTolerance(dailyKg, 0.1);
   }
 
   private async getAlertThreshold(feedType?: string): Promise<number> {

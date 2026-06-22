@@ -23,6 +23,7 @@ import { EventsModule }   from './modules/events/events.module';
 import { VisitorsModule } from './modules/visitors/visitors.module';
 import { DataUploadModule } from './modules/data-upload/data-upload.module';
 import { UsersModule }    from './modules/users/users.module';  // FIX: was never registered
+import { BrooderModule }  from './modules/brooder/brooder.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { UsersModule }    from './modules/users/users.module';  // FIX: was neve
     EventsModule,
     VisitorsModule,
     DataUploadModule,
+    BrooderModule,
   ],
 })
 export class AppModule {}
