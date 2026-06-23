@@ -1,6 +1,6 @@
 // src/modules/store/store-inventory.controller.ts
 import {
-  Controller, Get, Post, Patch, Body, Param, Query, UseGuards, Request,
+  Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, Request,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -56,6 +56,16 @@ export class StoreInventoryController {
   @RequirePermission(Permission.INVENTORY_MANAGE)
   updateItem(@Param('id') id: string, @Body() dto: UpdateStoreItemDto) {
     return this.svc.updateItem(id, dto);
+  }
+
+  /**
+   * Soft-delete an inventory item (sets isActive = false).
+   * Blocked if the item still has stock on hand.
+   */
+  @Delete('items/:id')
+  @RequirePermission(Permission.INVENTORY_MANAGE)
+  deleteItem(@Param('id') id: string) {
+    return this.svc.deleteItem(id);
   }
 
   // ── Stock In ─────────────────────────────────────────────────────────────────

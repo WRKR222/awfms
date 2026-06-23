@@ -182,7 +182,9 @@ enum IssuancePlanItemStatus {
 enum StoreItemCategory {
   MEDICATION
   EQUIPMENT
-  FEED_SUPPLEMENT
+  FEED
+  SUPPLEMENT
+  FEED_SUPPLEMENT // kept for legacy data compatibility; deprecated — use FEED or SUPPLEMENT
   PACKAGING
   CLEANING
   SAFETY

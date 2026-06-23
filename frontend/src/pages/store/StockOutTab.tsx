@@ -103,9 +103,11 @@ export function StockOutTab() {
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['store-stock-out'] });
+      // Prefix invalidation: covers ['store-items','active'] AND ['store-items','all']
       qc.invalidateQueries({ queryKey: ['store-items'] });
       qc.invalidateQueries({ queryKey: ['store-items-low'] });
       qc.invalidateQueries({ queryKey: ['feed'] });
+      qc.invalidateQueries({ queryKey: ['approved-plan-items'] });
       reset({ issuedDate: dayjs().format('YYYY-MM-DD') });
       setShowForm(false);
     },
@@ -128,7 +130,7 @@ export function StockOutTab() {
                 <option value="">Select item…</option>
                 {items.map(i => (
                   <option key={i.id} value={i.id}>
-                    {i.sku} — {i.name} (stock: {Number(i.currentStock)} {i.unit})
+                    [{i.category === 'FEED_SUPPLEMENT' ? 'FEED/SUPP' : i.category}] {i.sku} — {i.name} (stock: {Number(i.currentStock)} {i.unit})
                   </option>
                 ))}
               </select>

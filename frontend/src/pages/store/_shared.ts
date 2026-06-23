@@ -23,14 +23,15 @@ export function fmtKES(n: number | string | undefined | null) {
 
 export function useStoreItems(activeOnly = true) {
   return useQuery({
-    queryKey: ['store-items', activeOnly],
+    queryKey: ['store-items', activeOnly ? 'active' : 'all'],
     queryFn: async () => {
       const res = await api.get('/store/inventory/items', {
         params: activeOnly ? { isActive: 'true' } : {},
       });
       return res.data as StoreItem[];
     },
-    staleTime: 60_000,
+    staleTime: 0,          // always refetch store-items on tab focus — critical for stock-in dropdown
+    refetchOnWindowFocus: true,
   });
 }
 

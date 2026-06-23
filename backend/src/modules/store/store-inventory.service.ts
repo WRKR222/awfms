@@ -182,6 +182,25 @@ export class StoreInventoryService {
     });
   }
 
+  /**
+   * Soft-delete a store item by setting isActive = false.
+   * The item is never hard-deleted so stock history (stock-in/out records) is preserved.
+   * Returns 409 if the item has stock on hand (must be zeroed out first).
+   */
+  async deleteItem(id: string) {
+    const item = await this.getItemById(id);
+    if (Number(item.currentStock) > 0) {
+      throw new BadRequestException(
+        `Cannot remove "${item.name}" — it still has ${item.currentStock} ${item.unit} in stock. ` +
+        `Issue out or adjust to zero before removing.`,
+      );
+    }
+    return this.prisma.storeItem.update({
+      where: { id },
+      data: { isActive: false },
+    });
+  }
+
   async getLowStockItems() {
     const items = await this.prisma.storeItem.findMany({ where: { isActive: true } });
     return items.filter(
