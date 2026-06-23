@@ -193,6 +193,38 @@ export class BrooderService {
     const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
+    // ── Validate: only BROODER-location batches (or unplaced batches being
+    //    placed for the first time, which have no location yet) can be assigned.
+    //    Once a batch is placed on any level its location becomes 'BROODER'.
+    //    We allow batches that are not yet placed (location != 'BROODER') only
+    //    on their very first assignment — subsequent assignments must already
+    //    be BROODER.  We determine "first assignment" by checking existing
+    //    assignments for this batch.
+    const existingAssignmentsForBatch = await this.prisma.brooderLevelAssignment.findMany({
+      where: { batchId: dto.batchId },
+    });
+    const isAlreadyPlaced = batch.location === 'BROODER';
+    const hasAnyAssignment = existingAssignmentsForBatch.length > 0;
+    if (!isAlreadyPlaced && hasAnyAssignment) {
+      throw new BadRequestException(
+        'Only batches currently in the Brooder can be assigned to a level.',
+      );
+    }
+
+    // ── Validate: total birds across all levels for this batch (excluding
+    //    the current level being upserted) must not exceed quantityReceived.
+    const siblingsTotal = existingAssignmentsForBatch
+      .filter(a => a.levelId !== levelId)      // exclude THIS level (upsert)
+      .reduce((s, a) => s + a.birdCount, 0);
+    const newTotal = siblingsTotal + dto.birdCount;
+    if (newTotal > batch.quantityReceived) {
+      throw new BadRequestException(
+        `Cannot assign ${dto.birdCount} birds to this level: total would be ${newTotal} ` +
+        `but batch ${batch.batchCode} only received ${batch.quantityReceived} birds. ` +
+        `You can place at most ${batch.quantityReceived - siblingsTotal} birds here.`,
+      );
+    }
+
     return this.prisma.$transaction(async (tx) => {
       const result = await tx.brooderLevelAssignment.upsert({
         where: { levelId },

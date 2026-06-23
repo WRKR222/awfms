@@ -13,6 +13,7 @@ import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequi
 import { BrooderLevelAssignModal } from '../../components/shared/BrooderLevelAssignModal';
 import { BrooderHeatLogModal } from '../../components/shared/BrooderHeatLogModal';
 import { BrooderLevelFeedLogModal } from '../../components/shared/BrooderLevelFeedLogModal';
+import { useBrooderCageMap } from '../../hooks/useBrooderCageMap';
 import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
 
 // ── Feed type options & label helper ─────────────────────────────────────────
@@ -559,9 +560,24 @@ export function BrooderPage() {
   const brooderBatches = allBatches.filter(
     b => b.location === 'BROODER' && b.isActive
   );
-  // Any active batch can be placed on the cage map (not only ones already
-  // marked BROODER — placing chicks on a level is what marks them as such).
-  const placeableBatches = allBatches.filter(b => b.isActive);
+  // Only batches already in the BROODER can be assigned to cage map levels.
+  // (A batch's location is set to BROODER when it is first placed on any level.)
+  const placeableBatches = brooderBatches;
+
+  // Build a per-batch count of birds already assigned to OTHER levels (for the
+  // assign modal to show "X still to place" when distributing across levels).
+  const { data: cageMapData } = useBrooderCageMap();
+  const assignedCountByBatch: Record<string, number> = {};
+  if (cageMapData) {
+    for (const row of cageMapData.rows) {
+      for (const level of row.levels) {
+        if (level.assignment) {
+          const { batchId, birdCount } = level.assignment;
+          assignedCountByBatch[batchId] = (assignedCountByBatch[batchId] ?? 0) + birdCount;
+        }
+      }
+    }
+  }
 
   const totalBrooderBirds = brooderBatches.reduce(
     (sum, b) => sum + (b.currentBirdCount ?? 0),
@@ -575,11 +591,14 @@ export function BrooderPage() {
 
   const handleSelectLevel = (level: BrooderLevelData, row: BrooderRowData) => {
     if (level.assignment) {
-      // Occupied — quick action is logging today's feed; long-press-free UX
-      // keeps it to one tap since feed logging is the daily task.
+      // Occupied — quick action is logging today's feed
       setFeedTarget({ level, row });
     } else {
-      setAssignTarget({ level, row });
+      // Empty level — only open assign modal if there are BROODER batches to assign.
+      // (The grid already blocks clicks on empty levels, but this is a safety guard.)
+      if (placeableBatches.length > 0) {
+        setAssignTarget({ level, row });
+      }
     }
   };
 
@@ -663,8 +682,11 @@ export function BrooderPage() {
             <div>
               <p className="font-semibold">6 rows × 4 levels — every chick accounted for</p>
               <p className="mt-0.5 text-amber-600 dark:text-amber-500">
-                Tap an empty cell to place a batch on it. Tap an occupied cell to log today's feed.
-                Use "Log heat" on a row to track charcoal used or start/stop the heat-bulb timer.
+                Only batches already in the Brooder can be assigned to levels. Distribute the
+                batch's received quantity across the rows and levels they occupy — the total
+                assigned must not exceed the quantity received. Tap an occupied cell to log
+                today's feed. Use "Log heat" on a row to record charcoal or start/stop the
+                heat-bulb timer. Empty levels and rows with no birds cannot be interacted with.
               </p>
             </div>
           </div>
@@ -689,7 +711,18 @@ export function BrooderPage() {
         <BrooderLevelAssignModal
           level={assignTarget.level}
           row={assignTarget.row}
-          batches={placeableBatches.map(b => ({ id: b.id, batchCode: b.batchCode, currentBirdCount: b.currentBirdCount }))}
+          batches={placeableBatches.map(b => ({
+            id: b.id,
+            batchCode: b.batchCode,
+            currentBirdCount: b.currentBirdCount,
+            quantityReceived: b.quantityReceived,
+            // Birds on OTHER levels for this batch (excluding this level's own current assignment)
+            alreadyAssignedCount:
+              (assignedCountByBatch[b.id] ?? 0) -
+              (assignTarget.level.assignment?.batchId === b.id
+                ? (assignTarget.level.assignment?.birdCount ?? 0)
+                : 0),
+          }))}
           onClose={() => setAssignTarget(null)}
         />
       )}
