@@ -13,13 +13,7 @@ import { IssuancePlanService } from './issuance-plan.service';
 import {
   IsString, IsOptional, IsNumber, IsBoolean, Min, IsNotEmpty,
 } from 'class-validator';
-import { Type, Transform } from 'class-transformer';
-
-// Coerce to finite number, defaulting to 0 for null/undefined/NaN
-const toFiniteNumber = ({ value }: { value: unknown }) => {
-  const n = Number(value);
-  return isFinite(n) ? n : 0;
-};
+import { Type } from 'class-transformer';
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
@@ -39,10 +33,10 @@ export class CreateStoreItemDto {
   @IsOptional() @IsString()
   description?: string;
 
-  @IsOptional() @Transform(toFiniteNumber) @IsNumber() @Min(0)
+  @IsOptional() @Type(() => Number) @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0)
   reorderLevel?: number;
 
-  @IsOptional() @Transform(toFiniteNumber) @IsNumber() @Min(0)
+  @IsOptional() @Type(() => Number) @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0)
   unitCostKes?: number;
 
   @IsOptional() @IsString()
@@ -62,10 +56,10 @@ export class UpdateStoreItemDto {
   @IsOptional() @IsString()
   description?: string;
 
-  @IsOptional() @Transform(toFiniteNumber) @IsNumber() @Min(0)
+  @IsOptional() @Type(() => Number) @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0)
   reorderLevel?: number;
 
-  @IsOptional() @Transform(toFiniteNumber) @IsNumber() @Min(0)
+  @IsOptional() @Type(() => Number) @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0)
   unitCostKes?: number;
 
   @IsOptional() @IsString()
@@ -75,58 +69,26 @@ export class UpdateStoreItemDto {
   isActive?: boolean;
 }
 
-export class StockInDto {
-  @IsString() @IsNotEmpty()
+export interface StockInDto {
   storeItemId: string;
-
-  @IsString() @IsNotEmpty()
   receivedDate: string;
-
-  @Transform(toFiniteNumber) @IsNumber() @Min(0)
   quantityIn: number;
-
-  @Transform(toFiniteNumber) @IsNumber() @Min(0)
   unitCostKes: number;
-
-  @IsOptional() @IsString()
   supplierName?: string;
-
-  @IsOptional() @IsString()
   invoiceRef?: string;
-
-  @IsOptional() @IsString()
   notes?: string;
 }
 
-export class StockOutDto {
-  @IsString() @IsNotEmpty()
+export interface StockOutDto {
   storeItemId: string;
-
-  @IsString() @IsNotEmpty()
   issuedDate: string;
-
-  @Transform(toFiniteNumber) @IsNumber() @Min(0)
   quantityOut: number;
-
-  @IsOptional() @IsString()
   recipientRole?: string;
-
-  @IsOptional() @IsString()
   otherRecipient?: string;
-
-  @IsOptional() @IsString()
   issuedToName?: string;
-
-  @IsOptional() @IsString()
   issuedToHouseId?: string;
-
-  @IsOptional() @IsString()
   issuedToBatchId?: string;
-
-  @IsOptional() @IsString()
   purpose?: string;
-
-  @IsOptional() @IsString()
   notes?: string;
 }
 
@@ -205,8 +167,8 @@ export class StoreInventoryService {
         ...(dto.category !== undefined ? { category: dto.category as any } : {}),
         ...(dto.unit !== undefined ? { unit: dto.unit as any } : {}),
         ...(dto.description !== undefined ? { description: dto.description } : {}),
-        ...(dto.reorderLevel !== undefined ? { reorderLevel: dto.reorderLevel } : {}),
-        ...(dto.unitCostKes !== undefined ? { unitCostKes: dto.unitCostKes } : {}),
+        ...(dto.reorderLevel !== undefined ? { reorderLevel: Number(dto.reorderLevel) } : {}),
+        ...(dto.unitCostKes !== undefined ? { unitCostKes: Number(dto.unitCostKes) } : {}),
         ...(dto.supplierId !== undefined ? { supplierId: dto.supplierId } : {}),
         ...(dto.isActive !== undefined ? { isActive: dto.isActive } : {}),
       },
