@@ -7,7 +7,7 @@
 
 import { useState } from 'react';
 import { Wheat, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
-import { useBrooderFeedRequirement, type FeedRequirementRow } from '../../hooks/useBrooderCageMap';
+import { useBrooderFeedSummary, type FeedRequirementRow } from '../../hooks/useBrooderCageMap';
 
 function variancePill(pct: number | null) {
   if (pct === null) {
@@ -81,7 +81,7 @@ function RowLine({ row }: { row: FeedRequirementRow }) {
 }
 
 export function BrooderFeedRequirement() {
-  const { data, isLoading } = useBrooderFeedRequirement();
+  const { data, isLoading } = useBrooderFeedSummary();
 
   if (isLoading) {
     return (
@@ -93,7 +93,7 @@ export function BrooderFeedRequirement() {
     );
   }
 
-  const rows = (data?.rows ?? []).filter(r => r.birdTotal > 0);
+  const rows = (data?.rows ?? []).filter((r: FeedRequirementRow) => r.birdTotal > 0);
 
   if (rows.length === 0) {
     return (
@@ -103,7 +103,7 @@ export function BrooderFeedRequirement() {
     );
   }
 
-  const exactRows = rows.filter(r => r.exactMatch).length;
+  const exactRows = rows.filter((r: FeedRequirementRow) => r.exactMatch).length;
 
   return (
     <div className="space-y-2">
@@ -116,7 +116,7 @@ export function BrooderFeedRequirement() {
           {exactRows}/{rows.length} rows exact
         </span>
       </div>
-      {rows.map(row => <RowLine key={row.rowId} row={row} />)}
+      {rows.map((row: FeedRequirementRow) => <RowLine key={row.rowId} row={row} />)}
     </div>
   );
 }

@@ -514,7 +514,7 @@ export class BrooderService {
 
     const level = await this.prisma.brooderLevel.findUnique({
       where:   { id: dto.levelId },
-      include: { assignment: true },
+      include: { assignment: true, row: true },
     });
     if (!level) throw new NotFoundException('Brooder level not found');
     if (!level.assignment) {
@@ -568,7 +568,7 @@ export class BrooderService {
 
     if (mortalityCheck.violated) {
       const rowLabel = level.row
-        ? `Row ${(level.row as any).rowNumber ?? ''}`
+        ? `Row ${level.row.rowNumber}`
         : 'Unknown Row';
       const title   = `⚠ Brooder Mortality Alert — ${batch.batchCode}`;
       const message = `${mortalityCheck.message} (${rowLabel}, ${level.label}). Actual: ${mortalityCheck.actualPct}%, Standard: ≤${mortalityCheck.standardPct}%.`;

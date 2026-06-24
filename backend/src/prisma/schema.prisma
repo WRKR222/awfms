@@ -149,6 +149,7 @@ enum NotificationType {
   ISSUANCE_PLAN_APPROVED
   ISSUANCE_PLAN_REJECTED
   ISSUANCE_PLAN_PENDING_REMINDER
+  WEEKLY_PLAN_REMINDER
   FEED_ISSUANCE_DAILY_ALERT
   // Brooder control threshold alerts
   BROODER_FEED_OVERISSUE    // feed issued > calculated HyLine daily ration for a level
@@ -1287,9 +1288,12 @@ model VisitorAdvanceNotice {
   expectedDate  DateTime  @map("expected_date") @db.Date
   visitorName   String    @map("visitor_name")
   organisation  String?
+  phone         String?
+  idNumber      String?   @map("id_number")
   purpose       String
   expectedCount Int       @default(1) @map("expected_count")
   houseIds      String[]  @map("house_ids")
+  notes         String?
   requestedById String    @map("requested_by_id")
 
   status       String    @default("PENDING")
@@ -1604,6 +1608,7 @@ model IssuancePlan {
   /// issuance-plan.service.ts for how this is kept in sync.
   phase         IssuancePlanPhase   @default(DRAFT)
   notes         String?
+  emergencyReason String?           @map("emergency_reason")
 
   createdById               String    @map("created_by_id")
 

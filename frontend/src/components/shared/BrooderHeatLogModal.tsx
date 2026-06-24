@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { X, Flame, Zap, Clock } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import {
-  useLogCharcoalHeat, useStartBulbHeat, useStopBulbHeat,
+  useCreateBrooderHeatLog, useStopBrooderHeatLog,
   type BrooderRowData,
 } from '../../hooks/useBrooderCageMap';
 
@@ -18,9 +18,9 @@ export function BrooderHeatLogModal({ row, onClose }: { row: BrooderRowData; onC
   const [bulbCount, setBulbCount] = useState('1');
   const [notes, setNotes] = useState('');
 
-  const logCharcoal = useLogCharcoalHeat();
-  const startBulb = useStartBulbHeat();
-  const stopBulb = useStopBulbHeat();
+  const logCharcoal = useCreateBrooderHeatLog();
+  const startBulb   = useCreateBrooderHeatLog();
+  const stopBulb    = useStopBrooderHeatLog();
 
   const today = dayjs().format('YYYY-MM-DD');
   const bulbRunning = row.heatToday?.sourceType === 'HEAT_BULB' && row.heatToday.isRunning;
@@ -65,7 +65,7 @@ export function BrooderHeatLogModal({ row, onClose }: { row: BrooderRowData; onC
               />
               <button
                 onClick={() => row.heatToday && stopBulb.mutate(
-                  { heatLogId: row.heatToday.id, notes: notes || undefined },
+                  { id: row.heatToday.id, data: { notes: notes || undefined } },
                   { onSuccess: onClose },
                 )}
                 disabled={stopBulb.isPending}
@@ -137,7 +137,7 @@ export function BrooderHeatLogModal({ row, onClose }: { row: BrooderRowData; onC
                 {sourceType === 'CHARCOAL' ? (
                   <button
                     onClick={() => logCharcoal.mutate(
-                      { rowId: row.rowId, logDate: today, charcoalKg: Number(charcoalKg), notes: notes || undefined },
+                      { rowId: row.rowId, logDate: today, sourceType: 'CHARCOAL', charcoalKg: Number(charcoalKg), notes: notes || undefined },
                       { onSuccess: onClose },
                     )}
                     disabled={logCharcoal.isPending || !charcoalKg}
@@ -148,7 +148,7 @@ export function BrooderHeatLogModal({ row, onClose }: { row: BrooderRowData; onC
                 ) : (
                   <button
                     onClick={() => startBulb.mutate(
-                      { rowId: row.rowId, logDate: today, bulbCount: Number(bulbCount) || 1, notes: notes || undefined },
+                      { rowId: row.rowId, logDate: today, sourceType: 'HEAT_BULB', bulbCount: Number(bulbCount) || 1, notes: notes || undefined },
                       { onSuccess: onClose },
                     )}
                     disabled={startBulb.isPending}

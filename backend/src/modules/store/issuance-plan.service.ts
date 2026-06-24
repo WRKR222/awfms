@@ -856,7 +856,7 @@ export class IssuancePlanService {
 
     await this.notifications.notifyRole(
       UserRole.STORE,
-      NotificationType.WEEKLY_PLAN_REMINDER as any,
+      NotificationType.WEEKLY_PLAN_REMINDER,
       "It's Saturday — Create the Weekly Issuance Plan",
       `Draft and submit the weekly issuance plan for the coming week (${dayjs(monday).format('D MMM')} – ${dayjs(monday).add(6, 'day').format('D MMM YYYY')}) before end of day.`,
     );
