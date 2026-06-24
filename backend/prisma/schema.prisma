@@ -150,7 +150,10 @@ enum NotificationType {
   ISSUANCE_PLAN_REJECTED
   ISSUANCE_PLAN_PENDING_REMINDER
   FEED_ISSUANCE_DAILY_ALERT
-  WEEKLY_PLAN_REMINDER
+  // Brooder control threshold alerts
+  BROODER_FEED_OVERISSUE    // feed issued > calculated HyLine daily ration for a level
+  BROODER_WEIGHT_ANOMALY    // bird weight sample outside HyLine min/max band
+  BROODER_MORTALITY_HIGH    // cumulative mortality % exceeds HyLine week ceiling
 }
 
 enum IssuancePlanType {
@@ -183,9 +186,7 @@ enum IssuancePlanItemStatus {
 enum StoreItemCategory {
   MEDICATION
   EQUIPMENT
-  FEED
-  SUPPLEMENT
-  FEED_SUPPLEMENT // kept for legacy data compatibility; deprecated — use FEED or SUPPLEMENT
+  FEED_SUPPLEMENT
   PACKAGING
   CLEANING
   SAFETY
@@ -310,6 +311,7 @@ model User {
   brooderLevelAssignments  BrooderLevelAssignment[] @relation("BrooderLevelAssignedBy")
   brooderHeatLogs          BrooderHeatLog[]         @relation("BrooderHeatLoggedBy")
   brooderLevelFeedLogs     BrooderLevelFeedLog[]    @relation("BrooderLevelFeedLoggedBy")
+  brooderMortalityLogs     BrooderLevelMortalityLog[] @relation("BrooderMortalityLoggedBy")
 
   @@map("users")
 }
@@ -420,8 +422,9 @@ model Batch {
   eggCollectionSessions EggCollectionSession[]
   cageAssignments       BatchCageAssignment[]
   dailyEggAggregates    DailyEggAggregate[]
-  brooderLevelAssignments BrooderLevelAssignment[]
-  
+  brooderLevelAssignments  BrooderLevelAssignment[]
+  brooderMortalityLogs     BrooderLevelMortalityLog[]
+
   @@index([houseId])
   @@index([stage])
   @@index([isActive])
@@ -1281,21 +1284,12 @@ model BiosecurityLog {
 
 model VisitorAdvanceNotice {
   id            String    @id @default(uuid())
-  // Was @db.Date (date-only) — widened to a full timestamp so Store can record
-  // an exact expected arrival time, not just a day. Existing date-only values
-  // (Manager's flow still submits date-only strings) keep working unchanged;
-  // they just read back as midnight, same as before.
-  expectedDate  DateTime  @map("expected_date")
+  expectedDate  DateTime  @map("expected_date") @db.Date
   visitorName   String    @map("visitor_name")
   organisation  String?
-  // Optional contact / identification details — useful for supplier and
-  // delivery-driver visits logged by Store.
-  phone         String?
-  idNumber      String?   @map("id_number")
   purpose       String
   expectedCount Int       @default(1) @map("expected_count")
   houseIds      String[]  @map("house_ids")
-  notes         String?
   requestedById String    @map("requested_by_id")
 
   status       String    @default("PENDING")
@@ -1378,6 +1372,7 @@ model BrooderLevel {
   assignment       BrooderLevelAssignment?
   brooderLogs      BrooderLog[]
   feedLogs         BrooderLevelFeedLog[]
+  mortalityLogs    BrooderLevelMortalityLog[]
 
   @@unique([rowId, levelNumber])
   @@map("brooder_levels")
@@ -1459,6 +1454,55 @@ model BrooderLevelFeedLog {
   @@map("brooder_level_feed_logs")
 }
 
+/// HyLine Brown rearing schedule (weeks 1-19) used as the control standard
+/// for feed consumption, bird weight, and mortality rate in the brooder.
+/// Seeded by migration; editable by OWNER via settings if breed changes.
+/// The "Surviving Birds" and "Total Weekly Feed (Bags)" columns from the
+/// original chart are excluded — they are batch-size-dependent.
+model BrooderControlStandard {
+  id                     String   @id @default(uuid())
+  week                   Int      @unique                                              // 1-19
+  deheusPhase            String   @map("deheus_phase")                                // Starter Crumbs / Grower / Developer / Prelayer
+  feedingGramsPerBird    Decimal  @map("feeding_grams_per_bird")   @db.Decimal(8, 2)  // g/bird/day
+  deheusWeeklyIntakeKg   Decimal  @map("deheus_weekly_intake_kg")  @db.Decimal(8, 3)  // kg/bird/week
+  expectedWeightMinG     Decimal  @map("expected_weight_min_g")    @db.Decimal(10, 2) // HyLine min (g)
+  expectedWeightMaxG     Decimal  @map("expected_weight_max_g")    @db.Decimal(10, 2) // HyLine max (g)
+  cumulativeMortalityPct Decimal  @map("cumulative_mortality_pct") @db.Decimal(5, 2)  // cumulative % mortality ceiling
+  productionTraysPerWeek Decimal? @map("production_trays_per_week") @db.Decimal(8, 2) // non-null only from week 18
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  @@map("brooder_control_standards")
+}
+
+/// Mortality / culling event pinpointed to an exact brooder Row + Level.
+/// On create the service:
+///   1. Writes this log record (Req 1 — row, level, count).
+///   2. Decrements BrooderLevelAssignment.birdCount (Req 2 — feed recalculates
+///      from the updated population on the next cage-map call).
+///   3. Decrements Batch.currentBirdCount.
+///   4. Checks cumulative mortality % against BrooderControlStandard and
+///      fires BROODER_MORTALITY_HIGH notification if exceeded (Req 7).
+model BrooderLevelMortalityLog {
+  id             String   @id @default(uuid())
+  levelId        String   @map("level_id")
+  batchId        String   @map("batch_id")
+  logDate        DateTime @map("log_date") @db.Date
+  mortalityCount Int      @default(0) @map("mortality_count")
+  cullingCount   Int      @default(0) @map("culling_count")
+  cause          String?                                         // MortalityCause enum value
+  notes          String?
+  loggedById     String   @map("logged_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  level    BrooderLevel @relation(fields: [levelId], references: [id], onDelete: Cascade)
+  batch    Batch        @relation(fields: [batchId], references: [id])
+  loggedBy User         @relation("BrooderMortalityLoggedBy", fields: [loggedById], references: [id])
+
+  @@index([levelId, logDate])
+  @@index([batchId])
+  @@map("brooder_level_mortality_logs")
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ─── PHASE 2: STORE INVENTORY MANAGEMENT ─────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1502,6 +1546,7 @@ model StoreStockIn {
   totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
   supplierName  String?  @map("supplier_name")
   invoiceRef    String?  @map("invoice_ref")
+  lpoId         String?  @map("lpo_id")
   notes         String?
   receivedById  String   @map("received_by_id")
   expiryDate    DateTime? @map("expiry_date") @db.Date
@@ -1509,6 +1554,7 @@ model StoreStockIn {
 
   storeItem     StoreItem           @relation(fields: [storeItemId], references: [id])
   receivedBy    User                @relation("StoreStockInReceivedBy", fields: [receivedById], references: [id])
+  lpo           LocalPurchaseOrder? @relation(fields: [lpoId], references: [id])
 
   @@index([storeItemId, receivedDate])
   @@index([receivedDate])
@@ -1547,20 +1593,17 @@ model StoreStockOut {
 
 /// Weekly or emergency issuance plan — replaces PurchaseRequest/LPO for stock issuance control
 model IssuancePlan {
-  id              String              @id @default(uuid())
-  planRef         String              @unique @map("plan_ref")
-  type            IssuancePlanType    @default(WEEKLY)
-  weekStartDate   DateTime            @map("week_start_date") @db.Date
-  weekEndDate     DateTime            @map("week_end_date") @db.Date
+  id            String              @id @default(uuid())
+  planRef       String              @unique @map("plan_ref")
+  type          IssuancePlanType    @default(WEEKLY)
+  weekStartDate DateTime            @map("week_start_date") @db.Date
+  weekEndDate   DateTime            @map("week_end_date") @db.Date
   /// Plan-level phase: whether it's still a draft, with the Accountant, with
   /// the Director, or fully decided. Does NOT mean every item was approved —
   /// check each IssuancePlanItem.status for that. See `phase` computation in
   /// issuance-plan.service.ts for how this is kept in sync.
-  phase           IssuancePlanPhase   @default(DRAFT)
-  notes           String?
-  /// Mandatory justification for EMERGENCY plans (enforced in IssuancePlanService,
-  /// not at the DB level, since WEEKLY plans never set it).
-  emergencyReason String?             @map("emergency_reason")
+  phase         IssuancePlanPhase   @default(DRAFT)
+  notes         String?
 
   createdById               String    @map("created_by_id")
 
@@ -1592,6 +1635,10 @@ model IssuancePlanItem {
   /// Running total issued against this plan line (incremented by each stock-out).
   /// Only items with status = APPROVED can ever have stock issued against them.
   quantityIssued  Decimal @default(0) @map("quantity_issued") @db.Decimal(10, 3)
+  /// Residual balance carried forward from the previous week's approved plan.
+  /// Stores deduct this from the current week's issuance so only the net
+  /// required quantity is issued (Req 4 — brooder feed carry-forward).
+  residualCarryForwardKg Decimal? @map("residual_carry_forward_kg") @db.Decimal(10, 3)
   /// MANUAL | PM_FEED_PLAN — auto-generated feed lines carry PM_FEED_PLAN
   source          String  @default("MANUAL") @map("source")
   notes           String?
@@ -1701,6 +1748,7 @@ model LocalPurchaseOrder {
   createdBy       User             @relation("LPOCreatedBy", fields: [createdById], references: [id])
   approvedBy      User?            @relation("LPOApprovedBy", fields: [approvedById], references: [id])
   items           LPOItem[]
+  stockIns        StoreStockIn[]
 
   @@index([status])
   @@index([lpoDate])

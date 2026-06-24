@@ -1,129 +1,226 @@
 // src/components/shared/BrooderLevelFeedLogModal.tsx
-// Attendant logs feed dispensed to one specific level. Shows the required
-// amount (population × standard ration) right alongside the input so the
-// attendant can match it exactly — and that match is what PM/Director see.
+//
+// Log feed dispensed to a specific brooder level.
+// Req 3: Shows the daily HyLine ration; warns before the server blocks if the
+//        entered quantity would exceed it. The server enforces the hard cap.
+// Req 4: Residual carry-forward is shown for awareness (displayed in parent summary).
 
-import { useState } from 'react';
-import { X, Wheat, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useForm } from 'react-hook-form';
+import { X, AlertTriangle, Info, CheckCircle } from 'lucide-react';
+import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
-import { useLogLevelFeed, type BrooderLevelData, type BrooderRowData } from '../../hooks/useBrooderCageMap';
+import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
 
-export function BrooderLevelFeedLogModal({
-  level, row, onClose,
-}: {
-  level: BrooderLevelData;
-  row: BrooderRowData;
+const FEED_TYPE_OPTIONS = [
+  { value: 'CHICK_MASH',  label: 'Chick & Duckling Mash' },
+  { value: 'GROWER_MASH', label: "Grower's Mash" },
+  { value: 'LAYER_MASH',  label: "Layer's Mash" },
+] as const;
+
+interface Props {
+  level:   BrooderLevelData;
+  row:     BrooderRowData;
   onClose: () => void;
-}) {
-  const logFeed = useLogLevelFeed();
-  const [feedType, setFeedType] = useState(level.feedType ?? 'CHICK_MASH');
-  const [quantity, setQuantity] = useState('');
-  const [notes, setNotes] = useState('');
+}
 
+export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
+  const qc    = useQueryClient();
   const today = dayjs().format('YYYY-MM-DD');
-  const required = level.requiredKgThisWeek;
-  const givenSoFar = level.dispensedKgThisWeek;
-  const remaining = required != null ? Math.max(0, Math.round((required - givenSoFar) * 100) / 100) : null;
+
+  const dailyRationKg    = level.dailyRationKg    ?? null;
+  const dispensedToday   = level.dispensedKgToday  ?? 0;
+  const remainingKg      = dailyRationKg !== null
+    ? Math.max(0, Math.round((dailyRationKg - dispensedToday) * 100) / 100)
+    : null;
 
   const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
   const lCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1';
 
+  const { register, handleSubmit, watch, formState: { errors } } = useForm({
+    defaultValues: {
+      feedType:            '',
+      entryDate:           today,
+      quantityDispensedKg: '',
+      notes:               '',
+    },
+  });
+
+  const qty = Number(watch('quantityDispensedKg') || 0);
+
+  // Warn if entry would exceed the daily ration (server will also block it)
+  const wouldExceed  = dailyRationKg !== null && (dispensedToday + qty) > dailyRationKg;
+  const overByKg     = dailyRationKg !== null
+    ? Math.max(0, Math.round(((dispensedToday + qty) - dailyRationKg) * 100) / 100)
+    : 0;
+
+  const submit = useMutation({
+    mutationFn: (data: any) =>
+      api.post('/brooder/feed-logs', {
+        levelId:             level.levelId,
+        feedType:            data.feedType,
+        entryDate:           data.entryDate,
+        quantityDispensedKg: Number(data.quantityDispensedKg),
+        notes:               data.notes || undefined,
+      }).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+      qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
+      qc.invalidateQueries({ queryKey: ['brooder-level-feed-logs', level.levelId] });
+      onClose();
+    },
+  });
+
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
-      <div className="bg-white dark:bg-dark-card w-full md:max-w-md rounded-t-3xl md:rounded-2xl shadow-2xl overflow-y-auto max-h-[95vh]">
+      <div className="bg-white dark:bg-dark-card w-full md:max-w-lg rounded-t-3xl md:rounded-2xl shadow-2xl overflow-y-auto max-h-[95vh]">
+        {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-dark-border sticky top-0 bg-white dark:bg-dark-card z-10">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-amber-500 rounded-xl flex items-center justify-center">
-              <Wheat className="w-4 h-4 text-white" />
+            <div className="w-9 h-9 bg-brand-green rounded-xl flex items-center justify-center">
+              <span className="text-white text-sm">🌾</span>
             </div>
             <div>
-              <p className="font-bold text-gray-800 dark:text-gray-100">{row.label} · {level.label}</p>
-              <p className="text-xs text-gray-400 font-mono">{level.batch?.batchCode}</p>
+              <p className="font-bold text-gray-800 dark:text-gray-100">Log Feed Dispensed</p>
+              <p className="text-xs text-gray-400">
+                {row.label} · {level.label}
+                {level.batch && ` · ${level.batch.batchCode}`}
+              </p>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg">
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg transition-colors">
             <X className="w-5 h-5 text-gray-500" />
           </button>
         </div>
 
-        <div className="p-5 space-y-4">
-          {/* Required-vs-given summary */}
-          {required != null && (
-            <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-3 grid grid-cols-3 gap-2 text-center">
+        {/* Daily ration banner (Req 3) */}
+        {dailyRationKg !== null && level.hylineWeek !== null && (
+          <div className={`mx-5 mt-4 rounded-xl p-3 text-xs flex items-start gap-2 ${
+            remainingKg === 0
+              ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400'
+              : 'bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400'
+          }`}>
+            {remainingKg === 0
+              ? <CheckCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              : <Info        className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />}
+            <div className="space-y-0.5">
+              <p className="font-semibold">
+                HyLine Week {level.hylineWeek} ration — {dailyRationKg.toFixed(2)} kg/day
+                ({level.assignment?.birdCount ?? 0} birds)
+              </p>
+              <p>
+                Already dispensed today: <strong>{dispensedToday.toFixed(2)} kg</strong>
+                {remainingKg !== null && remainingKg > 0 && (
+                  <> · Remaining: <strong>{remainingKg.toFixed(2)} kg</strong></>
+                )}
+                {remainingKg === 0 && <> · Daily ration fully met</>}
+              </p>
+            </div>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-4">
+          {/* Feed type */}
+          <div>
+            <label className={lCls}>Feed type</label>
+            <select
+              {...register('feedType', { required: 'Select a feed type' })}
+              className={iCls}
+            >
+              <option value="">Select feed type…</option>
+              {FEED_TYPE_OPTIONS.map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            {errors.feedType && (
+              <p className="text-red-500 text-xs mt-1">{String(errors.feedType.message)}</p>
+            )}
+          </div>
+
+          {/* Date */}
+          <div>
+            <label className={lCls}>Date</label>
+            <input
+              {...register('entryDate', { required: true })}
+              type="date"
+              max={today}
+              className={iCls}
+            />
+          </div>
+
+          {/* Quantity */}
+          <div>
+            <label className={lCls}>Quantity dispensed (kg)</label>
+            <input
+              {...register('quantityDispensedKg', {
+                required: 'Enter a quantity',
+                min: { value: 0.01, message: 'Must be > 0' },
+                validate: v => {
+                  if (remainingKg !== null && Number(v) > (remainingKg + 0.001)) {
+                    return `Exceeds remaining daily ration (${remainingKg.toFixed(2)} kg left)`;
+                  }
+                  return true;
+                },
+              })}
+              type="number" step="0.01" min="0.01"
+              className={`${iCls} ${wouldExceed ? 'border-red-400 ring-red-200' : ''}`}
+              placeholder={remainingKg !== null ? `Max ${remainingKg.toFixed(2)} kg` : 'e.g. 5.50'}
+            />
+            {errors.quantityDispensedKg && (
+              <p className="text-red-500 text-xs mt-1">{String(errors.quantityDispensedKg.message)}</p>
+            )}
+          </div>
+
+          {/* Over-issue warning (Req 3) */}
+          {wouldExceed && qty > 0 && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-3 text-xs text-red-700 dark:text-red-400 flex items-start gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
               <div>
-                <p className="text-[10px] text-gray-400 uppercase">Required/wk</p>
-                <p className="text-sm font-bold text-gray-800 dark:text-gray-100">{required}kg</p>
-              </div>
-              <div>
-                <p className="text-[10px] text-gray-400 uppercase">Given so far</p>
-                <p className="text-sm font-bold text-gray-800 dark:text-gray-100">{givenSoFar}kg</p>
-              </div>
-              <div>
-                <p className="text-[10px] text-gray-400 uppercase">Remaining</p>
-                <p className={`text-sm font-bold ${remaining === 0 ? 'text-green-500' : 'text-amber-600'}`}>
-                  {remaining}kg
+                <p className="font-semibold">Feed over-issue — will be blocked by server</p>
+                <p className="mt-0.5">
+                  This quantity exceeds the daily ration by{' '}
+                  <strong>{overByKg.toFixed(2)} kg</strong>.
+                  Reduce the quantity to {remainingKg?.toFixed(2) ?? '—'} kg or less.
+                  Excess from previous logs should be deducted from tomorrow's issuance.
                 </p>
               </div>
             </div>
           )}
 
+          {/* Notes */}
           <div>
-            <label className={lCls}>Feed Type</label>
-            <select value={feedType} onChange={e => setFeedType(e.target.value)} className={iCls}>
-              <option value="CHICK_MASH">Chick Mash</option>
-              <option value="GROWER_MASH">Grower Mash</option>
-              <option value="LAYER_MASH">Layer Mash</option>
-            </select>
-          </div>
-
-          <div>
-            <label className={lCls}>Quantity Dispensed (kg)</label>
-            <input
-              value={quantity} onChange={e => setQuantity(e.target.value)}
-              type="number" step="0.1" min="0" className={`${iCls} font-bold text-center text-lg`}
-              placeholder="e.g. 5.5"
+            <label className={lCls}>Notes (optional)</label>
+            <textarea
+              {...register('notes')}
+              rows={2}
+              className={`${iCls} resize-none`}
+              placeholder="Any observations…"
             />
-            {remaining != null && Number(quantity) > 0 && (
-              <p className={`text-xs mt-1.5 flex items-center gap-1 ${
-                Number(quantity) === remaining ? 'text-green-600' : 'text-amber-600'
-              }`}>
-                {Number(quantity) === remaining ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
-                {Number(quantity) === remaining
-                  ? 'Matches exact remaining requirement'
-                  : `Remaining requirement is ${remaining}kg`}
-              </p>
-            )}
           </div>
 
-          <div>
-            <label className={lCls}>Notes</label>
-            <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} className={`${iCls} resize-none`} placeholder="Optional" />
-          </div>
+          {/* Server error */}
+          {submit.isError && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-3 text-sm text-red-600 dark:text-red-400">
+              {(submit.error as any)?.response?.data?.message ?? 'Failed to save. Please try again.'}
+            </div>
+          )}
 
-          {logFeed.isError && <p className="text-red-500 text-sm">Failed to save. Please try again.</p>}
-
-          <div className="flex gap-3 pt-1">
-            <button onClick={onClose} className="flex-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-3 font-semibold">
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button" onClick={onClose}
+              className="flex-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-3 font-semibold"
+            >
               Cancel
             </button>
             <button
-              onClick={() => logFeed.mutate(
-                {
-                  levelId: level.levelId,
-                  feedType,
-                  entryDate: today,
-                  quantityDispensedKg: Number(quantity),
-                  notes: notes || undefined,
-                },
-                { onSuccess: onClose },
-              )}
-              disabled={logFeed.isPending || !quantity || Number(quantity) <= 0}
-              className="flex-1 bg-amber-500 text-white rounded-xl py-3 font-semibold disabled:opacity-60"
+              type="submit"
+              disabled={submit.isPending || wouldExceed}
+              className="flex-1 bg-brand-green text-white rounded-xl py-3 font-semibold disabled:opacity-60"
             >
-              {logFeed.isPending ? 'Saving…' : 'Log Feed'}
+              {submit.isPending ? 'Saving…' : 'Log Feed'}
             </button>
           </div>
-        </div>
+        </form>
       </div>
     </div>
   );

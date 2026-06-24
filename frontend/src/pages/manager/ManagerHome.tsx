@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
+import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 import dayjs from '../../lib/dayjs';
 
 export function ManagerHome() {
@@ -137,7 +138,11 @@ export function ManagerHome() {
             <p className="text-[10px] text-gray-400">Population × standard ration · this week, by row/level</p>
           </div>
         </div>
-        <BrooderFeedRequirement />
+        <div className="space-y-3">
+          {/* Req 7: PM sees feed, weight, mortality alerts immediately */}
+          <BrooderControlStandardPanel />
+          <BrooderFeedRequirement />
+        </div>
       </div>
 
       {/* Production House Cage Map */}

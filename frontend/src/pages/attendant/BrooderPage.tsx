@@ -15,6 +15,8 @@ import { BrooderHeatLogModal } from '../../components/shared/BrooderHeatLogModal
 import { BrooderLevelFeedLogModal } from '../../components/shared/BrooderLevelFeedLogModal';
 import { useBrooderCageMap } from '../../hooks/useBrooderCageMap';
 import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
+import { BrooderMortalityLogModal } from '../../components/shared/BrooderMortalityLogModal';
+import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 
 // ── Feed type options & label helper ─────────────────────────────────────────
 
@@ -588,6 +590,7 @@ export function BrooderPage() {
   const [assignTarget, setAssignTarget] = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
   const [feedTarget, setFeedTarget] = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
   const [heatTarget, setHeatTarget] = useState<BrooderRowData | null>(null);
+  const [mortalityTarget, setMortalityTarget] = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
 
   const handleSelectLevel = (level: BrooderLevelData, row: BrooderRowData) => {
     if (level.assignment) {
@@ -682,14 +685,15 @@ export function BrooderPage() {
             <div>
               <p className="font-semibold">6 rows × 4 levels — every chick accounted for</p>
               <p className="mt-0.5 text-amber-600 dark:text-amber-500">
-                Only batches already in the Brooder can be assigned to levels. Distribute the
-                batch's received quantity across the rows and levels they occupy — the total
-                assigned must not exceed the quantity received. Tap an occupied cell to log
-                today's feed. Use "Log heat" on a row to record charcoal or start/stop the
-                heat-bulb timer. Empty levels and rows with no birds cannot be interacted with.
+                Tap an occupied cell to log today's feed. Use "Log mortality" on a cell to
+                record deaths or culling by row and level — bird counts update automatically.
+                Use "Log heat" on a row to record charcoal or start/stop the heat-bulb timer.
               </p>
             </div>
           </div>
+
+          {/* Req 6 & 7: Control Standards panel */}
+          <BrooderControlStandardPanel />
 
           <div>
             <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-2">
@@ -703,6 +707,7 @@ export function BrooderPage() {
           <BrooderCageMapGrid
             onSelectLevel={handleSelectLevel}
             onLogHeat={row => setHeatTarget(row)}
+            onLogMortality={(level, row) => setMortalityTarget({ level, row })}
           />
         </>
       )}
@@ -735,6 +740,13 @@ export function BrooderPage() {
       )}
       {heatTarget && (
         <BrooderHeatLogModal row={heatTarget} onClose={() => setHeatTarget(null)} />
+      )}
+      {mortalityTarget && (
+        <BrooderMortalityLogModal
+          level={mortalityTarget.level}
+          row={mortalityTarget.row}
+          onClose={() => setMortalityTarget(null)}
+        />
       )}
     </div>
   );

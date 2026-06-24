@@ -1,134 +1,118 @@
 // src/hooks/useBrooderCageMap.ts
+// CHANGES: BrooderLevelData extended with dailyRationKg, dispensedKgToday,
+// and hylineWeek — new fields returned by the updated getCageMap() endpoint.
+
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api/client';
 
-// ── Types ─────────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface BrooderLevelData {
-  levelId: string;
+  levelId:     string;
   levelNumber: number;
-  label: string;
-  isActive: boolean;
+  label:       string;
+  isActive:    boolean;
   assignment: {
-    batchId: string;
-    birdCount: number;
+    batchId:    string;
+    birdCount:  number;
     placedDate: string;
-    notes: string | null;
+    notes:      string | null;
   } | null;
   batch: {
-    batchCode: string;
-    strain: string;
-    stage: string;
-    ageWeeks: number;
+    batchCode:        string;
+    strain:           string;
+    stage:            string;
+    ageWeeks:         number;
+    quantityReceived: number;
   } | null;
-  feedType: string | null;
-  requiredKgThisWeek: number | null;
+  // Feed control fields (new — from HyLine standard lookup)
+  hylineWeek:          number | null;   // HyLine week for this batch's age
+  dailyRationKg:       number | null;   // g/bird/day × birdCount / 1000
+  requiredKgThisWeek:  number | null;
   dispensedKgThisWeek: number;
+  dispensedKgToday:    number;          // NEW — for over-issue guard in modal
   feedVariancePercent: number | null;
 }
 
 export interface BrooderRowData {
-  rowId: string;
+  rowId:     string;
   rowNumber: number;
-  label: string;
-  isActive: boolean;
+  label:     string;
+  isActive:  boolean;
   birdTotal: number;
   heatToday: {
-    id: string;
-    sourceType: 'CHARCOAL' | 'HEAT_BULB';
-    charcoalKg: number | null;
+    id:            string;
+    sourceType:    'CHARCOAL' | 'HEAT_BULB';
+    charcoalKg:    number | null;
     bulbStartedAt: string | null;
     bulbStoppedAt: string | null;
     bulbMinutesOn: number | null;
-    bulbCount: number | null;
-    isRunning: boolean;
+    bulbCount:     number | null;
+    isRunning:     boolean;
   } | null;
   levels: BrooderLevelData[];
 }
 
 export interface BrooderCageMapResponse {
-  rows: BrooderRowData[];
+  rows:        BrooderRowData[];
   totalChicks: number;
   generatedAt: string;
 }
 
 export interface FeedRequirementLevel {
-  levelId: string;
-  levelNumber: number;
-  label: string;
-  batchCode: string | null;
-  birdCount: number;
-  feedType: string | null;
-  requiredKgThisWeek: number | null;
+  levelId:             string;
+  levelNumber:         number;
+  label:               string;
+  batchCode:           string | null;
+  birdCount:           number;
+  hylineWeek:          number | null;
+  dailyRationKg:       number | null;
+  requiredKgThisWeek:  number | null;
   dispensedKgThisWeek: number;
+  dispensedKgToday:    number;
   feedVariancePercent: number | null;
-  exactMatch: boolean;
+  exactMatch:          boolean;
 }
 
 export interface FeedRequirementRow {
-  rowId: string;
-  rowNumber: number;
-  label: string;
-  birdTotal: number;
-  requiredKgThisWeek: number;
+  rowId:               string;
+  rowNumber:           number;
+  label:               string;
+  birdTotal:           number;
+  requiredKgThisWeek:  number;
   dispensedKgThisWeek: number;
-  exactMatch: boolean;
-  levels: FeedRequirementLevel[];
+  exactMatch:          boolean;
+  levels:              FeedRequirementLevel[];
 }
 
 export interface FeedRequirementSummary {
-  weekStart: string;
-  totalChicks: number;
-  totalRequiredKgThisWeek: number;
+  weekStart:                string;
+  totalChicks:              number;
+  totalRequiredKgThisWeek:  number;
   totalDispensedKgThisWeek: number;
-  rows: FeedRequirementRow[];
+  residualCarryForwardKg:   number;  // NEW — from last approved issuance plan
+  netToIssueKg:             number;  // NEW — required - residual
+  rows:                     FeedRequirementRow[];
 }
 
-// ── Queries ──────────────────────────────────────────────────────────────
+// ── Hooks ─────────────────────────────────────────────────────────────────────
 
 export function useBrooderCageMap() {
   return useQuery<BrooderCageMapResponse>({
-    queryKey: ['brooder', 'cage-map'],
-    queryFn: () => api.get('/brooder/cage-map').then(r => r.data),
-    staleTime: 30_000,
+    queryKey:      ['brooder-cage-map'],
+    queryFn:       () => api.get('/brooder/cage-map').then(r => r.data),
+    staleTime:     30_000,
     refetchInterval: 60_000,
   });
 }
 
-export function useBrooderFeedRequirement() {
+export function useBrooderFeedSummary() {
   return useQuery<FeedRequirementSummary>({
-    queryKey: ['brooder', 'feed-requirement-summary'],
-    queryFn: () => api.get('/brooder/feed-requirement-summary').then(r => r.data),
-    staleTime: 30_000,
+    queryKey:      ['brooder-feed-summary'],
+    queryFn:       () => api.get('/brooder/feed-requirement-summary').then(r => r.data),
+    staleTime:     30_000,
     refetchInterval: 60_000,
   });
-}
-
-export function useBrooderHeatLogs(rowId: string | null) {
-  return useQuery({
-    queryKey: ['brooder', 'heat-logs', rowId],
-    queryFn: () => api.get(`/brooder/rows/${rowId}/heat-logs`).then(r => r.data),
-    enabled: !!rowId,
-    staleTime: 15_000,
-  });
-}
-
-export function useBrooderLevelFeedLogs(levelId: string | null) {
-  return useQuery({
-    queryKey: ['brooder', 'level-feed-logs', levelId],
-    queryFn: () => api.get(`/brooder/levels/${levelId}/feed-logs`).then(r => r.data),
-    enabled: !!levelId,
-    staleTime: 15_000,
-  });
-}
-
-// ── Mutations ────────────────────────────────────────────────────────────
-
-function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
-  qc.invalidateQueries({ queryKey: ['brooder'] });
-  qc.invalidateQueries({ queryKey: ['batches'] });
-  qc.invalidateQueries({ queryKey: ['brooder-summary'] });
-  qc.invalidateQueries({ queryKey: ['feed'] });
 }
 
 export function useAssignBrooderLevel() {
@@ -136,7 +120,11 @@ export function useAssignBrooderLevel() {
   return useMutation({
     mutationFn: ({ levelId, data }: { levelId: string; data: any }) =>
       api.post(`/brooder/levels/${levelId}/assign`, data).then(r => r.data),
-    onSuccess: () => invalidateAll(qc),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+      qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
+      qc.invalidateQueries({ queryKey: ['batches'] });
+    },
   });
 }
 
@@ -145,44 +133,70 @@ export function useRemoveBrooderLevelAssignment() {
   return useMutation({
     mutationFn: (levelId: string) =>
       api.delete(`/brooder/levels/${levelId}/assign`).then(r => r.data),
-    onSuccess: () => invalidateAll(qc),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+      qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
+      qc.invalidateQueries({ queryKey: ['batches'] });
+    },
   });
 }
 
-export function useLogCharcoalHeat() {
+export function useCreateBrooderHeatLog() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { rowId: string; logDate: string; charcoalKg: number; notes?: string }) =>
-      api.post('/brooder/heat-logs', { ...data, sourceType: 'CHARCOAL' }).then(r => r.data),
-    onSuccess: () => invalidateAll(qc),
+    mutationFn: (data: any) =>
+      api.post('/brooder/heat-logs', data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+    },
   });
 }
 
-export function useStartBulbHeat() {
+export function useStopBrooderHeatLog() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { rowId: string; logDate: string; bulbCount?: number; notes?: string }) =>
-      api.post('/brooder/heat-logs', { ...data, sourceType: 'HEAT_BULB' }).then(r => r.data),
-    onSuccess: () => invalidateAll(qc),
+    mutationFn: ({ id, data }: { id: string; data: any }) =>
+      api.patch(`/brooder/heat-logs/${id}/stop`, data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+    },
   });
 }
 
-export function useStopBulbHeat() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ heatLogId, notes }: { heatLogId: string; notes?: string }) =>
-      api.patch(`/brooder/heat-logs/${heatLogId}/stop`, { notes }).then(r => r.data),
-    onSuccess: () => invalidateAll(qc),
-  });
-}
-
-export function useLogLevelFeed() {
+/** Mutation: log mortality/culling on a specific level (Req 1). */
+export function useCreateBrooderMortalityLog() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: {
-      levelId: string; feedType: string; entryDate: string;
-      quantityDispensedKg: number; notes?: string;
-    }) => api.post('/brooder/feed-logs', data).then(r => r.data),
-    onSuccess: () => invalidateAll(qc),
+      levelId:        string;
+      batchId:        string;
+      logDate:        string;
+      mortalityCount: number;
+      cullingCount:   number;
+      cause?:         string;
+      notes?:         string;
+    }) => api.post('/brooder/mortality-logs', data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+      qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
+      qc.invalidateQueries({ queryKey: ['batches'] });
+    },
+  });
+}
+
+/** Mutation: log a weight sample (Req 6 + Req 7). */
+export function useCheckBrooderWeightSample() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      batchId:      string;
+      sampleDate:   string;
+      sampleCount:  number;
+      totalWeightG: number;
+      notes?:       string;
+    }) => api.post('/brooder/weight-samples', data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['brooder-weight-history'] });
+    },
   });
 }

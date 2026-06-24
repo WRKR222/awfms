@@ -22,6 +22,7 @@ import { CageMap } from '../../components/shared/CageMap';
 import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
+import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 
 type Range = 'daily' | 'weekly' | 'monthly' | 'quarterly';
 
@@ -555,8 +556,10 @@ function BrooderMapPanel() {
       <div className="bg-white dark:bg-dark-card px-4 py-3 border-b border-gray-100 dark:border-dark-border">
         <div className="flex items-center gap-2 mb-3">
           <Flame className="w-4 h-4 text-amber-500" />
-          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Brooder — Feed & Log Status</span>
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Brooder — Control & Feed Status</span>
         </div>
+        {/* Req 7: Directors see live threshold violations immediately */}
+        <BrooderControlStandardPanel />
         <BrooderFeedSummary />
       </div>
 
