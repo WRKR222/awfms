@@ -1552,7 +1552,6 @@ model StoreStockIn {
   totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
   supplierName  String?  @map("supplier_name")
   invoiceRef    String?  @map("invoice_ref")
-  lpoId         String?  @map("lpo_id")
   notes         String?
   receivedById  String   @map("received_by_id")
   expiryDate    DateTime? @map("expiry_date") @db.Date
@@ -1560,7 +1559,6 @@ model StoreStockIn {
 
   storeItem     StoreItem           @relation(fields: [storeItemId], references: [id])
   receivedBy    User                @relation("StoreStockInReceivedBy", fields: [receivedById], references: [id])
-  lpo           LocalPurchaseOrder? @relation(fields: [lpoId], references: [id])
 
   @@index([storeItemId, receivedDate])
   @@index([receivedDate])
@@ -1755,7 +1753,6 @@ model LocalPurchaseOrder {
   createdBy       User             @relation("LPOCreatedBy", fields: [createdById], references: [id])
   approvedBy      User?            @relation("LPOApprovedBy", fields: [approvedById], references: [id])
   items           LPOItem[]
-  stockIns        StoreStockIn[]
 
   @@index([status])
   @@index([lpoDate])
