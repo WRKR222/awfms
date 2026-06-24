@@ -1,13 +1,7 @@
-// frontend/src/pages/store/StockInTab.tsx
-// Fixes:
-//   - Items dropdown now always refetches fresh data (staleTime:0 in _shared.ts)
-//   - Added item search filter so all items are easily findable
-//   - Invalidation key broadened to match both 'active' and 'all' cache entries
-//   - Category label updated for FEED / SUPPLEMENT split
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm, useWatch } from 'react-hook-form';
-import { Plus, Info, Search } from 'lucide-react';
+import { Plus, Info, Search, CheckCircle, Pencil } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import { api } from '../../lib/api/client';
 import { fmtKES, useStoreItems } from './_shared';
@@ -30,6 +24,7 @@ export function StockInTab() {
   const [showForm, setShowForm] = useState(false);
   const [search, setSearch] = useState('');
   const [itemSearch, setItemSearch] = useState('');
+  const [reviewData, setReviewData] = useState<FormData | null>(null);
 
   const { register, handleSubmit, reset, control, setValue } = useForm<FormData>({
     defaultValues: { receivedDate: dayjs().format('YYYY-MM-DD') },
@@ -58,6 +53,7 @@ export function StockInTab() {
       qc.invalidateQueries({ queryKey: ['store-stock-in'] });
       reset({ receivedDate: dayjs().format('YYYY-MM-DD') });
       setItemSearch('');
+      setReviewData(null);
       setShowForm(false);
     },
   });
@@ -73,6 +69,19 @@ export function StockInTab() {
     `${i.sku} ${i.name}`.toLowerCase().includes(itemSearch.toLowerCase()),
   );
 
+  // Called on form submit — shows review modal instead of sending directly
+  const onReview = (data: FormData) => {
+    setReviewData(data);
+  };
+
+  // Called from review modal confirm button
+  const onConfirmSubmit = () => {
+    if (reviewData) create.mutate(reviewData);
+  };
+
+  // The item for the review modal (may differ from currently watched)
+  const reviewItem = reviewData ? items.find(i => i.id === reviewData.storeItemId) : null;
+
   return (
     <div className="space-y-4">
       <button
@@ -84,7 +93,7 @@ export function StockInTab() {
 
       {showForm && (
         <form
-          onSubmit={handleSubmit(d => create.mutate(d))}
+          onSubmit={handleSubmit(onReview)}
           className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border space-y-3"
         >
           <h3 className="font-semibold text-gray-700 dark:text-gray-200 text-sm">Record Stock Receipt</h3>
@@ -224,7 +233,7 @@ export function StockInTab() {
             disabled={create.isPending}
             className="bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60"
           >
-            {create.isPending ? 'Recording…' : 'Record Stock In'}
+            Review &amp; Confirm
           </button>
           {create.isError && (
             <p className="text-xs text-red-600">
@@ -232,6 +241,57 @@ export function StockInTab() {
             </p>
           )}
         </form>
+      )}
+
+      {/* ── Review / Confirm Modal ── */}
+      {reviewData && reviewItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="bg-white dark:bg-dark-card rounded-2xl p-5 max-w-md w-full shadow-xl space-y-4">
+            <div className="flex items-center gap-2 text-brand-green">
+              <CheckCircle className="w-5 h-5" />
+              <h3 className="font-bold text-sm">Review Stock Receipt</h3>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Please confirm the details below are correct before recording.
+            </p>
+
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-3 space-y-2 text-sm">
+              <ReviewRow label="Item" value={`${reviewItem.name} (${reviewItem.sku})`} />
+              <ReviewRow label="Received Date" value={dayjs(reviewData.receivedDate).format('DD/MM/YYYY')} />
+              <ReviewRow label="Quantity In" value={`${Number(reviewData.quantityIn)} ${reviewItem.unit}`} />
+              <ReviewRow label="Unit Cost" value={fmtKES(reviewData.unitCostKes)} />
+              <ReviewRow label="Total Cost" value={fmtKES(Number(reviewData.quantityIn) * Number(reviewData.unitCostKes))} strong />
+              <ReviewRow label="Balance After" value={`${Number(reviewItem.currentStock) + Number(reviewData.quantityIn)} ${reviewItem.unit}`} />
+              {reviewData.supplierName && <ReviewRow label="Supplier" value={reviewData.supplierName} />}
+              {reviewData.invoiceRef && <ReviewRow label="Invoice Ref" value={reviewData.invoiceRef} />}
+              {reviewData.expiryDate && <ReviewRow label="Expiry Date" value={dayjs(reviewData.expiryDate).format('DD/MM/YYYY')} />}
+              {reviewData.notes && <ReviewRow label="Notes" value={reviewData.notes} />}
+            </div>
+
+            {create.isError && (
+              <p className="text-xs text-red-600">
+                {(create.error as any)?.response?.data?.message ?? 'Failed to record. Please try again.'}
+              </p>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={onConfirmSubmit}
+                disabled={create.isPending}
+                className="bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60"
+              >
+                {create.isPending ? 'Recording…' : 'Confirm & Record'}
+              </button>
+              <button
+                onClick={() => { setReviewData(null); create.reset(); }}
+                disabled={create.isPending}
+                className="flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300 disabled:opacity-50"
+              >
+                <Pencil className="w-3 h-3" /> Edit
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── History table ── */}
@@ -313,6 +373,17 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <label className="text-xs text-gray-500 mb-1 block">{label}</label>
       {children}
+    </div>
+  );
+}
+
+function ReviewRow({ label, value, strong }: { label: string; value: string | number; strong?: boolean }) {
+  return (
+    <div className="flex justify-between items-start gap-4 py-0.5">
+      <span className="text-xs text-gray-500 flex-shrink-0">{label}</span>
+      <span className={`text-xs text-right ${strong ? 'font-bold text-gray-800 dark:text-gray-100' : 'text-gray-700 dark:text-gray-200'}`}>
+        {String(value)}
+      </span>
     </div>
   );
 }

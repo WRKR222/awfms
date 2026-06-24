@@ -187,6 +187,8 @@ enum IssuancePlanItemStatus {
 enum StoreItemCategory {
   MEDICATION
   EQUIPMENT
+  FEED
+  SUPPLEMENT
   FEED_SUPPLEMENT
   PACKAGING
   CLEANING

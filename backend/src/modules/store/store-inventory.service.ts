@@ -182,22 +182,35 @@ export class StoreInventoryService {
   }
 
   /**
-   * Soft-delete a store item by setting isActive = false.
-   * The item is never hard-deleted so stock history (stock-in/out records) is preserved.
-   * Returns 409 if the item has stock on hand (must be zeroed out first).
+   * Permanently delete a store item so its SKU can be recycled.
+   * Blocked if the item still has stock on hand OR has any stock-in/out history
+   * (to preserve ledger integrity). Both conditions must be clear before deletion.
    */
   async deleteItem(id: string) {
     const item = await this.getItemById(id);
+
     if (Number(item.currentStock) > 0) {
       throw new BadRequestException(
-        `Cannot remove "${item.name}" — it still has ${item.currentStock} ${item.unit} in stock. ` +
-        `Issue out or adjust to zero before removing.`,
+        `Cannot delete "${item.name}" — it still has ${item.currentStock} ${item.unit} in stock. ` +
+        `Issue out or adjust to zero before deleting.`,
       );
     }
-    return this.prisma.storeItem.update({
-      where: { id },
-      data: { isActive: false },
-    });
+
+    const [stockInCount, stockOutCount] = await Promise.all([
+      this.prisma.storeStockIn.count({ where: { storeItemId: id } }),
+      this.prisma.storeStockOut.count({ where: { storeItemId: id } }),
+    ]);
+
+    if (stockInCount > 0 || stockOutCount > 0) {
+      throw new BadRequestException(
+        `Cannot delete "${item.name}" — it has existing stock movement records (${stockInCount} stock-in, ${stockOutCount} stock-out). ` +
+        `Items with transaction history cannot be permanently deleted to preserve audit records. ` +
+        `If you no longer need this item, contact an administrator.`,
+      );
+    }
+
+    await this.prisma.storeItem.delete({ where: { id } });
+    return { deleted: true, id, sku: item.sku };
   }
 
   async getLowStockItems() {

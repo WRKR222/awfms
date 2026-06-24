@@ -1,13 +1,8 @@
 // frontend/src/pages/store/StockOutTab.tsx
-// Changes:
-//   - Stock out only allowed for items approved on weekly or emergency issuance plan
-//   - Removed Recipient (House) field
-//   - Batch dropdown now shows actual batches from the system (not filtered by house)
-//   - Removed duplicate Department/Project field (purpose used once)
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm, useWatch } from 'react-hook-form';
-import { Plus, AlertTriangle, ShieldX } from 'lucide-react';
+import { Plus, AlertTriangle, ShieldX, CheckCircle, Pencil } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import { api } from '../../lib/api/client';
 import { fmtKES, useStoreItems, useBatches } from './_shared';
@@ -64,6 +59,7 @@ export function StockOutTab() {
   const { data: approvedItemIds } = useApprovedPlanItems();
   const [showForm, setShowForm] = useState(false);
   const [search, setSearch] = useState('');
+  const [reviewData, setReviewData] = useState<FormData | null>(null);
 
   const { register, handleSubmit, reset, control, watch } = useForm<FormData>({
     defaultValues: { issuedDate: dayjs().format('YYYY-MM-DD') },
@@ -109,9 +105,25 @@ export function StockOutTab() {
       qc.invalidateQueries({ queryKey: ['feed'] });
       qc.invalidateQueries({ queryKey: ['approved-plan-items'] });
       reset({ issuedDate: dayjs().format('YYYY-MM-DD') });
+      setReviewData(null);
       setShowForm(false);
     },
   });
+
+  // Called on form submit — shows review modal instead of sending directly
+  const onReview = (data: FormData) => {
+    setReviewData(data);
+  };
+
+  // Called from review modal confirm button
+  const onConfirmSubmit = () => {
+    if (reviewData) create.mutate(reviewData);
+  };
+
+  // Helpers for the review modal
+  const reviewItem   = reviewData ? items.find(i => i.id === reviewData.storeItemId) : null;
+  const reviewBatch  = reviewData?.issuedToBatchId ? batches.find(b => b.id === reviewData.issuedToBatchId) : null;
+  const reviewRole   = reviewData ? RECIPIENT_ROLES.find(r => r.value === reviewData.recipientRole)?.label ?? reviewData.recipientRole : null;
 
   return (
     <div className="space-y-4">
@@ -121,7 +133,7 @@ export function StockOutTab() {
       </button>
 
       {showForm && (
-        <form onSubmit={handleSubmit(d => create.mutate(d))}
+        <form onSubmit={handleSubmit(onReview)}
           className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border space-y-3">
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -226,10 +238,59 @@ export function StockOutTab() {
             title={isItemApproved === false ? 'Item must be approved on an issuance plan before stock can be issued' : ''}
             className="bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Issue Stock Out
+            Review &amp; Confirm
           </button>
           {create.isError && <p className="text-xs text-red-600">Failed to issue. Check stock levels and required fields.</p>}
         </form>
+      )}
+
+      {/* ── Review / Confirm Modal ── */}
+      {reviewData && reviewItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="bg-white dark:bg-dark-card rounded-2xl p-5 max-w-md w-full shadow-xl space-y-4">
+            <div className="flex items-center gap-2 text-brand-green">
+              <CheckCircle className="w-5 h-5" />
+              <h3 className="font-bold text-sm">Review Stock Issuance</h3>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Please confirm the details below are correct before issuing.
+            </p>
+
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-3 space-y-2 text-sm">
+              <ReviewRow label="Item" value={`${reviewItem.name} (${reviewItem.sku})`} />
+              <ReviewRow label="Issued Date" value={dayjs(reviewData.issuedDate).format('DD/MM/YYYY')} />
+              <ReviewRow label="Quantity Out" value={`${Number(reviewData.quantityOut)} ${reviewItem.unit}`} />
+              <ReviewRow label="Total Cost" value={fmtKES(Number(reviewData.quantityOut) * Number(reviewItem.unitCostKes))} strong />
+              <ReviewRow label="Balance After" value={`${Math.max(0, Number(reviewItem.currentStock) - Number(reviewData.quantityOut))} ${reviewItem.unit}`} />
+              {reviewRole && <ReviewRow label="Issued To (Role)" value={reviewRole} />}
+              {reviewData.otherRecipient && <ReviewRow label="Dept / Project" value={reviewData.otherRecipient} />}
+              {reviewData.purpose && <ReviewRow label="Purpose / Person" value={reviewData.purpose} />}
+              {reviewBatch && <ReviewRow label="Batch" value={reviewBatch.batchCode} />}
+              {reviewData.notes && <ReviewRow label="Notes" value={reviewData.notes} />}
+            </div>
+
+            {create.isError && (
+              <p className="text-xs text-red-600">Failed to issue. Check stock levels and required fields.</p>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={onConfirmSubmit}
+                disabled={create.isPending}
+                className="bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-60"
+              >
+                {create.isPending ? 'Issuing…' : 'Confirm & Issue'}
+              </button>
+              <button
+                onClick={() => { setReviewData(null); create.reset(); }}
+                disabled={create.isPending}
+                className="flex items-center gap-1 px-4 py-2 rounded-xl text-sm font-semibold border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300 disabled:opacity-50"
+              >
+                <Pencil className="w-3 h-3" /> Edit
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border overflow-hidden">
@@ -276,4 +337,15 @@ export function StockOutTab() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return <div><label className="text-xs text-gray-500 mb-1 block">{label}</label>{children}</div>;
+}
+
+function ReviewRow({ label, value, strong }: { label: string; value: string | number; strong?: boolean }) {
+  return (
+    <div className="flex justify-between items-start gap-4 py-0.5">
+      <span className="text-xs text-gray-500 flex-shrink-0">{label}</span>
+      <span className={`text-xs text-right ${strong ? 'font-bold text-gray-800 dark:text-gray-100' : 'text-gray-700 dark:text-gray-200'}`}>
+        {String(value)}
+      </span>
+    </div>
+  );
 }
