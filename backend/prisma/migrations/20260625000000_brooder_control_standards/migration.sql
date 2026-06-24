@@ -5,6 +5,10 @@
 -- adds per-level mortality tracking with row/level granularity, adds a
 -- weekly residual feed carry-forward column to BrooderLevelFeedLog, and
 -- registers the new notification types used for threshold alerts.
+--
+-- IDEMPOTENT VERSION — every DDL statement is guarded with
+-- IF NOT EXISTS / IF EXISTS / ON CONFLICT DO NOTHING so the migration
+-- is safe to re-run after a partial failure (P3009 recovery).
 -- ============================================================================
 
 -- ── 1. HyLine Brown rearing standard table ───────────────────────────────────
@@ -87,7 +91,7 @@ CREATE INDEX IF NOT EXISTS "brooder_level_mortality_logs_batch_idx"
 -- ── 3. Residual feed balance carry-forward on IssuancePlan ───────────────────
 -- When the previous week's issuance plan closes out with unused feed,
 -- the residual must be deducted from the next week's plan (req 4).
--- We track it as a nullable decimal on IssuancePlanItem — stores stores can
+-- We track it as a nullable decimal on IssuancePlanItem — stores can
 -- see "this item already has Xkg residual from last week".
 
 ALTER TABLE "issuance_plan_items"
