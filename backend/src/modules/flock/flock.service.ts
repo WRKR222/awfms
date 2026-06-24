@@ -125,6 +125,29 @@ export class FlockService {
       );
     }
 
+    // Brooder cage-map level placements — stored in notes AND BrooderLevelAssignment records created atomically.
+    // Format: [{ levelId: string, birdCount: number, notes?: string }]
+    if (Array.isArray(input.brooderLevelPlacements) && input.brooderLevelPlacements.length) {
+      // Validate total matches quantityReceived
+      const placedTotal = input.brooderLevelPlacements.reduce(
+        (sum: number, p: any) => sum + (Number(p.birdCount) || 0),
+        0,
+      );
+      // Allow partial placement (PM may leave some cells unassigned initially)
+      // but reject if placed total exceeds quantity received
+      if (placedTotal > quantity) {
+        throw new BadRequestException(
+          `Brooder level placements total (${placedTotal}) exceeds Quantity Received (${quantity}).`,
+        );
+      }
+      notesParts.push(
+        'Brooder level placements: ' +
+        input.brooderLevelPlacements
+          .map((p: any) => `level:${p.levelId}=${p.birdCount}`)
+          .join(', '),
+      );
+    }
+
     try {
       // Transaction: batch creation + cage assignments are atomic
       const result = await this.prisma.$transaction(async (tx) => {
@@ -182,6 +205,37 @@ export class FlockService {
                 batchId:      batch.id,
                 birdCount:    Number(placement.birdCount) || 0,
                 transferDate: new Date(),
+                assignedById: userId,
+              },
+            });
+          }
+        }
+
+        // Create BrooderLevelAssignment records for direct brooder registration.
+        // Each entry: { levelId: string, birdCount: number, notes?: string }
+        // levelId is the UUID PK of brooder_levels (from the cage-map endpoint).
+        if (location === 'BROODER' && Array.isArray(input.brooderLevelPlacements) && input.brooderLevelPlacements.length) {
+          const placementDate = new Date();
+          for (const placement of input.brooderLevelPlacements) {
+            const birdCount = Number(placement.birdCount) || 0;
+            if (birdCount <= 0) continue; // skip empty cells
+            const level = await tx.brooderLevel.findUnique({ where: { id: placement.levelId } });
+            if (!level) continue; // gracefully skip unknown levelIds
+            await tx.brooderLevelAssignment.upsert({
+              where:  { levelId: placement.levelId },
+              create: {
+                levelId:      placement.levelId,
+                batchId:      batch.id,
+                birdCount,
+                placedDate:   placementDate,
+                notes:        placement.notes ?? null,
+                assignedById: userId,
+              },
+              update: {
+                batchId:      batch.id,
+                birdCount,
+                placedDate:   placementDate,
+                notes:        placement.notes ?? null,
                 assignedById: userId,
               },
             });

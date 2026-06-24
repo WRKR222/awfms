@@ -31,6 +31,16 @@ export class BrooderController {
     return this.svc.getCageMap();
   }
 
+  /** GET /brooder/rows-and-levels
+   *  Returns the fixed 6-row × 4-level grid with occupancy status.
+   *  Used by the New Batch registration modal so the PM can assign birds
+   *  directly from the form without navigating away. */
+  @Get('rows-and-levels')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getRowsAndLevels() {
+    return this.svc.getRowsAndLevels();
+  }
+
   @Get('feed-requirement-summary')
   @RequirePermission(Permission.FLOCK_VIEW)
   getFeedRequirementSummary() {

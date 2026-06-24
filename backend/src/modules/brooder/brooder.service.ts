@@ -115,6 +115,40 @@ export class BrooderService {
 
   // ── Cage map: full 6x4 grid with assignments, heating, feed status ───────
 
+  /** Lightweight grid for the registration modal: returns rows + levels with
+   *  occupancy flag so the PM can see which cells are free before placing birds. */
+  async getRowsAndLevels() {
+    const rows = await this.prisma.brooderRow.findMany({
+      orderBy: { rowNumber: 'asc' },
+      where:   { isActive: true },
+      select: {
+        id: true, rowNumber: true, label: true,
+        levels: {
+          orderBy: { levelNumber: 'asc' },
+          where:   { isActive: true },
+          select: {
+            id: true, levelNumber: true, label: true,
+            assignment: {
+              select: { batchId: true, birdCount: true },
+            },
+          },
+        },
+      },
+    });
+    return rows.map(r => ({
+      rowId:     r.id,
+      rowNumber: r.rowNumber,
+      label:     r.label,
+      levels: r.levels.map(l => ({
+        levelId:     l.id,
+        levelNumber: l.levelNumber,
+        label:       l.label,
+        isOccupied:  !!l.assignment,
+        currentBirdCount: l.assignment?.birdCount ?? 0,
+      })),
+    }));
+  }
+
   async getCageMap() {
     const rows = await this.prisma.brooderRow.findMany({
       orderBy: { rowNumber: 'asc' },

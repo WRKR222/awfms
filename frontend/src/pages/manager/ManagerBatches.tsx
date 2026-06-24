@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
-import { Bird, Calendar, Home, Info, ChevronRight, Plus, CheckCircle, Clock, XCircle, TrendingUp, Hash, Layers, X, AlertTriangle, Pencil } from 'lucide-react';
+import { Bird, Calendar, Home, Info, ChevronRight, Plus, CheckCircle, Clock, XCircle, TrendingUp, Hash, Layers, X, AlertTriangle, Pencil, Flame } from 'lucide-react';
 import { useBatches, useUpdateBatch } from '../../hooks/useFlock';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
@@ -314,6 +314,24 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
   const [rowPlacements, setRowPlacements] = useState<RowPlacementMap>(emptyRowPlacements);
   const [placementError, setPlacementError] = useState<string | null>(null);
 
+  // Brooder cage-map placements: levelId → bird count string
+  type BrooderLevelMap = Record<string, string>;
+  const [brooderLevelMap, setBrooderLevelMap] = useState<BrooderLevelMap>({});
+
+  // Fetch the brooder grid when location = BROODER
+  const { data: brooderRows = [] } = useQuery<{
+    rowId: string; rowNumber: number; label: string;
+    levels: { levelId: string; levelNumber: number; label: string; isOccupied: boolean; currentBirdCount: number }[];
+  }[]>({
+    queryKey: ['brooder-rows-and-levels'],
+    queryFn:  () => api.get('/brooder/rows-and-levels').then(r => r.data),
+    enabled:  location === 'BROODER',
+    staleTime: 30_000,
+  });
+
+  const brooderPlacedTotal = Object.values(brooderLevelMap)
+    .reduce((sum, v) => sum + (Number(v) || 0), 0);
+
   const placedTotal = Object.values(rowPlacements)
     .reduce((sum, v) => sum + (Number(v) || 0), 0);
 
@@ -340,6 +358,11 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
         payload.rowPlacements = Object.entries(rowPlacements)
           .map(([rowCode, count]) => ({ rowCode, birdCount: Number(count) || 0 }));
       }
+      if (data.location === 'BROODER') {
+        payload.brooderLevelPlacements = Object.entries(brooderLevelMap)
+          .filter(([, count]) => Number(count) > 0)
+          .map(([levelId, count]) => ({ levelId, birdCount: Number(count) }));
+      }
       return api.post('/flock/batches', payload).then(r => r.data);
     },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['flock', 'batches'] }); onClose(); },
@@ -354,6 +377,12 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
         );
         return;
       }
+    }
+    if (data.location === 'BROODER' && brooderPlacedTotal > Number(data.quantityReceived)) {
+      setPlacementError(
+        `Birds assigned to brooder levels (${brooderPlacedTotal}) exceeds Quantity Received (${data.quantityReceived || 0}).`,
+      );
+      return;
     }
     create.mutate(data);
   };
@@ -508,6 +537,80 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
               <p className="text-[10px] text-gray-400">
                 The sum of birds placed across all rows must equal the Quantity Received.
               </p>
+            </div>
+          )}
+
+          {/* Brooder cage-map level placements ───────────────────────────── */}
+          {location === 'BROODER' && (
+            <div className="bg-amber-500/5 dark:bg-amber-900/10 border border-amber-500/30 rounded-xl p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Flame className="w-4 h-4 text-amber-500" />
+                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                    Assign to Brooder Cage Map
+                  </p>
+                </div>
+                <p className={`text-xs font-semibold ${
+                  brooderPlacedTotal > 0 && brooderPlacedTotal === quantityReceived
+                    ? 'text-brand-green'
+                    : brooderPlacedTotal > quantityReceived
+                    ? 'text-red-500'
+                    : 'text-gray-400'
+                }`}>
+                  {brooderPlacedTotal} / {quantityReceived || 0} birds placed
+                </p>
+              </div>
+              <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                Optional — assign birds to specific rows and levels now.
+                You can also assign them later from the Brooder Cage Map.
+              </p>
+              {brooderRows.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">Loading cage map…</p>
+              ) : (
+                <div className="space-y-3">
+                  {brooderRows.map(row => (
+                    <div key={row.rowId}>
+                      <p className="text-[11px] uppercase tracking-wide font-bold text-amber-600 dark:text-amber-400 mb-1.5 flex items-center gap-1.5">
+                        <Layers className="w-3 h-3" /> {row.label}
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {row.levels.map(level => (
+                          <div key={level.levelId}>
+                            <label className={`${lCls} flex items-center gap-1.5`}>
+                              {level.label}
+                              {level.isOccupied && (
+                                <span className="text-[9px] bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 px-1.5 py-0.5 rounded-full font-semibold">
+                                  Occupied ({level.currentBirdCount})
+                                </span>
+                              )}
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              inputMode="numeric"
+                              value={brooderLevelMap[level.levelId] ?? ''}
+                              onChange={e =>
+                                setBrooderLevelMap(prev => ({
+                                  ...prev,
+                                  [level.levelId]: e.target.value,
+                                }))
+                              }
+                              className={`${iCls} ${level.isOccupied ? 'border-amber-300 dark:border-amber-700' : ''}`}
+                              placeholder="0"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {brooderPlacedTotal > quantityReceived && quantityReceived > 0 && (
+                <p className="text-red-500 text-xs flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  Total assigned ({brooderPlacedTotal}) exceeds Quantity Received ({quantityReceived}).
+                </p>
+              )}
             </div>
           )}
 

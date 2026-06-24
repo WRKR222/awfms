@@ -106,6 +106,31 @@ export function useBrooderCageMap() {
   });
 }
 
+/** Lightweight grid for registration/assignment modals (no feed/heat data). */
+export interface BrooderLevelSummary {
+  levelId:          string;
+  levelNumber:      number;
+  label:            string;
+  isOccupied:       boolean;
+  currentBirdCount: number;
+}
+
+export interface BrooderRowSummary {
+  rowId:     string;
+  rowNumber: number;
+  label:     string;
+  levels:    BrooderLevelSummary[];
+}
+
+export function useBrooderRowsAndLevels(enabled = true) {
+  return useQuery<BrooderRowSummary[]>({
+    queryKey:  ['brooder-rows-and-levels'],
+    queryFn:   () => api.get('/brooder/rows-and-levels').then(r => r.data),
+    staleTime: 30_000,
+    enabled,
+  });
+}
+
 export function useBrooderFeedSummary() {
   return useQuery<FeedRequirementSummary>({
     queryKey:      ['brooder-feed-summary'],
