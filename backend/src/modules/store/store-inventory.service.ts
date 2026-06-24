@@ -75,26 +75,58 @@ export class UpdateStoreItemDto {
   isActive?: boolean;
 }
 
-export interface StockInDto {
+export class StockInDto {
+  @IsString() @IsNotEmpty()
   storeItemId: string;
+
+  @IsString() @IsNotEmpty()
   receivedDate: string;
+
+  @Transform(toFiniteNumber) @IsNumber() @Min(0)
   quantityIn: number;
+
+  @Transform(toFiniteNumber) @IsNumber() @Min(0)
   unitCostKes: number;
+
+  @IsOptional() @IsString()
   supplierName?: string;
+
+  @IsOptional() @IsString()
   invoiceRef?: string;
+
+  @IsOptional() @IsString()
   notes?: string;
 }
 
-export interface StockOutDto {
+export class StockOutDto {
+  @IsString() @IsNotEmpty()
   storeItemId: string;
+
+  @IsString() @IsNotEmpty()
   issuedDate: string;
+
+  @Transform(toFiniteNumber) @IsNumber() @Min(0)
   quantityOut: number;
+
+  @IsOptional() @IsString()
   recipientRole?: string;
+
+  @IsOptional() @IsString()
   otherRecipient?: string;
+
+  @IsOptional() @IsString()
   issuedToName?: string;
+
+  @IsOptional() @IsString()
   issuedToHouseId?: string;
+
+  @IsOptional() @IsString()
   issuedToBatchId?: string;
+
+  @IsOptional() @IsString()
   purpose?: string;
+
+  @IsOptional() @IsString()
   notes?: string;
 }
 
