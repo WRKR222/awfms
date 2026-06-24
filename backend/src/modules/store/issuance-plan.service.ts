@@ -109,6 +109,7 @@ export class IssuancePlanService {
       type: 'WEEKLY' | 'EMERGENCY';
       weekStartDate: string;
       notes?: string;
+      emergencyReason?: string;
       items: {
         storeItemId: string;
         quantityPlanned?: number;
@@ -127,6 +128,15 @@ export class IssuancePlanService {
 
     if (dayjs.utc(monday).isoWeekday() !== 1) {
       throw new BadRequestException('weekStartDate must be a Monday');
+    }
+
+    // Weekly plans are only ever drawn up on Saturday for the following week.
+    // The "Weekly Plan" button is disabled client-side on every other day, but
+    // this check stops the same restriction being bypassed via a direct API call.
+    if (dto.type === 'WEEKLY' && !isSaturday()) {
+      throw new BadRequestException(
+        'Weekly issuance plans can only be created on Saturdays for the following week.',
+      );
     }
 
     const enrichedItems = dto.items.map((item) => {
@@ -150,6 +160,7 @@ export class IssuancePlanService {
         weekEndDate: sunday,
         phase: 'DRAFT',
         notes: dto.notes,
+        emergencyReason: dto.type === 'EMERGENCY' ? dto.emergencyReason : null,
         createdById: userId,
       },
     });
@@ -191,6 +202,7 @@ export class IssuancePlanService {
     id: string,
     dto: {
       notes?: string;
+      emergencyReason?: string;
       items?: {
         id?: string;
         storeItemId: string;
@@ -325,6 +337,9 @@ export class IssuancePlanService {
       if (dto.notes !== undefined) {
         await tx.issuancePlan.update({ where: { id }, data: { notes: dto.notes } });
       }
+      if (dto.emergencyReason !== undefined && plan.type === 'EMERGENCY') {
+        await tx.issuancePlan.update({ where: { id }, data: { emergencyReason: dto.emergencyReason } });
+      }
     });
 
     await this.syncPhase(id);
@@ -351,6 +366,14 @@ export class IssuancePlanService {
     if (plan.type === 'WEEKLY' && !isSaturday()) {
       throw new BadRequestException(
         'Weekly issuance plans can only be submitted on Saturdays for the following week',
+      );
+    }
+
+    // Emergency plans must always carry a reason explaining the urgency —
+    // Store cannot submit one without it.
+    if (plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim()) {
+      throw new BadRequestException(
+        'A reason is required before an emergency issuance plan can be submitted.',
       );
     }
 
@@ -812,6 +835,31 @@ export class IssuancePlanService {
         { entityId: item.planId, entityType: 'IssuancePlan' },
       );
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // SATURDAY WEEKLY-PLAN REMINDER (called by cron) — nudges Store to draft and
+  // submit next week's weekly issuance plan. Skips the nudge if a weekly plan
+  // for the upcoming week already exists (drafted, submitted, or decided).
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async sendWeeklyPlanReminder() {
+    const today = dayjs();
+    const daysUntilMon = (8 - today.day()) % 7 || 7;
+    const mondayDateStr = today.add(daysUntilMon, 'day').format('YYYY-MM-DD');
+    const monday = dayjs.utc(mondayDateStr).startOf('day').toDate();
+
+    const existing = await this.prisma.issuancePlan.findFirst({
+      where: { type: 'WEEKLY', weekStartDate: monday },
+    });
+    if (existing) return;
+
+    await this.notifications.notifyRole(
+      UserRole.STORE,
+      NotificationType.WEEKLY_PLAN_REMINDER as any,
+      "It's Saturday — Create the Weekly Issuance Plan",
+      `Draft and submit the weekly issuance plan for the coming week (${dayjs(monday).format('D MMM')} – ${dayjs(monday).add(6, 'day').format('D MMM YYYY')}) before end of day.`,
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

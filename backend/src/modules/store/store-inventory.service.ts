@@ -82,7 +82,6 @@ export interface StockInDto {
   unitCostKes: number;
   supplierName?: string;
   invoiceRef?: string;
-  lpoId?: string;
   notes?: string;
 }
 
@@ -226,7 +225,6 @@ export class StoreInventoryService {
           totalCostKes,
           supplierName: dto.supplierName ?? null,
           invoiceRef:   dto.invoiceRef ?? null,
-          lpoId:        dto.lpoId ?? null,
           notes:        dto.notes ?? null,
           receivedById: user.id,
         },
@@ -256,7 +254,6 @@ export class StoreInventoryService {
       include: {
         storeItem:  { select: { name: true, unit: true, sku: true } },
         receivedBy: { select: { fullName: true } },
-        lpo:        { select: { lpoNumber: true } },
       },
       orderBy: { receivedDate: 'desc' },
       take: 100,

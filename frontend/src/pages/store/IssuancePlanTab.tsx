@@ -321,6 +321,12 @@ function PlanCard({
             </p>
           )}
 
+          {plan.type === 'EMERGENCY' && plan.emergencyReason && (
+            <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl px-3 py-2">
+              <span className="font-semibold">Reason:</span> {plan.emergencyReason}
+            </p>
+          )}
+
           {/* Per-item rows — each carries its own status + actions */}
           {items.length > 0 ? (
             <div className="space-y-2">
@@ -360,8 +366,18 @@ function PlanCard({
             {canSubmit && (
               <button
                 onClick={() => submitMutation.mutate()}
-                disabled={submitMutation.isPending || (!isSaturday() && plan.type === 'WEEKLY')}
-                title={!isSaturday() && plan.type === 'WEEKLY' ? 'Weekly plans can only be submitted on Saturdays' : ''}
+                disabled={
+                  submitMutation.isPending ||
+                  (!isSaturday() && plan.type === 'WEEKLY') ||
+                  (plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim())
+                }
+                title={
+                  !isSaturday() && plan.type === 'WEEKLY'
+                    ? 'Weekly plans can only be submitted on Saturdays'
+                    : plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim()
+                      ? 'A reason is required before this emergency plan can be submitted'
+                      : ''
+                }
                 className="flex items-center gap-1.5 bg-brand-green text-white px-4 py-2 rounded-xl text-xs font-semibold disabled:opacity-50"
               >
                 <CheckCircle className="w-3.5 h-3.5" />

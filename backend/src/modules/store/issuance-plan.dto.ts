@@ -52,6 +52,12 @@ export class CreateIssuancePlanDto {
   @IsString()
   notes?: string;
 
+  /** Mandatory justification when type === 'EMERGENCY'; enforced in the service
+   *  (not here) so the same DTO can serve WEEKLY plans, where it's irrelevant. */
+  @IsOptional()
+  @IsString()
+  emergencyReason?: string;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => IssuancePlanItemDto)
@@ -62,6 +68,10 @@ export class UpdateIssuancePlanDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  emergencyReason?: string;
 
   @IsOptional()
   @IsArray()

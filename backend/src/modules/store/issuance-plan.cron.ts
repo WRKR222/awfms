@@ -22,4 +22,11 @@ export class IssuancePlanCron {
     this.logger.log('Running issuance plan pending reminders');
     await this.issuancePlanService.sendPendingReminders();
   }
+
+  /** 07:00 every Saturday — remind Store to draft the weekly issuance plan */
+  @Cron('0 7 * * 6')
+  async weeklyPlanReminder() {
+    this.logger.log('Running Saturday weekly issuance plan reminder');
+    await this.issuancePlanService.sendWeeklyPlanReminder();
+  }
 }

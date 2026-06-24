@@ -61,6 +61,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
   ],
   [UserRole.STORE]: [
+    // FIX: Store needs FLOCK_VIEW to list batches (GET /flock/batches) for the
+    // "Recipient (Batch)" dropdown on Stock Out — without it the request 403s
+    // and the dropdown silently falls back to an empty list ("— None —" only).
+    Permission.FLOCK_VIEW,
     Permission.FEED_VIEW,
     Permission.FEED_STOCK_VIEW,
     Permission.FEED_INTAKE_LOG,

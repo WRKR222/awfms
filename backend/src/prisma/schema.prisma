@@ -150,6 +150,7 @@ enum NotificationType {
   ISSUANCE_PLAN_REJECTED
   ISSUANCE_PLAN_PENDING_REMINDER
   FEED_ISSUANCE_DAILY_ALERT
+  WEEKLY_PLAN_REMINDER
 }
 
 enum IssuancePlanType {
@@ -1492,7 +1493,6 @@ model StoreStockIn {
   totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
   supplierName  String?  @map("supplier_name")
   invoiceRef    String?  @map("invoice_ref")
-  lpoId         String?  @map("lpo_id")
   notes         String?
   receivedById  String   @map("received_by_id")
   expiryDate    DateTime? @map("expiry_date") @db.Date
@@ -1500,7 +1500,6 @@ model StoreStockIn {
 
   storeItem     StoreItem           @relation(fields: [storeItemId], references: [id])
   receivedBy    User                @relation("StoreStockInReceivedBy", fields: [receivedById], references: [id])
-  lpo           LocalPurchaseOrder? @relation(fields: [lpoId], references: [id])
 
   @@index([storeItemId, receivedDate])
   @@index([receivedDate])
@@ -1539,17 +1538,20 @@ model StoreStockOut {
 
 /// Weekly or emergency issuance plan — replaces PurchaseRequest/LPO for stock issuance control
 model IssuancePlan {
-  id            String              @id @default(uuid())
-  planRef       String              @unique @map("plan_ref")
-  type          IssuancePlanType    @default(WEEKLY)
-  weekStartDate DateTime            @map("week_start_date") @db.Date
-  weekEndDate   DateTime            @map("week_end_date") @db.Date
+  id              String              @id @default(uuid())
+  planRef         String              @unique @map("plan_ref")
+  type            IssuancePlanType    @default(WEEKLY)
+  weekStartDate   DateTime            @map("week_start_date") @db.Date
+  weekEndDate     DateTime            @map("week_end_date") @db.Date
   /// Plan-level phase: whether it's still a draft, with the Accountant, with
   /// the Director, or fully decided. Does NOT mean every item was approved —
   /// check each IssuancePlanItem.status for that. See `phase` computation in
   /// issuance-plan.service.ts for how this is kept in sync.
-  phase         IssuancePlanPhase   @default(DRAFT)
-  notes         String?
+  phase           IssuancePlanPhase   @default(DRAFT)
+  notes           String?
+  /// Mandatory justification for EMERGENCY plans (enforced in IssuancePlanService,
+  /// not at the DB level, since WEEKLY plans never set it).
+  emergencyReason String?             @map("emergency_reason")
 
   createdById               String    @map("created_by_id")
 
@@ -1690,7 +1692,6 @@ model LocalPurchaseOrder {
   createdBy       User             @relation("LPOCreatedBy", fields: [createdById], references: [id])
   approvedBy      User?            @relation("LPOApprovedBy", fields: [approvedById], references: [id])
   items           LPOItem[]
-  stockIns        StoreStockIn[]
 
   @@index([status])
   @@index([lpoDate])
