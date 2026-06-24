@@ -1281,12 +1281,21 @@ model BiosecurityLog {
 
 model VisitorAdvanceNotice {
   id            String    @id @default(uuid())
-  expectedDate  DateTime  @map("expected_date") @db.Date
+  // Was @db.Date (date-only) — widened to a full timestamp so Store can record
+  // an exact expected arrival time, not just a day. Existing date-only values
+  // (Manager's flow still submits date-only strings) keep working unchanged;
+  // they just read back as midnight, same as before.
+  expectedDate  DateTime  @map("expected_date")
   visitorName   String    @map("visitor_name")
   organisation  String?
+  // Optional contact / identification details — useful for supplier and
+  // delivery-driver visits logged by Store.
+  phone         String?
+  idNumber      String?   @map("id_number")
   purpose       String
   expectedCount Int       @default(1) @map("expected_count")
   houseIds      String[]  @map("house_ids")
+  notes         String?
   requestedById String    @map("requested_by_id")
 
   status       String    @default("PENDING")

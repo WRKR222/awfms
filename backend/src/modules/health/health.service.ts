@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { HealthEventType, VaccinationRoute, UserRole, NotificationType } from '@prisma/client';
@@ -236,18 +236,41 @@ export class HealthService {
     expectedDate: string;
     visitorName: string;
     organisation?: string;
+    phone?: string;
+    idNumber?: string;
     purpose: string;
     expectedCount?: number;
     houseIds?: string[];
+    notes?: string;
   }, requestedById: string) {
+    const expectedDate = new Date(dto.expectedDate);
+    if (isNaN(expectedDate.getTime())) {
+      throw new BadRequestException('Invalid expected date/time');
+    }
+    // Cannot schedule an advance visit in the past, relative to the moment
+    // it's being logged. Date-only submissions (no time-of-day, e.g. the
+    // Manager flow's plain date picker) are compared by calendar day so
+    // "today" still validates; full date+time submissions (e.g. Store's
+    // datetime picker) are compared by exact instant.
+    const hasTimeComponent = /T\d/.test(dto.expectedDate);
+    const isPast = hasTimeComponent
+      ? expectedDate.getTime() < Date.now()
+      : dayjs(expectedDate).isBefore(dayjs(), 'day');
+    if (isPast) {
+      throw new BadRequestException('Expected arrival date/time cannot be in the past');
+    }
+
     const notice = await this.prisma.visitorAdvanceNotice.create({
       data: {
-        expectedDate: new Date(dto.expectedDate),
+        expectedDate,
         visitorName: dto.visitorName,
         organisation: dto.organisation,
+        phone: dto.phone,
+        idNumber: dto.idNumber,
         purpose: dto.purpose,
         expectedCount: dto.expectedCount ?? 1,
         houseIds: dto.houseIds ?? [],
+        notes: dto.notes,
         requestedById,
         status: 'PENDING',
       },
@@ -258,7 +281,7 @@ export class HealthService {
       UserRole.OWNER,
       NotificationType.SYSTEM,
       'Visitor Notice Requires Approval',
-      `${dto.visitorName}${dto.organisation ? ` (${dto.organisation})` : ''} is expected on ${dayjs(dto.expectedDate).format('D MMM YYYY')}. Please review and approve.`,
+      `${dto.visitorName}${dto.organisation ? ` (${dto.organisation})` : ''} is expected on ${dayjs(dto.expectedDate).format('D MMM YYYY, HH:mm')}. Please review and approve.`,
       { entityId: notice.id, entityType: 'visitor_advance_notice' },
     );
 

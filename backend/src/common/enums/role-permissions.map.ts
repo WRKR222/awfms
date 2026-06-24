@@ -65,6 +65,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     // "Recipient (Batch)" dropdown on Stock Out — without it the request 403s
     // and the dropdown silently falls back to an empty list ("— None —" only).
     Permission.FLOCK_VIEW,
+    // FIX: Store logs advance visitor notices via POST/GET /health/visitors/advance
+    // (Visitors page) — without these, submitting always 403'd ("Failed to submit").
+    Permission.HEALTH_VISITOR_LOG,
+    Permission.HEALTH_VIEW,
     Permission.FEED_VIEW,
     Permission.FEED_STOCK_VIEW,
     Permission.FEED_INTAKE_LOG,
