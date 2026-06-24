@@ -17,7 +17,7 @@
 --   "Total Weekly Feed for the Flock (Bags)" (batch-size specific).
 
 CREATE TABLE IF NOT EXISTS "brooder_control_standards" (
-  "id"                       UUID        NOT NULL DEFAULT gen_random_uuid(),
+  "id"                       TEXT        NOT NULL DEFAULT gen_random_uuid()::text,
   "week"                     INTEGER     NOT NULL,               -- 1-19
   "deheus_phase"             TEXT        NOT NULL,               -- e.g. 'Starter Crumbs'
   "feeding_grams_per_bird"   DECIMAL(8,2) NOT NULL,             -- g/bird/day
@@ -63,15 +63,15 @@ ON CONFLICT ("week") DO NOTHING;
 -- BrooderLevelAssignment.bird_count and Batch.current_bird_count on insert.
 
 CREATE TABLE IF NOT EXISTS "brooder_level_mortality_logs" (
-  "id"              UUID        NOT NULL DEFAULT gen_random_uuid(),
-  "level_id"        UUID        NOT NULL,
-  "batch_id"        UUID        NOT NULL,
+  "id"              TEXT        NOT NULL DEFAULT gen_random_uuid()::text,
+  "level_id"        TEXT        NOT NULL,
+  "batch_id"        TEXT        NOT NULL,
   "log_date"        DATE        NOT NULL,
   "mortality_count" INTEGER     NOT NULL DEFAULT 0,
   "culling_count"   INTEGER     NOT NULL DEFAULT 0,
   "cause"           TEXT,                                        -- MortalityCause value
   "notes"           TEXT,
-  "logged_by_id"    UUID        NOT NULL,
+  "logged_by_id"    TEXT        NOT NULL,
   "created_at"      TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   CONSTRAINT "brooder_level_mortality_logs_pkey" PRIMARY KEY ("id"),
