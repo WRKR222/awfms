@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
-import { Plus, Search, AlertTriangle, Pencil, Trash2 } from 'lucide-react';
+import { Plus, Search, AlertTriangle, Pencil, Trash2, RotateCcw } from 'lucide-react';
 import { api } from '../../lib/api/client';
 import { fmtKES, useStoreItems, type StoreItem } from './_shared';
 
@@ -111,6 +111,13 @@ export function ItemsTab() {
         err?.response?.data?.message ?? 'Failed to remove item. It may still have stock on hand.',
       );
     },
+  });
+
+  // Bring a soft-deleted item back — re-activates it so it shows up again in
+  // Stock In / Stock Out item pickers (which only fetch isActive items).
+  const reactivateMut = useMutation({
+    mutationFn: (id: string) => api.patch(`/store/inventory/items/${id}`, { isActive: true }).then(r => r.data),
+    onSuccess: () => invalidateItems(),
   });
 
   const safeNum = (v: unknown) => {
@@ -381,6 +388,16 @@ export function ItemsTab() {
                               className="text-red-500 hover:underline text-xs inline-flex items-center gap-1"
                             >
                               <Trash2 className="w-3 h-3" /> Remove
+                            </button>
+                          )}
+                          {inactive && (
+                            <button
+                              onClick={() => reactivateMut.mutate(i.id)}
+                              disabled={reactivateMut.isPending}
+                              className="text-brand-green hover:underline text-xs inline-flex items-center gap-1 disabled:opacity-50"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              {reactivateMut.isPending ? 'Reactivating…' : 'Reactivate'}
                             </button>
                           )}
                         </div>
