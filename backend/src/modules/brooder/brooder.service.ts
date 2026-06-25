@@ -350,6 +350,16 @@ export class BrooderService {
       }
 
       // ── Place / update the target level ────────────────────────────────
+      // If the target level already has birds, ADD the incoming count to the
+      // existing count (moving birds into an occupied level merges them).
+      // If the target is empty, this is a fresh placement.
+      const existingTargetAssignment = await tx.brooderLevelAssignment.findUnique({
+        where: { levelId },
+      });
+      const finalBirdCount = existingTargetAssignment
+        ? existingTargetAssignment.birdCount + dto.birdCount
+        : dto.birdCount;
+
       const result = await tx.brooderLevelAssignment.upsert({
         where:  { levelId },
         create: {
@@ -357,7 +367,7 @@ export class BrooderService {
           placedDate: new Date(dto.placedDate), notes: dto.notes ?? null, assignedById: userId,
         },
         update: {
-          batchId: dto.batchId, birdCount: dto.birdCount,
+          batchId: dto.batchId, birdCount: finalBirdCount,
           placedDate: new Date(dto.placedDate), notes: dto.notes ?? null, assignedById: userId,
         },
       });

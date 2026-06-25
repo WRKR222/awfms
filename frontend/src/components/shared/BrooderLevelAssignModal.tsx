@@ -193,24 +193,41 @@ export function BrooderLevelAssignModal({ level, row, batches, allRows, onClose 
                   </div>
 
                   {/* Live transfer summary banner */}
-                  {selectedSource && watchedBirdCount && Number(watchedBirdCount) > 0 && (
-                    <div className="flex items-center gap-2 bg-white dark:bg-dark-bg border border-blue-200 dark:border-blue-700 rounded-xl px-3 py-2 text-xs">
-                      <Bird className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
-                      <span className="font-bold text-blue-700 dark:text-blue-300">
-                        {Number(watchedBirdCount).toLocaleString()} birds
-                      </span>
-                      <ArrowRight className="w-3 h-3 text-gray-400 flex-shrink-0" />
-                      <span className="text-gray-500">
-                        <span className="text-red-500 font-semibold line-through mr-1">
-                          {selectedSource.rowLabel} · {selectedSource.levelLabel}
-                        </span>
-                      </span>
-                      <ArrowRight className="w-3 h-3 text-gray-400 flex-shrink-0" />
-                      <span className="text-green-600 dark:text-green-400 font-semibold">
-                        {row.label} · {level.label}
-                      </span>
-                    </div>
-                  )}
+                  {selectedSource && watchedBirdCount && Number(watchedBirdCount) > 0 && !exceedsSource && (() => {
+                    const moving = Number(watchedBirdCount);
+                    const targetExisting = level.assignment?.birdCount ?? 0;
+                    const resultingCount = targetExisting + moving;
+                    return (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2 bg-white dark:bg-dark-bg border border-blue-200 dark:border-blue-700 rounded-xl px-3 py-2 text-xs">
+                          <Bird className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
+                          <span className="font-bold text-blue-700 dark:text-blue-300">
+                            {moving.toLocaleString()} birds moving
+                          </span>
+                          <ArrowRight className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                          <span className="text-red-500 font-semibold line-through">
+                            {selectedSource.rowLabel} · {selectedSource.levelLabel}
+                          </span>
+                          <ArrowRight className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                          <span className="text-green-600 dark:text-green-400 font-semibold">
+                            {row.label} · {level.label}
+                          </span>
+                        </div>
+                        {targetExisting > 0 && (
+                          <div className="flex items-center gap-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl px-3 py-2 text-xs">
+                            <Bird className="w-3.5 h-3.5 text-green-600 flex-shrink-0" />
+                            <span className="text-gray-500">
+                              {targetExisting.toLocaleString()} existing + {moving.toLocaleString()} incoming
+                            </span>
+                            <span className="text-gray-400">=</span>
+                            <span className="font-bold text-green-700 dark:text-green-400">
+                              {resultingCount.toLocaleString()} birds total on {row.label} · {level.label}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Error: cannot move more birds than the source level has */}
                   {selectedSource && watchedBirdCount && Number(watchedBirdCount) > selectedSource.birdCount && (
@@ -247,7 +264,7 @@ export function BrooderLevelAssignModal({ level, row, batches, allRows, onClose 
           <div>
             <label className={lCls}>
               <Bird className="w-3.5 h-3.5 inline mr-1 text-amber-500" />
-              Chick Count on this Level
+              {sourceRequired ? 'Birds to Move' : 'Chick Count on this Level'}
               {selectedSource && (
                 <span className="ml-1 font-normal text-gray-400">
                   (max {selectedSource.birdCount.toLocaleString()} from {selectedSource.rowLabel} · {selectedSource.levelLabel})
