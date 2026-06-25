@@ -96,7 +96,14 @@ export function BrooderLevelAssignModal({ level, row, batches, allRows, onClose 
   // Find the selected source for the summary banner
   const selectedSource = sourceOptions.find(o => o.levelId === watchedSourceId);
 
+  // Guard: cannot reassign more birds than the source level has
+  const exceedsSource =
+    !!selectedSource &&
+    !!watchedBirdCount &&
+    Number(watchedBirdCount) > selectedSource.birdCount;
+
   const submit = (data: any) => {
+    if (exceedsSource) return; // safety — button is also disabled
     assign.mutate(
       {
         levelId: level.levelId,
@@ -205,14 +212,15 @@ export function BrooderLevelAssignModal({ level, row, batches, allRows, onClose 
                     </div>
                   )}
 
-                  {/* Warn if trying to move more birds than the source has */}
+                  {/* Error: cannot move more birds than the source level has */}
                   {selectedSource && watchedBirdCount && Number(watchedBirdCount) > selectedSource.birdCount && (
-                    <div className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl px-3 py-2">
+                    <div className="flex items-start gap-1.5 text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded-xl px-3 py-2">
                       <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                       <span>
-                        You're assigning <strong>{Number(watchedBirdCount).toLocaleString()}</strong> birds but{' '}
+                        Cannot reassign <strong>{Number(watchedBirdCount).toLocaleString()}</strong> birds —{' '}
                         <strong>{selectedSource.rowLabel} · {selectedSource.levelLabel}</strong> only has{' '}
-                        <strong>{selectedSource.birdCount.toLocaleString()}</strong>. Check the count.
+                        <strong>{selectedSource.birdCount.toLocaleString()}</strong>. Reduce the count to{' '}
+                        {selectedSource.birdCount.toLocaleString()} or fewer.
                       </span>
                     </div>
                   )}
@@ -240,10 +248,21 @@ export function BrooderLevelAssignModal({ level, row, batches, allRows, onClose 
             <label className={lCls}>
               <Bird className="w-3.5 h-3.5 inline mr-1 text-amber-500" />
               Chick Count on this Level
+              {selectedSource && (
+                <span className="ml-1 font-normal text-gray-400">
+                  (max {selectedSource.birdCount.toLocaleString()} from {selectedSource.rowLabel} · {selectedSource.levelLabel})
+                </span>
+              )}
             </label>
             <input
-              {...register('birdCount', { required: true, min: 1 })}
-              type="number" min="1" className={`${iCls} font-bold text-center`}
+              {...register('birdCount', {
+                required: true,
+                min: 1,
+                ...(selectedSource ? { max: selectedSource.birdCount } : {}),
+              })}
+              type="number" min="1"
+              max={selectedSource ? selectedSource.birdCount : undefined}
+              className={`${iCls} font-bold text-center`}
               placeholder="e.g. 250"
             />
             {errors.birdCount && (
@@ -295,7 +314,7 @@ export function BrooderLevelAssignModal({ level, row, batches, allRows, onClose 
                 Cancel
               </button>
               <button
-                type="submit" disabled={assign.isPending}
+                type="submit" disabled={assign.isPending || exceedsSource}
                 className={`flex-1 ${accentColor} text-white rounded-xl py-3 font-semibold disabled:opacity-60`}
               >
                 {assign.isPending ? 'Saving…' : isPlacing ? 'Place Birds' : 'Save Reassignment'}

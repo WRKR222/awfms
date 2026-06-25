@@ -327,49 +327,96 @@ function SessionLogModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
   );
 }
 
-// ── Daily Entry Modal (water / vaccine / supplement — once per day) ────────────────
+// ── Daily Entry Modal (water / vaccines / supplements — once per day) ────────────────
+
+interface VaccineItem  { name: string; dose: string; route: string; }
+interface SupplementItem { name: string; dose: string; }
 
 function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () => void }) {
   const qc    = useQueryClient();
   const today = dayjs().format('YYYY-MM-DD');
   const min   = dayjs(batch.dateOfHatch).format('YYYY-MM-DD');
 
-  const { register, handleSubmit, watch, formState: { errors } } = useForm({
+  const { register, handleSubmit, watch } = useForm({
     defaultValues: {
       logDate:           today,
       waterConsumptionL: '',
-      vaccineGiven:      '',
-      vaccineDose:       '',
-      vaccineRoute:      'DRINKING_WATER',
-      supplement:        '',
-      supplementDose:    '',
       notes:             '',
     },
   });
+
+  const [vaccines,    setVaccines]    = useState<VaccineItem[]>([]);
+  const [supplements, setSupplements] = useState<SupplementItem[]>([]);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const logDate     = watch('logDate');
   const isBackdated = logDate < today;
   const daysBack    = logDate ? dayjs(today).diff(dayjs(logDate), 'day') : 0;
 
+  function addVaccine()    { setVaccines(v => [...v, { name: '', dose: '', route: 'DRINKING_WATER' }]); }
+  function removeVaccine(i: number) { setVaccines(v => v.filter((_, j) => j !== i)); }
+  function updateVaccine(i: number, field: keyof VaccineItem, val: string) {
+    setVaccines(v => v.map((item, j) => j === i ? { ...item, [field]: val } : item));
+  }
+
+  function addSupplement()    { setSupplements(s => [...s, { name: '', dose: '' }]); }
+  function removeSupplement(i: number) { setSupplements(s => s.filter((_, j) => j !== i)); }
+  function updateSupplement(i: number, field: keyof SupplementItem, val: string) {
+    setSupplements(s => s.map((item, j) => j === i ? { ...item, [field]: val } : item));
+  }
+
   const submit = useMutation({
-    mutationFn: (data: any) => api.post('/flock/brooder-logs', {
-      batchId:           batch.id,
-      logDate:           data.logDate,
-      logSession:        undefined,              // OMITTED — this is a once-daily entry
-      waterConsumptionL: data.waterConsumptionL ? Number(data.waterConsumptionL) : undefined,
-      vaccineGiven:      data.vaccineGiven       || undefined,
-      vaccineDose:       data.vaccineDose        || undefined,
-      vaccineRoute:      data.vaccineRoute       || undefined,
-      supplement:        data.supplement         || undefined,
-      supplementDose:    data.supplementDose     || undefined,
-      notes:             data.notes              || undefined,
-    }).then(r => r.data),
+    mutationFn: async (data: any) => {
+      const base = {
+        batchId:           batch.id,
+        logDate:           data.logDate,
+        logSession:        undefined,
+        waterConsumptionL: data.waterConsumptionL ? Number(data.waterConsumptionL) : undefined,
+        notes:             data.notes || undefined,
+      };
+      const cleanVaccines    = vaccines.filter(v => v.name.trim());
+      const cleanSupplements = supplements.filter(s => s.name.trim());
+
+      // If no meds, just post base (water + notes)
+      if (cleanVaccines.length === 0 && cleanSupplements.length === 0) {
+        return api.post('/flock/brooder-logs', base).then(r => r.data);
+      }
+      const promises: Promise<any>[] = [];
+      for (const v of cleanVaccines) {
+        promises.push(api.post('/flock/brooder-logs', {
+          ...base,
+          vaccineGiven:  v.name.trim(),
+          vaccineDose:   v.dose.trim(),
+          vaccineRoute:  v.route,
+        }).then(r => r.data));
+      }
+      for (const s of cleanSupplements) {
+        promises.push(api.post('/flock/brooder-logs', {
+          ...base,
+          supplement:     s.name.trim(),
+          supplementDose: s.dose.trim(),
+        }).then(r => r.data));
+      }
+      return Promise.all(promises);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-logs',     batch.id] });
       qc.invalidateQueries({ queryKey: ['brooder-last-log', batch.id] });
       onClose();
     },
+    onError: (err: any) => {
+      setSubmitError(err?.message ?? err?.response?.data?.message ?? 'Failed to save. Please try again.');
+    },
   });
+
+  function onFormSubmit(data: any) {
+    setSubmitError(null);
+    const cleanVaccines    = vaccines.filter(v => v.name.trim());
+    const cleanSupplements = supplements.filter(s => s.name.trim());
+    if (cleanVaccines.some(v => !v.dose.trim())) { setSubmitError('Each vaccine entry must have a dose.'); return; }
+    if (cleanSupplements.some(s => !s.dose.trim())) { setSubmitError('Each supplement entry must have a dose.'); return; }
+    submit.mutate(data);
+  }
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
@@ -382,7 +429,7 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
             </div>
             <div>
               <p className="font-bold text-gray-800 dark:text-gray-100">Daily Entry</p>
-              <p className="text-xs text-gray-400">{batch.batchCode} · water / vaccine / supplement · once per day</p>
+              <p className="text-xs text-gray-400">{batch.batchCode} · water / vaccines / supplements · once per day</p>
             </div>
           </div>
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg">
@@ -390,7 +437,7 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
           </button>
         </div>
 
-        <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-5">
+        <form onSubmit={handleSubmit(onFormSubmit)} className="p-5 space-y-5">
 
           {/* ── Date ── */}
           <div>
@@ -416,45 +463,87 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
             <input {...register('waterConsumptionL')} type="number" step="0.1" min="0" className={iCls} placeholder="e.g. 25" />
           </div>
 
-          {/* ── Vaccine ── */}
-          <div className="rounded-xl border border-purple-100 dark:border-purple-900/30 bg-purple-50/50 dark:bg-purple-900/10 p-3 space-y-2">
-            <p className="text-[11px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-widest flex items-center gap-1.5">
-              <Syringe className="w-3 h-3" /> Vaccine (if given today)
-            </p>
-            <div>
-              <label className={lCls}>Vaccine Name</label>
-              <input {...register('vaccineGiven')} className={iCls} placeholder="e.g. Newcastle ND1" />
+          {/* ── Vaccines ── */}
+          <div className="rounded-xl border border-purple-100 dark:border-purple-900/30 bg-purple-50/50 dark:bg-purple-900/10 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-widest flex items-center gap-1.5">
+                <Syringe className="w-3 h-3" /> Vaccines
+              </p>
+              <button type="button" onClick={addVaccine}
+                className="text-xs font-semibold text-purple-600 dark:text-purple-400 hover:underline flex items-center gap-1">
+                <Plus className="w-3 h-3" /> Add vaccine
+              </button>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className={lCls}>Dose</label>
-                <input {...register('vaccineDose')} className={iCls} placeholder="e.g. 1 drop/bird" />
+            {vaccines.length === 0 && (
+              <p className="text-[11px] text-gray-400 italic">No vaccines added. Tap 'Add vaccine' to log one.</p>
+            )}
+            {vaccines.map((v, i) => (
+              <div key={i} className="bg-white dark:bg-dark-bg rounded-xl border border-purple-100 dark:border-purple-800 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-purple-600 dark:text-purple-400">Vaccine {i + 1}</span>
+                  <button type="button" onClick={() => removeVaccine(i)} className="text-gray-400 hover:text-red-500">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div>
+                  <label className={lCls}>Vaccine Name *</label>
+                  <input value={v.name} onChange={e => updateVaccine(i, 'name', e.target.value)}
+                    className={iCls} placeholder="e.g. Newcastle ND1" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className={lCls}>Dose *</label>
+                    <input value={v.dose} onChange={e => updateVaccine(i, 'dose', e.target.value)}
+                      className={iCls} placeholder="e.g. 1 drop/bird" />
+                  </div>
+                  <div>
+                    <label className={lCls}>Route</label>
+                    <select value={v.route} onChange={e => updateVaccine(i, 'route', e.target.value)} className={iCls}>
+                      {VACCINE_ROUTES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                    </select>
+                  </div>
+                </div>
               </div>
-              <div>
-                <label className={lCls}>Route</label>
-                <select {...register('vaccineRoute')} className={iCls}>
-                  {VACCINE_ROUTES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-                </select>
-              </div>
-            </div>
+            ))}
             <p className="text-[10px] text-purple-500 dark:text-purple-400">
-              Will auto-appear in Vaccination History under the Manager’s Health page.
+              Vaccines auto-appear in Vaccination History under the Manager's Health page.
             </p>
           </div>
 
-          {/* ── Supplement ── */}
-          <div className="rounded-xl border border-teal-100 dark:border-teal-900/30 bg-teal-50/50 dark:bg-teal-900/10 p-3 space-y-2">
-            <p className="text-[11px] font-bold text-teal-600 dark:text-teal-400 uppercase tracking-widest flex items-center gap-1.5">
-              <FlaskConical className="w-3 h-3" /> Supplement (if given today)
-            </p>
-            <div>
-              <label className={lCls}>Supplement Name</label>
-              <input {...register('supplement')} className={iCls} placeholder="e.g. Vitamins, Electrolytes" />
+          {/* ── Supplements ── */}
+          <div className="rounded-xl border border-teal-100 dark:border-teal-900/30 bg-teal-50/50 dark:bg-teal-900/10 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-bold text-teal-600 dark:text-teal-400 uppercase tracking-widest flex items-center gap-1.5">
+                <FlaskConical className="w-3 h-3" /> Supplements
+              </p>
+              <button type="button" onClick={addSupplement}
+                className="text-xs font-semibold text-teal-600 dark:text-teal-400 hover:underline flex items-center gap-1">
+                <Plus className="w-3 h-3" /> Add supplement
+              </button>
             </div>
-            <div>
-              <label className={lCls}>Dose</label>
-              <input {...register('supplementDose')} className={iCls} placeholder="e.g. 2g/L water" />
-            </div>
+            {supplements.length === 0 && (
+              <p className="text-[11px] text-gray-400 italic">No supplements added. Tap 'Add supplement' to log one.</p>
+            )}
+            {supplements.map((s, i) => (
+              <div key={i} className="bg-white dark:bg-dark-bg rounded-xl border border-teal-100 dark:border-teal-800 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-teal-600 dark:text-teal-400">Supplement {i + 1}</span>
+                  <button type="button" onClick={() => removeSupplement(i)} className="text-gray-400 hover:text-red-500">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div>
+                  <label className={lCls}>Supplement Name *</label>
+                  <input value={s.name} onChange={e => updateSupplement(i, 'name', e.target.value)}
+                    className={iCls} placeholder="e.g. Vitamins, Electrolytes" />
+                </div>
+                <div>
+                  <label className={lCls}>Dose *</label>
+                  <input value={s.dose} onChange={e => updateSupplement(i, 'dose', e.target.value)}
+                    className={iCls} placeholder="e.g. 2g/L water" />
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* ── Notes ── */}
@@ -463,9 +552,9 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
             <textarea {...register('notes')} rows={2} className={`${iCls} resize-none`} placeholder="Observations, concerns..." />
           </div>
 
-          {submit.isError && (
+          {(submit.isError || submitError) && (
             <p className="text-red-500 text-sm bg-red-50 dark:bg-red-900/20 rounded-xl p-3">
-              {(submit.error as any)?.response?.data?.message ?? 'Failed to save. Please try again.'}
+              {submitError ?? (submit.error as any)?.response?.data?.message ?? 'Failed to save. Please try again.'}
             </p>
           )}
 
@@ -487,6 +576,21 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
 
 // ── Treatment Log Modal ───────────────────────────────────────────────────────
 
+interface TreatmentEntry {
+  drugName:     string;
+  dose:         string;
+  doseUnit:     string;
+  route:        string;
+  durationDays: string;
+  rowId:        string;
+  levelId:      string;
+  notes:        string;
+}
+
+function emptyTreatment(): TreatmentEntry {
+  return { drugName: '', dose: '', doseUnit: 'ml', route: 'DRINKING_WATER', durationDays: '', rowId: '', levelId: '', notes: '' };
+}
+
 function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () => void }) {
   const qc    = useQueryClient();
   const today = dayjs().format('YYYY-MM-DD');
@@ -494,35 +598,53 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
   const { data: rowsAndLevels = [] } = useBrooderRowsAndLevels(true);
 
   const { register, handleSubmit, watch } = useForm({
-    defaultValues: {
-      treatmentDate: today,
-      drugName:      '',
-      dose:          '',
-      doseUnit:      'ml',
-      route:         'DRINKING_WATER',
-      durationDays:  '',
-      rowId:         '',
-      levelId:       '',
-      notes:         '',
-    },
+    defaultValues: { treatmentDate: today },
   });
 
-  const selectedRowId = watch('rowId');
-  const levelsForRow  = rowsAndLevels.find(r => r.rowId === selectedRowId)?.levels ?? [];
+  const [treatments,  setTreatments]  = useState<TreatmentEntry[]>([emptyTreatment()]);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  function addTreatment()    { setTreatments(t => [...t, emptyTreatment()]); }
+  function removeTreatment(i: number) { setTreatments(t => t.filter((_, j) => j !== i)); }
+  function updateTreatment(i: number, field: keyof TreatmentEntry, val: string) {
+    setTreatments(t => t.map((item, j) => j === i ? { ...item, [field]: val } : item));
+  }
 
   const submit = useMutation({
-    mutationFn: (data: any) => api.post('/flock/brooder-treatment-logs', {
-      ...data,
-      batchId:      batch.id,
-      durationDays: data.durationDays ? Number(data.durationDays) : undefined,
-      rowId:        data.rowId   || undefined,
-      levelId:      data.levelId || undefined,
-    }).then(r => r.data),
+    mutationFn: async (data: any) => {
+      const clean = treatments.filter(t => t.drugName.trim());
+      if (clean.some(t => !t.dose.trim())) throw new Error('Each treatment must have a dose.');
+      return Promise.all(clean.map(t =>
+        api.post('/flock/brooder-treatment-logs', {
+          batchId:      batch.id,
+          treatmentDate: data.treatmentDate,
+          drugName:     t.drugName.trim(),
+          dose:         t.dose.trim(),
+          doseUnit:     t.doseUnit,
+          route:        t.route,
+          durationDays: t.durationDays ? Number(t.durationDays) : undefined,
+          rowId:        t.rowId   || undefined,
+          levelId:      t.levelId || undefined,
+          notes:        t.notes   || undefined,
+        }).then(r => r.data)
+      ));
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-treatments', batch.id] });
       onClose();
     },
+    onError: (err: any) => {
+      setSubmitError(err?.message ?? err?.response?.data?.message ?? 'Failed to save treatment. Try again.');
+    },
   });
+
+  function onFormSubmit(data: any) {
+    setSubmitError(null);
+    const clean = treatments.filter(t => t.drugName.trim());
+    if (clean.length === 0) { setSubmitError('Add at least one treatment drug.'); return; }
+    if (clean.some(t => !t.dose.trim())) { setSubmitError('Each treatment must have a dose.'); return; }
+    submit.mutate(data);
+  }
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
@@ -542,74 +664,108 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
           </button>
         </div>
 
-        <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-4">
+        <form onSubmit={handleSubmit(onFormSubmit)} className="p-5 space-y-4">
+          {/* Shared date */}
           <div>
             <label className={lCls}><Calendar className="w-3 h-3 inline mr-1" />Treatment Date</label>
             <input {...register('treatmentDate', { required: true })} type="date" max={today} className={iCls} />
           </div>
 
-          <div>
-            <label className={lCls}><Pill className="w-3 h-3 inline mr-1 text-red-400" />Drug / Product Name *</label>
-            <input {...register('drugName', { required: true })} className={iCls} placeholder="e.g. Tylosin, Baytril, OTC" />
-          </div>
+          {/* Treatment entries */}
+          {treatments.map((t, i) => {
+            const levelsForRow = rowsAndLevels.find(r => r.rowId === t.rowId)?.levels ?? [];
+            return (
+              <div key={i} className="rounded-xl border border-red-100 dark:border-red-900/30 bg-red-50/40 dark:bg-red-900/10 p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-red-600 dark:text-red-400 uppercase tracking-widest">
+                    Treatment {i + 1}
+                  </span>
+                  {treatments.length > 1 && (
+                    <button type="button" onClick={() => removeTreatment(i)} className="text-gray-400 hover:text-red-500">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
 
-          <div className="grid grid-cols-3 gap-2">
-            <div className="col-span-1">
-              <label className={lCls}>Dose *</label>
-              <input {...register('dose', { required: true })} className={iCls} placeholder="e.g. 1" />
-            </div>
-            <div className="col-span-1">
-              <label className={lCls}>Unit</label>
-              <select {...register('doseUnit')} className={iCls}>
-                {DOSE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-              </select>
-            </div>
-            <div className="col-span-1">
-              <label className={lCls}>Duration (days)</label>
-              <input {...register('durationDays')} type="number" min="1" className={iCls} placeholder="e.g. 5" />
-            </div>
-          </div>
+                <div>
+                  <label className={lCls}><Pill className="w-3 h-3 inline mr-1 text-red-400" />Drug / Product Name *</label>
+                  <input value={t.drugName} onChange={e => updateTreatment(i, 'drugName', e.target.value)}
+                    className={iCls} placeholder="e.g. Tylosin, Baytril, OTC" />
+                </div>
 
-          <div>
-            <label className={lCls}>Route of Administration</label>
-            <select {...register('route')} className={iCls}>
-              {TREATMENT_ROUTES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-            </select>
-          </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="col-span-1">
+                    <label className={lCls}>Dose *</label>
+                    <input value={t.dose} onChange={e => updateTreatment(i, 'dose', e.target.value)}
+                      className={iCls} placeholder="e.g. 1" />
+                  </div>
+                  <div className="col-span-1">
+                    <label className={lCls}>Unit</label>
+                    <select value={t.doseUnit} onChange={e => updateTreatment(i, 'doseUnit', e.target.value)} className={iCls}>
+                      {DOSE_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                    </select>
+                  </div>
+                  <div className="col-span-1">
+                    <label className={lCls}>Duration (days)</label>
+                    <input value={t.durationDays} onChange={e => updateTreatment(i, 'durationDays', e.target.value)}
+                      type="number" min="1" className={iCls} placeholder="e.g. 5" />
+                  </div>
+                </div>
 
-          {/* Row + Level selector (occupied levels only) */}
-          <div className="rounded-xl border border-gray-100 dark:border-dark-border bg-gray-50 dark:bg-dark-bg p-3 space-y-2">
-            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-widest">
-              Target Row &amp; Level (optional — leave blank for whole batch)
+                <div>
+                  <label className={lCls}>Route of Administration</label>
+                  <select value={t.route} onChange={e => updateTreatment(i, 'route', e.target.value)} className={iCls}>
+                    {TREATMENT_ROUTES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+                  </select>
+                </div>
+
+                {/* Row + Level */}
+                <div className="rounded-xl border border-gray-100 dark:border-dark-border bg-white dark:bg-dark-bg p-3 space-y-2">
+                  <p className="text-[11px] font-bold text-gray-500 uppercase tracking-widest">
+                    Target Row &amp; Level (optional)
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className={lCls}>Row</label>
+                      <select value={t.rowId} onChange={e => updateTreatment(i, 'rowId', e.target.value)} className={iCls}>
+                        <option value="">All rows</option>
+                        {rowsAndLevels.map(r => (
+                          <option key={r.rowId} value={r.rowId}>{r.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className={lCls}>Level</label>
+                      <select value={t.levelId} onChange={e => updateTreatment(i, 'levelId', e.target.value)}
+                        className={iCls} disabled={!t.rowId}>
+                        <option value="">All levels</option>
+                        {levelsForRow.filter(l => l.isOccupied).map(l => (
+                          <option key={l.levelId} value={l.levelId}>{l.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className={lCls}>Notes</label>
+                  <textarea value={t.notes} onChange={e => updateTreatment(i, 'notes', e.target.value)}
+                    rows={2} className={`${iCls} resize-none`} placeholder="Instructions, withdrawal period, etc." />
+                </div>
+              </div>
+            );
+          })}
+
+          <button type="button" onClick={addTreatment}
+            className="w-full border border-dashed border-red-300 dark:border-red-700 text-red-500 dark:text-red-400 rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-1.5 hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors">
+            <Plus className="w-3.5 h-3.5" /> Add another treatment
+          </button>
+
+          {(submit.isError || submitError) && (
+            <p className="text-red-500 text-sm bg-red-50 dark:bg-red-900/20 rounded-xl p-3">
+              {submitError ?? 'Failed to save treatment. Try again.'}
             </p>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className={lCls}>Row</label>
-                <select {...register('rowId')} className={iCls}>
-                  <option value="">All rows</option>
-                  {rowsAndLevels.map(r => (
-                    <option key={r.rowId} value={r.rowId}>{r.label}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className={lCls}>Level</label>
-                <select {...register('levelId')} className={iCls} disabled={!selectedRowId}>
-                  <option value="">All levels</option>
-                  {levelsForRow.filter(l => l.isOccupied).map(l => (
-                    <option key={l.levelId} value={l.levelId}>{l.label}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <label className={lCls}>Notes</label>
-            <textarea {...register('notes')} rows={2} className={`${iCls} resize-none`} placeholder="Instructions, withdrawal period, etc." />
-          </div>
-
-          {submit.isError && <p className="text-red-500 text-sm">Failed to save treatment. Try again.</p>}
+          )}
 
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose}
@@ -618,7 +774,7 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
             </button>
             <button type="submit" disabled={submit.isPending}
               className="flex-1 bg-red-500 text-white rounded-xl py-3 font-semibold text-sm disabled:opacity-60">
-              {submit.isPending ? 'Saving…' : 'Save Treatment'}
+              {submit.isPending ? 'Saving…' : `Save ${treatments.filter(t => t.drugName.trim()).length || 1} Treatment${treatments.filter(t => t.drugName.trim()).length > 1 ? 's' : ''}`}
             </button>
           </div>
         </form>
