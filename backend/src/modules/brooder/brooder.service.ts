@@ -233,7 +233,7 @@ export class BrooderService {
         let hylineWeek: number | null = null;
 
         if (batch && a) {
-          ageWeeks = dayjs().diff(dayjs(batch.dateOfHatch), 'week');
+          ageWeeks = Math.max(1, dayjs().diff(dayjs(batch.dateOfHatch), 'week'));
           const std = hylineStandard(ageWeeks);
           hylineWeek = std.week;
           requiredKgThisWeek = brooderRequiredFeedKg(a.birdCount, ageWeeks, 7);
@@ -280,7 +280,7 @@ export class BrooderService {
             batchCode:      batch.batchCode,
             strain:         batch.strain,
             stage:          batch.stage,
-            ageWeeks:       dayjs().diff(dayjs(batch.dateOfHatch), 'week'),
+            ageWeeks:       Math.max(1, dayjs().diff(dayjs(batch.dateOfHatch), 'week')),
             quantityReceived: batch.quantityReceived,
           } : null,
           hylineWeek,
@@ -934,7 +934,9 @@ export class BrooderService {
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
-    const ageWeeks   = dayjs().diff(dayjs(batch.dateOfHatch), 'week');
+    // A batch placed today has diff = 0 weeks, but is in its first week of
+    // life — HyLine weeks are 1-indexed, so floor at 1 for display and lookup.
+    const ageWeeks   = Math.max(1, dayjs().diff(dayjs(batch.dateOfHatch), 'week'));
     const totalDeaths = batch.quantityReceived - batch.currentBirdCount;
     const check      = checkMortalityViolation(totalDeaths, batch.quantityReceived, ageWeeks);
     const std        = hylineStandard(ageWeeks);

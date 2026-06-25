@@ -795,7 +795,7 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
   const [treatHistOpen, setTreatHistOpen] = useState(false);
 
   const ageDays   = dayjs().diff(dayjs(batch.dateOfHatch), 'day');
-  const ageWeeks  = Math.floor(ageDays / 7);
+  const ageWeeks  = Math.max(1, Math.floor(ageDays / 7));
   const survival  = batch.quantityReceived > 0
     ? ((batch.currentBirdCount / batch.quantityReceived) * 100).toFixed(1)
     : '—';

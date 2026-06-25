@@ -333,8 +333,8 @@ export function BrooderControlStandardPanel() {
                 {standards.map(std => {
                   // Highlight the current age-week row for any active batch
                   const isCurrentWeek = batches.some((b: any) => {
-                    const weeks = dayjs().diff(dayjs(b.dateOfHatch), 'week');
-                    return Math.max(1, Math.min(19, weeks)) === std.week;
+                    const weeks = Math.max(1, dayjs().diff(dayjs(b.dateOfHatch), 'week'));
+                    return Math.min(19, weeks) === std.week;
                   });
 
                   return (
