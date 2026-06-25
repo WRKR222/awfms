@@ -1082,11 +1082,21 @@ export class BrooderService {
     const yesterdayStr  = yesterday.format('YYYY-MM-DD');
 
     const levels = await this.prisma.brooderLevel.findMany({
-      where: { isActive: true, assignment: { isNot: null } },
+      where: {
+        isActive: true,
+        assignment: {
+          isNot: null,
+          // Only flag levels whose batch was placed BEFORE yesterday —
+          // a batch registered today (or yesterday) hasn't had a chance
+          // to receive a feed log for that date yet, so it should never
+          // appear as "missed".
+          placedDate: { lt: yesterdayDate },
+        },
+      },
       select: {
         id: true, label: true,
         row: { select: { id: true, label: true } },
-        assignment: { select: { batchId: true, birdCount: true } },
+        assignment: { select: { batchId: true, birdCount: true, placedDate: true } },
       },
     });
     if (levels.length === 0) return { date: yesterdayStr, alertCount: 0, alerts: [] };
