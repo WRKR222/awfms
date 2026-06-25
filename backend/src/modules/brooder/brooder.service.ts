@@ -322,6 +322,34 @@ export class BrooderService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // ── Decrement the source level (bird reassignment) ──────────────────
+      if (dto.sourceLevelId) {
+        const sourceAssignment = await tx.brooderLevelAssignment.findUnique({
+          where: { levelId: dto.sourceLevelId },
+        });
+        if (!sourceAssignment) {
+          throw new BadRequestException(
+            'The specified source level has no active assignment. Cannot move birds from it.',
+          );
+        }
+        const newSourceCount = sourceAssignment.birdCount - dto.birdCount;
+        if (newSourceCount < 0) {
+          throw new BadRequestException(
+            `Cannot move ${dto.birdCount} birds from the source level — it only has ${sourceAssignment.birdCount}.`,
+          );
+        }
+        if (newSourceCount === 0) {
+          // Source level is now empty — remove the assignment entirely
+          await tx.brooderLevelAssignment.delete({ where: { levelId: dto.sourceLevelId } });
+        } else {
+          await tx.brooderLevelAssignment.update({
+            where: { levelId: dto.sourceLevelId },
+            data:  { birdCount: newSourceCount },
+          });
+        }
+      }
+
+      // ── Place / update the target level ────────────────────────────────
       const result = await tx.brooderLevelAssignment.upsert({
         where:  { levelId },
         create: {

@@ -3,10 +3,14 @@ import { z } from 'zod';
 
 // ── Level assignment (place / move a batch's chicks onto a row+level) ──────
 export const AssignLevelSchema = z.object({
-  batchId:     z.string().uuid(),
-  birdCount:   z.number().int().min(0),
-  placedDate:  z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  notes:       z.string().max(500).optional(),
+  batchId:       z.string().uuid(),
+  birdCount:     z.number().int().min(0),
+  placedDate:    z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  notes:         z.string().max(500).optional(),
+  /** UUID of the level birds are being moved FROM. When provided the service
+   *  decrements that level's birdCount by the same amount. Required on all
+   *  reassignments; optional only for the very first placement on an empty map. */
+  sourceLevelId: z.string().uuid().optional(),
 });
 export type AssignLevelDto = z.infer<typeof AssignLevelSchema>;
 

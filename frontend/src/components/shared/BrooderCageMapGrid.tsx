@@ -9,7 +9,7 @@
 
 import { useState } from 'react';
 import {
-  Flame, Zap, Bird, AlertTriangle, CheckCircle2, Clock, Layers, XCircle,
+  Flame, Zap, Bird, AlertTriangle, CheckCircle2, Clock, Layers, XCircle, ArrowLeftRight,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import {
@@ -67,10 +67,12 @@ function LevelCell({
   level,
   onSelect,
   onLogMortality,
+  onReassign,
 }: {
   level:          BrooderLevelData;
   onSelect:       (level: BrooderLevelData) => void;
   onLogMortality: (level: BrooderLevelData) => void;
+  onReassign:     (level: BrooderLevelData) => void;
 }) {
   const occupied = !!level.assignment;
 
@@ -137,15 +139,26 @@ function LevelCell({
         )}
       </button>
 
-      {/* Mortality button — only shown on occupied cells (Req 1) */}
+      {/* Action buttons — only shown on occupied cells */}
       {occupied && (
-        <button
-          onClick={e => { e.stopPropagation(); onLogMortality(level); }}
-          className="absolute top-2 right-2 p-0.5 rounded hover:bg-red-900/40 transition-colors group"
-          title="Log mortality / culling"
-        >
-          <XCircle className="w-3 h-3 text-white/20 group-hover:text-red-400 transition-colors" />
-        </button>
+        <div className="absolute top-1.5 right-1.5 flex flex-col gap-0.5">
+          {/* Reassign birds */}
+          <button
+            onClick={e => { e.stopPropagation(); onReassign(level); }}
+            className="p-0.5 rounded hover:bg-blue-900/50 transition-colors group"
+            title="Reassign birds from another level"
+          >
+            <ArrowLeftRight className="w-3 h-3 text-white/20 group-hover:text-blue-400 transition-colors" />
+          </button>
+          {/* Log mortality */}
+          <button
+            onClick={e => { e.stopPropagation(); onLogMortality(level); }}
+            className="p-0.5 rounded hover:bg-red-900/40 transition-colors group"
+            title="Log mortality / culling"
+          >
+            <XCircle className="w-3 h-3 text-white/20 group-hover:text-red-400 transition-colors" />
+          </button>
+        </div>
       )}
     </div>
   );
@@ -158,11 +171,13 @@ function RowBlock({
   onSelectLevel,
   onLogHeat,
   onLogMortality,
+  onReassign,
 }: {
   row:            BrooderRowData;
   onSelectLevel:  (level: BrooderLevelData, row: BrooderRowData) => void;
   onLogHeat:      (row: BrooderRowData) => void;
   onLogMortality: (level: BrooderLevelData, row: BrooderRowData) => void;
+  onReassign:     (level: BrooderLevelData, row: BrooderRowData) => void;
 }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
@@ -191,6 +206,7 @@ function RowBlock({
             level={level}
             onSelect={l => onSelectLevel(l, row)}
             onLogMortality={l => onLogMortality(l, row)}
+            onReassign={l => onReassign(l, row)}
           />
         ))}
       </div>
@@ -204,10 +220,12 @@ export function BrooderCageMapGrid({
   onSelectLevel,
   onLogHeat,
   onLogMortality,
+  onReassign,
 }: {
   onSelectLevel?:  (level: BrooderLevelData, row: BrooderRowData) => void;
   onLogHeat?:      (row: BrooderRowData) => void;
   onLogMortality?: (level: BrooderLevelData, row: BrooderRowData) => void;
+  onReassign?:     (level: BrooderLevelData, row: BrooderRowData) => void;
 }) {
   const { data, isLoading } = useBrooderCageMap();
   const [, setSelected]     = useState<BrooderLevelData | null>(null);
@@ -242,6 +260,9 @@ export function BrooderCageMapGrid({
           <CheckCircle2 className="w-3 h-3 text-green-400" /> Feed on target
         </span>
         <span className="text-[10px] text-white/30 flex items-center gap-1">
+          <ArrowLeftRight className="w-3 h-3 text-blue-400/60" /> Reassign birds
+        </span>
+        <span className="text-[10px] text-white/30 flex items-center gap-1">
           <XCircle className="w-3 h-3 text-red-400/60" /> Log mortality
         </span>
         <span className="text-[10px] text-white/30">Tap cell = log feed</span>
@@ -271,6 +292,7 @@ export function BrooderCageMapGrid({
                 }}
                 onLogHeat={r => onLogHeat?.(r)}
                 onLogMortality={(level, r) => onLogMortality?.(level, r)}
+                onReassign={(level, r) => onReassign?.(level, r)}
               />
             ))}
           </div>

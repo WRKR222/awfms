@@ -848,6 +848,7 @@ export function BrooderPage() {
 
   const { data: cageMapData }                  = useBrooderCageMap();
   const [assignTarget,   setAssignTarget]      = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
+  const [reassignTarget, setReassignTarget]    = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
   const [feedTarget,     setFeedTarget]        = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
   const [heatTarget,     setHeatTarget]        = useState<BrooderRowData | null>(null);
   const [mortalityTarget, setMortalityTarget]  = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
@@ -911,6 +912,7 @@ export function BrooderPage() {
           onSelectLevel={handleSelectLevel}
           onLogHeat={row => setHeatTarget(row)}
           onLogMortality={(level, row) => setMortalityTarget({ level, row })}
+          onReassign={(level, row) => setReassignTarget({ level, row })}
         />
       </div>
 
@@ -952,7 +954,27 @@ export function BrooderPage() {
                 ? (assignTarget.level.assignment?.birdCount ?? 0)
                 : 0),
           }))}
+          allRows={cageMapData?.rows ?? []}
           onClose={() => setAssignTarget(null)}
+        />
+      )}
+      {reassignTarget && (
+        <BrooderLevelAssignModal
+          level={reassignTarget.level}
+          row={reassignTarget.row}
+          batches={brooderBatches.map(b => ({
+            id: b.id,
+            batchCode: b.batchCode,
+            currentBirdCount: b.currentBirdCount,
+            quantityReceived: b.quantityReceived,
+            alreadyAssignedCount:
+              (assignedCountByBatch[b.id] ?? 0) -
+              (reassignTarget.level.assignment?.batchId === b.id
+                ? (reassignTarget.level.assignment?.birdCount ?? 0)
+                : 0),
+          }))}
+          allRows={cageMapData?.rows ?? []}
+          onClose={() => setReassignTarget(null)}
         />
       )}
       {feedTarget     && <BrooderLevelFeedLogModal  level={feedTarget.level}     row={feedTarget.row}     onClose={() => setFeedTarget(null)} />}
