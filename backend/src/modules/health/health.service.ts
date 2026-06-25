@@ -48,8 +48,14 @@ export class HealthService {
         where: { id: dto.batchId },
         data: { isActive: false, stage: 'SOLD' as any, soldAt: new Date() },
       });
-      // Clear cage assignments so cage map shows rows as vacant
+      // Clear production-house cage-row assignments so cage map shows rows as vacant
       await this.prisma.batchCageAssignment.deleteMany({ where: { batchId: dto.batchId } });
+      // FIX: also clear brooder level assignments so the brooder cage map vacates
+      // correctly when a batch is sold while still in BROODING stage.
+      // Previously only BatchLifecycleService.updateBatchStage() cleared this table,
+      // but Farm Events bypass that path — leaving orphaned BrooderLevelAssignment
+      // rows that kept the brooder map occupied and the feed requirement non-zero.
+      await this.prisma.brooderLevelAssignment.deleteMany({ where: { batchId: dto.batchId } });
       // ── Notify Director (OWNER) — batch sold ─────────────────────────────
       const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId }, select: { batchCode: true } });
       await this.notifications.notifyRole(
@@ -63,8 +69,10 @@ export class HealthService {
         where: { id: dto.batchId },
         data: { isActive: false, stage: 'DISCARDED' as any, discardedAt: new Date() },
       });
-      // Clear cage assignments so cage map shows rows as vacant
+      // Clear production-house cage-row assignments so cage map shows rows as vacant
       await this.prisma.batchCageAssignment.deleteMany({ where: { batchId: dto.batchId } });
+      // FIX: also clear brooder level assignments (same reason as BATCH_SOLD above)
+      await this.prisma.brooderLevelAssignment.deleteMany({ where: { batchId: dto.batchId } });
       // ── Notify Director (OWNER) — batch discarded ─────────────────────────
       const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId }, select: { batchCode: true } });
       await this.notifications.notifyRole(

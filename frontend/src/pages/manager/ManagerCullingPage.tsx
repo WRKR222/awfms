@@ -131,7 +131,7 @@ export function ManagerCullingPage() {
         totalWeightG: data.totalWeightG ? Number(data.totalWeightG) : undefined,
       }).then(r => r.data);
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ['health-events'] });
       qc.invalidateQueries({ queryKey: ['batches'] });
       // FIX: the PM Batches page reads bird counts via useBatches(), which is
@@ -142,6 +142,20 @@ export function ManagerCullingPage() {
       qc.invalidateQueries({ queryKey: ['flock', 'batches'] });
       qc.invalidateQueries({ queryKey: ['cage-map'] });
       qc.invalidateQueries({ queryKey: ['cage-assignments'] });
+
+      // FIX (brooder): When BATCH_SOLD or BATCH_DISCARDED is logged for a batch
+      // that was in BROODING, the backend deletes its BrooderLevelAssignment rows
+      // and marks the batch inactive — but the frontend React Query cache for the
+      // brooder cage map and feed summary was never invalidated here, so the
+      // brooder UI kept showing occupied levels and non-zero required/given feed
+      // until a hard refresh. These three keys match the hooks used by
+      // BrooderCageMapGrid, BrooderFeedSummary, and BrooderFeedRequirement.
+      if (variables.eventType === 'BATCH_SOLD' || variables.eventType === 'BATCH_DISCARDED') {
+        qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+        qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
+        qc.invalidateQueries({ queryKey: ['brooder-rows-and-levels'] });
+      }
+
       setSubmitted(true);
       reset();
       setTimeout(() => { setSubmitted(false); setShowForm(false); }, 2000);
