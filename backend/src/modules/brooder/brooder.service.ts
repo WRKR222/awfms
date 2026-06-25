@@ -629,7 +629,7 @@ export class BrooderService {
           eventType:     'BIRD_MORTALITY' as any,
           eventDate:     new Date(dto.logDate),
           affectedCount: totalLost,
-          notes:         eventNotes,
+          outcome:       eventNotes,
           recordedById:  userId,
         },
       });
