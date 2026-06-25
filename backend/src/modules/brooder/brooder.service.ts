@@ -354,6 +354,69 @@ export class BrooderService {
             data:  { birdCount: newSourceCount },
           });
         }
+
+        // ── Carry over partial-day feed when birds move mid-day ────────────
+        // If feed was already dispensed to the source level TODAY before this
+        // reassignment, that feed was eaten by the population as it stood at
+        // feeding time (oldSourceBirdCount = sourceAssignment.birdCount).
+        // Moving dto.birdCount of those birds out must move their proportional
+        // share of today's already-eaten feed to the destination level too —
+        // otherwise:
+        //   • the source level's remaining ration looks artificially used up,
+        //     penalising the birds that stayed behind, and
+        //   • the destination level looks un-fed, letting the incoming birds
+        //     be issued a full fresh day's ration on top of what they already
+        //     ate before the move.
+        // Carryover entries are dated "today" so they also flow correctly into
+        // this week's dispensed total for both levels.
+        const oldSourceBirdCount = sourceAssignment.birdCount;
+        const todayDate     = new Date(dayjs().format('YYYY-MM-DD'));
+        const tomorrowDate  = dayjs(todayDate).add(1, 'day').toDate();
+        const todaysSourceLogs = await tx.brooderLevelFeedLog.findMany({
+          where: {
+            levelId:   dto.sourceLevelId,
+            entryDate: { gte: todayDate, lt: tomorrowDate },
+          },
+        });
+        if (todaysSourceLogs.length > 0 && oldSourceBirdCount > 0) {
+          const dispensedByFeedType = new Map<string, number>();
+          for (const log of todaysSourceLogs) {
+            dispensedByFeedType.set(
+              log.feedType,
+              (dispensedByFeedType.get(log.feedType) ?? 0) + log.quantityDispensedKg,
+            );
+          }
+          for (const [feedType, totalKg] of dispensedByFeedType) {
+            const movedShareKg = Math.round(
+              (totalKg * dto.birdCount / oldSourceBirdCount) * 1000,
+            ) / 1000;
+            if (!movedShareKg) continue;
+            await tx.brooderLevelFeedLog.create({
+              data: {
+                levelId:             dto.sourceLevelId,
+                feedType,
+                entryDate:           todayDate,
+                quantityDispensedKg: -movedShareKg,
+                requiredKgForWeek:   null,
+                notes: `Reassignment carryover: ${dto.birdCount} of ${oldSourceBirdCount} birds moved out — ` +
+                       `their share of today's already-dispensed ${feedType} transferred to the destination level.`,
+                loggedById: userId,
+              },
+            });
+            await tx.brooderLevelFeedLog.create({
+              data: {
+                levelId,
+                feedType,
+                entryDate:           todayDate,
+                quantityDispensedKg: movedShareKg,
+                requiredKgForWeek:   null,
+                notes: `Reassignment carryover: ${dto.birdCount} birds received from another level, already ` +
+                       `having eaten ${movedShareKg.toFixed(3)}kg of ${feedType} today before the move.`,
+                loggedById: userId,
+              },
+            });
+          }
+        }
       }
 
       // ── Place / update the target level ────────────────────────────────
