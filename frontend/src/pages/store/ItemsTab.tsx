@@ -237,6 +237,10 @@ export function ItemsTab() {
               <select {...register('category', { required: true })} className="input">
                 <option value="">Select…</option>
                 {CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                {/* Preserve legacy value so editing an existing FEED_SUPPLEMENT item doesn't blank the field */}
+                {editing?.category === 'FEED_SUPPLEMENT' && (
+                  <option value="FEED_SUPPLEMENT">Feed / Supplement (legacy)</option>
+                )}
               </select>
             </Field>
             <Field label="Unit *">

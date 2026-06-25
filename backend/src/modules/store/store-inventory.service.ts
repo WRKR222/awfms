@@ -7,11 +7,11 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { NotificationType, UserRole } from '@prisma/client';
+import { NotificationType, UserRole, StoreItemCategory, StoreItemUnit } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { IssuancePlanService } from './issuance-plan.service';
 import {
-  IsString, IsOptional, IsNumber, IsBoolean, Min, IsNotEmpty,
+  IsString, IsOptional, IsNumber, IsBoolean, Min, IsNotEmpty, IsEnum,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -47,10 +47,10 @@ export class UpdateStoreItemDto {
   @IsOptional() @IsString() @IsNotEmpty()
   name?: string;
 
-  @IsOptional() @IsString()
+  @IsOptional() @IsEnum(StoreItemCategory, { message: 'Invalid category value' })
   category?: string;
 
-  @IsOptional() @IsString()
+  @IsOptional() @IsEnum(StoreItemUnit, { message: 'Invalid unit value' })
   unit?: string;
 
   @IsOptional() @IsString()
