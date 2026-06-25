@@ -309,8 +309,15 @@ export class BrooderService {
       );
     }
 
+    // FIX: when a sourceLevelId is provided the birds are being MOVED (not added),
+    // so the source level must be excluded from siblingsTotal — otherwise the check
+    // double-counts those birds and incorrectly throws a quantityReceived overflow.
+    // Example: moving 2990 from R3L2 → R3L3(2984).  Without the fix:
+    //   siblingsTotal = 2990 (R3L2 still counted) + 2990 (dto) = 5980 > quantityReceived → throws.
+    // With the fix:
+    //   siblingsTotal = 0 (R3L2 excluded) + 2990 (dto) = 2990 ≤ quantityReceived → passes.
     const siblingsTotal = existingAssignmentsForBatch
-      .filter(a => a.levelId !== levelId)
+      .filter(a => a.levelId !== levelId && a.levelId !== dto.sourceLevelId)
       .reduce((s, a) => s + a.birdCount, 0);
     const newTotal = siblingsTotal + dto.birdCount;
     if (newTotal > batch.quantityReceived) {
