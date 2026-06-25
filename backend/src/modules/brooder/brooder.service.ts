@@ -897,4 +897,80 @@ export class BrooderService {
       rows,
     };
   }
+
+  // ── Missed-feed flagging (yesterday's ration not fully given) ────────────
+  //
+  // Surfaced on Lead Attendant and PM home pages so a shortfall is caught
+  // the morning after it happens, instead of only being visible inside the
+  // "this week" totals where a single bad day is easy to miss.
+  // A level is flagged when yesterday's required ration (population ×
+  // HyLine g/bird/day for that level's age yesterday) exceeds what was
+  // actually dispensed to it on that calendar date.
+
+  async getMissedFeedAlerts() {
+    const yesterday    = dayjs().subtract(1, 'day').startOf('day');
+    const yesterdayDate = yesterday.toDate();
+    const yesterdayStr  = yesterday.format('YYYY-MM-DD');
+
+    const levels = await this.prisma.brooderLevel.findMany({
+      where: { isActive: true, assignment: { isNot: null } },
+      select: {
+        id: true, label: true,
+        row: { select: { id: true, label: true } },
+        assignment: { select: { batchId: true, birdCount: true } },
+      },
+    });
+    if (levels.length === 0) return { date: yesterdayStr, alertCount: 0, alerts: [] };
+
+    const batchIds = Array.from(new Set(levels.map(l => l.assignment!.batchId)));
+    const batches = await this.prisma.batch.findMany({
+      where: { id: { in: batchIds } },
+      select: { id: true, batchCode: true, dateOfHatch: true },
+    });
+    const batchMap = Object.fromEntries(batches.map(b => [b.id, b]));
+
+    const levelIds = levels.map(l => l.id);
+    const feedLogs = await this.prisma.brooderLevelFeedLog.findMany({
+      where: { levelId: { in: levelIds }, entryDate: yesterdayDate },
+      select: { levelId: true, quantityDispensedKg: true },
+    });
+    const dispensedByLevel: Record<string, number> = {};
+    for (const f of feedLogs) {
+      dispensedByLevel[f.levelId] = (dispensedByLevel[f.levelId] ?? 0) + f.quantityDispensedKg;
+    }
+
+    const alerts: Array<{
+      levelId: string; levelLabel: string; rowId: string; rowLabel: string;
+      batchId: string; batchCode: string; date: string;
+      requiredKg: number; dispensedKg: number; shortfallKg: number;
+    }> = [];
+
+    for (const level of levels) {
+      const a = level.assignment!;
+      const batch = batchMap[a.batchId];
+      if (!batch || a.birdCount <= 0) continue;
+
+      const ageWeeksYesterday = yesterday.diff(dayjs(batch.dateOfHatch), 'week');
+      const requiredKg  = brooderRequiredFeedKg(a.birdCount, ageWeeksYesterday, 1);
+      const dispensedKg = Math.round((dispensedByLevel[level.id] ?? 0) * 100) / 100;
+
+      // Small tolerance to avoid flagging rounding noise.
+      if (requiredKg > 0 && dispensedKg < requiredKg - 0.05) {
+        alerts.push({
+          levelId:     level.id,
+          levelLabel:  level.label,
+          rowId:       level.row.id,
+          rowLabel:    level.row.label,
+          batchId:     batch.id,
+          batchCode:   batch.batchCode,
+          date:        yesterdayStr,
+          requiredKg:  Math.round(requiredKg * 100) / 100,
+          dispensedKg,
+          shortfallKg: Math.round((requiredKg - dispensedKg) * 100) / 100,
+        });
+      }
+    }
+
+    return { date: yesterdayStr, alertCount: alerts.length, alerts };
+  }
 }

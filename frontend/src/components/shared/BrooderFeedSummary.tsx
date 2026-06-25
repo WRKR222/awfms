@@ -10,14 +10,27 @@ import { Flame, AlertTriangle, Calendar, CheckCircle2 } from 'lucide-react';
 
 interface LastLog {
   logDate: string;
-  feedType: string | null;
-  feedConsumedKg: number | null;
   waterConsumptionL: number | null;
   temperature: number | null;
   lightingOk: boolean;
   mortalityCount: number;
   vaccineGiven: string | null;
   notes: string | null;
+}
+
+interface LastFeedEntry {
+  logDate: string;
+  feedConsumedKg: number;
+  feedTypes: string[];
+}
+
+interface LastTreatment {
+  treatmentDate: string;
+  drugName: string;
+  dose: string;
+  doseUnit: string;
+  route: string;
+  durationDays: number | null;
 }
 
 interface BrooderBatchSummary {
@@ -28,6 +41,8 @@ interface BrooderBatchSummary {
   ageWeeks: number;
   supplierName: string | null;
   lastLog: LastLog | null;
+  lastFeedEntry: LastFeedEntry | null;
+  lastTreatment: LastTreatment | null;
   daysSinceLastLog: number | null;
   logOverdue: boolean;
 }
@@ -73,7 +88,7 @@ function OverdueBadge({ days }: { days: number | null }) {
 
 function BatchRow({ b }: { b: BrooderBatchSummary }) {
   const log = b.lastLog;
-  const hasFeed = log && (log.feedConsumedKg != null || log.feedType);
+  const feed = b.lastFeedEntry;
 
   return (
     <div className={`rounded-xl p-3 text-xs space-y-2 border ${
@@ -93,24 +108,27 @@ function BatchRow({ b }: { b: BrooderBatchSummary }) {
         <OverdueBadge days={b.daysSinceLastLog} />
       </div>
 
-      {/* Last log details */}
+      {/* Feed — sourced from BrooderLevelFeedLog (per row/level), most important */}
+      <div className="flex flex-wrap gap-3">
+        {feed ? (
+          <span className="flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-lg">
+            🌾 {feed.feedConsumedKg} kg
+            {feed.feedTypes.length > 0 ? ` · ${feed.feedTypes.map(feedLabel).join(', ')}` : ''}
+            {' '}· {dayjs(feed.logDate).format('ddd D MMM')}
+          </span>
+        ) : (
+          <span className="flex items-center gap-1 text-gray-400 italic">🌾 No feed recorded</span>
+        )}
+      </div>
+
+      {/* Environmental / vaccine log details */}
       {log ? (
         <div className="space-y-1.5">
           <div className="flex items-center gap-1 text-gray-400">
             <Calendar className="w-3 h-3" />
-            <span>Last log: <strong className="text-gray-600 dark:text-gray-300">{dayjs(log.logDate).format('ddd D MMM YYYY')}</strong></span>
+            <span>Last env. log: <strong className="text-gray-600 dark:text-gray-300">{dayjs(log.logDate).format('ddd D MMM YYYY')}</strong></span>
           </div>
           <div className="flex flex-wrap gap-3">
-            {/* Feed — most important, highlighted */}
-            {hasFeed ? (
-              <span className="flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-lg">
-                🌾{' '}
-                {log.feedConsumedKg != null ? `${log.feedConsumedKg} kg` : ''}
-                {log.feedType ? ` · ${feedLabel(log.feedType)}` : ' feed'}
-              </span>
-            ) : (
-              <span className="flex items-center gap-1 text-gray-400 italic">🌾 No feed recorded</span>
-            )}
             {log.waterConsumptionL != null && (
               <span className="text-gray-500 dark:text-gray-400">💧 {log.waterConsumptionL}L water</span>
             )}
@@ -132,7 +150,16 @@ function BatchRow({ b }: { b: BrooderBatchSummary }) {
           )}
         </div>
       ) : (
-        <p className="text-red-400 italic">No entries logged yet.</p>
+        <p className="text-red-400 italic">No environmental log entries yet.</p>
+      )}
+
+      {/* Treatment — sourced from BrooderTreatmentLog */}
+      {b.lastTreatment && (
+        <p className="text-gray-500 dark:text-gray-400">
+          💊 <strong className="text-gray-700 dark:text-gray-300">{b.lastTreatment.drugName}</strong>
+          {' '}{b.lastTreatment.dose}{b.lastTreatment.doseUnit} · {b.lastTreatment.route.replace(/_/g, ' ').toLowerCase()}
+          {' '}· {dayjs(b.lastTreatment.treatmentDate).format('ddd D MMM')}
+        </p>
       )}
     </div>
   );

@@ -47,6 +47,16 @@ export class BrooderController {
     return this.svc.getFeedRequirementSummary();
   }
 
+  /** GET /brooder/missed-feed-alerts
+   *  Flags any row/level whose required ration for YESTERDAY was not fully
+   *  dispensed by the time the day rolled over. Surfaced on Lead Attendant
+   *  and PM home pages the morning after a shortfall occurs. */
+  @Get('missed-feed-alerts')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getMissedFeedAlerts() {
+    return this.svc.getMissedFeedAlerts();
+  }
+
   @Get('assignments')
   @RequirePermission(Permission.FLOCK_VIEW)
   getAssignmentsByBatch(@Query('batchId') batchId: string) {

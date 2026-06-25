@@ -140,6 +140,36 @@ export function useBrooderFeedSummary() {
   });
 }
 
+// ── Missed-feed alerts (yesterday's ration not fully given) ────────────────
+
+export interface MissedFeedAlert {
+  levelId:     string;
+  levelLabel:  string;
+  rowId:       string;
+  rowLabel:    string;
+  batchId:     string;
+  batchCode:   string;
+  date:        string;
+  requiredKg:  number;
+  dispensedKg: number;
+  shortfallKg: number;
+}
+
+export interface MissedFeedAlertsResponse {
+  date:       string;
+  alertCount: number;
+  alerts:     MissedFeedAlert[];
+}
+
+export function useMissedFeedAlerts() {
+  return useQuery<MissedFeedAlertsResponse>({
+    queryKey:      ['brooder-missed-feed-alerts'],
+    queryFn:       () => api.get('/brooder/missed-feed-alerts').then(r => r.data),
+    staleTime:     60_000,
+    refetchInterval: 5 * 60_000,
+  });
+}
+
 export function useAssignBrooderLevel() {
   const qc = useQueryClient();
   return useMutation({

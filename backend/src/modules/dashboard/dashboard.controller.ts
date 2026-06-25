@@ -503,13 +503,12 @@ export class DashboardController {
 
     const batchSummaries = await Promise.all(
       brooderBatches.map(async (batch) => {
+        // ── Environmental / vaccine / supplement log (still tracked on BrooderLog) ──
         const lastLog = await this.prisma.brooderLog.findFirst({
           where: { batchId: batch.id },
           orderBy: { logDate: 'desc' },
           select: {
             logDate:           true,
-            feedType:          true,
-            feedConsumedKg:    true,
             waterConsumptionL: true,
             temperature:       true,
             lightingOk:        true,
@@ -519,9 +518,58 @@ export class DashboardController {
           },
         });
 
+        // ── Actual feed (FIX: feed is no longer tracked on BrooderLog —
+        // it's per-row/level via BrooderLevelFeedLog. Previously this card
+        // read BrooderLog.feedConsumedKg/feedType, which are always written
+        // as null, so the PM/Director card never reflected real feed given.) ──
+        const batchLevelIds = (
+          await this.prisma.brooderLevelAssignment.findMany({
+            where: { batchId: batch.id },
+            select: { levelId: true },
+          })
+        ).map(a => a.levelId);
+
+        let lastFeedEntry: { logDate: Date; feedConsumedKg: number; feedTypes: string[] } | null = null;
+        if (batchLevelIds.length > 0) {
+          const latestFeedLog = await this.prisma.brooderLevelFeedLog.findFirst({
+            where: { levelId: { in: batchLevelIds } },
+            orderBy: { entryDate: 'desc' },
+          });
+          if (latestFeedLog) {
+            const sameDayLogs = await this.prisma.brooderLevelFeedLog.findMany({
+              where: { levelId: { in: batchLevelIds }, entryDate: latestFeedLog.entryDate },
+              select: { quantityDispensedKg: true, feedType: true },
+            });
+            lastFeedEntry = {
+              logDate:        latestFeedLog.entryDate,
+              feedConsumedKg: Math.round(sameDayLogs.reduce((s, f) => s + f.quantityDispensedKg, 0) * 100) / 100,
+              feedTypes:      Array.from(new Set(sameDayLogs.map(f => f.feedType))),
+            };
+          }
+        }
+
+        // ── Last treatment (FIX: previously not surfaced anywhere on the
+        // PM/Director dashboards, so a treatment given by the attendant was
+        // invisible until someone opened the batch's full history.) ──
+        const lastTreatment = await (this.prisma as any).brooderTreatmentLog.findFirst({
+          where: { batchId: batch.id },
+          orderBy: { treatmentDate: 'desc' },
+          select: { treatmentDate: true, drugName: true, dose: true, doseUnit: true, route: true, durationDays: true },
+        }).catch(() => null);
+
         const ageDays = dayjs().diff(dayjs(batch.dateOfHatch), 'day');
-        const daysSinceLastLog = lastLog
-          ? dayjs().diff(dayjs(lastLog.logDate), 'day')
+
+        // "Last activity" = most recent of env log / feed entry — this is
+        // what actually determines whether the batch was attended to today.
+        const candidateDates = [
+          lastLog?.logDate ?? null,
+          lastFeedEntry?.logDate ?? null,
+        ].filter((d): d is Date => d != null);
+        const lastActivityDate = candidateDates.length > 0
+          ? candidateDates.reduce((latest, d) => (d > latest ? d : latest))
+          : null;
+        const daysSinceLastLog = lastActivityDate
+          ? dayjs().diff(dayjs(lastActivityDate), 'day')
           : null;
 
         return {
@@ -534,6 +582,8 @@ export class DashboardController {
           ageWeeks:         Math.floor(ageDays / 7),
           supplierName:     batch.supplier?.name ?? null,
           lastLog:          lastLog ?? null,
+          lastFeedEntry:    lastFeedEntry,
+          lastTreatment:    lastTreatment ?? null,
           daysSinceLastLog: daysSinceLastLog,
           logOverdue:       daysSinceLastLog === null || daysSinceLastLog > 0,
         };
