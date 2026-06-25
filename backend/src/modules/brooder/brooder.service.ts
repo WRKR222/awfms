@@ -209,6 +209,19 @@ export class BrooderService {
       }
     }
 
+    // This week's weight samples per level — used to flag birds outside the
+    // HyLine min/max band for their age, wherever they were weighed.
+    const weightSamples = levelIds.length
+      ? await this.prisma.birdWeightSample.findMany({
+          where: { levelId: { in: levelIds }, sampleDate: { gte: weekStart } },
+          orderBy: { sampleDate: 'desc' },
+        })
+      : [];
+    const latestWeightByLevel: Record<string, typeof weightSamples[number]> = {};
+    for (const w of weightSamples) {
+      if (w.levelId && !latestWeightByLevel[w.levelId]) latestWeightByLevel[w.levelId] = w;
+    }
+
     const mappedRows = rows.map(row => {
       const heat = heatByRow[row.id] ?? null;
       const levels = row.levels.map(level => {
@@ -228,6 +241,29 @@ export class BrooderService {
         }
         const dispensedThisWeek = feedByLevel[level.id] ?? 0;
         const dispensedToday    = todayFeedByLevel[level.id] ?? 0;
+
+        // ── Weight check (this week, this exact row/level) ─────────────────
+        const latestWeight = latestWeightByLevel[level.id] ?? null;
+        let weightCheck: {
+          sampleDate:     Date;
+          averageWeightG: number;
+          ageWeeks:       number;
+          minG:           number;
+          maxG:           number;
+          withinBounds:   boolean;
+        } | null = null;
+        if (latestWeight) {
+          const wStd = hylineStandard(latestWeight.ageWeeks);
+          const avg  = Number(latestWeight.averageWeightG);
+          weightCheck = {
+            sampleDate:     latestWeight.sampleDate,
+            averageWeightG: avg,
+            ageWeeks:       latestWeight.ageWeeks,
+            minG:           wStd.weightMinG,
+            maxG:           wStd.weightMaxG,
+            withinBounds:   avg >= wStd.weightMinG && avg <= wStd.weightMaxG,
+          };
+        }
 
         return {
           levelId:       level.id,
@@ -256,6 +292,7 @@ export class BrooderService {
             requiredKgThisWeek && requiredKgThisWeek > 0
               ? Math.round(((dispensedThisWeek - requiredKgThisWeek) / requiredKgThisWeek) * 1000) / 10
               : null,
+          weightCheck,
         };
       });
 
@@ -784,7 +821,34 @@ export class BrooderService {
   async checkWeightSample(input: unknown, userId: string) {
     const dto = parseOrThrow(CreateBrooderWeightSampleSchema, input);
 
-    const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
+    let batchId:    string | null = dto.batchId ?? null;
+    let rowId:      string | null = null;
+    let levelId:    string | null = null;
+    let rowLabel:   string | null = null;
+    let levelLabel: string | null = null;
+
+    if (dto.levelId) {
+      const level = await this.prisma.brooderLevel.findUnique({
+        where:   { id: dto.levelId },
+        include: { assignment: true, row: true },
+      });
+      if (!level) throw new NotFoundException('Brooder level not found');
+      if (!level.assignment) {
+        throw new BadRequestException(
+          `${level.row.label} · ${level.label} has no birds assigned — ` +
+          `weight can only be logged on an occupied row and level.`,
+        );
+      }
+      batchId    = level.assignment.batchId;
+      rowId      = level.rowId;
+      levelId    = level.id;
+      rowLabel   = level.row.label;
+      levelLabel = level.label;
+    }
+
+    if (!batchId) throw new BadRequestException('Either levelId or batchId is required');
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
     const ageWeeks     = dayjs(dto.sampleDate).diff(dayjs(batch.dateOfHatch), 'week');
@@ -795,7 +859,8 @@ export class BrooderService {
     // Persist the weight sample (uses existing BirdWeightSample model)
     const saved = await this.prisma.birdWeightSample.create({
       data: {
-        batchId:       dto.batchId,
+        batchId,
+        rowId, levelId,
         sampleDate:    new Date(dto.sampleDate),
         sampleCount:   dto.sampleCount,
         totalWeightG:  dto.totalWeightG,
@@ -808,20 +873,41 @@ export class BrooderService {
 
     // ── Req 7: Alert on violation ─────────────────────────────────────────
     if (weightCheck.violated) {
-      const title   = `⚠ Brooder Weight Alert — ${batch.batchCode}`;
+      const location = levelLabel ? ` (${rowLabel} · ${levelLabel})` : '';
+      const title   = `⚠ Brooder Weight Alert — ${batch.batchCode}${location}`;
       const message = `${weightCheck.message} Sample: ${dto.sampleCount} birds avg ${averageG.toFixed(0)}g (week ${ageWeeks}).`;
-      await this.alertRoles('BROODER_WEIGHT_ANOMALY', title, message, dto.batchId);
+      await this.alertRoles('BROODER_WEIGHT_ANOMALY', title, message, batchId);
       this.logger.warn(`[BrooderControl] ${title}: ${message}`);
     }
 
     return {
       sample: saved,
+      rowId, levelId, rowLabel, levelLabel,
       ageWeeks,
       averageWeightG: Math.round(averageG * 10) / 10,
       standard: { week: std.week, minG: std.weightMinG, maxG: std.weightMaxG, phase: std.phase },
       withinBounds: !weightCheck.violated,
       violation: weightCheck.violated ? weightCheck.message : null,
     };
+  }
+
+  /** Weight history for a specific occupied row/level (cage map weight log). */
+  async getLevelWeightHistory(levelId: string) {
+    const samples = await this.prisma.birdWeightSample.findMany({
+      where:   { levelId },
+      orderBy: { sampleDate: 'asc' },
+    });
+
+    return samples.map(s => {
+      const std = hylineStandard(s.ageWeeks);
+      const avg = Number(s.averageWeightG);
+      return {
+        ...s,
+        averageWeightG: avg,
+        standard:  { week: std.week, minG: std.weightMinG, maxG: std.weightMaxG, phase: std.phase },
+        withinBounds: avg >= std.weightMinG && avg <= std.weightMaxG,
+      };
+    });
   }
 
   async getWeightHistory(batchId: string) {

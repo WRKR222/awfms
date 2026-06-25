@@ -32,6 +32,15 @@ export interface BrooderLevelData {
   dispensedKgThisWeek: number;
   dispensedKgToday:    number;          // NEW — for over-issue guard in modal
   feedVariancePercent: number | null;
+  // Weight control — latest sample logged against this row/level this week.
+  weightCheck: {
+    sampleDate:     string;
+    averageWeightG: number;
+    ageWeeks:       number;
+    minG:           number;
+    maxG:           number;
+    withinBounds:   boolean;
+  } | null;
 }
 
 export interface BrooderRowData {
@@ -241,19 +250,48 @@ export function useCreateBrooderMortalityLog() {
   });
 }
 
-/** Mutation: log a weight sample (Req 6 + Req 7). */
+/** Mutation: log a weight sample (Req 6 + Req 7).
+ *  Preferred: pass levelId to log against a specific occupied row/level —
+ *  the service derives batchId from that level's active assignment. */
 export function useCheckBrooderWeightSample() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: {
-      batchId:      string;
+      levelId?:     string;
+      batchId?:     string;
       sampleDate:   string;
       sampleCount:  number;
       totalWeightG: number;
       notes?:       string;
     }) => api.post('/brooder/weight-samples', data).then(r => r.data),
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
       qc.invalidateQueries({ queryKey: ['brooder-weight-history'] });
+      qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+      if (variables.levelId) {
+        qc.invalidateQueries({ queryKey: ['brooder-level-weight-history', variables.levelId] });
+      }
     },
+  });
+}
+
+/** Weight history scoped to a specific occupied row/level. */
+export interface LevelWeightSample {
+  id:             string;
+  sampleDate:     string;
+  sampleCount:    number;
+  totalWeightG:   number;
+  averageWeightG: number;
+  ageWeeks:       number;
+  notes:          string | null;
+  standard:       { week: number; minG: number; maxG: number; phase: string };
+  withinBounds:   boolean;
+}
+
+export function useLevelWeightHistory(levelId: string | null) {
+  return useQuery<LevelWeightSample[]>({
+    queryKey:  ['brooder-level-weight-history', levelId],
+    queryFn:   () => api.get(`/brooder/levels/${levelId}/weight-history`).then(r => r.data),
+    enabled:   !!levelId,
+    staleTime: 30_000,
   });
 }

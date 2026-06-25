@@ -73,13 +73,21 @@ export const CreateLevelMortalityLogSchema = z.object({
 export type CreateLevelMortalityLogDto = z.infer<typeof CreateLevelMortalityLogSchema>;
 
 // ── Bird weight sample (checked against HyLine control standard) ──────────
+// Preferred: pass levelId — the service derives batchId + rowId from the
+// level's active assignment, so weight can be logged from any occupied
+// row/level on the cage map. batchId alone is still accepted for legacy
+// (non-cage-map) callers such as the general flock weight-sample endpoint.
 export const CreateBrooderWeightSampleSchema = z.object({
-  batchId:       z.string().uuid(),
+  levelId:       z.string().uuid().optional(),
+  batchId:       z.string().uuid().optional(),
   sampleDate:    z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   sampleCount:   z.number().int().min(1),
   totalWeightG:  z.number().int().min(1),
   notes:         z.string().max(500).optional(),
-});
+}).refine(
+  d => !!d.levelId || !!d.batchId,
+  { message: 'Either levelId (an occupied row/level) or batchId is required' },
+);
 export type CreateBrooderWeightSampleDto = z.infer<typeof CreateBrooderWeightSampleSchema>;
 
 // ── Control standard query ────────────────────────────────────────────────

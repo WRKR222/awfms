@@ -9,7 +9,7 @@
 
 import { useState } from 'react';
 import {
-  Flame, Zap, Bird, AlertTriangle, CheckCircle2, Clock, Layers, XCircle, ArrowLeftRight,
+  Flame, Zap, Bird, AlertTriangle, CheckCircle2, Clock, Layers, XCircle, ArrowLeftRight, Scale,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import {
@@ -68,11 +68,13 @@ function LevelCell({
   onSelect,
   onLogMortality,
   onReassign,
+  onLogWeight,
 }: {
   level:          BrooderLevelData;
   onSelect:       (level: BrooderLevelData) => void;
   onLogMortality: (level: BrooderLevelData) => void;
   onReassign:     (level: BrooderLevelData) => void;
+  onLogWeight:    (level: BrooderLevelData) => void;
 }) {
   const occupied = !!level.assignment;
 
@@ -86,10 +88,14 @@ function LevelCell({
     return 'low';                                       // red/dim
   })();
 
+  const weightFlagged = occupied && level.weightCheck !== null && !level.weightCheck.withinBounds;
+
   return (
     <div className={`w-full rounded-lg border transition-colors relative ${
       occupied
-        ? 'bg-amber-950/30 border-amber-700/40 hover:border-amber-500/60'
+        ? weightFlagged
+          ? 'bg-red-950/30 border-red-700/50 hover:border-red-500/70'
+          : 'bg-amber-950/30 border-amber-700/40 hover:border-amber-500/60'
         : 'bg-white/5 border-white/10 hover:border-white/20'
     }`}>
       {/* Main click target — log feed */}
@@ -133,6 +139,16 @@ function LevelCell({
                 Week: {level.dispensedKgThisWeek}/{level.requiredKgThisWeek}kg
               </p>
             )}
+            {/* Weight check status */}
+            {level.weightCheck && (
+              <p className={`text-[9px] mt-0.5 flex items-center gap-1 font-semibold ${
+                weightFlagged ? 'text-red-400' : 'text-green-400'
+              }`}>
+                {weightFlagged ? <AlertTriangle className="w-2.5 h-2.5" /> : <Scale className="w-2.5 h-2.5" />}
+                {level.weightCheck.averageWeightG.toFixed(0)}g
+                <span className="text-white/30">({level.weightCheck.minG}-{level.weightCheck.maxG}g)</span>
+              </p>
+            )}
           </>
         ) : (
           <p className="text-[10px] text-white/25 mt-2">Empty</p>
@@ -149,6 +165,16 @@ function LevelCell({
             title="Reassign birds from another level"
           >
             <ArrowLeftRight className="w-3 h-3 text-white/20 group-hover:text-blue-400 transition-colors" />
+          </button>
+          {/* Log weight */}
+          <button
+            onClick={e => { e.stopPropagation(); onLogWeight(level); }}
+            className="p-0.5 rounded hover:bg-indigo-900/50 transition-colors group"
+            title="Log bird weight sample"
+          >
+            <Scale className={`w-3 h-3 transition-colors ${
+              weightFlagged ? 'text-red-400' : 'text-white/20 group-hover:text-indigo-400'
+            }`} />
           </button>
           {/* Log mortality */}
           <button
@@ -172,12 +198,14 @@ function RowBlock({
   onLogHeat,
   onLogMortality,
   onReassign,
+  onLogWeight,
 }: {
   row:            BrooderRowData;
   onSelectLevel:  (level: BrooderLevelData, row: BrooderRowData) => void;
   onLogHeat:      (row: BrooderRowData) => void;
   onLogMortality: (level: BrooderLevelData, row: BrooderRowData) => void;
   onReassign:     (level: BrooderLevelData, row: BrooderRowData) => void;
+  onLogWeight:    (level: BrooderLevelData, row: BrooderRowData) => void;
 }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
@@ -207,6 +235,7 @@ function RowBlock({
             onSelect={l => onSelectLevel(l, row)}
             onLogMortality={l => onLogMortality(l, row)}
             onReassign={l => onReassign(l, row)}
+            onLogWeight={l => onLogWeight(l, row)}
           />
         ))}
       </div>
@@ -221,11 +250,13 @@ export function BrooderCageMapGrid({
   onLogHeat,
   onLogMortality,
   onReassign,
+  onLogWeight,
 }: {
   onSelectLevel?:  (level: BrooderLevelData, row: BrooderRowData) => void;
   onLogHeat?:      (row: BrooderRowData) => void;
   onLogMortality?: (level: BrooderLevelData, row: BrooderRowData) => void;
   onReassign?:     (level: BrooderLevelData, row: BrooderRowData) => void;
+  onLogWeight?:    (level: BrooderLevelData, row: BrooderRowData) => void;
 }) {
   const { data, isLoading } = useBrooderCageMap();
   const [, setSelected]     = useState<BrooderLevelData | null>(null);
@@ -263,6 +294,9 @@ export function BrooderCageMapGrid({
           <ArrowLeftRight className="w-3 h-3 text-blue-400/60" /> Reassign birds
         </span>
         <span className="text-[10px] text-white/30 flex items-center gap-1">
+          <Scale className="w-3 h-3 text-indigo-400/60" /> Log weight
+        </span>
+        <span className="text-[10px] text-white/30 flex items-center gap-1">
           <XCircle className="w-3 h-3 text-red-400/60" /> Log mortality
         </span>
         <span className="text-[10px] text-white/30">Tap cell = log feed</span>
@@ -293,6 +327,7 @@ export function BrooderCageMapGrid({
                 onLogHeat={r => onLogHeat?.(r)}
                 onLogMortality={(level, r) => onLogMortality?.(level, r)}
                 onReassign={(level, r) => onReassign?.(level, r)}
+                onLogWeight={(level, r) => onLogWeight?.(level, r)}
               />
             ))}
           </div>

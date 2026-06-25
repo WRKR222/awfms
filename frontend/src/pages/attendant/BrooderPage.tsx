@@ -33,6 +33,7 @@ import { BrooderReassignModal }      from '../../components/shared/BrooderReassi
 import { BrooderHeatLogModal }       from '../../components/shared/BrooderHeatLogModal';
 import { BrooderLevelFeedLogModal }  from '../../components/shared/BrooderLevelFeedLogModal';
 import { BrooderMortalityLogModal }  from '../../components/shared/BrooderMortalityLogModal';
+import { BrooderWeightLogModal }     from '../../components/shared/BrooderWeightLogModal';
 import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 import { useBrooderCageMap, useBrooderRowsAndLevels } from '../../hooks/useBrooderCageMap';
 import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
@@ -244,7 +245,7 @@ function SessionLogModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
         <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-5">
 
           {/* ── Date + Session ── */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className={lCls}><Calendar className="w-3 h-3 inline mr-1" />Date</label>
               <input {...register('logDate', { required: true })} type="date" min={min} max={today} className={iCls} />
@@ -1009,6 +1010,7 @@ export function BrooderPage() {
   const [feedTarget,     setFeedTarget]        = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
   const [heatTarget,     setHeatTarget]        = useState<BrooderRowData | null>(null);
   const [mortalityTarget, setMortalityTarget]  = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
+  const [weightTarget,    setWeightTarget]     = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
 
   const assignedCountByBatch: Record<string, number> = {};
   if (cageMapData) {
@@ -1057,9 +1059,9 @@ export function BrooderPage() {
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
           <HeartCrack className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-500" />
           <div>
-            <p className="font-semibold">Cage Map — tap a cell to log feed · use <span className="text-red-500">Log Mortality</span> to record deaths by row &amp; level</p>
+            <p className="font-semibold">Cage Map — tap a cell to log feed · use <span className="text-red-500">Log Mortality</span> or <span className="text-indigo-500">Log Weight</span> for row &amp; level events</p>
             <p className="mt-0.5 text-amber-600 dark:text-amber-500">
-              Mortality is tracked per row and level only through the cage map — it will appear in Farm Events for the manager.
+              Mortality and weight samples are tracked per row and level only through the cage map — mortality appears in Farm Events, and weight outside the HyLine band is flagged to the Manager and Owner.
               Environmental readings (temperature, humidity, water, light) are logged per session using the batch panel below.
             </p>
           </div>
@@ -1070,6 +1072,7 @@ export function BrooderPage() {
           onLogHeat={row => setHeatTarget(row)}
           onLogMortality={(level, row) => setMortalityTarget({ level, row })}
           onReassign={(level, row) => setReassignTarget({ level, row })}
+          onLogWeight={(level, row) => setWeightTarget({ level, row })}
         />
       </div>
 
@@ -1130,6 +1133,13 @@ export function BrooderPage() {
           level={mortalityTarget.level}
           row={mortalityTarget.row}
           onClose={() => setMortalityTarget(null)}
+        />
+      )}
+      {weightTarget && (
+        <BrooderWeightLogModal
+          level={weightTarget.level}
+          row={weightTarget.row}
+          onClose={() => setWeightTarget(null)}
         />
       )}
     </div>

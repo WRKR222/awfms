@@ -155,6 +155,14 @@ export class BrooderController {
     return this.svc.getWeightHistory(batchId);
   }
 
+  /** GET /brooder/levels/:levelId/weight-history
+   *  Weight samples logged specifically against this occupied row/level. */
+  @Get('levels/:levelId/weight-history')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getLevelWeightHistory(@Param('levelId') levelId: string) {
+    return this.svc.getLevelWeightHistory(levelId);
+  }
+
   /** GET /brooder/batches/:batchId/mortality-check
    *  Returns real-time cumulative mortality % vs HyLine ceiling for the batch. */
   @Get('batches/:batchId/mortality-check')

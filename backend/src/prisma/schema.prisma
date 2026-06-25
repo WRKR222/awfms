@@ -449,6 +449,11 @@ model FlockDailyEntry {
 model BirdWeightSample {
   id             String   @id @default(uuid())
   batchId        String   @map("batch_id")
+  // Optional — set when the sample is taken against a specific occupied
+  // brooder row + level (cage map weight logging) rather than the batch
+  // in general. Lets weight be compared/flagged per physical location.
+  rowId          String?  @map("row_id")
+  levelId        String?  @map("level_id")
   sampleDate     DateTime @map("sample_date") @db.Date
   sampleCount    Int      @map("sample_count")
   totalWeightG   Int      @map("total_weight_g")
@@ -458,9 +463,12 @@ model BirdWeightSample {
   recordedById   String   @map("recorded_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
 
-  batch Batch @relation(fields: [batchId], references: [id])
+  batch Batch        @relation(fields: [batchId], references: [id])
+  row   BrooderRow?  @relation(fields: [rowId], references: [id], onDelete: SetNull)
+  level BrooderLevel? @relation(fields: [levelId], references: [id], onDelete: SetNull)
 
   @@index([batchId, sampleDate])
+  @@index([levelId, sampleDate])
   @@map("bird_weight_samples")
 }
 
@@ -1377,6 +1385,7 @@ model BrooderRow {
   heatLogs      BrooderHeatLog[]
   brooderLogs   BrooderLog[]
   treatmentLogs BrooderTreatmentLog[]
+  weightSamples BirdWeightSample[]
 
   @@map("brooder_rows")
 }
@@ -1399,6 +1408,7 @@ model BrooderLevel {
   feedLogs         BrooderLevelFeedLog[]
   mortalityLogs    BrooderLevelMortalityLog[]
   treatmentLogs    BrooderTreatmentLog[]
+  weightSamples    BirdWeightSample[]
 
   @@unique([rowId, levelNumber])
   @@map("brooder_levels")
