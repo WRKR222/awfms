@@ -610,6 +610,31 @@ export class BrooderService {
       this.logger.warn(`[BrooderControl] ${title}: ${message}`);
     }
 
+    // ── Farm Events: emit HealthEvent so mortality appears in manager's
+    //    Farm Events History with full row/level context. ─────────────────
+    try {
+      const rowLabel   = level.row   ? level.row.label   : 'Unknown Row';
+      const levelLabel = level.label ?? 'Unknown Level';
+      const causeNote  = dto.cause ? ` (${dto.cause})` : '';
+      const eventNotes =
+        `Brooder mortality — ${rowLabel}, ${levelLabel}.` +
+        (dto.mortalityCount > 0 ? ` Deaths: ${dto.mortalityCount}.` : '') +
+        (dto.cullingCount   > 0 ? ` Culled: ${dto.cullingCount}.`   : '') +
+        causeNote +
+        (dto.notes ? ` Notes: ${dto.notes}` : '');
+
+      await this.prisma.healthEvent.create({
+        data: {
+          batchId:       dto.batchId,
+          eventType:     'BIRD_MORTALITY' as any,
+          eventDate:     new Date(dto.logDate),
+          affectedCount: totalLost,
+          notes:         eventNotes,
+          recordedById:  userId,
+        },
+      });
+    } catch (_) { /* best-effort — mortality log itself already succeeded */ }
+
     this.refresh();
     return {
       ...log,
@@ -769,46 +794,78 @@ export class BrooderService {
     }
 
     const rows = map.rows.map(row => {
-      const levels       = row.levels.filter(l => l.assignment);
-      const requiredKg   = levels.reduce((s, l) => s + (l.requiredKgThisWeek ?? 0), 0);
-      const dispensedKg  = levels.reduce((s, l) => s + (l.dispensedKgThisWeek ?? 0), 0);
+      const levels            = row.levels.filter(l => l.assignment);
+      const requiredKg        = levels.reduce((s, l) => s + (l.requiredKgThisWeek ?? 0), 0);
+      const dispensedKg       = levels.reduce((s, l) => s + (l.dispensedKgThisWeek ?? 0), 0);
+      // Daily aggregates — sum all levels in this row
+      const dailyRationKgRow  = levels.reduce((s, l) => s + (l.dailyRationKg ?? 0), 0);
+      const dispensedTodayRow = levels.reduce((s, l) => s + (l.dispensedKgToday ?? 0), 0);
+      // A row's daily ration is met if every occupied level has been fully fed today
+      const dailyExactMatch   = levels.length > 0 && levels.every(
+        l => l.dailyRationKg !== null && l.dispensedKgToday >= l.dailyRationKg,
+      );
       return {
         rowId:               row.rowId,
         rowNumber:           row.rowNumber,
         label:               row.label,
         birdTotal:           row.birdTotal,
-        requiredKgThisWeek:  Math.round(requiredKg  * 100) / 100,
-        dispensedKgThisWeek: Math.round(dispensedKg * 100) / 100,
+        // ── weekly ──
+        requiredKgThisWeek:  Math.round(requiredKg        * 100) / 100,
+        dispensedKgThisWeek: Math.round(dispensedKg       * 100) / 100,
         exactMatch:          levels.length > 0 && levels.every(l => l.feedVariancePercent === 0),
-        levels: levels.map(l => ({
-          levelId:             l.levelId,
-          levelNumber:         l.levelNumber,
-          label:               l.label,
-          batchCode:           l.batch?.batchCode ?? null,
-          birdCount:           l.assignment?.birdCount ?? 0,
-          hylineWeek:          l.hylineWeek,
-          dailyRationKg:       l.dailyRationKg,
-          requiredKgThisWeek:  l.requiredKgThisWeek,
-          dispensedKgThisWeek: l.dispensedKgThisWeek,
-          dispensedKgToday:    l.dispensedKgToday,
-          feedVariancePercent: l.feedVariancePercent,
-          exactMatch:          l.feedVariancePercent === 0,
-        })),
+        // ── daily (NEW) ──
+        dailyRationKg:       Math.round(dailyRationKgRow  * 100) / 100,
+        dispensedKgToday:    Math.round(dispensedTodayRow * 100) / 100,
+        dailyExactMatch,
+        levels: levels.map(l => {
+          // Per-level daily variance percent vs today's ration
+          const dailyVariancePct =
+            l.dailyRationKg && l.dailyRationKg > 0
+              ? Math.round(((l.dispensedKgToday - l.dailyRationKg) / l.dailyRationKg) * 1000) / 10
+              : null;
+          return {
+            levelId:             l.levelId,
+            levelNumber:         l.levelNumber,
+            label:               l.label,
+            batchCode:           l.batch?.batchCode ?? null,
+            birdCount:           l.assignment?.birdCount ?? 0,
+            hylineWeek:          l.hylineWeek,
+            // weekly
+            dailyRationKg:       l.dailyRationKg,
+            requiredKgThisWeek:  l.requiredKgThisWeek,
+            dispensedKgThisWeek: l.dispensedKgThisWeek,
+            feedVariancePercent: l.feedVariancePercent,
+            exactMatch:          l.feedVariancePercent === 0,
+            // daily (NEW)
+            dispensedKgToday:    l.dispensedKgToday,
+            dailyVariancePct,
+            dailyMet:
+              l.dailyRationKg !== null && l.dispensedKgToday >= l.dailyRationKg,
+          };
+        }),
       };
     });
 
-    const totalRequiredKg  = rows.reduce((s, r) => s + r.requiredKgThisWeek, 0);
-    const totalDispensedKg = rows.reduce((s, r) => s + r.dispensedKgThisWeek, 0);
+    const totalRequiredKg         = rows.reduce((s, r) => s + r.requiredKgThisWeek, 0);
+    const totalDispensedKg        = rows.reduce((s, r) => s + r.dispensedKgThisWeek, 0);
+    // Daily grand totals (NEW)
+    const totalDailyRationKg      = rows.reduce((s, r) => s + r.dailyRationKg, 0);
+    const totalDispensedKgToday   = rows.reduce((s, r) => s + r.dispensedKgToday, 0);
     // Net amount Store should issue this week after deducting residual carry-forward
     const netToIssueKg = Math.max(0, Math.round((totalRequiredKg - residualCarryForwardKg) * 100) / 100);
 
     return {
-      weekStart:               dayjs().startOf('week').toDate(),
-      totalChicks:             map.totalChicks,
-      totalRequiredKgThisWeek: Math.round(totalRequiredKg  * 100) / 100,
-      totalDispensedKgThisWeek: Math.round(totalDispensedKg * 100) / 100,
+      weekStart:                    dayjs().startOf('week').toDate(),
+      today:                        dayjs().format('YYYY-MM-DD'),
+      totalChicks:                  map.totalChicks,
+      // weekly
+      totalRequiredKgThisWeek:      Math.round(totalRequiredKg  * 100) / 100,
+      totalDispensedKgThisWeek:     Math.round(totalDispensedKg * 100) / 100,
       residualCarryForwardKg,
       netToIssueKg,
+      // daily (NEW)
+      totalDailyRationKg:           Math.round(totalDailyRationKg    * 100) / 100,
+      totalDispensedKgToday:        Math.round(totalDispensedKgToday * 100) / 100,
       rows,
     };
   }

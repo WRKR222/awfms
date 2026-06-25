@@ -82,3 +82,58 @@ export type CreateBrooderWeightSampleDto = z.infer<typeof CreateBrooderWeightSam
 export const ControlStandardQuerySchema = z.object({
   week: z.coerce.number().int().min(1).max(19).optional(),
 });
+
+// ── Brooder daily log — two distinct entry types ──────────────────────────
+//
+// SESSION LOG  (temperature / humidity / light_intensity)
+//   • Must include a logSession: MORNING | MIDDAY | EVENING
+//   • Recorded up to 3× per day (one per session)
+//   • Uniqueness enforced: (batchId, logDate, logSession)
+//
+// ONCE-DAILY LOG  (water consumption / vaccine / supplement / notes)
+//   • logSession must be omitted or null
+//   • Recorded only once per calendar day
+//   • Uniqueness enforced: (batchId, logDate) WHERE log_session IS NULL
+// ─────────────────────────────────────────────────────────────────────────
+
+const BrooderLogSession = z.enum(['MORNING', 'MIDDAY', 'EVENING']);
+
+// Session log: environmental readings recorded 3× per day
+export const CreateBrooderSessionLogSchema = z.object({
+  batchId:           z.string().uuid(),
+  logDate:           z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  logSession:        BrooderLogSession,            // required for session logs
+  temperature:       z.number().min(-10).max(60).optional(),
+  humidityPercent:   z.number().min(0).max(100).optional(),
+  lightIntensityLux: z.number().int().min(0).max(100_000).optional(),
+  lightingOk:        z.boolean().default(true),
+  rowId:             z.string().uuid().optional(),
+  levelId:           z.string().uuid().optional(),
+  notes:             z.string().max(500).optional(),
+}).refine(
+  d => d.temperature != null || d.humidityPercent != null || d.lightIntensityLux != null,
+  { message: 'At least one of temperature, humidityPercent, or lightIntensityLux is required for a session log' },
+);
+export type CreateBrooderSessionLogDto = z.infer<typeof CreateBrooderSessionLogSchema>;
+
+// Once-daily log: water, vaccine, supplement — no session tag
+export const CreateBrooderDailyEntrySchema = z.object({
+  batchId:           z.string().uuid(),
+  logDate:           z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  logSession:        z.null().optional(),         // must NOT be set for daily entries
+  waterConsumptionL: z.number().min(0).max(50_000).optional(),
+  vaccineGiven:      z.string().max(200).optional(),
+  vaccineDose:       z.string().max(200).optional(),
+  vaccineRoute:      z.string().max(100).optional(),
+  supplement:        z.string().max(200).optional(),
+  supplementDose:    z.string().max(200).optional(),
+  rowId:             z.string().uuid().optional(),
+  levelId:           z.string().uuid().optional(),
+  notes:             z.string().max(500).optional(),
+}).refine(
+  d => (d.waterConsumptionL != null)
+    || (d.vaccineGiven && d.vaccineGiven.trim().length > 0)
+    || (d.supplement   && d.supplement.trim().length  > 0),
+  { message: 'At least one of waterConsumptionL, vaccineGiven, or supplement is required for a daily entry' },
+);
+export type CreateBrooderDailyEntryDto = z.infer<typeof CreateBrooderDailyEntrySchema>;

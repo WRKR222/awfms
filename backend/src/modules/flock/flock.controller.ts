@@ -108,4 +108,20 @@ export class FlockController {
   @Post('brooder-logs')
   @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
   createBrooderLog(@Body() body: any, @CurrentUser() user: any) { return this.svc.createBrooderLog(body, user.id); }
+
+  @Get('brooder-treatment-logs')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  listBrooderTreatmentLogs(
+    @Query('batchId') batchId: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.svc.listBrooderTreatmentLogs(batchId, limit ? Number(limit) : 30);
+  }
+
+  @Post('brooder-treatment-logs')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  createBrooderTreatmentLog(@Body() body: any, @CurrentUser() user: any) {
+    return this.svc.createBrooderTreatmentLog(body, user.id);
+  }
 }
+

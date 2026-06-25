@@ -283,6 +283,7 @@ model User {
   deliveryLogsLogged      DeliveryLog[]           @relation("DeliveryLogsLogged")
   dailyPricesSet          DailyEggPrice[]
   brooderLogs             BrooderLog[]            @relation("BrooderLoggedBy")
+  brooderTreatmentLogs    BrooderTreatmentLog[]   @relation("BrooderTreatmentLoggedBy")
 
   // Phase 4
   expenseCategories      ExpenseCategory[]       @relation("ExpenseCategoryCreatedBy")
@@ -418,6 +419,7 @@ model Batch {
   flockEntries          FlockDailyEntry[]
   feedIntakeLogs        FeedIntakeLog[]
   brooderLogs           BrooderLog[]
+  treatmentLogs         BrooderTreatmentLog[]
   productionEntries     ProductionEntry[]
   weightSamples         BirdWeightSample[]
   vaccinationRecords    VaccinationRecord[]
@@ -1314,25 +1316,37 @@ model VisitorAdvanceNotice {
 
 // ─── BROODER LOG ─────────────────────────────────────────────────────────────
 
+enum BrooderLogSession {
+  MORNING
+  MIDDAY
+  EVENING
+}
+
 model BrooderLog {
-  id                String   @id @default(uuid())
-  batchId           String   @map("batch_id")
-  logDate           DateTime @map("log_date") @db.Date
-  feedType          String?  @map("feed_type")
-  feedConsumedKg    Float?   @map("feed_consumed_kg")
+  id                String            @id @default(uuid())
+  batchId           String            @map("batch_id")
+  logDate           DateTime          @map("log_date") @db.Date
+  logSession        BrooderLogSession? @map("log_session")
+  // Environmental readings (3× daily)
   waterConsumptionL Float?   @map("water_consumption_l")
   temperature       Float?
+  humidityPercent   Float?   @map("humidity_percent")
+  lightIntensityLux Int?     @map("light_intensity_lux")
   lightingOk        Boolean  @default(true) @map("lighting_ok")
+  // Feed & mortality removed — tracked via BrooderLevelFeedLog / BrooderLevelMortalityLog
+  feedType          String?  @map("feed_type")
+  feedConsumedKg    Float?   @map("feed_consumed_kg")
   mortalityCount    Int      @default(0) @map("mortality_count")
+  // Vaccine with dose
   vaccineGiven      String?  @map("vaccine_given")
+  vaccineGivenDose  String?  @map("vaccine_given_dose")
+  // Supplement with dose
   supplement        String?
+  supplementDose    String?  @map("supplement_dose")
   notes             String?
   loggedById        String   @map("logged_by_id")
   createdAt         DateTime @default(now()) @map("created_at")
 
-  // Optional cage-map pinpoint — when set, this log describes conditions on
-  // one specific row/level rather than the batch as a whole. Nullable so
-  // existing batch-wide entries (pre-cage-map) keep working unchanged.
   rowId   String? @map("row_id")
   levelId String? @map("level_id")
 
@@ -1341,10 +1355,39 @@ model BrooderLog {
   row      BrooderRow?    @relation(fields: [rowId], references: [id])
   level    BrooderLevel?  @relation(fields: [levelId], references: [id])
 
+  // Uniqueness constraints (enforced via partial indexes — see migration 20260626000001)
+  // SESSION  logs: unique (batchId, logDate, logSession) WHERE logSession IS NOT NULL  → 3×/day max
+  // DAILY    logs: unique (batchId, logDate)             WHERE logSession IS NULL      → 1×/day max
   @@index([batchId, logDate])
   @@index([rowId])
   @@index([levelId])
   @@map("brooder_logs")
+}
+
+/// Drug/treatment administered to a brooder batch, pinpointed to a row+level.
+model BrooderTreatmentLog {
+  id            String   @id @default(uuid())
+  batchId       String   @map("batch_id")
+  rowId         String?  @map("row_id")
+  levelId       String?  @map("level_id")
+  treatmentDate DateTime @map("treatment_date") @db.Date
+  drugName      String   @map("drug_name")
+  dose          String
+  doseUnit      String   @default("ml") @map("dose_unit")
+  route         String   @default("DRINKING_WATER")
+  durationDays  Int?     @map("duration_days")
+  notes         String?
+  loggedById    String   @map("logged_by_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  batch    Batch        @relation(fields: [batchId], references: [id])
+  loggedBy User         @relation("BrooderTreatmentLoggedBy", fields: [loggedById], references: [id])
+  row      BrooderRow?  @relation(fields: [rowId], references: [id])
+  level    BrooderLevel? @relation(fields: [levelId], references: [id])
+
+  @@index([batchId])
+  @@index([treatmentDate])
+  @@map("brooder_treatment_logs")
 }
 
 /// One of the 6 fixed physical rows/decks in the brooder house.
@@ -1358,6 +1401,7 @@ model BrooderRow {
   levels        BrooderLevel[]
   heatLogs      BrooderHeatLog[]
   brooderLogs   BrooderLog[]
+  treatmentLogs BrooderTreatmentLog[]
 
   @@map("brooder_rows")
 }
@@ -1379,6 +1423,7 @@ model BrooderLevel {
   brooderLogs      BrooderLog[]
   feedLogs         BrooderLevelFeedLog[]
   mortalityLogs    BrooderLevelMortalityLog[]
+  treatmentLogs    BrooderTreatmentLog[]
 
   @@unique([rowId, levelNumber])
   @@map("brooder_levels")
@@ -1552,6 +1597,7 @@ model StoreStockIn {
   totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
   supplierName  String?  @map("supplier_name")
   invoiceRef    String?  @map("invoice_ref")
+  lpoId         String?  @map("lpo_id")
   notes         String?
   receivedById  String   @map("received_by_id")
   expiryDate    DateTime? @map("expiry_date") @db.Date
@@ -1559,6 +1605,7 @@ model StoreStockIn {
 
   storeItem     StoreItem           @relation(fields: [storeItemId], references: [id])
   receivedBy    User                @relation("StoreStockInReceivedBy", fields: [receivedById], references: [id])
+  lpo           LocalPurchaseOrder? @relation(fields: [lpoId], references: [id])
 
   @@index([storeItemId, receivedDate])
   @@index([receivedDate])
@@ -1753,6 +1800,7 @@ model LocalPurchaseOrder {
   createdBy       User             @relation("LPOCreatedBy", fields: [createdById], references: [id])
   approvedBy      User?            @relation("LPOApprovedBy", fields: [approvedById], references: [id])
   items           LPOItem[]
+  stockIns        StoreStockIn[]
 
   @@index([status])
   @@index([lpoDate])

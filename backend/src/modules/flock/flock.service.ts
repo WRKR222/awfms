@@ -535,10 +535,12 @@ export class FlockService {
     if (!batchId) return [];
     return this.prisma.brooderLog.findMany({
       where: { batchId, ...(rowId ? { rowId } : {}), ...(levelId ? { levelId } : {}) },
-      orderBy: { logDate: 'desc' },
+      orderBy: [{ logDate: 'desc' }, { createdAt: 'desc' }],
       take: limit,
       include: {
         loggedBy: { select: { id: true, fullName: true } },
+        row:   { select: { id: true, label: true } },
+        level: { select: { id: true, label: true } },
       },
     });
   }
@@ -549,53 +551,137 @@ export class FlockService {
     const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
-    const mortality = Number(input.mortalityCount ?? 0);
-    if (mortality > 0) {
-      await this.prisma.batch.update({
-        where: { id: batch.id },
-        data: { currentBirdCount: { decrement: mortality } },
+    const logDate     = input.logDate ? new Date(input.logDate) : new Date();
+    const isSessionLog = !!(input.logSession); // MORNING | MIDDAY | EVENING
+
+    // ── SESSION LOG (temperature / humidity / light — up to 3× per day) ──────
+    if (isSessionLog) {
+      // Reject duplicate (batch, date, session)
+      const existing = await this.prisma.brooderLog.findFirst({
+        where: { batchId: batch.id, logDate, logSession: input.logSession as any },
+      });
+      if (existing) {
+        throw new BadRequestException(
+          `A ${input.logSession} session log has already been recorded for this batch on ${input.logDate}. ` +
+          `Edit the existing record instead.`,
+        );
+      }
+
+      // Session logs carry ONLY environmental readings — no water/vaccine/supplement
+      return this.prisma.brooderLog.create({
+        data: {
+          batchId:           batch.id,
+          logDate,
+          logSession:        input.logSession as any,
+          temperature:       input.temperature        != null ? Number(input.temperature)        : null,
+          humidityPercent:   input.humidityPercent    != null ? Number(input.humidityPercent)    : null,
+          lightIntensityLux: input.lightIntensityLux  != null ? Number(input.lightIntensityLux)  : null,
+          lightingOk:        input.lightingOk ?? true,
+          // Once-daily fields explicitly excluded from session logs
+          waterConsumptionL: null,
+          vaccineGiven:      null,
+          vaccineGivenDose:  null,
+          supplement:        null,
+          supplementDose:    null,
+          feedType:          null,
+          feedConsumedKg:    null,
+          mortalityCount:    0,
+          notes:             input.notes ?? null,
+          loggedById:        userId,
+          rowId:             input.rowId   ?? null,
+          levelId:           input.levelId ?? null,
+        },
       });
     }
 
-    // If feed was consumed, also create a FeedIntakeLog to deduct from stock
-    const feedKg = Number(input.feedConsumedKg ?? 0);
-    if (feedKg > 0 && input.feedType) {
+    // ── ONCE-DAILY LOG (water / vaccine / supplement — max 1× per day) ───────
+    const existingDaily = await this.prisma.brooderLog.findFirst({
+      where: { batchId: batch.id, logDate, logSession: null },
+    });
+    if (existingDaily) {
+      throw new BadRequestException(
+        `A daily entry (water / vaccine / supplement) has already been recorded for this batch on ${input.logDate}. ` +
+        `Edit the existing record instead.`,
+      );
+    }
+
+    // Vaccine: auto-create VaccinationRecord so it shows on the manager's
+    // Vaccination History page without the manager needing to re-enter it.
+    if (input.vaccineGiven && String(input.vaccineGiven).trim()) {
       try {
-        await this.prisma.feedIntakeLog.create({
+        await this.prisma.vaccinationRecord.create({
           data: {
-            batchId: batch.id,
-            houseId: batch.houseId,
-            feedType: input.feedType,
-            entryDate: input.logDate ? new Date(input.logDate) : new Date(),
-            quantityDispensedKg: feedKg,
-            wastageKg: 0,
-            recommendedMinKg: 0,
-            recommendedMaxKg: 0,
-            notes: 'Logged from Brooder page',
-            recordedById: userId,
+            batchId:          batch.id,
+            vaccineName:      String(input.vaccineGiven).trim(),
+            administeredDate: logDate,
+            route:            (input.vaccineRoute ?? 'DRINKING_WATER') as any,
+            batchSize:        batch.currentBirdCount,
+            dosageUnits:      input.vaccineDose ? String(input.vaccineDose).trim() : undefined,
+            notes:            input.notes ?? undefined,
+            recordedById:     userId,
           },
         });
-      } catch (_) { /* feed intake log is best-effort */ }
+      } catch (_) { /* best-effort — don't fail the whole log */ }
     }
 
     return this.prisma.brooderLog.create({
       data: {
         batchId:           batch.id,
-        logDate:           input.logDate ? new Date(input.logDate) : new Date(),
-        feedType:          input.feedType ?? null,
-        feedConsumedKg:    input.feedConsumedKg != null ? Number(input.feedConsumedKg) : null,
+        logDate,
+        logSession:        null,               // once-daily entries carry no session tag
         waterConsumptionL: input.waterConsumptionL != null ? Number(input.waterConsumptionL) : null,
-        temperature:       input.temperature != null ? Number(input.temperature) : null,
-        lightingOk:        input.lightingOk ?? true,
-        mortalityCount:    mortality,
-        vaccineGiven:      input.vaccineGiven ?? null,
-        supplement:        input.supplement ?? null,
+        // Environmental readings excluded from once-daily entries
+        temperature:       null,
+        humidityPercent:   null,
+        lightIntensityLux: null,
+        lightingOk:        true,
+        feedType:          null,
+        feedConsumedKg:    null,
+        mortalityCount:    0,
+        vaccineGiven:      input.vaccineGiven   ?? null,
+        vaccineGivenDose:  input.vaccineDose    ?? null,
+        supplement:        input.supplement     ?? null,
+        supplementDose:    input.supplementDose ?? null,
         notes:             input.notes ?? null,
         loggedById:        userId,
-        // Optional cage-map pinpoint — lets an attendant tie this entry to
-        // one specific row/level instead of describing the whole batch.
-        rowId:             input.rowId ?? null,
+        rowId:             input.rowId   ?? null,
         levelId:           input.levelId ?? null,
+      },
+    });
+  }
+
+  async listBrooderTreatmentLogs(batchId: string, limit = 30) {
+    return (this.prisma as any).brooderTreatmentLog.findMany({
+      where:   { batchId },
+      orderBy: { treatmentDate: 'desc' },
+      take:    limit,
+      include: {
+        loggedBy: { select: { id: true, fullName: true } },
+        row:      { select: { id: true, label: true } },
+        level:    { select: { id: true, label: true } },
+      },
+    });
+  }
+
+  async createBrooderTreatmentLog(input: any, userId: string) {
+    if (!input?.batchId) throw new BadRequestException('batchId is required');
+    if (!input?.drugName) throw new BadRequestException('drugName is required');
+    if (!input?.dose)     throw new BadRequestException('dose is required');
+    const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+    return (this.prisma as any).brooderTreatmentLog.create({
+      data: {
+        batchId:       batch.id,
+        rowId:         input.rowId       ?? null,
+        levelId:       input.levelId     ?? null,
+        treatmentDate: input.treatmentDate ? new Date(input.treatmentDate) : new Date(),
+        drugName:      String(input.drugName).trim(),
+        dose:          String(input.dose).trim(),
+        doseUnit:      input.doseUnit ?? 'ml',
+        route:         input.route    ?? 'DRINKING_WATER',
+        durationDays:  input.durationDays != null ? Number(input.durationDays) : null,
+        notes:         input.notes ?? null,
+        loggedById:    userId,
       },
     });
   }
