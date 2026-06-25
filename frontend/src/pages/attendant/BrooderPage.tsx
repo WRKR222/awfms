@@ -29,6 +29,7 @@ import {
 import { BrooderCageMapGrid }        from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement }    from '../../components/shared/BrooderFeedRequirement';
 import { BrooderLevelAssignModal }   from '../../components/shared/BrooderLevelAssignModal';
+import { BrooderReassignModal }      from '../../components/shared/BrooderReassignModal';
 import { BrooderHeatLogModal }       from '../../components/shared/BrooderHeatLogModal';
 import { BrooderLevelFeedLogModal }  from '../../components/shared/BrooderLevelFeedLogModal';
 import { BrooderMortalityLogModal }  from '../../components/shared/BrooderMortalityLogModal';
@@ -1115,20 +1116,9 @@ export function BrooderPage() {
         />
       )}
       {reassignTarget && (
-        <BrooderLevelAssignModal
-          level={reassignTarget.level}
-          row={reassignTarget.row}
-          batches={brooderBatches.map(b => ({
-            id: b.id,
-            batchCode: b.batchCode,
-            currentBirdCount: b.currentBirdCount,
-            quantityReceived: b.quantityReceived,
-            alreadyAssignedCount:
-              (assignedCountByBatch[b.id] ?? 0) -
-              (reassignTarget.level.assignment?.batchId === b.id
-                ? (reassignTarget.level.assignment?.birdCount ?? 0)
-                : 0),
-          }))}
+        <BrooderReassignModal
+          sourceLevel={reassignTarget.level}
+          sourceRow={reassignTarget.row}
           allRows={cageMapData?.rows ?? []}
           onClose={() => setReassignTarget(null)}
         />
