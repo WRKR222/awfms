@@ -1081,24 +1081,26 @@ export class BrooderService {
     const yesterdayDate = yesterday.toDate();
     const yesterdayStr  = yesterday.format('YYYY-MM-DD');
 
-    const levels = await this.prisma.brooderLevel.findMany({
-      where: {
-        isActive: true,
-        assignment: {
-          isNot: null,
-          // Only flag levels whose batch was placed BEFORE yesterday —
-          // a batch registered today (or yesterday) hasn't had a chance
-          // to receive a feed log for that date yet, so it should never
-          // appear as "missed".
-          placedDate: { lt: yesterdayDate },
-        },
-      },
+    // Fetch all currently-assigned active levels, then filter by placedDate in
+    // the loop — Prisma does not allow scalar filters inside a nested-relation
+    // existence check (isNot: null) without a separate `is` block, which would
+    // require the relation filter API unavailable on this Prisma version.
+    const allLevels = await this.prisma.brooderLevel.findMany({
+      where: { isActive: true, assignment: { isNot: null } },
       select: {
         id: true, label: true,
-        row: { select: { id: true, label: true } },
+        row:        { select: { id: true, label: true } },
         assignment: { select: { batchId: true, birdCount: true, placedDate: true } },
       },
     });
+
+    // Only flag levels whose batch was placed strictly before yesterday —
+    // a batch registered today (or on yesterday itself) hasn't had a chance
+    // to receive a feed log for that date yet, so it must never appear as "missed".
+    const levels = allLevels.filter(
+      l => l.assignment && l.assignment.placedDate < yesterdayDate,
+    );
+
     if (levels.length === 0) return { date: yesterdayStr, alertCount: 0, alerts: [] };
 
     const batchIds = Array.from(new Set(levels.map(l => l.assignment!.batchId)));
