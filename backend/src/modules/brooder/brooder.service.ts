@@ -360,10 +360,13 @@ export class BrooderService {
         ? existingTargetAssignment.birdCount + dto.birdCount
         : dto.birdCount;
 
+      // FIX: both create and update branches must use finalBirdCount so that
+      // incoming birds are always ADDED to whatever already exists on the target
+      // level — whether the upsert ends up inserting or updating.
       const result = await tx.brooderLevelAssignment.upsert({
         where:  { levelId },
         create: {
-          levelId, batchId: dto.batchId, birdCount: dto.birdCount,
+          levelId, batchId: dto.batchId, birdCount: finalBirdCount,
           placedDate: new Date(dto.placedDate), notes: dto.notes ?? null, assignedById: userId,
         },
         update: {

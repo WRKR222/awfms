@@ -177,6 +177,7 @@ export function useAssignBrooderLevel() {
       api.post(`/brooder/levels/${levelId}/assign`, data).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+      qc.invalidateQueries({ queryKey: ['brooder-rows-and-levels'] }); // FIX: keep source dropdown in sync
       qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
       qc.invalidateQueries({ queryKey: ['batches'] });
     },
@@ -190,6 +191,7 @@ export function useRemoveBrooderLevelAssignment() {
       api.delete(`/brooder/levels/${levelId}/assign`).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+      qc.invalidateQueries({ queryKey: ['brooder-rows-and-levels'] }); // FIX: keep source dropdown in sync
       qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
       qc.invalidateQueries({ queryKey: ['batches'] });
     },
