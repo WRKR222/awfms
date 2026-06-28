@@ -688,7 +688,9 @@ function EditBatchModal({ batch, onClose }: { batch: any; onClose: () => void })
 
   const mortalityOnArrival = Number(watch('mortalityOnArrival') || 0);
   const mortalityChanged = mortalityOnArrival !== (batch.mortalityOnArrival ?? 0);
-  const projectedCurrentCount = batch.currentBirdCount - (mortalityOnArrival - (batch.mortalityOnArrival ?? 0));
+  // currentBirdCount stays fixed (brooder birds don't change).
+  // quantityReceived is recalculated as: currentBirdCount + mortalityOnArrival.
+  const projectedQuantityReceived = batch.currentBirdCount + mortalityOnArrival;
 
   const onSubmit = (data: any) => {
     update.mutate(
@@ -728,18 +730,27 @@ function EditBatchModal({ batch, onClose }: { batch: any; onClose: () => void })
 
         <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-4">
 
-          {/* Locked field — shown for context only */}
-          <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 flex items-center justify-between">
-            <div>
-              <p className={lCls}>Number Received</p>
-              <p className="text-sm font-bold text-gray-600 dark:text-gray-300">{batch.quantityReceived?.toLocaleString()}</p>
-              {batch.mortalityOnArrival > 0 && (
-                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5">
-                  incl. {batch.mortalityOnArrival} died on arrival
-                </p>
-              )}
+          {/* Quantity received breakdown — shown for context */}
+          <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 space-y-1">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className={lCls}>Birds in Brooder</p>
+                <p className="text-sm font-bold text-brand-green">{batch.currentBirdCount?.toLocaleString()}</p>
+              </div>
+              <span className="text-gray-300 dark:text-gray-600 text-lg font-light">+</span>
+              <div className="text-center">
+                <p className={lCls}>Died on Arrival</p>
+                <p className="text-sm font-bold text-amber-600 dark:text-amber-400">{batch.mortalityOnArrival ?? 0}</p>
+              </div>
+              <span className="text-gray-300 dark:text-gray-600 text-lg font-light">=</span>
+              <div className="text-right">
+                <p className={lCls}>Total Received</p>
+                <p className="text-sm font-bold text-gray-700 dark:text-gray-200">{batch.quantityReceived?.toLocaleString()}</p>
+              </div>
             </div>
-            <p className="text-[10px] text-gray-400 max-w-[55%] text-right">Total birds off the truck — locked after registration.</p>
+            <p className="text-[10px] text-gray-400 mt-1">
+              Edit mortality on arrival below — Total Received updates automatically. Brooder count stays unchanged.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -791,14 +802,18 @@ function EditBatchModal({ batch, onClose }: { batch: any; onClose: () => void })
             <label className={lCls}>Mortality on Arrival</label>
             <input {...register('mortalityOnArrival', { required: true, min: 0 })} type="number" min="0" className={iCls} />
             <p className="text-[10px] text-gray-400 mt-1">
-              Only correct this if the number recorded at registration was wrong. Changing it
-              adjusts Current Birds by the difference — it does not erase any mortality logged since then.
-              Mortality on arrival is noted for records only and does <strong>not</strong> count toward the cumulative mortality threshold.
+              Birds that died before being assigned to the brooder. Noted for records only —
+              does <strong>not</strong> count toward the cumulative mortality threshold.
             </p>
+            {/* Live formula: show updated quantityReceived */}
             {mortalityChanged && (
-              <p className={`text-xs mt-1 font-semibold ${projectedCurrentCount < 0 ? 'text-red-500' : 'text-amber-600 dark:text-amber-400'}`}>
-                Current Birds will change from {batch.currentBirdCount?.toLocaleString()} to {projectedCurrentCount.toLocaleString()}.
-              </p>
+              <div className="mt-2 rounded-lg px-3 py-2 text-xs font-medium bg-brand-green/5 dark:bg-brand-green/10 text-gray-700 dark:text-gray-300 border border-brand-green/20 flex items-center justify-between">
+                <span>
+                  Brooder birds: <strong>{batch.currentBirdCount?.toLocaleString()}</strong>
+                  {' '}+ DOA: <strong>{mortalityOnArrival}</strong>
+                  {' '}= Total received: <strong>{projectedQuantityReceived.toLocaleString()}</strong>
+                </span>
+              </div>
             )}
           </div>
 

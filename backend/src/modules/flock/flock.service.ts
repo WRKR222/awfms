@@ -326,28 +326,26 @@ export class FlockService {
       data.notes = input.notes || null;
     }
 
-    // mortalityOnArrival correction — apply only the delta to currentBirdCount.
+    // mortalityOnArrival correction:
+    // quantityReceived = birds assigned to brooder (currentBirdCount) + mortalityOnArrival.
+    // When the PM records or corrects mortality on arrival, currentBirdCount stays fixed
+    // (the brooder already has those birds), and quantityReceived is recalculated as
+    // currentBirdCount + newMortalityOnArrival. This ensures the formula always holds.
+    // mortalityOnArrival is flagged for records only and does NOT feed the cumulative threshold.
     if (input.mortalityOnArrival !== undefined) {
       const newMortalityOnArrival = Number(input.mortalityOnArrival);
       if (!Number.isFinite(newMortalityOnArrival) || newMortalityOnArrival < 0) {
         throw new BadRequestException('mortalityOnArrival must be zero or a positive number');
       }
-      if (newMortalityOnArrival > batch.quantityReceived) {
-        throw new BadRequestException('mortalityOnArrival cannot exceed Quantity Received');
-      }
-      const delta = newMortalityOnArrival - batch.mortalityOnArrival; // +ve = correcting upward
-      const newCurrentBirdCount = batch.currentBirdCount - delta;
-      if (newCurrentBirdCount < 0) {
-        throw new BadRequestException(
-          'This correction would make the current bird count negative. Check the recorded mortality before saving.',
-        );
-      }
+      // quantityReceived = current live birds + DOA; currentBirdCount stays unchanged.
+      const newQuantityReceived = batch.currentBirdCount + newMortalityOnArrival;
       data.mortalityOnArrival = newMortalityOnArrival;
-      data.currentBirdCount = newCurrentBirdCount;
+      data.quantityReceived   = newQuantityReceived;
+      // currentBirdCount is intentionally NOT changed here — the brooder already holds those birds.
     }
 
-    // quantityReceived is deliberately ignored even if present in the payload —
-    // "Number Received" is locked once a batch is created.
+    // quantityReceived is only updated via the mortalityOnArrival correction above
+    // to preserve the invariant: quantityReceived = currentBirdCount + mortalityOnArrival.
 
     if (Object.keys(data).length === 0) {
       return this.getBatch(id);
