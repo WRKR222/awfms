@@ -148,7 +148,7 @@ function BatchCard({ batch, onTransfer, onEdit }: { batch: any; onTransfer?: (id
           </div>
         </Tooltip>
 
-        <Tooltip tip={`Started with ${batch.quantityReceived} birds. Survival rate: ${survivalRate}%`}>
+        <Tooltip tip={`${batch.quantityReceived} birds received off truck${batch.mortalityOnArrival > 0 ? ` (incl. ${batch.mortalityOnArrival} died on arrival — not counted in mortality threshold)` : ''}. Survival rate: ${survivalRate}%`}>
           <div className="rounded-xl bg-gray-50 dark:bg-dark-bg p-3 cursor-default">
             <div className="flex items-center gap-1 mb-0.5">
               <Layers className="w-3 h-3 text-gray-400" />
@@ -156,6 +156,9 @@ function BatchCard({ batch, onTransfer, onEdit }: { batch: any; onTransfer?: (id
             </div>
             <p className="text-xl font-bold text-gray-700 dark:text-gray-300">{batch.quantityReceived?.toLocaleString()}</p>
             <p className="text-[10px] text-gray-400 mt-0.5">{survivalRate}% survival</p>
+            {batch.mortalityOnArrival > 0 && (
+              <p className="text-[10px] text-amber-500 mt-0.5">{batch.mortalityOnArrival} on arrival</p>
+            )}
           </div>
         </Tooltip>
 
@@ -296,6 +299,7 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
       birdBreed: '',
       location: 'BROODER',
       quantityReceived: '',
+      mortalityOnArrival: '0',
       dayOfHatch: dayjs().format('YYYY-MM-DD'),
       dateReceived: dayjs().format('YYYY-MM-DD'),
       houseId: '',
@@ -309,6 +313,10 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
   const location           = watch('location');
   const vaccinatedOnArrival = watch('vaccinatedOnArrival');
   const quantityReceived   = Number(watch('quantityReceived') || 0);
+  const mortalityOnArrival = Number(watch('mortalityOnArrival') || 0);
+  // Birds available to assign = total received minus those that died on arrival.
+  // mortalityOnArrival is noted but does NOT count toward cumulative mortality threshold.
+  const assignableBirds    = Math.max(0, quantityReceived - mortalityOnArrival);
 
   // Per-row bird placements (only used when Assign To = Production House)
   const [rowPlacements, setRowPlacements] = useState<RowPlacementMap>(emptyRowPlacements);
@@ -345,6 +353,7 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
         birdBreed: data.birdBreed,
         location: data.location,
         quantityReceived: Number(data.quantityReceived),
+        mortalityOnArrival: Number(data.mortalityOnArrival) || 0,
         dateOfHatch: data.dayOfHatch,
         dateReceived: data.dateReceived,
         houseId: data.houseId,
@@ -370,17 +379,20 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
 
   const onSubmit = (data: any) => {
     setPlacementError(null);
+    const qty = Number(data.quantityReceived) || 0;
+    const moa = Number(data.mortalityOnArrival) || 0;
+    const assignable = Math.max(0, qty - moa);
     if (data.location === 'PRODUCTION_HOUSE') {
-      if (placedTotal !== Number(data.quantityReceived)) {
+      if (placedTotal !== assignable) {
         setPlacementError(
-          `Birds placed across rows (${placedTotal}) must equal Quantity Received (${data.quantityReceived || 0}).`,
+          `Birds placed across rows (${placedTotal}) must equal birds available to assign (${assignable} = ${qty} received − ${moa} died on arrival).`,
         );
         return;
       }
     }
-    if (data.location === 'BROODER' && brooderPlacedTotal > Number(data.quantityReceived)) {
+    if (data.location === 'BROODER' && brooderPlacedTotal > assignable) {
       setPlacementError(
-        `Birds assigned to brooder levels (${brooderPlacedTotal}) exceeds Quantity Received (${data.quantityReceived || 0}).`,
+        `Birds assigned to brooder levels (${brooderPlacedTotal}) exceeds birds available to assign (${assignable} = ${qty} received − ${moa} died on arrival).`,
       );
       return;
     }
@@ -472,6 +484,18 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
               <input {...register('weightKg', { required: 'Required', min: 0 })} type="number" step="0.001" min="0" className={iCls} placeholder="e.g. 0.045" />
               {errors.weightKg && <p className="text-red-500 text-xs mt-1">{(errors.weightKg as any).message}</p>}
             </div>
+            <div className="md:col-span-2">
+              <label className={lCls}>Mortality on Arrival</label>
+              <input {...register('mortalityOnArrival', { min: 0 })} type="number" min="0" className={iCls} placeholder="0" />
+              <p className="text-[10px] text-gray-400 mt-1">
+                Birds dead on arrival. Noted for records only — does <strong>not</strong> count toward the cumulative mortality threshold. Birds to assign = Received − this number.
+              </p>
+              {mortalityOnArrival > 0 && quantityReceived > 0 && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 font-semibold">
+                  {assignableBirds.toLocaleString()} birds available to assign ({quantityReceived.toLocaleString()} received − {mortalityOnArrival} died on arrival)
+                </p>
+              )}
+            </div>
           </div>
 
           {/* Vaccination on arrival ───────────────────────────────────────── */}
@@ -501,11 +525,11 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
                   Birds Placed Per Row (Block 1)
                 </p>
                 <p className={`text-xs font-semibold ${
-                  placedTotal === quantityReceived && quantityReceived > 0
+                  placedTotal === assignableBirds && assignableBirds > 0
                     ? 'text-brand-green'
                     : 'text-gray-500'
                 }`}>
-                  {placedTotal} / {quantityReceived || 0}
+                  {placedTotal} / {assignableBirds || 0}
                 </p>
               </div>
               {PRODUCTION_HOUSE_UNITS.map(({ unit, rows }) => (
@@ -535,7 +559,7 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
                 <p className="text-red-500 text-xs">{placementError}</p>
               )}
               <p className="text-[10px] text-gray-400">
-                The sum of birds placed across all rows must equal the Quantity Received.
+                The sum of birds placed across all rows must equal the birds available to assign (Quantity Received minus any mortality on arrival).
               </p>
             </div>
           )}
@@ -551,13 +575,13 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
                   </p>
                 </div>
                 <p className={`text-xs font-semibold ${
-                  brooderPlacedTotal > 0 && brooderPlacedTotal === quantityReceived
+                  brooderPlacedTotal > 0 && brooderPlacedTotal === assignableBirds
                     ? 'text-brand-green'
-                    : brooderPlacedTotal > quantityReceived
+                    : brooderPlacedTotal > assignableBirds
                     ? 'text-red-500'
                     : 'text-gray-400'
                 }`}>
-                  {brooderPlacedTotal} / {quantityReceived || 0} birds placed
+                  {brooderPlacedTotal} / {assignableBirds || 0} birds placed
                 </p>
               </div>
               <p className="text-[10px] text-amber-600 dark:text-amber-400">
@@ -605,10 +629,10 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
                   ))}
                 </div>
               )}
-              {brooderPlacedTotal > quantityReceived && quantityReceived > 0 && (
+              {brooderPlacedTotal > assignableBirds && assignableBirds > 0 && (
                 <p className="text-red-500 text-xs flex items-center gap-1">
                   <AlertTriangle className="w-3.5 h-3.5" />
-                  Total assigned ({brooderPlacedTotal}) exceeds Quantity Received ({quantityReceived}).
+                  Total assigned ({brooderPlacedTotal}) exceeds birds available to assign ({assignableBirds}).
                 </p>
               )}
             </div>
@@ -709,8 +733,13 @@ function EditBatchModal({ batch, onClose }: { batch: any; onClose: () => void })
             <div>
               <p className={lCls}>Number Received</p>
               <p className="text-sm font-bold text-gray-600 dark:text-gray-300">{batch.quantityReceived?.toLocaleString()}</p>
+              {batch.mortalityOnArrival > 0 && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5">
+                  incl. {batch.mortalityOnArrival} died on arrival
+                </p>
+              )}
             </div>
-            <p className="text-[10px] text-gray-400 max-w-[55%] text-right">Locked — cannot be changed after registration.</p>
+            <p className="text-[10px] text-gray-400 max-w-[55%] text-right">Total birds off the truck — locked after registration.</p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -764,6 +793,7 @@ function EditBatchModal({ batch, onClose }: { batch: any; onClose: () => void })
             <p className="text-[10px] text-gray-400 mt-1">
               Only correct this if the number recorded at registration was wrong. Changing it
               adjusts Current Birds by the difference — it does not erase any mortality logged since then.
+              Mortality on arrival is noted for records only and does <strong>not</strong> count toward the cumulative mortality threshold.
             </p>
             {mortalityChanged && (
               <p className={`text-xs mt-1 font-semibold ${projectedCurrentCount < 0 ? 'text-red-500' : 'text-amber-600 dark:text-amber-400'}`}>
