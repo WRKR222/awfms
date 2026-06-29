@@ -24,6 +24,7 @@ export interface BrooderLevelData {
     stage:            string;
     ageWeeks:         number;
     quantityReceived: number;
+    dateOfHatch:      string;   // ISO date string — used for early-phase detection in feed log modal
   } | null;
   // Feed control fields (new — from HyLine standard lookup)
   hylineWeek:          number | null;   // HyLine week for this batch's age

@@ -292,11 +292,12 @@ export class BrooderService {
             notes:     a.notes,
           } : null,
           batch: batch ? {
-            batchCode:      batch.batchCode,
-            strain:         batch.strain,
-            stage:          batch.stage,
-            ageWeeks:       Math.max(1, dayjs().diff(dayjs(batch.dateOfHatch), 'week')),
+            batchCode:        batch.batchCode,
+            strain:           batch.strain,
+            stage:            batch.stage,
+            ageWeeks:         Math.max(1, dayjs().diff(dayjs(batch.dateOfHatch), 'week')),
             quantityReceived: batch.quantityReceived,
+            dateOfHatch:      dayjs(batch.dateOfHatch).format('YYYY-MM-DD'),
           } : null,
           hylineWeek,
           dailyRationKg,
@@ -1265,6 +1266,7 @@ export class BrooderService {
       levelId: string; levelLabel: string; rowId: string; rowLabel: string;
       batchId: string; batchCode: string; date: string;
       requiredKg: number; dispensedKg: number; shortfallKg: number;
+      feedingPhase: string;
     }> = [];
 
     for (const level of levels) {
