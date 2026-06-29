@@ -671,21 +671,9 @@ export class BrooderService {
       }
     }
 
-    // `feedingPhase` was computed above inside the `if (level.assignment)` block.
-    // Capture it for the DB write (falls back to STANDARD if level is unassigned).
-    let resolvedFeedingPhase: string = 'STANDARD';
-    let resolvedIsAdvisoryOnly = false;
-    if (level.assignment) {
-      const batchForPhase = await this.prisma.batch.findUnique({
-        where:  { id: level.assignment.batchId },
-        select: { dateOfHatch: true },
-      });
-      if (batchForPhase) {
-        const ph = getFeedingPhase(batchForPhase.dateOfHatch, new Date(dto.entryDate));
-        resolvedFeedingPhase    = ph;
-        resolvedIsAdvisoryOnly  = ph !== 'STANDARD';
-      }
-    }
+    // Note: feedingPhase / isAdvisoryOnly will be written once migration
+    // 20260629000000_brooder_early_phase_feed has run and prisma generate
+    // has been re-executed. Until then those columns are intentionally omitted.
 
     const result = await this.prisma.brooderLevelFeedLog.create({
       data: {
@@ -696,12 +684,10 @@ export class BrooderService {
         requiredKgForWeek,
         notes:               dto.notes ?? null,
         loggedById:          userId,
-        // feedingPhase and isAdvisoryOnly were added in migration
-        // 20260629000000_brooder_early_phase_feed. Cast required until
-        // the Prisma client is regenerated against the updated schema.
-        feedingPhase:        resolvedFeedingPhase,
-        isAdvisoryOnly:      resolvedIsAdvisoryOnly,
-      } as any,
+        // feedingPhase and isAdvisoryOnly are added by migration
+        // 20260629000000_brooder_early_phase_feed — omit until that migration
+        // has run in this environment to avoid PrismaClientValidationError.
+      },
     });
 
     // Mirror into FeedIntakeLog so farm-wide stock deduction stays consistent.
