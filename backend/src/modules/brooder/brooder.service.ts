@@ -696,9 +696,12 @@ export class BrooderService {
         requiredKgForWeek,
         notes:               dto.notes ?? null,
         loggedById:          userId,
+        // feedingPhase and isAdvisoryOnly were added in migration
+        // 20260629000000_brooder_early_phase_feed. Cast required until
+        // the Prisma client is regenerated against the updated schema.
         feedingPhase:        resolvedFeedingPhase,
         isAdvisoryOnly:      resolvedIsAdvisoryOnly,
-      },
+      } as any,
     });
 
     // Mirror into FeedIntakeLog so farm-wide stock deduction stays consistent.
