@@ -189,6 +189,38 @@ export function isTransitionPhase(dateOfHatch: Date, referenceDate: Date = new D
 }
 
 /**
+ * Returns the start (UTC midnight) of the batch-relative "brooder week"
+ * containing `referenceDate`.
+ *
+ * Weeks here are anchored to the batch's `dateOfHatch` rather than the
+ * calendar (Mon–Sun / Sun–Sat) week: Week 1 = days 0–6 since hatch,
+ * Week 2 = days 7–13, etc.
+ *
+ * Why this matters: chicks almost never hatch exactly on a calendar week
+ * boundary, so the calendar week and the chicks' first week of life rarely
+ * line up. If "this week's" dispensed/required feed totals are windowed by
+ * calendar week, a feed log backdated to a day that has rolled into a new
+ * calendar week — but is still within the same brooder week for that batch —
+ * silently falls outside the window and never shows up in the weekly totals.
+ * Anchoring the window to the hatch date instead fixes that for every batch,
+ * and is most noticeable in Week 1 because that's the week most likely to
+ * straddle a calendar boundary.
+ *
+ * @param dateOfHatch   - batch hatch date
+ * @param referenceDate - the date whose containing brooder-week we want (defaults to today)
+ */
+export function brooderWeekStart(dateOfHatch: Date, referenceDate: Date = new Date()): Date {
+  const ageInDays = Math.floor(
+    (referenceDate.getTime() - dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
+  );
+  const weekIndex = Math.floor(Math.max(0, ageInDays) / 7); // 0-indexed brooder week number
+  const start = new Date(dateOfHatch);
+  start.setUTCHours(0, 0, 0, 0);
+  start.setUTCDate(start.getUTCDate() + weekIndex * 7);
+  return start;
+}
+
+/**
  * Advisory (non-enforced) daily feed upper bound for the early phase.
  *
  * During the early phase the full HyLine standard ration is used as the

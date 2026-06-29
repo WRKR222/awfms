@@ -32,6 +32,7 @@ import {
   hylineStandard,
   brooderRequiredFeedKg,
   brooderAdjustedWeeklyFeedKg,
+  brooderWeekStart,
   checkWeightViolation,
   checkMortalityViolation,
   getFeedingPhase,
@@ -195,17 +196,41 @@ export class BrooderService {
       if (!heatByRow[h.rowId]) heatByRow[h.rowId] = h;
     }
 
-    // This week's feed dispensed per level
-    const weekStart = dayjs().startOf('week').toDate();
+    // This week's feed dispensed per level — anchored to each batch's OWN
+    // hatch-relative "brooder week" (Week 1 = days 0-6 since hatch, etc.),
+    // not the calendar week. Chicks rarely hatch exactly on a calendar
+    // week boundary, so a calendar-week window can silently exclude a
+    // feed log backdated to a day that's still within the chicks' first
+    // week of life but has rolled into a new calendar week. See
+    // brooderWeekStart() in feed-standard.util.ts for details.
     const levelIds = rows.flatMap(r => r.levels).map(l => l.id);
+
+    const weekStartByLevel: Record<string, Date> = {};
+    for (const row of rows) {
+      for (const level of row.levels) {
+        const a = level.assignment;
+        const batch = a ? batchMap[a.batchId] : null;
+        if (batch) weekStartByLevel[level.id] = brooderWeekStart(batch.dateOfHatch);
+      }
+    }
+    const weekStartValues = Object.values(weekStartByLevel);
+    // Fetch from the earliest relevant brooder-week-start across all levels
+    // in one query, then filter per-level (each may have a different start).
+    const earliestWeekStart = weekStartValues.length
+      ? new Date(Math.min(...weekStartValues.map(d => d.getTime())))
+      : dayjs().startOf('week').toDate();
+
     const feedLogs = levelIds.length
       ? await this.prisma.brooderLevelFeedLog.findMany({
-          where: { levelId: { in: levelIds }, entryDate: { gte: weekStart } },
+          where: { levelId: { in: levelIds }, entryDate: { gte: earliestWeekStart } },
         })
       : [];
     const feedByLevel: Record<string, number> = {};
     for (const f of feedLogs) {
-      feedByLevel[f.levelId] = (feedByLevel[f.levelId] ?? 0) + f.quantityDispensedKg;
+      const levelWeekStart = weekStartByLevel[f.levelId];
+      if (levelWeekStart && f.entryDate.getTime() >= levelWeekStart.getTime()) {
+        feedByLevel[f.levelId] = (feedByLevel[f.levelId] ?? 0) + f.quantityDispensedKg;
+      }
     }
 
     // Today's feed dispensed per level (for over-issue guard display)
@@ -219,9 +244,12 @@ export class BrooderService {
 
     // This week's weight samples per level — used to flag birds outside the
     // HyLine min/max band for their age, wherever they were weighed.
+    // (Weight sampling cadence isn't part of the brooder-week feed fix above —
+    // calendar week is fine here.)
+    const calendarWeekStart = dayjs().startOf('week').toDate();
     const weightSamples = levelIds.length
       ? await this.prisma.birdWeightSample.findMany({
-          where: { levelId: { in: levelIds }, sampleDate: { gte: weekStart } },
+          where: { levelId: { in: levelIds }, sampleDate: { gte: calendarWeekStart } },
           orderBy: { sampleDate: 'desc' },
         })
       : [];
@@ -244,10 +272,12 @@ export class BrooderService {
           ageWeeks = Math.max(1, dayjs().diff(dayjs(batch.dateOfHatch), 'week'));
           const std = hylineStandard(ageWeeks);
           hylineWeek = std.week;
-          // Use adjusted weekly feed (early/transition days contribute 0 or 50%)
-          const weekStart = dayjs().startOf('week').toDate();
+          // Use adjusted weekly feed (early/transition days contribute 0 or 50%),
+          // windowed to this batch's OWN hatch-relative brooder week so it
+          // matches dispensedKgThisWeek's window above.
+          const levelWeekStart = brooderWeekStart(batch.dateOfHatch);
           requiredKgThisWeek = brooderAdjustedWeeklyFeedKg(
-            a.birdCount, ageWeeks, batch.dateOfHatch, weekStart,
+            a.birdCount, ageWeeks, batch.dateOfHatch, levelWeekStart,
           );
           // Daily ration is always the standard HyLine figure — enforcement
           // is relaxed in early/transition phases but the figure is still
@@ -619,7 +649,9 @@ export class BrooderService {
       if (batch) {
         const entryDateObj = new Date(dto.entryDate);
         ageWeeks          = dayjs(dto.entryDate).diff(dayjs(batch.dateOfHatch), 'week');
-        const weekStart   = dayjs(dto.entryDate).startOf('week').toDate();
+        // Anchored to the batch's own hatch date, not the calendar week —
+        // see brooderWeekStart() in feed-standard.util.ts.
+        const weekStart   = brooderWeekStart(batch.dateOfHatch, entryDateObj);
         requiredKgForWeek = brooderAdjustedWeeklyFeedKg(
           level.assignment.birdCount, ageWeeks, batch.dateOfHatch, weekStart,
         );
@@ -1080,7 +1112,6 @@ export class BrooderService {
     // request to the store is reduced accordingly (no double-stocking).
     let earlyPhaseResidual = 0;
     try {
-      const thisWeekStart = dayjs().startOf('week').toDate();
       const now           = new Date();
 
       // Gather all active assigned levels that are still in early/transition
@@ -1122,11 +1153,12 @@ export class BrooderService {
         const issuedKg = Number(issued._sum.quantityDispensedKg ?? 0);
 
         // Estimate actual consumption: use the adjusted weekly figure
-        // (which counts 0 for early days, 50% for transition days).
-        // The difference is the residual still in the feeder.
+        // (which counts 0 for early days, 50% for transition days),
+        // windowed to this batch's own hatch-relative brooder week.
         const ageWeeks   = dayjs().diff(dayjs(batch.dateOfHatch), 'week');
+        const batchWeekStart = brooderWeekStart(batch.dateOfHatch, now);
         const estimatedConsumedKg = brooderAdjustedWeeklyFeedKg(
-          a.birdCount, ageWeeks, batch.dateOfHatch, thisWeekStart,
+          a.birdCount, ageWeeks, batch.dateOfHatch, batchWeekStart,
         );
 
         const residual = earlyPhaseResidualKg(issuedKg, estimatedConsumedKg);
