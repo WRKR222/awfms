@@ -156,8 +156,10 @@ export const EARLY_PHASE_DAYS = 3; // Days 1, 2, 3 (0-indexed: 0, 1, 2)
 
 /** Number of calendar days from hatch for the "transition" phase.
  *  From EARLY_PHASE_DAYS through TRANSITION_END_DAYS chicks should be
- *  eating more regularly but may still have some carry-over from earlier days. */
-export const TRANSITION_END_DAYS = 7; // end of first calendar week
+ *  eating more regularly but may still have some carry-over from earlier days.
+ *  Set to 8 so that the full first 7-day week (Days 0–7) is covered by
+ *  EARLY or TRANSITION — STANDARD enforcement only begins at Day 8 (Week 2+). */
+export const TRANSITION_END_DAYS = 8; // Day 8 = start of week 2 → STANDARD
 
 export type FeedingPhase = 'EARLY' | 'TRANSITION' | 'STANDARD';
 
@@ -270,9 +272,14 @@ export function earlyPhaseResidualKg(
 }
 
 /**
- * Returns true if the end of Week 1 (Day 7) has been reached and the batch
- * has shown no feed consumption at all — a clinical concern that warrants
- * a BROODER_EARLY_PHASE_NOT_EATING alert to managers.
+ * Returns true if the batch has entered Week 2 (Day 8+) and has shown no
+ * feed consumption at all — a clinical concern that warrants a
+ * BROODER_EARLY_PHASE_NOT_EATING alert to managers.
+ *
+ * The alert fires at Day 8 (start of Week 2) rather than Day 7, because
+ * the entire first week is covered by EARLY/TRANSITION leniency. By Day 8
+ * full standard enforcement begins, and zero intake through that point
+ * requires immediate investigation.
  *
  * @param dateOfHatch       - batch hatch date
  * @param totalConsumedKg   - total feed consumed in Week 1 across all early days
@@ -286,7 +293,7 @@ export function isEarlyPhaseNotEating(
   const ageInDays = Math.floor(
     (referenceDate.getTime() - dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
   );
-  // Only flag once the batch is past the full first week (day 7+)
+  // Only flag once the batch has entered Week 2 (TRANSITION_END_DAYS = 8)
   return ageInDays >= TRANSITION_END_DAYS && totalConsumedKg <= 0;
 }
 
