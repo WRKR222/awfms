@@ -1,13 +1,24 @@
 // src/components/shared/BrooderLevelFeedLogModal.tsx
 //
 // Log feed dispensed to a specific brooder level.
-// Req 3: Shows the daily HyLine ration; warns before the server blocks if the
-//        entered quantity would exceed it. The server enforces the hard cap.
-// Req 4: Residual carry-forward is shown for awareness (displayed in parent summary).
+//
+// Phase-aware enforcement:
+//   • EARLY phase (Days 1–2 of Week 1): HyLine ration is shown as ADVISORY only.
+//     The hard-block is lifted on the server.  A clear info banner explains that
+//     chicks are still learning to eat and the initial day-1 feed may last 2+ days.
+//     No error is shown if the attendant enters less than the advisory amount.
+//   • TRANSITION phase (Days 3–6): softer messaging — chicks should be eating
+//     more regularly; partial shortfalls are expected.  Over-issue still warned.
+//   • STANDARD phase (Week 2+): original hard-cap enforcement; server blocks
+//     any issuance that exceeds the daily HyLine ration.
+//
+// Residual carry-forward note is shown in all phases so attendants understand
+// that any unconsumed feed from early days will be deducted from next week's
+// store issuance automatically.
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
-import { X, AlertTriangle, Info, CheckCircle } from 'lucide-react';
+import { X, AlertTriangle, Info, CheckCircle, Sprout } from 'lucide-react';
 import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
 import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
@@ -18,19 +29,93 @@ const FEED_TYPE_OPTIONS = [
   { value: 'LAYER_MASH',  label: "Layer's Mash" },
 ] as const;
 
+// ── Phase helpers (mirror of feed-standard.util.ts constants) ────────────────
+const EARLY_PHASE_DAYS      = 3;
+const TRANSITION_END_DAYS   = 7;
+
+type FeedingPhase = 'EARLY' | 'TRANSITION' | 'STANDARD';
+
+function getFeedingPhase(dateOfHatch: string | null | undefined, today: string): FeedingPhase {
+  if (!dateOfHatch) return 'STANDARD';
+  const ageInDays = dayjs(today).diff(dayjs(dateOfHatch), 'day');
+  if (ageInDays < EARLY_PHASE_DAYS)    return 'EARLY';
+  if (ageInDays < TRANSITION_END_DAYS) return 'TRANSITION';
+  return 'STANDARD';
+}
+
+// ── Props ────────────────────────────────────────────────────────────────────
+
 interface Props {
   level:   BrooderLevelData;
   row:     BrooderRowData;
   onClose: () => void;
 }
 
+// ── Early-phase banner ───────────────────────────────────────────────────────
+
+function EarlyPhaseBanner({ phase, advisoryKg, dispensedToday }: {
+  phase: FeedingPhase;
+  advisoryKg: number | null;
+  dispensedToday: number;
+}) {
+  if (phase === 'STANDARD') return null;
+
+  const isEarly      = phase === 'EARLY';
+  const dayRange     = isEarly ? 'Days 1–2' : 'Days 3–6';
+  const phaseName    = isEarly ? 'Early learning phase' : 'Transition phase';
+  const bgClass      = isEarly
+    ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300'
+    : 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300';
+
+  return (
+    <div className={`mx-5 mt-4 rounded-xl p-3 text-xs flex items-start gap-2 border ${bgClass}`}>
+      <Sprout className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+      <div className="space-y-1">
+        <p className="font-semibold">
+          {phaseName} ({dayRange}) — advisory issuance only
+        </p>
+        {isEarly ? (
+          <p>
+            Day-old chicks are still learning to eat. Feed placed on Day 1 often lasts
+            2 or more days — <strong>no issuance may be needed today</strong> if there is
+            still feed in the trough from earlier.
+            {advisoryKg !== null && (
+              <> The HyLine advisory cap is <strong>{advisoryKg.toFixed(2)} kg</strong>; the
+              server will accept up to this amount and log any excess as carry-over.</>
+            )}
+          </p>
+        ) : (
+          <p>
+            Chicks should be eating more regularly now. Small carry-overs from
+            early days are still normal.
+            {advisoryKg !== null && (
+              <> Advisory daily cap: <strong>{advisoryKg.toFixed(2)} kg</strong>
+              {dispensedToday > 0 && <> · Dispensed today: <strong>{dispensedToday.toFixed(2)} kg</strong></>}.</>
+            )}
+          </p>
+        )}
+        <p className="opacity-80">
+          Any unconsumed feed from these early days is automatically tracked and
+          deducted from next week&rsquo;s store issuance request — no waste.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Main component ───────────────────────────────────────────────────────────
+
 export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
   const qc    = useQueryClient();
   const today = dayjs().format('YYYY-MM-DD');
 
-  const dailyRationKg    = level.dailyRationKg    ?? null;
-  const dispensedToday   = level.dispensedKgToday  ?? 0;
-  const remainingKg      = dailyRationKg !== null
+  const dateOfHatch   = level.batch?.dateOfHatch ?? null;
+  const feedingPhase  = getFeedingPhase(dateOfHatch, today);
+  const isStandard    = feedingPhase === 'STANDARD';
+
+  const dailyRationKg  = level.dailyRationKg    ?? null;
+  const dispensedToday = level.dispensedKgToday  ?? 0;
+  const remainingKg    = (isStandard && dailyRationKg !== null)
     ? Math.max(0, Math.round((dailyRationKg - dispensedToday) * 100) / 100)
     : null;
 
@@ -48,9 +133,15 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
 
   const qty = Number(watch('quantityDispensedKg') || 0);
 
-  // Warn if entry would exceed the daily ration (server will also block it)
-  const wouldExceed  = dailyRationKg !== null && (dispensedToday + qty) > dailyRationKg;
-  const overByKg     = dailyRationKg !== null
+  // In STANDARD mode: warn and block client-side if over ration.
+  // In EARLY/TRANSITION: only warn (no block) if over advisory cap.
+  const wouldExceedRation = isStandard && dailyRationKg !== null && (dispensedToday + qty) > dailyRationKg;
+  const overByKg = (isStandard && dailyRationKg !== null)
+    ? Math.max(0, Math.round(((dispensedToday + qty) - dailyRationKg) * 100) / 100)
+    : 0;
+  // Advisory soft-warn for early/transition
+  const wouldExceedAdvisory = !isStandard && dailyRationKg !== null && (dispensedToday + qty) > dailyRationKg;
+  const advisoryOverByKg = (!isStandard && dailyRationKg !== null)
     ? Math.max(0, Math.round(((dispensedToday + qty) - dailyRationKg) * 100) / 100)
     : 0;
 
@@ -93,8 +184,15 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
           </button>
         </div>
 
-        {/* Daily ration banner (Req 3) */}
-        {dailyRationKg !== null && level.hylineWeek !== null && (
+        {/* Early / Transition phase banner */}
+        <EarlyPhaseBanner
+          phase={feedingPhase}
+          advisoryKg={dailyRationKg}
+          dispensedToday={dispensedToday}
+        />
+
+        {/* Standard daily ration banner (Req 3) — only in STANDARD phase */}
+        {isStandard && dailyRationKg !== null && level.hylineWeek !== null && (
           <div className={`mx-5 mt-4 rounded-xl p-3 text-xs flex items-start gap-2 ${
             remainingKg === 0
               ? 'bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400'
@@ -150,29 +248,43 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
 
           {/* Quantity */}
           <div>
-            <label className={lCls}>Quantity dispensed (kg)</label>
+            <label className={lCls}>
+              Quantity dispensed (kg)
+              {!isStandard && (
+                <span className="ml-1 font-normal text-blue-500 dark:text-blue-400 normal-case">
+                  — advisory, not enforced
+                </span>
+              )}
+            </label>
             <input
               {...register('quantityDispensedKg', {
                 required: 'Enter a quantity',
                 min: { value: 0.01, message: 'Must be > 0' },
                 validate: v => {
-                  if (remainingKg !== null && Number(v) > (remainingKg + 0.001)) {
+                  // Hard-block client-side ONLY in STANDARD phase
+                  if (isStandard && remainingKg !== null && Number(v) > (remainingKg + 0.001)) {
                     return `Exceeds remaining daily ration (${remainingKg.toFixed(2)} kg left)`;
                   }
                   return true;
                 },
               })}
               type="number" step="0.01" min="0.01"
-              className={`${iCls} ${wouldExceed ? 'border-red-400 ring-red-200' : ''}`}
-              placeholder={remainingKg !== null ? `Max ${remainingKg.toFixed(2)} kg` : 'e.g. 5.50'}
+              className={`${iCls} ${wouldExceedRation ? 'border-red-400 ring-red-200' : ''}`}
+              placeholder={
+                isStandard && remainingKg !== null
+                  ? `Max ${remainingKg.toFixed(2)} kg`
+                  : dailyRationKg !== null
+                  ? `Advisory max ${dailyRationKg.toFixed(2)} kg`
+                  : 'e.g. 5.50'
+              }
             />
             {errors.quantityDispensedKg && (
               <p className="text-red-500 text-xs mt-1">{String(errors.quantityDispensedKg.message)}</p>
             )}
           </div>
 
-          {/* Over-issue warning (Req 3) */}
-          {wouldExceed && qty > 0 && (
+          {/* Hard over-issue warning — STANDARD phase (Req 3) */}
+          {isStandard && wouldExceedRation && qty > 0 && (
             <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-3 text-xs text-red-700 dark:text-red-400 flex items-start gap-2">
               <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
               <div>
@@ -180,8 +292,24 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
                 <p className="mt-0.5">
                   This quantity exceeds the daily ration by{' '}
                   <strong>{overByKg.toFixed(2)} kg</strong>.
-                  Reduce the quantity to {remainingKg?.toFixed(2) ?? '—'} kg or less.
-                  Excess from previous logs should be deducted from tomorrow's issuance.
+                  Reduce to {remainingKg?.toFixed(2) ?? '—'} kg or less.
+                  Any excess from previous logs should be deducted from tomorrow&rsquo;s issuance.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Soft advisory warning — EARLY / TRANSITION phase */}
+          {!isStandard && wouldExceedAdvisory && qty > 0 && (
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold">Above advisory cap (+{advisoryOverByKg.toFixed(2)} kg)</p>
+                <p className="mt-0.5">
+                  This is above the HyLine advisory cap for the {feedingPhase.toLowerCase()} phase,
+                  but <strong>will still be accepted</strong> since chicks are still learning to eat.
+                  The excess will be logged as early-phase carry-over and deducted from the next
+                  store issuance automatically.
                 </p>
               </div>
             </div>
@@ -194,7 +322,11 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
               {...register('notes')}
               rows={2}
               className={`${iCls} resize-none`}
-              placeholder="Any observations…"
+              placeholder={
+                feedingPhase === 'EARLY'
+                  ? 'e.g. Feed still present from Day 1, only topped up…'
+                  : 'Any observations…'
+              }
             />
           </div>
 
@@ -214,7 +346,7 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
             </button>
             <button
               type="submit"
-              disabled={submit.isPending || wouldExceed}
+              disabled={submit.isPending || (isStandard && wouldExceedRation)}
               className="flex-1 bg-brand-green text-white rounded-xl py-3 font-semibold disabled:opacity-60"
             >
               {submit.isPending ? 'Saving…' : 'Log Feed'}

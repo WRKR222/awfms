@@ -7,6 +7,31 @@
 // `gramsPerBirdPerDay` preserves FeedService's original table exactly.
 // `brooderGramsPerBirdPerDay` uses the HyLine Brown rearing chart.
 // `hylineStandard` returns the full week row for threshold checking.
+//
+// ── Early-Phase Feeding (Days 1–3 of Week 1) ────────────────────────────────
+//
+// Day-old chicks are still learning to eat. Their feed intake in the first
+// 2–3 days is highly inconsistent and does NOT follow the HyLine standard
+// table.  A common pattern: the initial feed placed on Day 1 may last 2 or
+// more days without a second issuance being needed.
+//
+// Rules encoded here:
+//   • Days 1–3  (ageInDays 0–2): "early phase" — HyLine daily ration is an
+//     advisory upper bound only.  The over-issuance hard-block is lifted;
+//     a warning is shown instead.  Zero or partial issuance on a given day
+//     is expected and does NOT trigger a missed-feed alert.
+//   • Days 4–7  (ageInDays 3–6): "transition phase" — standard ration
+//     applies but the missed-feed alert still has a softer threshold (50 %
+//     of ration) to allow for partial day-1 carry-over still being consumed.
+//   • Week 2+  (ageInDays ≥ 7): full standard schedule, hard-block enforced.
+//
+// If chicks have not started eating consistently by end of Day 7 the system
+// flags this as BROODER_EARLY_PHASE_NOT_EATING (surfaced on Manager/Owner).
+//
+// Residual carry-forward in issuance plans:
+//   Any feed placed but not consumed during the early phase is tracked as
+//   a residual and automatically deducted from the next week's store issuance
+//   request (same Req 4 mechanism used for standard weekly carry-forward).
 
 import { FeedType } from '@prisma/client';
 
@@ -118,6 +143,153 @@ export function withTolerance(kg: number, tolerance = 0.1): { min: number; max: 
   };
 }
 
+// ── Early-Phase Feeding Helpers ───────────────────────────────────────────────
+//
+// The early phase covers the first EARLY_PHASE_DAYS of a batch's life.
+// During this window the standard daily ration is advisory only — chicks
+// often don't finish the first day's feed for 2+ days, so over-issue
+// enforcement is relaxed and missed-feed alerts are suppressed.
+
+/** Number of calendar days from hatch at which chicks are considered to be
+ *  in the "early / learning to eat" phase.  Day 0 = hatch day. */
+export const EARLY_PHASE_DAYS = 3; // Days 1, 2, 3 (0-indexed: 0, 1, 2)
+
+/** Number of calendar days from hatch for the "transition" phase.
+ *  From EARLY_PHASE_DAYS through TRANSITION_END_DAYS chicks should be
+ *  eating more regularly but may still have some carry-over from earlier days. */
+export const TRANSITION_END_DAYS = 7; // end of first calendar week
+
+export type FeedingPhase = 'EARLY' | 'TRANSITION' | 'STANDARD';
+
+/**
+ * Returns the feeding phase for a batch given its hatch date and a reference date.
+ *
+ * @param dateOfHatch  - The batch's date of hatch (UTC midnight)
+ * @param referenceDate - The date to evaluate (defaults to today)
+ */
+export function getFeedingPhase(dateOfHatch: Date, referenceDate: Date = new Date()): FeedingPhase {
+  const ageInDays = Math.floor(
+    (referenceDate.getTime() - dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
+  );
+  if (ageInDays < EARLY_PHASE_DAYS)    return 'EARLY';
+  if (ageInDays < TRANSITION_END_DAYS) return 'TRANSITION';
+  return 'STANDARD';
+}
+
+/** True when the batch is in the early learning-to-eat window on a given date. */
+export function isEarlyPhase(dateOfHatch: Date, referenceDate: Date = new Date()): boolean {
+  return getFeedingPhase(dateOfHatch, referenceDate) === 'EARLY';
+}
+
+/** True when the batch is in the transition window on a given date. */
+export function isTransitionPhase(dateOfHatch: Date, referenceDate: Date = new Date()): boolean {
+  return getFeedingPhase(dateOfHatch, referenceDate) === 'TRANSITION';
+}
+
+/**
+ * Advisory (non-enforced) daily feed upper bound for the early phase.
+ *
+ * During the early phase the full HyLine standard ration is used as the
+ * UPPER BOUND only — it is never enforced as a hard cap.  The server will
+ * warn but not block.  Returns the standard daily ration kg.
+ */
+export function earlyPhaseAdvisoryDailyKg(birdCount: number, ageWeeks: number): number {
+  return brooderRequiredFeedKg(birdCount, ageWeeks, 1);
+}
+
+/**
+ * Computes the adjusted weekly feed requirement for a batch that started
+ * mid-week or is still in the early / transition phase this week.
+ *
+ * Logic:
+ *   • For each calendar day in the current ISO week, determine whether it
+ *     falls in EARLY, TRANSITION, or STANDARD phase for the batch.
+ *   • EARLY days: contribute 0 kg to the "expected" weekly total because
+ *     the batch may not eat at all — carry-over from day 1 is the norm.
+ *   • TRANSITION days: contribute 50% of the standard daily ration as the
+ *     minimum expected intake (birds are learning but eating inconsistently).
+ *   • STANDARD days: contribute the full daily ration.
+ *
+ * This is the figure used in getFeedRequirementSummary and store issuance
+ * planning to avoid requesting more feed than chicks will realistically eat.
+ *
+ * @param birdCount    - live bird count for the level
+ * @param ageWeeks     - age of batch in completed weeks (used for g/bird/day lookup)
+ * @param dateOfHatch  - batch hatch date (used to classify each day of the week)
+ * @param weekStart    - Monday of the current ISO week (defaults to this week)
+ */
+export function brooderAdjustedWeeklyFeedKg(
+  birdCount: number,
+  ageWeeks: number,
+  dateOfHatch: Date,
+  weekStart: Date,
+): number {
+  const standardDailyKg = brooderRequiredFeedKg(birdCount, ageWeeks, 1);
+  let totalKg = 0;
+
+  for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
+    const day = new Date(weekStart);
+    day.setDate(day.getDate() + dayOffset);
+    const phase = getFeedingPhase(dateOfHatch, day);
+
+    if (phase === 'EARLY') {
+      // Early phase: do not add to the expected weekly total.
+      // The initial day-1 feed is already in the store issuance; any residual
+      // rolls forward as carry-over (handled separately in earlyPhaseResidualKg).
+      totalKg += 0;
+    } else if (phase === 'TRANSITION') {
+      // Transition: count 50% of standard ration for planning purposes.
+      totalKg += standardDailyKg * 0.5;
+    } else {
+      totalKg += standardDailyKg;
+    }
+  }
+
+  return Math.round(totalKg * 100) / 100;
+}
+
+/**
+ * Computes the expected early-phase feed provision (the initial "starter" feed
+ * placed on Day 1) and compares it against what was actually consumed to derive
+ * the residual carry-over into the next week's issuance plan.
+ *
+ * Rule:
+ *   - On Day 1 the attendant places `initialIssuedKg` from the store.
+ *   - Over Days 1–(EARLY_PHASE_DAYS - 1) the birds consume `actualConsumedKg`.
+ *   - Residual = initialIssuedKg − actualConsumedKg  (floored at 0).
+ *   - The residual is deducted from the next week's net issuance request.
+ *
+ * @param initialIssuedKg    - total feed issued during the early phase (kg)
+ * @param actualConsumedKg   - total feed actually consumed during early phase (kg)
+ */
+export function earlyPhaseResidualKg(
+  initialIssuedKg: number,
+  actualConsumedKg: number,
+): number {
+  return Math.max(0, Math.round((initialIssuedKg - actualConsumedKg) * 100) / 100);
+}
+
+/**
+ * Returns true if the end of Week 1 (Day 7) has been reached and the batch
+ * has shown no feed consumption at all — a clinical concern that warrants
+ * a BROODER_EARLY_PHASE_NOT_EATING alert to managers.
+ *
+ * @param dateOfHatch       - batch hatch date
+ * @param totalConsumedKg   - total feed consumed in Week 1 across all early days
+ * @param referenceDate     - evaluation date (defaults to today)
+ */
+export function isEarlyPhaseNotEating(
+  dateOfHatch: Date,
+  totalConsumedKg: number,
+  referenceDate: Date = new Date(),
+): boolean {
+  const ageInDays = Math.floor(
+    (referenceDate.getTime() - dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
+  );
+  // Only flag once the batch is past the full first week (day 7+)
+  return ageInDays >= TRANSITION_END_DAYS && totalConsumedKg <= 0;
+}
+
 // ── Threshold checkers (returns null if within bounds, or a descriptive message) ──
 
 /** Check weight sample against HyLine standard. Returns violation message or null. */
@@ -143,15 +315,31 @@ export function checkWeightViolation(
   return { violated: false, message: '', standard: std };
 }
 
-/** Check cumulative mortality % against HyLine standard. Returns violation or null. */
+/**
+ * Check cumulative mortality % against HyLine standard. Returns violation or null.
+ *
+ * IMPORTANT — pass `effectiveBirdsReceived`, NOT raw `quantityReceived`.
+ *
+ *   effectiveBirdsReceived = batch.quantityReceived - batch.mortalityOnArrival
+ *
+ * Mortalities on arrival are DOA birds that died in transit before the farm
+ * ever had custody of them.  They are NOT the farm's responsibility and must
+ * NOT inflate the cumulative mortality % used in HyLine control comparisons.
+ * The caller is responsible for subtracting `mortalityOnArrival` before
+ * passing the baseline here.
+ *
+ * Similarly, `farmDeaths` should equal:
+ *   effectiveBirdsReceived - batch.currentBirdCount
+ * (i.e. deaths that occurred on the farm after arrival — arrival DOAs excluded).
+ */
 export function checkMortalityViolation(
-  totalDeaths: number,
-  originalBirdCount: number,
+  farmDeaths: number,
+  effectiveBirdsReceived: number,
   ageWeeks: number,
 ): { violated: boolean; message: string; actualPct: number; standardPct: number } {
   const std = hylineStandard(ageWeeks);
-  const actualPct = originalBirdCount > 0
-    ? Math.round(((totalDeaths / originalBirdCount) * 100) * 100) / 100
+  const actualPct = effectiveBirdsReceived > 0
+    ? Math.round(((farmDeaths / effectiveBirdsReceived) * 100) * 100) / 100
     : 0;
   if (actualPct > std.cumulativeMortalityPct) {
     return {
