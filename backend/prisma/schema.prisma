@@ -1320,12 +1320,15 @@ model BrooderLog {
   feedType          String?  @map("feed_type")
   feedConsumedKg    Float?   @map("feed_consumed_kg")
   mortalityCount    Int      @default(0) @map("mortality_count")
-  // Vaccine with dose
+  // Legacy single-vaccine / single-supplement columns (kept for backward compat)
   vaccineGiven      String?  @map("vaccine_given")
   vaccineGivenDose  String?  @map("vaccine_given_dose")
-  // Supplement with dose
   supplement        String?
   supplementDose    String?  @map("supplement_dose")
+  // Multi-vaccine / multi-supplement arrays (preferred — replaces the single columns above)
+  // Stored as JSON arrays of { name, dose, route } / { name, dose }
+  vaccinesJson      Json?    @map("vaccines_json")      // VaccineEntry[]
+  supplementsJson   Json?    @map("supplements_json")   // SupplementEntry[]
   notes             String?
   loggedById        String   @map("logged_by_id")
   createdAt         DateTime @default(now()) @map("created_at")
@@ -1430,11 +1433,6 @@ model BrooderLevelAssignment {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  /// Estimated kg of feed placed during the early phase (Days 1-2) that
-  /// remained uneaten. Populated once the batch exits TRANSITION phase.
-  /// Deducted from the next week's store issuance request (Req 4 extension).
-  earlyPhaseResidualKg Decimal? @map("early_phase_residual_kg") @db.Decimal(10, 3)
-
   level      BrooderLevel @relation(fields: [levelId], references: [id], onDelete: Cascade)
   batch      Batch        @relation(fields: [batchId], references: [id])
   assignedBy User         @relation("BrooderLevelAssignedBy", fields: [assignedById], references: [id])
@@ -1488,19 +1486,10 @@ model BrooderLevelFeedLog {
   loggedById          String   @map("logged_by_id")
   createdAt           DateTime @default(now()) @map("created_at")
 
-  /// EARLY | TRANSITION | STANDARD — phase at time of issuance.
-  /// Drives whether the daily ration was enforced (STANDARD) or advisory only.
-  feedingPhase        String   @default("STANDARD") @map("feeding_phase")
-
-  /// TRUE when issuance was logged during EARLY or TRANSITION phase and the
-  /// daily ration cap was shown as advisory only (not a hard block).
-  isAdvisoryOnly      Boolean  @default(false) @map("is_advisory_only")
-
   level    BrooderLevel @relation(fields: [levelId], references: [id], onDelete: Cascade)
   loggedBy User         @relation("BrooderLevelFeedLoggedBy", fields: [loggedById], references: [id])
 
   @@index([levelId, entryDate])
-  @@index([feedingPhase])
   @@map("brooder_level_feed_logs")
 }
 

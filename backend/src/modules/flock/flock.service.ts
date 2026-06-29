@@ -549,7 +549,7 @@ export class FlockService {
     const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
-    const logDate     = input.logDate ? new Date(input.logDate) : new Date();
+    const logDate      = input.logDate ? new Date(input.logDate) : new Date();
     const isSessionLog = !!(input.logSession); // MORNING | MIDDAY | EVENING
 
     // ── SESSION LOG (temperature / humidity / light — up to 3× per day) ──────
@@ -565,7 +565,6 @@ export class FlockService {
         );
       }
 
-      // Session logs carry ONLY environmental readings — no water/vaccine/supplement
       return this.prisma.brooderLog.create({
         data: {
           batchId:           batch.id,
@@ -575,12 +574,13 @@ export class FlockService {
           humidityPercent:   input.humidityPercent    != null ? Number(input.humidityPercent)    : null,
           lightIntensityLux: input.lightIntensityLux  != null ? Number(input.lightIntensityLux)  : null,
           lightingOk:        input.lightingOk ?? true,
-          // Once-daily fields explicitly excluded from session logs
           waterConsumptionL: null,
           vaccineGiven:      null,
           vaccineGivenDose:  null,
+          vaccinesJson:      null,
           supplement:        null,
           supplementDose:    null,
+          supplementsJson:   null,
           feedType:          null,
           feedConsumedKg:    null,
           mortalityCount:    0,
@@ -592,43 +592,96 @@ export class FlockService {
       });
     }
 
-    // ── ONCE-DAILY LOG (water / vaccine / supplement — max 1× per day) ───────
+    // ── ONCE-DAILY LOG (water / vaccines / supplements — max 1× per day) ─────
+    //
+    // Accepts:
+    //   • input.vaccines    — array of { name, dose, route }  (preferred)
+    //   • input.supplements — array of { name, dose }         (preferred)
+    //   • input.vaccineGiven / input.vaccineGivenDose / input.vaccineRoute (legacy single)
+    //   • input.supplement  / input.supplementDose            (legacy single)
+    //
+    // All are collapsed into vaccinesJson / supplementsJson for storage.
+    // Legacy single fields are also populated for backward-compat read paths.
+    //
+    // Past-date (backdated) logs are allowed as long as no daily log already
+    // exists for that batch+date. The uniqueness check only rejects true
+    // duplicate submissions, not backdated entries.
+
     const existingDaily = await this.prisma.brooderLog.findFirst({
       where: { batchId: batch.id, logDate, logSession: null },
     });
     if (existingDaily) {
       throw new BadRequestException(
-        `A daily entry (water / vaccine / supplement) has already been recorded for this batch on ${input.logDate}. ` +
-        `Edit the existing record instead.`,
+        `A daily entry has already been recorded for ${batch.batchCode} on ` +
+        `${logDate.toISOString().slice(0, 10)}. ` +
+        `To correct it, ask a manager to edit the existing record.`,
       );
     }
 
-    // Vaccine: auto-create VaccinationRecord so it shows on the manager's
-    // Vaccination History page without the manager needing to re-enter it.
-    if (input.vaccineGiven && String(input.vaccineGiven).trim()) {
-      try {
-        await this.prisma.vaccinationRecord.create({
-          data: {
-            batchId:          batch.id,
-            vaccineName:      String(input.vaccineGiven).trim(),
-            administeredDate: logDate,
-            route:            (input.vaccineRoute ?? 'DRINKING_WATER') as any,
-            batchSize:        batch.currentBirdCount,
-            dosageUnits:      input.vaccineDose ? String(input.vaccineDose).trim() : undefined,
-            notes:            input.notes ?? undefined,
-            recordedById:     userId,
-          },
-        });
-      } catch (_) { /* best-effort — don't fail the whole log */ }
+    // Normalise vaccines: merge array input + legacy single-vaccine input
+    type VaccineEntry    = { name: string; dose: string; route?: string };
+    type SupplementEntry = { name: string; dose: string };
+
+    const vaccinesArr: VaccineEntry[] = [];
+    if (Array.isArray(input.vaccines)) {
+      for (const v of input.vaccines) {
+        const name = String(v.name ?? '').trim();
+        if (name) vaccinesArr.push({ name, dose: String(v.dose ?? '').trim(), route: v.route ?? 'DRINKING_WATER' });
+      }
+    } else if (input.vaccineGiven && String(input.vaccineGiven).trim()) {
+      // Legacy single-vaccine path
+      vaccinesArr.push({
+        name:  String(input.vaccineGiven).trim(),
+        dose:  String(input.vaccineDose ?? input.vaccineGivenDose ?? '').trim(),
+        route: input.vaccineRoute ?? 'DRINKING_WATER',
+      });
     }
+
+    const supplementsArr: SupplementEntry[] = [];
+    if (Array.isArray(input.supplements)) {
+      for (const s of input.supplements) {
+        const name = String(s.name ?? '').trim();
+        if (name) supplementsArr.push({ name, dose: String(s.dose ?? '').trim() });
+      }
+    } else if (input.supplement && String(input.supplement).trim()) {
+      supplementsArr.push({
+        name: String(input.supplement).trim(),
+        dose: String(input.supplementDose ?? '').trim(),
+      });
+    }
+
+    // Auto-create VaccinationRecord for each vaccine so it appears on the
+    // manager's Health/Vaccination History page without re-entry.
+    if (vaccinesArr.length > 0) {
+      await Promise.allSettled(
+        vaccinesArr.map(v =>
+          this.prisma.vaccinationRecord.create({
+            data: {
+              batchId:          batch.id,
+              vaccineName:      v.name,
+              administeredDate: logDate,
+              route:            (v.route ?? 'DRINKING_WATER') as any,
+              batchSize:        batch.currentBirdCount,
+              dosageUnits:      v.dose || undefined,
+              notes:            input.notes ?? undefined,
+              recordedById:     userId,
+            },
+          })
+        )
+      );
+      // allSettled — individual VaccinationRecord failures don't abort the log
+    }
+
+    // Legacy single-field values for backward-compat (first vaccine/supplement only)
+    const firstVaccine    = vaccinesArr[0]    ?? null;
+    const firstSupplement = supplementsArr[0] ?? null;
 
     return this.prisma.brooderLog.create({
       data: {
         batchId:           batch.id,
         logDate,
-        logSession:        null,               // once-daily entries carry no session tag
+        logSession:        null,
         waterConsumptionL: input.waterConsumptionL != null ? Number(input.waterConsumptionL) : null,
-        // Environmental readings excluded from once-daily entries
         temperature:       null,
         humidityPercent:   null,
         lightIntensityLux: null,
@@ -636,10 +689,14 @@ export class FlockService {
         feedType:          null,
         feedConsumedKg:    null,
         mortalityCount:    0,
-        vaccineGiven:      input.vaccineGiven   ?? null,
-        vaccineGivenDose:  input.vaccineDose    ?? null,
-        supplement:        input.supplement     ?? null,
-        supplementDose:    input.supplementDose ?? null,
+        // Legacy single-field columns (first entry, for existing read paths)
+        vaccineGiven:      firstVaccine?.name      ?? null,
+        vaccineGivenDose:  firstVaccine?.dose      ?? null,
+        supplement:        firstSupplement?.name   ?? null,
+        supplementDose:    firstSupplement?.dose   ?? null,
+        // Full arrays stored as JSON (source of truth for display)
+        vaccinesJson:      vaccinesArr.length    > 0 ? vaccinesArr    : null,
+        supplementsJson:   supplementsArr.length > 0 ? supplementsArr : null,
         notes:             input.notes ?? null,
         loggedById:        userId,
         rowId:             input.rowId   ?? null,

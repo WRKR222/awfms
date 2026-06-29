@@ -85,6 +85,9 @@ interface BrooderBatch {
   isActive:         boolean;
 }
 
+interface VaccineEntry    { name: string; dose: string; route?: string; }
+interface SupplementEntry { name: string; dose: string; }
+
 interface BrooderLog {
   id:                string;
   batchId:           string;
@@ -95,10 +98,14 @@ interface BrooderLog {
   humidityPercent?:  number;
   lightIntensityLux?: number;
   lightingOk:        boolean;
+  // Legacy single-entry fields (still populated for backward compat)
   vaccineGiven?:     string;
   vaccineGivenDose?: string;
   supplement?:       string;
   supplementDose?:   string;
+  // Preferred multi-entry JSON arrays
+  vaccinesJson?:     VaccineEntry[]    | null;
+  supplementsJson?:  SupplementEntry[] | null;
   notes?:            string;
   createdAt?:        string;
   loggedBy?:         { fullName: string };
@@ -160,20 +167,27 @@ function SessionEntry({ log }: { log: BrooderLog }) {
           {log.lightIntensityLux != null && <span className="flex items-center gap-1"><Sun className="w-3 h-3 text-amber-400" />{log.lightIntensityLux} lux</span>}
           {!log.lightingOk && <span className="flex items-center gap-1 text-red-400"><AlertTriangle className="w-3 h-3" />Lighting issue</span>}
         </div>
-        {(log.vaccineGiven || log.supplement) && (
-          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
-            {log.vaccineGiven && (
-              <span className="flex items-center gap-1 text-purple-600 dark:text-purple-400">
-                <Syringe className="w-3 h-3" />
-                {log.vaccineGiven}{log.vaccineGivenDose ? ` · ${log.vaccineGivenDose}` : ''}
+        {(log.vaccineGiven || log.supplement || log.vaccinesJson?.length || log.supplementsJson?.length) && (
+          <div className="mt-1 flex flex-col gap-1 text-[11px]">
+            {/* Prefer JSON arrays; fall back to legacy single-entry fields */}
+            {(log.vaccinesJson && log.vaccinesJson.length > 0
+              ? log.vaccinesJson
+              : log.vaccineGiven ? [{ name: log.vaccineGiven, dose: log.vaccineGivenDose ?? '' }] : []
+            ).map((v, i) => (
+              <span key={i} className="flex items-center gap-1 text-purple-600 dark:text-purple-400">
+                <Syringe className="w-3 h-3 flex-shrink-0" />
+                {v.name}{v.dose ? ` · ${v.dose}` : ''}
               </span>
-            )}
-            {log.supplement && (
-              <span className="flex items-center gap-1 text-teal-600 dark:text-teal-400">
-                <FlaskConical className="w-3 h-3" />
-                {log.supplement}{log.supplementDose ? ` · ${log.supplementDose}` : ''}
+            ))}
+            {(log.supplementsJson && log.supplementsJson.length > 0
+              ? log.supplementsJson
+              : log.supplement ? [{ name: log.supplement, dose: log.supplementDose ?? '' }] : []
+            ).map((s, i) => (
+              <span key={i} className="flex items-center gap-1 text-teal-600 dark:text-teal-400">
+                <FlaskConical className="w-3 h-3 flex-shrink-0" />
+                {s.name}{s.dose ? ` · ${s.dose}` : ''}
               </span>
-            )}
+            ))}
           </div>
         )}
         {log.notes && <p className="mt-1 text-[10px] text-gray-400 italic">{log.notes}</p>}
@@ -369,37 +383,27 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
 
   const submit = useMutation({
     mutationFn: async (data: any) => {
-      const base = {
-        batchId:           batch.id,
-        logDate:           data.logDate,
-        logSession:        undefined,
-        waterConsumptionL: data.waterConsumptionL ? Number(data.waterConsumptionL) : undefined,
-        notes:             data.notes || undefined,
-      };
       const cleanVaccines    = vaccines.filter(v => v.name.trim());
       const cleanSupplements = supplements.filter(s => s.name.trim());
 
-      // If no meds, just post base (water + notes)
-      if (cleanVaccines.length === 0 && cleanSupplements.length === 0) {
-        return api.post('/flock/brooder-logs', base).then(r => r.data);
-      }
-      const promises: Promise<any>[] = [];
-      for (const v of cleanVaccines) {
-        promises.push(api.post('/flock/brooder-logs', {
-          ...base,
-          vaccineGiven:  v.name.trim(),
-          vaccineDose:   v.dose.trim(),
-          vaccineRoute:  v.route,
-        }).then(r => r.data));
-      }
-      for (const s of cleanSupplements) {
-        promises.push(api.post('/flock/brooder-logs', {
-          ...base,
-          supplement:     s.name.trim(),
-          supplementDose: s.dose.trim(),
-        }).then(r => r.data));
-      }
-      return Promise.all(promises);
+      // Single POST — backend accepts vaccines[] and supplements[] arrays.
+      // No more parallel requests that race against the once-daily uniqueness check.
+      return api.post('/flock/brooder-logs', {
+        batchId:           batch.id,
+        logDate:           data.logDate,
+        logSession:        undefined,   // null/absent = once-daily entry
+        waterConsumptionL: data.waterConsumptionL ? Number(data.waterConsumptionL) : undefined,
+        vaccines:          cleanVaccines.map(v => ({
+          name:  v.name.trim(),
+          dose:  v.dose.trim(),
+          route: v.route,
+        })),
+        supplements:       cleanSupplements.map(s => ({
+          name: s.name.trim(),
+          dose: s.dose.trim(),
+        })),
+        notes:             data.notes || undefined,
+      }).then(r => r.data);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-logs',     batch.id] });
@@ -407,7 +411,7 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
       onClose();
     },
     onError: (err: any) => {
-      setSubmitError(err?.message ?? err?.response?.data?.message ?? 'Failed to save. Please try again.');
+      setSubmitError(err?.response?.data?.message ?? err?.message ?? 'Failed to save. Please try again.');
     },
   });
 
