@@ -635,8 +635,8 @@ export class BrooderService {
         //   and will be deducted from the next store issuance request.
         // • TRANSITION phase (Days 3–6): same relaxed rule — soft warn only.
         // • STANDARD phase (Week 2+): original hard-block enforced.
-        const entryDateStart = dayjs(dto.entryDate).startOf('day').toDate();
-        const entryDateEnd   = dayjs(dto.entryDate).endOf('day').toDate();
+        const entryDateStart = new Date(`${dto.entryDate}T00:00:00.000Z`);
+        const entryDateEnd   = new Date(`${dto.entryDate}T23:59:59.999Z`);
         const todayIssued = await this.prisma.brooderLevelFeedLog.aggregate({
           where: {
             levelId:   dto.levelId,
@@ -691,7 +691,7 @@ export class BrooderService {
       data: {
         levelId:             dto.levelId,
         feedType:            dto.feedType,
-        entryDate:           new Date(dto.entryDate),
+        entryDate:           new Date(`${dto.entryDate}T00:00:00.000Z`),
         quantityDispensedKg: dto.quantityDispensedKg,
         requiredKgForWeek,
         notes:               dto.notes ?? null,
@@ -705,43 +705,64 @@ export class BrooderService {
     });
 
     // Mirror into FeedIntakeLog so farm-wide stock deduction stays consistent.
+    // This is best-effort — a failure here must never surface as a 500 to the
+    // attendant. Failures are logged for the PM to reconcile if needed.
     if (level.assignment) {
-      const batch = await this.prisma.batch.findUnique({ where: { id: level.assignment.batchId } });
-      if (batch) {
-        const entryDate = new Date(dto.entryDate);
-        const existing  = await this.prisma.feedIntakeLog.findUnique({
-          where: {
-            batchId_entryDate_feedType: {
-              batchId: batch.id, entryDate, feedType: dto.feedType as any,
-            },
-          },
-        });
-        if (existing) {
-          await this.prisma.feedIntakeLog.update({
-            where: { id: existing.id },
-            data:  {
-              quantityDispensedKg: { increment: dto.quantityDispensedKg },
-              notes: existing.notes
-                ? `${existing.notes} | +${dto.quantityDispensedKg}kg via ${level.label}`
-                : `Logged from Brooder cage map — ${level.label}`,
-            },
-          });
-        } else {
-          await this.prisma.feedIntakeLog.create({
-            data: {
-              batchId:             batch.id,
-              houseId:             batch.houseId,
-              feedType:            dto.feedType as any,
-              entryDate,
-              quantityDispensedKg: dto.quantityDispensedKg,
-              wastageKg:           0,
-              recommendedMinKg:    0,
-              recommendedMaxKg:    requiredKgForWeek ?? 0,
-              notes:               `Logged from Brooder cage map — ${level.label}`,
-              recordedById:        userId,
+      try {
+        const batch = await this.prisma.batch.findUnique({ where: { id: level.assignment.batchId } });
+        if (batch) {
+          // Use a date-only value normalised to UTC midnight to match the
+          // @db.Date column exactly, regardless of server timezone.
+          // new Date("YYYY-MM-DD") without time is parsed as UTC midnight,
+          // which is correct for @db.Date columns.
+          const entryDate = new Date(`${dto.entryDate}T00:00:00.000Z`);
+
+          const existing = await this.prisma.feedIntakeLog.findFirst({
+            where: {
+              batchId:   batch.id,
+              feedType:  dto.feedType as any,
+              entryDate: {
+                gte: new Date(`${dto.entryDate}T00:00:00.000Z`),
+                lt:  new Date(`${dto.entryDate}T23:59:59.999Z`),
+              },
             },
           });
+
+          if (existing) {
+            await this.prisma.feedIntakeLog.update({
+              where: { id: existing.id },
+              data:  {
+                quantityDispensedKg: { increment: dto.quantityDispensedKg },
+                notes: existing.notes
+                  ? `${existing.notes} | +${dto.quantityDispensedKg}kg via ${level.label}`
+                  : `Logged from Brooder cage map — ${level.label}`,
+              },
+            });
+          } else {
+            await this.prisma.feedIntakeLog.create({
+              data: {
+                batchId:             batch.id,
+                houseId:             batch.houseId,
+                feedType:            dto.feedType as any,
+                entryDate,
+                quantityDispensedKg: dto.quantityDispensedKg,
+                wastageKg:           0,
+                recommendedMinKg:    0,
+                recommendedMaxKg:    requiredKgForWeek ?? 0,
+                notes:               `Logged from Brooder cage map — ${level.label}`,
+                recordedById:        userId,
+              },
+            });
+          }
         }
+      } catch (mirrorErr: any) {
+        // Best-effort mirror — log but do not rethrow.
+        // The brooder feed log was already saved successfully above.
+        this.logger.warn(
+          `[BrooderFeedLog] FeedIntakeLog mirror failed for level ${dto.levelId} ` +
+          `on ${dto.entryDate} (${mirrorErr?.code ?? mirrorErr?.message}). ` +
+          `Brooder log was saved. PM should reconcile stock manually if needed.`,
+        );
       }
     }
 
