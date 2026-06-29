@@ -920,7 +920,10 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
                 const isToday  = date === today;
                 const daysAgo  = dayjs(today).diff(dayjs(date), 'day');
                 const dateLabel = isToday ? 'Today' : daysAgo === 1 ? 'Yesterday' : `${daysAgo}d ago`;
-                const sessionCount = dayLogs.length;
+                const sessionLogs = dayLogs.filter(l => l.logSession != null);
+                const hasDailyLog = dayLogs.some(l => l.logSession == null);
+                const totalLogged = sessionLogs.length + (hasDailyLog ? 1 : 0);
+                const TOTAL_EXPECTED = 4; // MORNING + MIDDAY + EVENING + General daily
                 return (
                   <div key={date}>
                     {/* Day header */}
@@ -934,11 +937,11 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
                         : 'bg-gray-100 dark:bg-gray-700 text-gray-500'
                       }`}>{dateLabel}</span>
                       <span className="text-[10px] text-gray-400">
-                        {sessionCount}/3 session{sessionCount !== 1 ? 's' : ''}
-                        {sessionCount < 3 && (
-                          <span className="ml-1 text-amber-500">· {3 - sessionCount} pending</span>
+                        {totalLogged}/{TOTAL_EXPECTED} entries
+                        {totalLogged < TOTAL_EXPECTED && (
+                          <span className="ml-1 text-amber-500">· {TOTAL_EXPECTED - totalLogged} pending</span>
                         )}
-                        {sessionCount >= 3 && (
+                        {totalLogged >= TOTAL_EXPECTED && (
                           <span className="ml-1 text-green-500 flex items-center gap-0.5 inline-flex">
                             <CheckCircle2 className="w-2.5 h-2.5" /> complete
                           </span>

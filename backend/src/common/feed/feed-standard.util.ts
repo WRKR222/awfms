@@ -247,23 +247,42 @@ export function earlyPhaseAdvisoryDailyKg(birdCount: number, ageWeeks: number): 
  * This is the figure used in getFeedRequirementSummary and store issuance
  * planning to avoid requesting more feed than chicks will realistically eat.
  *
+ * IMPORTANT — only days up to and including `upToDate` are counted. This
+ * prevents future days inside the batch's current brooder-week from being
+ * treated as already consumed, which would make a 2-day-old batch look like
+ * it has eaten a near-full week's worth of feed and produce a large false
+ * residual carry-forward.
+ *
  * @param birdCount    - live bird count for the level
  * @param ageWeeks     - age of batch in completed weeks (used for g/bird/day lookup)
  * @param dateOfHatch  - batch hatch date (used to classify each day of the week)
- * @param weekStart    - Monday of the current ISO week (defaults to this week)
+ * @param weekStart    - start of the batch-relative brooder week (from brooderWeekStart())
+ * @param upToDate     - only count days ≤ this date (defaults to today)
  */
 export function brooderAdjustedWeeklyFeedKg(
   birdCount: number,
   ageWeeks: number,
   dateOfHatch: Date,
   weekStart: Date,
+  upToDate: Date = new Date(),
 ): number {
   const standardDailyKg = brooderRequiredFeedKg(birdCount, ageWeeks, 1);
+
+  // Normalise upToDate to UTC midnight so day-boundary comparisons are exact.
+  const cutoff = new Date(upToDate);
+  cutoff.setUTCHours(0, 0, 0, 0);
+
   let totalKg = 0;
 
   for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
     const day = new Date(weekStart);
+    day.setUTCHours(0, 0, 0, 0);
     day.setDate(day.getDate() + dayOffset);
+
+    // Do not count days that haven't happened yet — a 2-day-old batch must
+    // not have days 3–6 of the week counted as already consumed feed.
+    if (day.getTime() > cutoff.getTime()) break;
+
     const phase = getFeedingPhase(dateOfHatch, day);
 
     if (phase === 'EARLY') {

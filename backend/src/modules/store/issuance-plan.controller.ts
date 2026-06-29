@@ -30,9 +30,8 @@ import { Response } from 'express';
 export class IssuancePlanController {
   constructor(private readonly svc: IssuancePlanService) {}
 
-  // ── List & detail ─────────────────────────────────────────────────────────
-  // Viewable by anyone in the chain: Store (INVENTORY_VIEW), Accountant (INVENTORY_VIEW),
-  // Director (has everything). INVENTORY_VIEW is held by Store + Accountant + Manager + Owner.
+  // ── List & detail ──────────────────────────────────────────────────────────
+  // Viewable by anyone in the chain: Store, Accountant (read-only), Director.
 
   @Get()
   @RequirePermission(Permission.INVENTORY_VIEW)
@@ -50,7 +49,9 @@ export class IssuancePlanController {
     return this.svc.getPlan(id);
   }
 
-  // ── Create / Submit (Store only) ──────────────────────────────────────────
+  // ── Create / Submit (Store only) ───────────────────────────────────────────
+  // Store can create a DRAFT on any day of the week.
+  // Submission of weekly plans is enforced to Saturday by the service.
 
   @Post()
   @RequirePermission(Permission.INVENTORY_MANAGE)
@@ -64,10 +65,7 @@ export class IssuancePlanController {
     return this.svc.submitPlan(id, user.id);
   }
 
-  // ── Update (edit line items) — Store, Accountant, or Director within the chain ──
-  // No single existing permission covers all three roles, so we gate on
-  // INVENTORY_VIEW (held by all three + Manager) at the controller level and let
-  // the service enforce who may actually edit, based on each item's own status.
+  // ── Update (edit line items) — Store (DRAFT) or Director (their queue) ─────
 
   @Patch(':id')
   @RequirePermission(Permission.INVENTORY_VIEW)
@@ -79,10 +77,9 @@ export class IssuancePlanController {
     return this.svc.updatePlan(id, dto, user.role);
   }
 
-  // ── Per-item approve / reject — Accountant or Director ────────────────────
-  // Approval now happens per line item, not per plan: the Director can approve
-  // some items on a plan and reject others. The service branches on user.role
-  // to apply the correct stage logic and rejects anyone else.
+  // ── Per-item approve / reject — Director (OWNER) only ─────────────────────
+  // Accountant no longer has an approval role; they receive notifications about
+  // Director decisions for visibility and reconciliation only.
 
   @Patch(':id/items/:itemId/approve')
   @RequirePermission(Permission.INVENTORY_VIEW)
@@ -91,8 +88,8 @@ export class IssuancePlanController {
     @Param('itemId') itemId: string,
     @CurrentUser() user: any,
   ) {
-    if (!['ACCOUNTANT', 'OWNER'].includes(user.role)) {
-      throw new ForbiddenException('Only the Accountant or Director can approve issuance plan items');
+    if (user.role !== 'OWNER') {
+      throw new ForbiddenException('Only the Director can approve issuance plan items');
     }
     return this.svc.approveItem(id, itemId, user.id, user.role);
   }
@@ -105,13 +102,13 @@ export class IssuancePlanController {
     @Body() dto: RejectIssuancePlanItemDto,
     @CurrentUser() user: any,
   ) {
-    if (!['ACCOUNTANT', 'OWNER'].includes(user.role)) {
-      throw new ForbiddenException('Only the Accountant or Director can reject issuance plan items');
+    if (user.role !== 'OWNER') {
+      throw new ForbiddenException('Only the Director can reject issuance plan items');
     }
     return this.svc.rejectItem(id, itemId, user.id, user.role, dto.rejectionReason);
   }
 
-  // ── PDF download — Store or Accountant, once at least one item is APPROVED ──
+  // ── PDF download — once at least one item is APPROVED ─────────────────────
 
   @Get(':id/pdf')
   @RequirePermission(Permission.INVENTORY_VIEW)
@@ -119,7 +116,7 @@ export class IssuancePlanController {
     await this.svc.streamPdf(id, res);
   }
 
-  // ── PM feed consumption plan (Manager only) ───────────────────────────────
+  // ── PM feed consumption plan (Manager only) ────────────────────────────────
 
   @Post('feed-consumption-plan')
   @RequirePermission(Permission.FEED_INTAKE_LOG)

@@ -1,5 +1,5 @@
 // src/pages/store/IssuancePlanTab.tsx
-// Store (create/submit/view) and Accountant (review/approve/reject/edit)
+// Store (create draft any day / submit Saturday) | Director (approve/reject) | Accountant (read-only)
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
@@ -15,31 +15,31 @@ type DayKey = typeof DAY_KEYS[number];
 
 // Per-ITEM status (what each line actually carries)
 const ITEM_STATUS_BADGE: Record<string, string> = {
-  PENDING_ACCOUNTANT: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+  PENDING_ACCOUNTANT: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300', // legacy
   PENDING_DIRECTOR:   'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
   APPROVED:           'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
   REJECTED:           'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
 };
 
 const ITEM_STATUS_LABEL: Record<string, string> = {
-  PENDING_ACCOUNTANT: 'Awaiting Accountant',
+  PENDING_ACCOUNTANT: 'Awaiting Director', // migrated items show same label
   PENDING_DIRECTOR:   'Awaiting Director',
   APPROVED:           'Approved',
   REJECTED:           'Rejected',
 };
 
-// Plan-level PHASE (a summary of where its items collectively are)
+// Plan-level PHASE
 const PHASE_BADGE: Record<string, string> = {
   DRAFT:              'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
-  PENDING_ACCOUNTANT: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+  PENDING_ACCOUNTANT: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300', // legacy
   PENDING_DIRECTOR:   'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
   DECIDED:            'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
 };
 
 const PHASE_LABEL: Record<string, string> = {
   DRAFT:              'Draft',
-  PENDING_ACCOUNTANT: 'Items Awaiting Accountant',
-  PENDING_DIRECTOR:   'Items Awaiting Director',
+  PENDING_ACCOUNTANT: 'Awaiting Director', // legacy label
+  PENDING_DIRECTOR:   'Awaiting Director',
   DECIDED:            'Decided',
 };
 
@@ -94,11 +94,10 @@ function ItemRow({
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['issuance-plans'] }); setShowReject(false); setRejectReason(''); onRefresh(); },
   });
 
-  const canAccountantApprove = userRole === 'ACCOUNTANT' && item.status === 'PENDING_ACCOUNTANT';
-  const canDirectorApprove = userRole === 'OWNER' && item.status === 'PENDING_DIRECTOR';
-  const canApprove = canAccountantApprove || canDirectorApprove;
-  const canReject = canAccountantApprove || canDirectorApprove;
-  const directorApproveBlocked = canDirectorApprove && plan.type === 'WEEKLY' && !isSaturday();
+  const canDirectorApprove = userRole === 'OWNER' && (item.status === 'PENDING_DIRECTOR' || item.status === 'PENDING_ACCOUNTANT');
+  const canApprove = canDirectorApprove;
+  const canReject = canDirectorApprove;
+  // Director can approve on any day — no Saturday restriction
 
   const breakdown = item.dailyBreakdown as Record<string, number> | null;
 
@@ -156,8 +155,7 @@ function ItemRow({
           {canApprove && (
             <button
               onClick={() => approveMutation.mutate()}
-              disabled={approveMutation.isPending || directorApproveBlocked}
-              title={directorApproveBlocked ? 'Director can only approve weekly items on Saturdays' : ''}
+              disabled={approveMutation.isPending}
               className="flex items-center gap-1 bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-green-700 transition-colors disabled:opacity-50"
             >
               <CheckCircle className="w-3 h-3" /> {approveMutation.isPending ? 'Approving…' : 'Approve'}
@@ -171,13 +169,6 @@ function ItemRow({
               <XCircle className="w-3 h-3" /> Reject
             </button>
           )}
-        </div>
-      )}
-
-      {directorApproveBlocked && (
-        <div className="flex items-center gap-1.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg px-2 py-1.5 text-[11px] text-amber-700 dark:text-amber-400">
-          <AlertTriangle className="w-3 h-3 flex-shrink-0" />
-          Weekly items can only be approved by the Director on Saturdays.
         </div>
       )}
 
@@ -260,20 +251,17 @@ function PlanCard({
   const pendingCount = items.length - approvedCount - rejectedCount;
 
   const canSubmit = userRole === 'STORE' && plan.phase === 'DRAFT';
-  // Editable while Store still has it in DRAFT, or while at least one item is
-  // still sitting with the current role (Accountant/Director can edit the
-  // items currently in their own queue).
+  // Store edits while DRAFT. Director edits their queue (PENDING_DIRECTOR, or re-opens APPROVED/REJECTED).
   const ROLE_EDIT_ITEM_STATUSES: Record<string, string[]> = {
-    STORE: ['PENDING_ACCOUNTANT'], // only meaningful pre-submit; gated by phase below too
-    ACCOUNTANT: ['PENDING_ACCOUNTANT'],
+    STORE: ['PENDING_DIRECTOR'],
     OWNER: ['PENDING_DIRECTOR', 'APPROVED', 'REJECTED'],
   };
   const canEdit =
     (userRole === 'STORE' && plan.phase === 'DRAFT') ||
-    (userRole !== 'STORE' &&
-      items.some((i: any) => (ROLE_EDIT_ITEM_STATUSES[userRole] ?? []).includes(i.status)));
+    (userRole === 'OWNER' &&
+      items.some((i: any) => (ROLE_EDIT_ITEM_STATUSES['OWNER'] ?? []).includes(i.status)));
 
-  const canPdf = approvedCount > 0 && ['STORE', 'ACCOUNTANT'].includes(userRole);
+  const canPdf = approvedCount > 0 && ['STORE', 'ACCOUNTANT', 'OWNER'].includes(userRole);
 
   const totalKes = items.reduce((s: number, i: any) => s + Number(i.quantityPlanned) * Number(i.unitPriceKes), 0);
   const approvedKes = items
@@ -373,7 +361,7 @@ function PlanCard({
                 }
                 title={
                   !isSaturday() && plan.type === 'WEEKLY'
-                    ? 'Weekly plans can only be submitted on Saturdays'
+                    ? 'Weekly plans must be submitted on Saturdays — you can keep editing the draft until then'
                     : plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim()
                       ? 'A reason is required before this emergency plan can be submitted'
                       : ''
@@ -579,11 +567,11 @@ function CreatePlanForm({
         </div>
 
         <div className="p-5 space-y-5">
-          {/* Saturday notice for weekly */}
+          {/* Saturday notice for weekly — drafts can be created any day */}
           {!isEditing && type === 'WEEKLY' && !isSaturday() && (
-            <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
+            <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-xl px-4 py-3 text-sm text-blue-700 dark:text-blue-400">
               <Calendar className="w-4 h-4 flex-shrink-0" />
-              You can draft this plan now, but it can only be submitted on Saturday for the following week.
+              You can save this draft now. Come back Saturday to submit it for Director approval.
             </div>
           )}
 
@@ -591,7 +579,7 @@ function CreatePlanForm({
           {isEditing && editingPlan.items?.some((i: any) => ['APPROVED', 'REJECTED'].includes(i.status)) && (
             <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
               <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-              Some items here are already approved or rejected. Editing one of those items will reopen it for accountant and director re-approval — items you don't touch keep their current outcome.
+              Some items are already approved or rejected. Editing those will reopen them for Director re-approval — items you don't touch keep their current outcome.
             </div>
           )}
 
@@ -803,20 +791,17 @@ export function IssuancePlanTab() {
   });
 
   const canCreate = ['STORE'].includes(userRole);
-  // Count individual ITEMS awaiting this role's action across all plans —
-  // a single plan can have some items pending and others already decided.
+  // Count individual ITEMS awaiting Director action across all plans
   const pendingCount = plans.reduce((sum, p) => {
     const items = p.items ?? [];
-    if (userRole === 'ACCOUNTANT') return sum + items.filter((i: any) => i.status === 'PENDING_ACCOUNTANT').length;
-    if (userRole === 'OWNER') return sum + items.filter((i: any) => i.status === 'PENDING_DIRECTOR').length;
+    if (userRole === 'OWNER') return sum + items.filter((i: any) => ['PENDING_DIRECTOR', 'PENDING_ACCOUNTANT'].includes(i.status)).length;
     return sum;
   }, 0);
 
   const phaseOptions = [
     { label: 'All', value: '' },
     { label: 'Draft', value: 'DRAFT' },
-    { label: 'Items Awaiting Accountant', value: 'PENDING_ACCOUNTANT' },
-    { label: 'Items Awaiting Director', value: 'PENDING_DIRECTOR' },
+    { label: 'Awaiting Director', value: 'PENDING_DIRECTOR' },
     { label: 'Decided', value: 'DECIDED' },
   ];
 
@@ -832,16 +817,15 @@ export function IssuancePlanTab() {
         {canCreate && (
           <>
             <button
-              onClick={() => { if (isSaturday()) setShowCreate('WEEKLY'); }}
-              disabled={!isSaturday()}
-              title={!isSaturday() ? 'Weekly plans can only be created on Saturdays' : 'Create weekly issuance plan for next week'}
-              className="flex items-center gap-1.5 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-mid transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick={() => setShowCreate('WEEKLY')}
+              className="flex items-center gap-1.5 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-mid transition-colors"
+              title="Create weekly issuance plan — submit on Saturday for Director approval"
             >
               <Plus className="w-4 h-4" /> Weekly Plan
             </button>
             {!isSaturday() && (
-              <span className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                <Calendar className="w-3.5 h-3.5" /> Weekly plan available Saturdays only
+              <span className="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5" /> Draft now, submit Saturday
               </span>
             )}
             <button
@@ -879,7 +863,7 @@ export function IssuancePlanTab() {
             No issuance plans found
           </p>
           {canCreate && (
-            <p className="text-xs text-gray-400 mt-1">Create a weekly plan on Saturday for the following week.</p>
+            <p className="text-xs text-gray-400 mt-1">Draft a weekly plan anytime — submit on Saturday for Director approval.</p>
           )}
         </div>
       ) : (

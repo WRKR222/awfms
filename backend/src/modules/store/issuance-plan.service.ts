@@ -52,6 +52,7 @@ const FEED_SKU: Record<string, string> = {
 // same per-item approval fields regardless of which endpoint it called.
 const ITEM_INCLUDE = {
   storeItem: { select: { id: true, name: true, sku: true, unit: true, currentStock: true } },
+  // accountantApprovedBy kept for backward compat on older records; null for all new plans
   accountantApprovedBy: { select: { id: true, fullName: true } },
   directorApprovedBy: { select: { id: true, fullName: true } },
   rejectedBy: { select: { id: true, fullName: true } },
@@ -71,21 +72,20 @@ export class IssuancePlanService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Plan phase is a derived summary of where its items collectively are:
+   * Plan phase (Director-only flow):
    * - DRAFT: plan hasn't been submitted yet
-   * - PENDING_ACCOUNTANT: at least one item is still awaiting the accountant
-   * - PENDING_DIRECTOR: every item has passed the accountant; at least one is
-   *   still awaiting the director
-   * - DECIDED: every item has a final outcome (APPROVED or REJECTED) from the director
-   * This keeps the plan's `phase` column useful for filtering/badges without
-   * pretending the whole plan is a single yes/no decision.
+   * - PENDING_DIRECTOR: submitted and awaiting Director action on ≥1 item
+   * - DECIDED: every item has a final outcome (APPROVED or REJECTED)
+   *
+   * PENDING_ACCOUNTANT is kept in the DB enum for compat but is never written
+   * for new plans. Legacy records migrated by 20260629 migration.
    */
-  private computePhase(items: { status: string }[], wasSubmitted: boolean): 'DRAFT' | 'PENDING_ACCOUNTANT' | 'PENDING_DIRECTOR' | 'DECIDED' {
+  private computePhase(items: { status: string }[], wasSubmitted: boolean): 'DRAFT' | 'PENDING_DIRECTOR' | 'DECIDED' {
     if (!wasSubmitted) return 'DRAFT';
     if (items.length === 0) return 'DRAFT';
-    if (items.some((i) => i.status === 'PENDING_ACCOUNTANT')) return 'PENDING_ACCOUNTANT';
-    if (items.some((i) => i.status === 'PENDING_DIRECTOR')) return 'PENDING_DIRECTOR';
-    return 'DECIDED'; // every item is APPROVED or REJECTED
+    // Any item that isn't yet APPROVED or REJECTED means we're still pending Director
+    if (items.some((i) => !['APPROVED', 'REJECTED'].includes(i.status))) return 'PENDING_DIRECTOR';
+    return 'DECIDED';
   }
 
   private async syncPhase(planId: string) {
@@ -102,6 +102,9 @@ export class IssuancePlanService {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // CREATE
+  // Store can create a DRAFT on any day of the week.
+  // Weekly plans can only be SUBMITTED on Saturday — creating a draft early is
+  // encouraged so the director can review and approve it on that same Saturday.
   // ─────────────────────────────────────────────────────────────────────────────
 
   async createPlan(
@@ -120,9 +123,6 @@ export class IssuancePlanService {
     },
     userId: string,
   ) {
-    // Parse as UTC noon to avoid timezone shifts (e.g. UTC+3 clients sending
-    // "YYYY-MM-DD" which dayjs would otherwise treat as UTC midnight, potentially
-    // rolling back to the previous day in the server's local time).
     const monday = dayjs.utc(dto.weekStartDate).startOf('day').toDate();
     const sunday = sundayOf(monday);
 
@@ -130,14 +130,8 @@ export class IssuancePlanService {
       throw new BadRequestException('weekStartDate must be a Monday');
     }
 
-    // Weekly plans are only ever drawn up on Saturday for the following week.
-    // The "Weekly Plan" button is disabled client-side on every other day, but
-    // this check stops the same restriction being bypassed via a direct API call.
-    if (dto.type === 'WEEKLY' && !isSaturday()) {
-      throw new BadRequestException(
-        'Weekly issuance plans can only be created on Saturdays for the following week.',
-      );
-    }
+    // No day-of-week gate on CREATE — Store can draft at any time.
+    // The submit endpoint enforces Saturday for weekly plans.
 
     const enrichedItems = dto.items.map((item) => {
       let qtyPlanned = Number(item.quantityPlanned ?? 0);
@@ -175,7 +169,8 @@ export class IssuancePlanService {
           dailyBreakdown: item.dailyBreakdown ?? Prisma.JsonNull,
           notes: item.notes,
           source: 'MANUAL',
-          status: 'PENDING_ACCOUNTANT',
+          // Director-only flow: skip PENDING_ACCOUNTANT, go straight to PENDING_DIRECTOR
+          status: 'PENDING_DIRECTOR',
         })),
       });
     }
@@ -196,6 +191,7 @@ export class IssuancePlanService {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // UPDATE (edit line items)
+  // Store can edit DRAFT plans any day. Director can edit items in their queue.
   // ─────────────────────────────────────────────────────────────────────────────
 
   async updatePlan(
@@ -221,15 +217,11 @@ export class IssuancePlanService {
     });
     if (!plan) throw new NotFoundException('Issuance plan not found');
 
-    // Store can only edit items that are still PENDING_ACCOUNTANT (i.e. haven't
-    // been touched yet). Accountant can only edit items still PENDING_ACCOUNTANT
-    // (their own queue). Director can edit items PENDING_DIRECTOR, or re-open an
-    // item that's already APPROVED/REJECTED by editing it back to PENDING_ACCOUNTANT.
-    // Since approval is now per item, "editable within the chain" means: you can
-    // only touch a line that currently sits at your stage.
+    // Store: edits while DRAFT (pre-submit) — items must be PENDING_DIRECTOR
+    //   (that's the initial status now for all new items)
+    // Director: can edit PENDING_DIRECTOR, APPROVED, or REJECTED items
     const editableItemStatuses: Record<string, string[]> = {
-      STORE: ['PENDING_ACCOUNTANT'],
-      ACCOUNTANT: ['PENDING_ACCOUNTANT'],
+      STORE: ['PENDING_DIRECTOR'],
       OWNER: ['PENDING_DIRECTOR', 'APPROVED', 'REJECTED'],
     };
     const allowedStatuses = editableItemStatuses[userRole] ?? [];
@@ -240,23 +232,20 @@ export class IssuancePlanService {
         const existingIds = new Set(existing.map((e) => e.id));
         const submittedIds = new Set(dto.items.filter((i: any) => i.id).map((i: any) => i.id));
 
-        // Only block edits to existing items the caller's role isn't allowed to touch.
         for (const item of dto.items as any[]) {
           if (item.id && existingIds.has(item.id)) {
             const prior = existing.find((e) => e.id === item.id)!;
             if (!allowedStatuses.includes(prior.status)) {
               throw new ForbiddenException(
-                `As ${userRole === 'STORE' ? 'Store' : userRole === 'ACCOUNTANT' ? 'Accountant' : 'Director'}, ` +
+                `As ${userRole === 'STORE' ? 'Store' : 'Director'}, ` +
                   `you cannot edit "${prior.id}" while it is ${prior.status.replace('_', ' ').toLowerCase()}.`,
               );
             }
           } else if (userRole !== 'STORE') {
-            // Only Store may add brand-new line items to a plan.
             throw new ForbiddenException('Only Store can add new line items to an issuance plan.');
           }
         }
 
-        // Delete only items the editor explicitly removed (present before, absent now)
         const idsToDelete = [...existingIds].filter((eid) => !submittedIds.has(eid));
         if (idsToDelete.length > 0) {
           const withIssuance = existing.filter(
@@ -291,8 +280,7 @@ export class IssuancePlanService {
           if (item.id && existingIds.has(item.id)) {
             const prior = existing.find((e) => e.id === item.id)!;
             // Editing a Director-decided item (APPROVED/REJECTED) re-opens it
-            // to PENDING_ACCOUNTANT — both signatures are needed again for
-            // that specific item only; siblings are untouched.
+            // to PENDING_DIRECTOR — only the Director signature is needed again.
             const willReopenItem = ['APPROVED', 'REJECTED'].includes(prior.status);
             await tx.issuancePlanItem.update({
               where: { id: item.id },
@@ -305,7 +293,7 @@ export class IssuancePlanService {
                 source: item.source ?? prior.source,
                 ...(willReopenItem
                   ? {
-                      status: 'PENDING_ACCOUNTANT',
+                      status: 'PENDING_DIRECTOR',
                       accountantApprovedById: null,
                       accountantApprovedAt: null,
                       directorApprovedById: null,
@@ -327,7 +315,7 @@ export class IssuancePlanService {
                 dailyBreakdown: item.dailyBreakdown ?? Prisma.JsonNull,
                 notes: item.notes,
                 source: item.source ?? 'MANUAL',
-                status: 'PENDING_ACCOUNTANT',
+                status: 'PENDING_DIRECTOR',
               },
             });
           }
@@ -347,7 +335,8 @@ export class IssuancePlanService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // SUBMIT (Store: DRAFT → every item PENDING_ACCOUNTANT, phase → PENDING_ACCOUNTANT)
+  // SUBMIT (Store: DRAFT → every item PENDING_DIRECTOR, phase → PENDING_DIRECTOR)
+  // Weekly plans must be submitted on Saturday. Director notified immediately.
   // ─────────────────────────────────────────────────────────────────────────────
 
   async submitPlan(id: string, userId: string) {
@@ -369,24 +358,29 @@ export class IssuancePlanService {
       );
     }
 
-    // Emergency plans must always carry a reason explaining the urgency —
-    // Store cannot submit one without it.
     if (plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim()) {
       throw new BadRequestException(
         'A reason is required before an emergency issuance plan can be submitted.',
       );
     }
 
-    await this.prisma.issuancePlan.update({
-      where: { id },
-      data: { phase: 'PENDING_ACCOUNTANT' },
+    // Ensure all items are PENDING_DIRECTOR (in case any were pre-loaded as drafts)
+    await this.prisma.issuancePlanItem.updateMany({
+      where: { planId: id, status: { notIn: ['APPROVED', 'REJECTED'] } },
+      data: { status: 'PENDING_DIRECTOR' },
     });
 
+    await this.prisma.issuancePlan.update({
+      where: { id },
+      data: { phase: 'PENDING_DIRECTOR' },
+    });
+
+    // Notify Director only — Accountant receives a read-only copy once approved
     await this.notifications.notifyRole(
-      UserRole.ACCOUNTANT,
+      UserRole.OWNER,
       NotificationType.ISSUANCE_PLAN_SUBMITTED as any,
-      'New Issuance Plan Awaiting Review',
-      `${plan.type === 'EMERGENCY' ? 'Emergency issuance plan' : 'Weekly issuance plan'} ${plan.planRef} (${plan.items.length} item${plan.items.length > 1 ? 's' : ''}) has been submitted for your approval.`,
+      'New Issuance Plan Awaiting Your Approval',
+      `${plan.type === 'EMERGENCY' ? 'Emergency issuance plan' : 'Weekly issuance plan'} ${plan.planRef} (${plan.items.length} item${plan.items.length > 1 ? 's' : ''}) has been submitted and requires your approval.`,
       { entityId: id, entityType: 'IssuancePlan' },
     );
 
@@ -394,95 +388,63 @@ export class IssuancePlanService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // PER-ITEM APPROVE / REJECT
+  // PER-ITEM APPROVE / REJECT — Director only
+  // Director can approve/reject on any day of the week for any plan type.
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Approve a single line item. Accountant moves it PENDING_ACCOUNTANT →
-   * PENDING_DIRECTOR. Director moves it PENDING_DIRECTOR → APPROVED. Sibling
-   * items on the same plan are completely unaffected — this is the core of
-   * "director can approve some items and reject others".
+   * Approve a single line item.
+   * Director moves it PENDING_DIRECTOR → APPROVED.
+   * Sibling items on the same plan are completely unaffected.
    */
   async approveItem(planId: string, itemId: string, userId: string, userRole: string) {
+    if (userRole !== 'OWNER') {
+      throw new ForbiddenException('Only the Director can approve issuance plan items');
+    }
+
     const item = await this.prisma.issuancePlanItem.findUnique({
       where: { id: itemId },
       include: { plan: true, storeItem: true },
     });
     if (!item || item.planId !== planId) throw new NotFoundException('Issuance plan item not found');
 
-    if (userRole === 'ACCOUNTANT') {
-      if (item.status !== 'PENDING_ACCOUNTANT') {
-        throw new BadRequestException('This item is not awaiting accountant approval');
-      }
-      await this.prisma.issuancePlanItem.update({
-        where: { id: itemId },
-        data: {
-          status: 'PENDING_DIRECTOR',
-          accountantApprovedById: userId,
-          accountantApprovedAt: new Date(),
-        },
-      });
-      await this.syncPhase(planId);
-
-      await this.notifications.notifyRole(
-        UserRole.OWNER,
-        NotificationType.ISSUANCE_PLAN_ACCOUNTANT_APPROVED as any,
-        'Issuance Plan Item Awaiting Your Approval',
-        `Accountant approved "${item.storeItem.name}" on plan ${item.plan.planRef}. It now awaits your final approval.`,
-        { entityId: planId, entityType: 'IssuancePlan' },
-      );
-      await this.notifications.notifyRole(
-        UserRole.STORE,
-        NotificationType.ISSUANCE_PLAN_ACCOUNTANT_APPROVED as any,
-        'Issuance Plan Item — Accountant Approved',
-        `"${item.storeItem.name}" on plan ${item.plan.planRef} has been approved by the Accountant and is now with the Director.`,
-        { entityId: planId, entityType: 'IssuancePlan' },
-      );
-
-      return this.getPlan(planId);
+    if (item.status !== 'PENDING_DIRECTOR') {
+      throw new BadRequestException('This item is not awaiting Director approval');
     }
 
-    if (userRole === 'OWNER') {
-      if (item.status !== 'PENDING_DIRECTOR') {
-        throw new BadRequestException('This item is not awaiting director approval');
-      }
-      if (item.plan.type === 'WEEKLY' && !isSaturday()) {
-        throw new BadRequestException(
-          'Weekly issuance plan items can only be approved by the Director on Saturdays',
-        );
-      }
-      await this.prisma.issuancePlanItem.update({
-        where: { id: itemId },
-        data: {
-          status: 'APPROVED',
-          directorApprovedById: userId,
-          directorApprovedAt: new Date(),
-        },
-      });
-      await this.syncPhase(planId);
+    await this.prisma.issuancePlanItem.update({
+      where: { id: itemId },
+      data: {
+        status: 'APPROVED',
+        directorApprovedById: userId,
+        directorApprovedAt: new Date(),
+      },
+    });
+    await this.syncPhase(planId);
 
-      await this.notifications.notifyRole(
-        UserRole.STORE,
-        NotificationType.ISSUANCE_PLAN_APPROVED as any,
-        'Issuance Plan Item Approved — Stock Can Now Be Issued',
-        `"${item.storeItem.name}" on plan ${item.plan.planRef} has been fully approved. You may now issue stock against this line.`,
-        { entityId: planId, entityType: 'IssuancePlan' },
-      );
-      await this.notifications.notifyRole(
-        UserRole.ACCOUNTANT,
-        NotificationType.ISSUANCE_PLAN_APPROVED as any,
-        `Issuance Plan Item Approved — ${item.plan.planRef}`,
-        `Director approved "${item.storeItem.name}" on plan ${item.plan.planRef}. Stock issuance for this item is now unlocked.`,
-        { entityId: planId, entityType: 'IssuancePlan' },
-      );
+    // Notify Store that this item is now authorised for stock issuance
+    await this.notifications.notifyRole(
+      UserRole.STORE,
+      NotificationType.ISSUANCE_PLAN_APPROVED as any,
+      'Issuance Plan Item Approved — Stock Can Now Be Issued',
+      `"${item.storeItem.name}" on plan ${item.plan.planRef} has been approved by the Director. You may now issue stock against this line.`,
+      { entityId: planId, entityType: 'IssuancePlan' },
+    );
 
-      return this.getPlan(planId);
-    }
+    // Accountant visibility: notify them of what the Director approved so they
+    // can reconcile spend — they don't approve, they only observe the outcome.
+    await this.notifications.notifyRole(
+      UserRole.ACCOUNTANT,
+      NotificationType.ISSUANCE_PLAN_APPROVED as any,
+      `Director Approved Issuance — ${item.plan.planRef}`,
+      `Director approved "${item.storeItem.name}" on plan ${item.plan.planRef}. Stock issuance for this item is now active.`,
+      { entityId: planId, entityType: 'IssuancePlan' },
+    );
 
-    throw new ForbiddenException('Only Accountant or Director can approve issuance plan items');
+    return this.getPlan(planId);
   }
 
-  /** Reject a single line item. Siblings are unaffected. */
+  /** Reject a single line item. Director only. Siblings unaffected. */
   async rejectItem(
     planId: string,
     itemId: string,
@@ -490,19 +452,17 @@ export class IssuancePlanService {
     userRole: string,
     rejectionReason: string,
   ) {
+    if (userRole !== 'OWNER') {
+      throw new ForbiddenException('Only the Director can reject issuance plan items');
+    }
+
     const item = await this.prisma.issuancePlanItem.findUnique({
       where: { id: itemId },
       include: { plan: true, storeItem: true },
     });
     if (!item || item.planId !== planId) throw new NotFoundException('Issuance plan item not found');
 
-    const rejectableStatuses =
-      userRole === 'ACCOUNTANT'
-        ? ['PENDING_ACCOUNTANT']
-        : userRole === 'OWNER'
-          ? ['PENDING_DIRECTOR']
-          : [];
-    if (!rejectableStatuses.includes(item.status)) {
+    if (item.status !== 'PENDING_DIRECTOR') {
       throw new BadRequestException('This item cannot be rejected in its current status');
     }
 
@@ -517,24 +477,23 @@ export class IssuancePlanService {
     });
     await this.syncPhase(planId);
 
+    // Notify Store (plan creator) of the rejection
     await this.notifications.notifyUser(
       item.plan.createdById,
       NotificationType.ISSUANCE_PLAN_REJECTED as any,
       `Issuance Plan Item Rejected — ${item.plan.planRef}`,
-      `${userRole === 'ACCOUNTANT' ? 'Accountant' : 'Director'} rejected "${item.storeItem.name}" on plan ${item.plan.planRef}: ${rejectionReason}`,
+      `Director rejected "${item.storeItem.name}" on plan ${item.plan.planRef}: ${rejectionReason}`,
       { entityId: planId, entityType: 'IssuancePlan' },
     );
-    // Also let the Accountant know if the Director rejected something they'd
-    // already passed, so they have visibility into the final outcome.
-    if (userRole === 'OWNER') {
-      await this.notifications.notifyRole(
-        UserRole.ACCOUNTANT,
-        NotificationType.ISSUANCE_PLAN_REJECTED as any,
-        `Issuance Plan Item Rejected — ${item.plan.planRef}`,
-        `Director rejected "${item.storeItem.name}" on plan ${item.plan.planRef} (you had approved it): ${rejectionReason}`,
-        { entityId: planId, entityType: 'IssuancePlan' },
-      );
-    }
+
+    // Let Accountant know about the rejection for their records
+    await this.notifications.notifyRole(
+      UserRole.ACCOUNTANT,
+      NotificationType.ISSUANCE_PLAN_REJECTED as any,
+      `Issuance Plan Item Rejected — ${item.plan.planRef}`,
+      `Director rejected "${item.storeItem.name}" on plan ${item.plan.planRef}: ${rejectionReason}`,
+      { entityId: planId, entityType: 'IssuancePlan' },
+    );
 
     return this.getPlan(planId);
   }
@@ -574,13 +533,6 @@ export class IssuancePlanService {
   // STOCK-OUT GATE — checks the ITEM's status, not the plan's
   // ─────────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Returns the IssuancePlanItem that authorises the requested stock-out, or
-   * throws BadRequestException if the item isn't APPROVED / limit exceeded.
-   * Only items with status = APPROVED can ever authorise a stock-out — a
-   * REJECTED or still-pending item on the same plan blocks nothing else and
-   * grants nothing either.
-   */
   async validateStockOut(
     storeItemId: string,
     quantityOut: number,
@@ -591,7 +543,6 @@ export class IssuancePlanService {
     const weekSunday = dayjs(weekMonday).add(6, 'day').endOf('day').toDate();
     const dayKey = DAY_KEYS[today.isoWeekday() - 1];
 
-    // 1. Look for an APPROVED weekly item covering this store item, this week
     const weeklyItem = await this.prisma.issuancePlanItem.findFirst({
       where: {
         storeItemId,
@@ -668,7 +619,6 @@ export class IssuancePlanService {
     return null;
   }
 
-  /** Increment quantityIssued on a plan item after a stock-out is recorded */
   async incrementIssuedQuantity(planItemId: string, quantity: number) {
     await this.prisma.issuancePlanItem.update({
       where: { id: planItemId },
@@ -728,11 +678,6 @@ export class IssuancePlanService {
     });
   }
 
-  /**
-   * Compute live bird count for a given stage (BROODING | PRODUCTION), then
-   * upsert a PM_FEED_PLAN line item into any DRAFT plan for this week. Never
-   * throws — a feed plan is always saved even if it can't be attached yet.
-   */
   private async injectFeedLineIntoPlan(
     monday: Date,
     stage: string,
@@ -792,7 +737,7 @@ export class IssuancePlanService {
           unitPriceKes: Number(storeItem.unitCostKes),
           dailyBreakdown,
           source: 'PM_FEED_PLAN',
-          status: 'PENDING_ACCOUNTANT',
+          status: 'PENDING_DIRECTOR',
           notes: `Auto: ${stage} birds (${totalBirds}) × ${gramsPerBirdPerDay}g/bird/day`,
         },
       });
@@ -802,7 +747,7 @@ export class IssuancePlanService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // DAILY FEED ALERT (called by cron) — only for items that are actually APPROVED
+  // DAILY FEED ALERT (called by cron) — only for items that are APPROVED
   // ─────────────────────────────────────────────────────────────────────────────
 
   async sendDailyFeedAlert() {
@@ -838,9 +783,34 @@ export class IssuancePlanService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // SATURDAY WEEKLY-PLAN REMINDER (called by cron) — nudges Store to draft and
-  // submit next week's weekly issuance plan. Skips the nudge if a weekly plan
-  // for the upcoming week already exists (drafted, submitted, or decided).
+  // THURSDAY EARLY REMINDER — 2 days before Saturday submission deadline
+  // Fires on Thursday if no weekly plan exists for the upcoming week yet.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async sendEarlyWeeklyPlanReminder() {
+    const today = dayjs();
+    // Thursday: next Monday is 4 days away
+    const daysUntilMon = (8 - today.day()) % 7 || 7;
+    const mondayDateStr = today.add(daysUntilMon, 'day').format('YYYY-MM-DD');
+    const monday = dayjs.utc(mondayDateStr).startOf('day').toDate();
+
+    const existing = await this.prisma.issuancePlan.findFirst({
+      where: { type: 'WEEKLY', weekStartDate: monday },
+    });
+    if (existing) return; // draft or submitted plan already exists — no nudge needed
+
+    await this.notifications.notifyRole(
+      UserRole.STORE,
+      NotificationType.WEEKLY_PLAN_EARLY_REMINDER as any,
+      'Heads Up — Issuance Plan Due Saturday',
+      `The weekly issuance plan for ${dayjs(monday).format('D MMM')} – ${dayjs(monday).add(6, 'day').format('D MMM YYYY')} is due this Saturday. ` +
+        `You can start drafting it now and submit on Saturday for Director approval.`,
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // SATURDAY WEEKLY-PLAN REMINDER — nudges Store to submit next week's plan.
+  // Skips the nudge if a plan for the upcoming week already exists.
   // ─────────────────────────────────────────────────────────────────────────────
 
   async sendWeeklyPlanReminder() {
@@ -857,13 +827,13 @@ export class IssuancePlanService {
     await this.notifications.notifyRole(
       UserRole.STORE,
       NotificationType.WEEKLY_PLAN_REMINDER,
-      "It's Saturday — Create the Weekly Issuance Plan",
-      `Draft and submit the weekly issuance plan for the coming week (${dayjs(monday).format('D MMM')} – ${dayjs(monday).add(6, 'day').format('D MMM YYYY')}) before end of day.`,
+      "It's Saturday — Submit the Weekly Issuance Plan",
+      `Draft and submit the weekly issuance plan for the coming week (${dayjs(monday).format('D MMM')} – ${dayjs(monday).add(6, 'day').format('D MMM YYYY')}) before end of day for Director approval.`,
     );
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // PENDING REMINDER (called by daily cron) — per item, not per plan
+  // PENDING REMINDER (called by daily cron) — Director only, per item
   // ─────────────────────────────────────────────────────────────────────────────
 
   async sendPendingReminders() {
@@ -871,37 +841,34 @@ export class IssuancePlanService {
 
     const pendingItems = await this.prisma.issuancePlanItem.findMany({
       where: {
-        status: { in: ['PENDING_ACCOUNTANT', 'PENDING_DIRECTOR'] as any[] },
+        status: 'PENDING_DIRECTOR',
         plan: { weekStartDate: { lte: today.add(7, 'day').toDate() } },
       },
       include: { plan: true, storeItem: true },
     });
 
-    // Group by plan + awaiting role so each reminder mentions affected items rather
-    // than spamming one notification per line item.
-    const groups = new Map<string, { plan: any; role: UserRole; items: any[] }>();
+    // Group by plan so we send one notification per plan rather than one per item
+    const groups = new Map<string, { plan: any; items: any[] }>();
     for (const item of pendingItems) {
-      const role = item.status === 'PENDING_ACCOUNTANT' ? UserRole.ACCOUNTANT : UserRole.OWNER;
-      const key = `${item.planId}:${role}`;
-      if (!groups.has(key)) groups.set(key, { plan: item.plan, role, items: [] });
+      const key = item.planId;
+      if (!groups.has(key)) groups.set(key, { plan: item.plan, items: [] });
       groups.get(key)!.items.push(item);
     }
 
-    for (const { plan, role, items } of groups.values()) {
-      const awaitingRole = role === UserRole.ACCOUNTANT ? 'Accountant' : 'Director';
+    for (const { plan, items } of groups.values()) {
       const itemNames = items.map((i) => i.storeItem?.name).filter(Boolean);
       await this.notifications.notifyRole(
-        role,
+        UserRole.OWNER,
         NotificationType.ISSUANCE_PLAN_PENDING_REMINDER as any,
         `Reminder: ${items.length} Item${items.length > 1 ? 's' : ''} Awaiting Your Approval — ${plan.planRef}`,
-        `Plan ${plan.planRef} (week of ${dayjs(plan.weekStartDate).format('D MMM YYYY')}) has ${items.length} item${items.length > 1 ? 's' : ''} still awaiting ${awaitingRole} approval${itemNames.length ? `: ${itemNames.join(', ')}` : ''}. Stock cannot be issued for these until approved.`,
+        `Plan ${plan.planRef} (week of ${dayjs(plan.weekStartDate).format('D MMM YYYY')}) has ${items.length} item${items.length > 1 ? 's' : ''} still awaiting your approval${itemNames.length ? `: ${itemNames.join(', ')}` : ''}.`,
         { entityId: plan.id, entityType: 'IssuancePlan' },
       );
     }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // PDF GENERATION — only APPROVED items are listed; others show their outcome
+  // PDF GENERATION — only APPROVED items listed
   // ─────────────────────────────────────────────────────────────────────────────
 
   async streamPdf(id: string, res: Response) {
@@ -974,9 +941,6 @@ export class IssuancePlanService {
       rowY += 15;
     });
 
-    // List rejected/pending items separately so the Accountant/Director can see
-    // at a glance what wasn't approved, without it looking like part of the
-    // authorised issuance table.
     const otherItems = plan.items.filter((i: any) => i.status !== 'APPROVED');
     if (otherItems.length > 0) {
       doc.moveDown(1.5);
@@ -985,9 +949,7 @@ export class IssuancePlanService {
         const label =
           item.status === 'REJECTED'
             ? `Rejected — ${item.rejectionReason ?? 'no reason given'}`
-            : item.status === 'PENDING_DIRECTOR'
-              ? 'Awaiting Director'
-              : 'Awaiting Accountant';
+            : 'Awaiting Director';
         doc.fontSize(8).fillColor('#999').text(`• ${item.storeItem.name}: ${label}`);
       });
     }
@@ -1006,7 +968,7 @@ export class IssuancePlanService {
       .moveDown(2)
       .fontSize(8)
       .fillColor('#888')
-      .text('This document is computer-generated. Only items approved by both the Accountant and Director are listed as authorised.', { align: 'center' });
+      .text('This document is computer-generated. Only Director-approved items are listed as authorised.', { align: 'center' });
 
     doc.end();
   }

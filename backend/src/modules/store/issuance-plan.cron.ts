@@ -16,14 +16,28 @@ export class IssuancePlanCron {
     await this.issuancePlanService.sendDailyFeedAlert();
   }
 
-  /** 07:00 daily — remind Accountant / Director about pending plans */
+  /** 07:00 daily — remind Director about pending plans */
   @Cron('0 7 * * *')
   async pendingReminder() {
     this.logger.log('Running issuance plan pending reminders');
     await this.issuancePlanService.sendPendingReminders();
   }
 
-  /** 07:00 every Saturday — remind Store to draft the weekly issuance plan */
+  /**
+   * 07:00 every Thursday — early reminder to Store to start drafting the
+   * weekly issuance plan before the Saturday submission deadline.
+   * Two days notice gives them time to gather quantities and cross-check stock.
+   */
+  @Cron('0 7 * * 4')
+  async earlyWeeklyPlanReminder() {
+    this.logger.log('Running Thursday early weekly issuance plan reminder');
+    await this.issuancePlanService.sendEarlyWeeklyPlanReminder();
+  }
+
+  /**
+   * 07:00 every Saturday — final reminder to Store to submit the weekly plan.
+   * Also the day Store must submit and the Director can approve.
+   */
   @Cron('0 7 * * 6')
   async weeklyPlanReminder() {
     this.logger.log('Running Saturday weekly issuance plan reminder');

@@ -148,6 +148,7 @@ enum NotificationType {
   ISSUANCE_PLAN_REJECTED
   ISSUANCE_PLAN_PENDING_REMINDER
   WEEKLY_PLAN_REMINDER
+  WEEKLY_PLAN_EARLY_REMINDER
   FEED_ISSUANCE_DAILY_ALERT
   // Brooder control threshold alerts
   BROODER_FEED_OVERISSUE    // feed issued > calculated HyLine daily ration for a level
@@ -161,20 +162,19 @@ enum IssuancePlanType {
 }
 
 /// Plan-level workflow phase — tracks whether the plan as a whole has been
-/// submitted and is in front of the Accountant/Director, independent of each
-/// item's own approval outcome (see IssuancePlanItemStatus).
+/// submitted and is awaiting Director approval. Accountant step removed.
+/// See IssuancePlanItemStatus for per-item outcomes.
 enum IssuancePlanPhase {
   DRAFT
-  PENDING_ACCOUNTANT
+  PENDING_ACCOUNTANT  // legacy — no longer entered for new plans; kept for DB enum compat
   PENDING_DIRECTOR
   DECIDED   // Director has acted on every item — plan as a whole is closed out
 }
 
-/// Per-item approval status. Each line item walks the same Accountant →
-/// Director chain independently, so the Director can approve some items on a
-/// plan and reject others without blocking or approving the rest.
+/// Per-item approval status. Items go straight to PENDING_DIRECTOR on submit
+/// (Accountant approval step removed). PENDING_ACCOUNTANT kept for DB enum compat.
 enum IssuancePlanItemStatus {
-  PENDING_ACCOUNTANT
+  PENDING_ACCOUNTANT  // legacy — no longer entered for new plans
   PENDING_DIRECTOR
   APPROVED
   REJECTED
