@@ -87,6 +87,8 @@ interface FeedSummary {
   totalRequiredKgThisWeek:  number;
   totalDispensedKgThisWeek: number;
   residualCarryForwardKg:   number;
+  earlyPhaseResidualKg:     number;  // portion of residual from early-phase over-stocking
+  standardResidualKg:       number;  // portion from last approved issuance plan
   netToIssueKg:             number;
   rows:                     FeedSummaryRow[];
 }
@@ -312,6 +314,11 @@ export function BrooderControlStandardPanel() {
                     <span>
                       <strong>{feedSummary.residualCarryForwardKg.toFixed(2)} kg</strong> residual
                       carried forward — deducted from this week's store issuance.
+                      {(feedSummary.earlyPhaseResidualKg ?? 0) > 0 && (
+                        <span className="ml-1 text-blue-500 dark:text-blue-300">
+                          ({feedSummary.earlyPhaseResidualKg.toFixed(2)} kg from early-phase starter feed)
+                        </span>
+                      )}
                     </span>
                   </div>
                 )}

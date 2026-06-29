@@ -238,8 +238,10 @@ export function earlyPhaseAdvisoryDailyKg(birdCount: number, ageWeeks: number): 
  * Logic:
  *   • For each calendar day in the current ISO week, determine whether it
  *     falls in EARLY, TRANSITION, or STANDARD phase for the batch.
- *   • EARLY days: contribute 0 kg to the "expected" weekly total because
- *     the batch may not eat at all — carry-over from day 1 is the norm.
+ *   • EARLY days: contribute the FULL standard daily ration to the schedule
+ *     total.  Feed is physically issued on Day 1 and birds do eat some of it.
+ *     Using 0 previously caused "no feed scheduled" / "net to issue = 0" for
+ *     any batch ≤ 2 days old (see inline comment in the function body).
  *   • TRANSITION days: contribute 50% of the standard daily ration as the
  *     minimum expected intake (birds are learning but eating inconsistently).
  *   • STANDARD days: contribute the full daily ration.
@@ -286,10 +288,15 @@ export function brooderAdjustedWeeklyFeedKg(
     const phase = getFeedingPhase(dateOfHatch, day);
 
     if (phase === 'EARLY') {
-      // Early phase: do not add to the expected weekly total.
-      // The initial day-1 feed is already in the store issuance; any residual
-      // rolls forward as carry-over (handled separately in earlyPhaseResidualKg).
-      totalKg += 0;
+      // Early phase: count the full standard daily ration for schedule display.
+      // Feed IS issued on Day 1 and birds DO eat some; using 0 here caused the
+      // brooder control panel to show "no feed scheduled" and "net to issue = 0"
+      // for batches ≤ 2 days old (totalRequiredKgThisWeek became 0, and
+      // earlyPhaseResidualKg(issuedKg, 0) = issuedKg inflated residual to 100%
+      // of issued feed, pushing netToIssueKg to 0).  Using the full ration fixes
+      // both display problems; genuine over-issuance is still caught by the
+      // soft-warn in createLevelFeedLog (hard-block is lifted for EARLY/TRANSITION).
+      totalKg += standardDailyKg;
     } else if (phase === 'TRANSITION') {
       // Transition: count 50% of standard ration for planning purposes.
       totalKg += standardDailyKg * 0.5;

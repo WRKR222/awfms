@@ -1153,8 +1153,9 @@ export class BrooderService {
         const issuedKg = Number(issued._sum.quantityDispensedKg ?? 0);
 
         // Estimate actual consumption: use the adjusted weekly figure
-        // (which counts 0 for early days, 50% for transition days),
-        // windowed to this batch's own hatch-relative brooder week.
+        // (which counts the full standard ration for early days and 50% for
+        // transition days), windowed to this batch's own hatch-relative brooder
+        // week.  Any feed issued beyond this estimate is treated as residual.
         const ageWeeks   = dayjs().diff(dayjs(batch.dateOfHatch), 'week');
         const batchWeekStart = brooderWeekStart(batch.dateOfHatch, now);
         const estimatedConsumedKg = brooderAdjustedWeeklyFeedKg(

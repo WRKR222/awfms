@@ -17,21 +17,28 @@
 //     Green  — within ±5% of schedule
 //     Amber  — >5% deviation (possible wastage or under-feeding)
 //     (No red hard-block — the schedule is advisory)
+//
+// ── Early-phase display (Days 1–2) ──────────────────────────────────────────
+//   Batches ≤ 2 days old are in the EARLY phase.  Since brooderAdjustedWeeklyFeedKg
+//   now counts the full HyLine ration for EARLY days (not 0), the schedule
+//   and net-to-issue figures are non-zero even on Day 1.  An "Early phase"
+//   badge is shown next to the variance pill so attendants understand the
+//   advisory (not enforced) nature of the figure.
 
 import { useState } from 'react';
 import {
   Wheat, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp,
-  Archive, Info,
+  Archive, Info, Baby,
 } from 'lucide-react';
-import { useBrooderFeedSummary, type FeedRequirementRow } from '../../hooks/useBrooderCageMap';
+import { useBrooderFeedSummary, type FeedRequirementRow, type FeedRequirementLevel } from '../../hooks/useBrooderCageMap';
 
 // ── Schedule vs actual pill ───────────────────────────────────────────────────
 function VariancePill({ pct }: { pct: number | null }) {
   if (pct === null) {
-    return <span className="text-[10px] text-gray-400 italic">No population</span>;
+    // requiredKgThisWeek is 0 — no birds or data not yet available
+    return <span className="text-[10px] text-gray-400 italic">No schedule</span>;
   }
   if (Math.abs(pct) <= 1) {
-    // ≤1% — on schedule
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
         <CheckCircle2 className="w-2.5 h-2.5" /> On schedule
@@ -50,10 +57,29 @@ function VariancePill({ pct }: { pct: number | null }) {
   );
 }
 
+/** Badge shown for levels still in the early learning-to-eat window (Week 1, Days 1–2). */
+function EarlyPhaseBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
+      title="Days 1–2: chicks are learning to eat. The HyLine ration is advisory — over-issue enforcement is relaxed."
+    >
+      <Baby className="w-2 h-2" /> Early phase
+    </span>
+  );
+}
+
 // ── Row-level expandable detail ───────────────────────────────────────────────
 function RowLine({ row }: { row: FeedRequirementRow }) {
   const [open, setOpen] = useState(false);
   if (row.birdTotal === 0) return null;
+
+  // A row is in early phase if ALL its occupied levels are early-phase
+  // (hylineWeek === 1 and dispensed is still very low relative to schedule).
+  // We use hylineWeek === 1 as the proxy — Week 1 covers Days 0-6.
+  const allEarlyPhase = row.levels.every(
+    l => l.birdCount > 0 && l.hylineWeek === 1,
+  );
 
   const weekVariancePct = row.requiredKgThisWeek > 0
     ? Math.round(((row.dispensedKgThisWeek - row.requiredKgThisWeek) / row.requiredKgThisWeek) * 1000) / 10
@@ -68,6 +94,7 @@ function RowLine({ row }: { row: FeedRequirementRow }) {
         <div className="flex items-center gap-2">
           <span className="font-bold text-gray-800 dark:text-gray-100">{row.label}</span>
           <span className="text-gray-400">{row.birdTotal.toLocaleString()} chicks</span>
+          {allEarlyPhase && <EarlyPhaseBadge />}
         </div>
         <div className="flex items-center gap-2">
           {/* Issued / Schedule */}
@@ -82,14 +109,16 @@ function RowLine({ row }: { row: FeedRequirementRow }) {
 
       {open && (
         <div className="px-3 pb-3 space-y-1.5 border-t border-gray-100 dark:border-dark-border pt-2">
-          {row.levels.map(l => {
-            const lvlVariance = l.feedVariancePercent;
+          {row.levels.map((l: FeedRequirementLevel) => {
+            const lvlVariance  = l.feedVariancePercent;
+            const isEarlyLevel = l.birdCount > 0 && l.hylineWeek === 1;
             return (
               <div key={l.levelId} className="flex items-center justify-between text-[11px]">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{l.label}</span>
                   <span className="font-mono text-gray-700 dark:text-gray-200 truncate">{l.batchCode}</span>
                   <span className="text-gray-400 flex-shrink-0">{l.birdCount.toLocaleString()}b</span>
+                  {isEarlyLevel && <EarlyPhaseBadge />}
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <span className="font-mono text-gray-500 dark:text-gray-400" title="Issued / Schedule">
@@ -137,6 +166,9 @@ export function BrooderFeedRequirement() {
   const residual       = data?.residualCarryForwardKg   ?? 0;
   const netToIssue     = data?.netToIssueKg             ?? 0;
 
+  // earlyPhaseResidualKg: portion of residual from early-phase over-stocking
+  const earlyResidual  = (data as any)?.earlyPhaseResidualKg ?? 0;
+
   const weekVariance   = totalRequired > 0
     ? Math.round(((totalDispensed - totalRequired) / totalRequired) * 1000) / 10
     : null;
@@ -160,6 +192,11 @@ export function BrooderFeedRequirement() {
             <Archive className="w-3 h-3" />
             <span>
               Carry-forward residual: <strong>{residual}kg</strong>
+              {earlyResidual > 0 && (
+                <span className="text-blue-600 dark:text-blue-400 ml-1">
+                  (incl. {earlyResidual}kg early-phase)
+                </span>
+              )}
               {' '}· Net store issuance needed: <strong>{netToIssue}kg</strong>
             </span>
           </div>
