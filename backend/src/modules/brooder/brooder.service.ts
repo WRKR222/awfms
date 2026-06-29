@@ -10,8 +10,10 @@
 //            following day is recalculated from the new population count
 //            (no explicit daily record needed — the cage-map feed-summary
 //            endpoint always derives from live birdCount).
-//   Req 3 — createLevelFeedLog blocks issuance that would exceed the daily
-//            HyLine ration; a BadRequestException is thrown before the DB write.
+//   Req 3 — createLevelFeedLog: The HyLine feeding schedule is ADVISORY ONLY.
+//            No hard cap is enforced.  Over-issuance is logged as carry-forward.
+//            Attendants may record "no feed issued" when birds are still eating
+//            carry-forward feed from a previous day (carryFromDate is required).
 //   Req 4 — getFeedRequirementSummary carries the current week's residual
 //            balance from the last approved IssuancePlan into the next plan.
 //   Req 5 — Feed control uses HyLine g/bird/day per week (not a fixed 90g).
@@ -620,7 +622,7 @@ export class BrooderService {
     return result;
   }
 
-  // ── Per-level feed logs (Req 3 — strict issuance control) ────────────────
+  // ── Per-level feed logs (Req 3 — advisory schedule, no hard cap) ──────────
 
   async listLevelFeedLogs(levelId: string, limit = 30) {
     return this.prisma.brooderLevelFeedLog.findMany({
@@ -659,14 +661,10 @@ export class BrooderService {
 
         const feedingPhase = getFeedingPhase(batch.dateOfHatch, entryDateObj);
 
-        // ── Req 3 (phase-aware): Control over-issuance ───────────────────
-        // • EARLY phase (Days 1–2): hard-block is LIFTED.  Chicks haven't
-        //   established eating patterns.  The attendant may top up feed
-        //   above the daily ration; a warning is logged but no exception.
-        //   The over-issue is automatically tracked as early-phase residual
-        //   and will be deducted from the next store issuance request.
-        // • TRANSITION phase (Days 3–6): same relaxed rule — soft warn only.
-        // • STANDARD phase (Week 2+): original hard-block enforced.
+        // ── Req 3 (advisory only — all phases) ───────────────────────────
+        // The HyLine schedule is shown as a reference.  The attendant may
+        // issue any amount; over-issuance is logged as carry-forward and
+        // deducted from the next store issuance.  No phase enforces a cap.
         const entryDateStart = new Date(`${dto.entryDate}T00:00:00.000Z`);
         const entryDateEnd   = new Date(`${dto.entryDate}T23:59:59.999Z`);
         const todayIssued = await this.prisma.brooderLevelFeedLog.aggregate({
@@ -679,26 +677,19 @@ export class BrooderService {
         const alreadyIssuedKg = todayIssued._sum.quantityDispensedKg ?? 0;
         const totalAfterKg    = Number(alreadyIssuedKg) + dto.quantityDispensedKg;
 
+        // ── Feeding schedule is ADVISORY only (all phases) ───────────────
+        // The HyLine ration is a reference figure for the attendant and for
+        // store issuance planning.  No hard cap is enforced at any phase.
+        // Over- or under-issuance is logged so variance can be tracked and
+        // the residual carry-forward is calculated for the issuance plan.
         if (dailyRationKg !== null && totalAfterKg > dailyRationKg) {
-          if (feedingPhase === 'STANDARD') {
-            // Week 2+: hard block
-            throw new BadRequestException(
-              `Feed issuance blocked: this level's daily ration is ${dailyRationKg.toFixed(2)} kg ` +
-              `for ${level.assignment.birdCount} birds at week ${ageWeeks} (HyLine standard). ` +
-              `Already issued today: ${Number(alreadyIssuedKg).toFixed(2)} kg. ` +
-              `Requested ${dto.quantityDispensedKg} kg would bring total to ${totalAfterKg.toFixed(2)} kg ` +
-              `(+${(totalAfterKg - dailyRationKg).toFixed(2)} kg over ration). ` +
-              `Reduce the quantity or use the excess to offset tomorrow's issuance.`,
-            );
-          } else {
-            // EARLY / TRANSITION: soft warn — allow issuance, log the event.
-            this.logger.warn(
-              `[EarlyPhase] Level ${dto.levelId} (${feedingPhase}) — over-advisory issuance. ` +
-              `Advisory daily cap: ${dailyRationKg.toFixed(2)} kg, total after this entry: ` +
-              `${totalAfterKg.toFixed(2)} kg (+${(totalAfterKg - dailyRationKg).toFixed(2)} kg). ` +
-              `This excess will be tracked as a residual carry-forward.`,
-            );
-          }
+          const overByKg = (totalAfterKg - dailyRationKg).toFixed(2);
+          this.logger.warn(
+            `[FeedAdvisory] Level ${dto.levelId} (${feedingPhase}) — above schedule. ` +
+            `Advisory daily cap: ${dailyRationKg.toFixed(2)} kg, ` +
+            `total after this entry: ${totalAfterKg.toFixed(2)} kg (+${overByKg} kg). ` +
+            `Excess tracked as carry-forward; deducted from next store issuance.`,
+          );
         }
       }
     }
@@ -707,18 +698,25 @@ export class BrooderService {
     // 20260629000000_brooder_early_phase_feed has run and prisma generate
     // has been re-executed. Until then those columns are intentionally omitted.
 
+    // Build the note string — for no-feed entries prepend the carry-from date.
+    let resolvedNotes = dto.notes ?? null;
+    if (dto.noFeedIssued) {
+      const carryNote = `No feed issued — birds still consuming feed dispensed on ${(dto as any).carryFromDate}.`;
+      resolvedNotes = resolvedNotes ? `${carryNote} ${resolvedNotes}` : carryNote;
+    }
+
     const result = await this.prisma.brooderLevelFeedLog.create({
       data: {
         levelId:             dto.levelId,
         feedType:            dto.feedType,
         entryDate:           new Date(`${dto.entryDate}T00:00:00.000Z`),
-        quantityDispensedKg: dto.quantityDispensedKg,
+        quantityDispensedKg: dto.quantityDispensedKg,  // 0 for no-feed entries
         requiredKgForWeek,
-        notes:               dto.notes ?? null,
+        notes:               resolvedNotes,
         loggedById:          userId,
-        // feedingPhase and isAdvisoryOnly are added by migration
-        // 20260629000000_brooder_early_phase_feed — omit until that migration
-        // has run in this environment to avoid PrismaClientValidationError.
+        // noFeedIssued and carryFromDate are stored in notes for now.
+        // A future migration can promote them to first-class columns once
+        // 20260629000000_brooder_early_phase_feed schema is finalised.
       },
     });
 

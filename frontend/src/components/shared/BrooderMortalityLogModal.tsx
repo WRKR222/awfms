@@ -133,10 +133,17 @@ export function BrooderMortalityLogModal({ level, row, onClose }: Props) {
         {/* Current bird count banner */}
         <div className="mx-5 mt-4 flex items-center gap-2 bg-gray-50 dark:bg-dark-bg rounded-xl p-3 text-sm">
           <Info className="w-4 h-4 text-gray-400 flex-shrink-0" />
-          <span className="text-gray-600 dark:text-gray-300">
-            Current birds on this level:{' '}
-            <strong className="text-gray-800 dark:text-gray-100">{birdCount.toLocaleString()}</strong>
-          </span>
+          <div className="space-y-0.5">
+            <span className="text-gray-600 dark:text-gray-300">
+              Live birds currently on this level:{' '}
+              <strong className="text-gray-800 dark:text-gray-100">{birdCount.toLocaleString()}</strong>
+            </span>
+            <p className="text-[10px] text-gray-400">
+              Deaths recorded here are counted against live birds only.
+              Birds that arrived dead (DOA) are not included in this count
+              and do not affect the farm&apos;s HyLine mortality %.
+            </p>
+          </div>
         </div>
 
         <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-4">

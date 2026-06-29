@@ -43,13 +43,43 @@ export const StopBulbHeatLogSchema = z.object({
 export type StopBulbHeatLogDto = z.infer<typeof StopBulbHeatLogSchema>;
 
 // ── Per-level feed logs ──────────────────────────────────────────────────
-export const CreateLevelFeedLogSchema = z.object({
-  levelId:              z.string().uuid(),
-  feedType:             z.enum(['CHICK_MASH', 'GROWER_MASH', 'LAYER_MASH']),
-  entryDate:            z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  quantityDispensedKg:  z.number().positive().max(2000),
-  notes:                z.string().max(500).optional(),
-});
+//
+// Two modes:
+//   1. Normal issuance: feedType + quantityDispensedKg provided.
+//      The schedule (HyLine ration) is shown as a reference only — no
+//      hard cap is enforced.  The attendant may issue any amount; the
+//      system tracks variance for the store issuance plan and residual
+//      carry-forward calculation.
+//
+//   2. No-feed-issued entry: noFeedIssued = true + noFeedIssuedReason.
+//      Records that the attendant checked and deliberately issued nothing
+//      because birds are still consuming feed placed on an earlier day.
+//      Stores the date of the original dispensing so the system can
+//      calculate how many days the carry-forward feed has been consumed.
+//      quantityDispensedKg is 0 in this case.
+//
+export const CreateLevelFeedLogSchema = z.discriminatedUnion('noFeedIssued', [
+  // ── Mode 1: feed was dispensed ──────────────────────────────────────
+  z.object({
+    noFeedIssued:         z.literal(false).default(false),
+    levelId:              z.string().uuid(),
+    feedType:             z.enum(['CHICK_MASH', 'GROWER_MASH', 'LAYER_MASH']),
+    entryDate:            z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    quantityDispensedKg:  z.number().positive().max(5000),
+    notes:                z.string().max(500).optional(),
+  }),
+  // ── Mode 2: no feed issued (carry-forward from an earlier day) ──────
+  z.object({
+    noFeedIssued:         z.literal(true),
+    levelId:              z.string().uuid(),
+    feedType:             z.enum(['CHICK_MASH', 'GROWER_MASH', 'LAYER_MASH']),
+    entryDate:            z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    quantityDispensedKg:  z.literal(0).default(0),
+    /** ISO date string of the dispensing day whose feed is still in the trough. */
+    carryFromDate:        z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    notes:                z.string().max(500).optional(),
+  }),
+]);
 export type CreateLevelFeedLogDto = z.infer<typeof CreateLevelFeedLogSchema>;
 
 // ── Per-level mortality log (new — req 1) ─────────────────────────────────

@@ -2,15 +2,35 @@
 //
 // Displays the HyLine Brown rearing control standard table (weeks 1-19)
 // alongside the live batch status. Flags any breaches on:
-//   • Feed consumption  (Req 5 / Req 6)
+//   • Feed consumption  (advisory reference vs. actual)
 //   • Bird weight       (Req 6)
 //   • Mortality rate    (Req 6)
 //
 // Used on Director (OwnerHome) and Production Manager (ManagerHome) dashboards.
 // The panel is read-only; editing is done via BrooderPage modals.
+//
+// ── Week calculation (IMPORTANT) ───────────────────────────────────────────
+// The "current week" row in the standard table and the week number shown on
+// the mortality status card are determined using the BATCH-RELATIVE week
+// (days since hatch ÷ 7), NOT the calendar week.  Batches almost never
+// hatch on a calendar Monday, so calendar-week comparisons will routinely
+// point to the wrong row in the HyLine schedule.
+//
+// The batch age in weeks is computed as:
+//   Math.max(1, Math.floor(daysSinceHatch / 7))
+// matching the backend's `dayjs(today).diff(dayjs(batch.dateOfHatch), 'week')`
+// which DayJS calculates as a floor of the fractional week difference.
+//
+// ── Mortality display (IMPORTANT) ──────────────────────────────────────────
+// The mortality percentage and "deaths from N birds" display use
+// `effectiveBirdsReceived` (= quantityReceived − mortalityOnArrival), NOT
+// raw `quantityReceived`.  Birds that arrived dead (DOA) are the supplier's
+// responsibility and must not inflate the farm's cumulative mortality %.
+// The backend already returns `effectiveBirdsReceived` and `mortalityOnArrival`
+// from the /mortality-check endpoint — we just need to use them here.
 
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle, ChevronDown, ChevronUp, Info } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Info } from 'lucide-react';
 import { useState } from 'react';
 import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
@@ -27,17 +47,20 @@ interface ControlStandard {
 }
 
 interface MortalityCheck {
-  batchId:             string;
-  batchCode:           string;
-  ageWeeks:            number;
-  originalCount:       number;
-  currentCount:        number;
-  totalDeaths:         number;
-  actualMortalityPct:  number;
-  standardCeilingPct:  number;
-  phase:               string;
-  violated:            boolean;
-  message:             string | null;
+  batchId:               string;
+  batchCode:             string;
+  ageWeeks:              number;
+  // Raw figures returned by the backend ─────────────────────────────────────
+  originalCount:         number;  // batch.quantityReceived (for display only)
+  mortalityOnArrival:    number;  // DOA birds — excluded from the farm's % calc
+  effectiveBirdsReceived: number; // originalCount − mortalityOnArrival (the real base)
+  currentCount:          number;
+  farmDeaths:            number;  // deaths that occurred on-farm (= effectiveBirdsReceived − currentCount)
+  actualMortalityPct:    number;
+  standardCeilingPct:    number;
+  phase:                 string;
+  violated:              boolean;
+  message:               string | null;
 }
 
 interface FeedSummaryRow {
@@ -68,7 +91,16 @@ interface FeedSummary {
   rows:                     FeedSummaryRow[];
 }
 
-// ── Utility helpers ───────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Batch-relative age in completed weeks.
+ * DayJS diff('week') floors the fractional week, matching the backend.
+ * Minimum 1 so a batch placed today shows "Week 1" not "Week 0".
+ */
+function batchAgeWeeks(dateOfHatch: string): number {
+  return Math.max(1, dayjs().diff(dayjs(dateOfHatch), 'week'));
+}
 
 function pctBar(actual: number, ceiling: number) {
   const pct = Math.min(100, (actual / ceiling) * 100);
@@ -91,7 +123,7 @@ function pctBar(actual: number, ceiling: number) {
   );
 }
 
-// ── Brooder batches hook ──────────────────────────────────────────────────────
+// ── Data hooks ────────────────────────────────────────────────────────────────
 
 function useBrooderBatches() {
   return useQuery({
@@ -113,12 +145,21 @@ function useMortalityCheck(batchId: string) {
   });
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// ── MortalityStatusRow ────────────────────────────────────────────────────────
 
 function MortalityStatusRow({ batchId }: { batchId: string }) {
   const { data: check, isLoading } = useMortalityCheck(batchId);
   if (isLoading) return <div className="h-4 bg-gray-100 dark:bg-gray-700 rounded animate-pulse" />;
   if (!check) return null;
+
+  // ── Correct mortality denominator ─────────────────────────────────────────
+  // farmDeaths  = deaths that happened on the farm (arrival DOAs excluded)
+  // effectiveBirdsReceived = the base population the farm is accountable for
+  //
+  // We display "N farm deaths from M birds" where M = effectiveBirdsReceived.
+  // If there were arrival DOAs we show a parenthetical so the manager can see
+  // the full picture without the DOAs polluting the HyLine comparison.
+  const hasDOA = check.mortalityOnArrival > 0;
 
   return (
     <div className={`rounded-xl p-3 text-sm flex items-start gap-2 ${
@@ -132,14 +173,23 @@ function MortalityStatusRow({ batchId }: { batchId: string }) {
       <div className="space-y-1 flex-1">
         <div className="flex items-center justify-between">
           <span className="font-semibold text-gray-700 dark:text-gray-200">{check.batchCode}</span>
+          {/* ── Batch-relative week (hatch-anchored, not calendar week) ─────── */}
           <span className="text-xs text-gray-400">Wk {check.ageWeeks} · {check.phase}</span>
         </div>
+
+        {/* ── Farm deaths vs effective base population ─────────────────────── */}
         <div className="text-xs text-gray-500 dark:text-gray-400">
-          {check.totalDeaths} deaths from {check.originalCount.toLocaleString()} birds
+          {check.farmDeaths} farm {check.farmDeaths === 1 ? 'death' : 'deaths'} from{' '}
+          {check.effectiveBirdsReceived.toLocaleString()} birds
+          {hasDOA && (
+            <span className="ml-1 text-[10px] text-gray-400 italic">
+              (+{check.mortalityOnArrival} DOA on arrival — excluded from farm %)</span>
+          )}
         </div>
+
         {pctBar(check.actualMortalityPct, check.standardCeilingPct)}
         <div className="text-[10px] text-gray-400">
-          Ceiling: ≤ {check.standardCeilingPct}% cumulative
+          Ceiling: ≤ {check.standardCeilingPct}% cumulative (HyLine Week {check.ageWeeks})
         </div>
         {check.violated && (
           <p className="text-xs font-semibold text-red-600 dark:text-red-400">{check.message}</p>
@@ -152,13 +202,12 @@ function MortalityStatusRow({ batchId }: { batchId: string }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function BrooderControlStandardPanel() {
-  const [showTable, setShowTable]   = useState(false);
-  const [activeTab, setActiveTab]   = useState<'status' | 'table'>('status');
+  const [activeTab, setActiveTab] = useState<'status' | 'table'>('status');
 
   const { data: standards = [], isLoading: stdLoading } = useQuery<ControlStandard[]>({
     queryKey: ['brooder-control-standards'],
     queryFn:  () => api.get('/brooder/control-standards').then(r => r.data),
-    staleTime: 600_000, // 10 min — rarely changes
+    staleTime: 600_000,
   });
 
   const { data: feedSummary, isLoading: feedLoading } = useQuery<FeedSummary>({
@@ -172,7 +221,6 @@ export function BrooderControlStandardPanel() {
 
   const hasResidual = (feedSummary?.residualCarryForwardKg ?? 0) > 0;
 
-  // Detect any feed over-variance this week
   const feedViolations = feedSummary?.rows.flatMap(r =>
     r.levels.filter(l => (l.feedVariancePercent ?? 0) > 10),
   ) ?? [];
@@ -223,7 +271,7 @@ export function BrooderControlStandardPanel() {
           {/* Feed summary */}
           <div>
             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">
-              Feed — This Week
+              Feed — This Week (schedule reference)
             </p>
             {feedLoading ? (
               <div className="h-16 bg-gray-50 dark:bg-dark-bg rounded-xl animate-pulse" />
@@ -234,13 +282,13 @@ export function BrooderControlStandardPanel() {
                     <p className="text-sm font-bold text-gray-800 dark:text-gray-100">
                       {feedSummary.totalRequiredKgThisWeek.toFixed(1)} kg
                     </p>
-                    <p className="text-[9px] text-gray-400 uppercase">Required</p>
+                    <p className="text-[9px] text-gray-400 uppercase">Schedule</p>
                   </div>
                   <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-2">
                     <p className="text-sm font-bold text-gray-800 dark:text-gray-100">
                       {feedSummary.totalDispensedKgThisWeek.toFixed(1)} kg
                     </p>
-                    <p className="text-[9px] text-gray-400 uppercase">Dispensed</p>
+                    <p className="text-[9px] text-gray-400 uppercase">Issued</p>
                   </div>
                   <div className={`rounded-xl p-2 ${
                     feedSummary.netToIssueKg > 0
@@ -258,28 +306,26 @@ export function BrooderControlStandardPanel() {
                   </div>
                 </div>
 
-                {/* Residual carry-forward */}
                 {hasResidual && (
                   <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-2.5 text-xs text-blue-700 dark:text-blue-400 flex items-center gap-2">
                     <Info className="w-3.5 h-3.5 flex-shrink-0" />
                     <span>
-                      <strong>{feedSummary.residualCarryForwardKg.toFixed(2)} kg</strong> residual from last week
+                      <strong>{feedSummary.residualCarryForwardKg.toFixed(2)} kg</strong> residual
                       carried forward — deducted from this week's store issuance.
                     </span>
                   </div>
                 )}
 
-                {/* Per-row level issues */}
                 {feedViolations.length > 0 && (
                   <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-xl p-2.5 text-xs text-orange-700 dark:text-orange-400 space-y-1">
                     <p className="font-semibold flex items-center gap-1">
                       <AlertTriangle className="w-3.5 h-3.5" />
-                      Levels with feed variance &gt;10%
+                      Levels with feed variance &gt;10% vs schedule
                     </p>
                     {feedViolations.map(l => (
                       <p key={l.levelId}>
                         {l.label}: {(l.feedVariancePercent ?? 0).toFixed(1)}% variance
-                        (today {l.dispensedKgToday.toFixed(2)} kg, ration {l.dailyRationKg?.toFixed(2) ?? '—'} kg/day)
+                        (today {l.dispensedKgToday.toFixed(2)} kg, schedule {l.dailyRationKg?.toFixed(2) ?? '—'} kg/day)
                       </p>
                     ))}
                   </div>
@@ -290,7 +336,7 @@ export function BrooderControlStandardPanel() {
             )}
           </div>
 
-          {/* Mortality status per batch */}
+          {/* Mortality per batch */}
           <div>
             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">
               Mortality — Cumulative vs HyLine Standard
@@ -331,10 +377,15 @@ export function BrooderControlStandardPanel() {
               </thead>
               <tbody className="divide-y divide-gray-50 dark:divide-dark-border">
                 {standards.map(std => {
-                  // Highlight the current age-week row for any active batch
+                  // ── Batch-relative week (hatch-anchored, not calendar week) ──
+                  // We compare against each batch's own age in completed weeks
+                  // (days-since-hatch ÷ 7), not any calendar week boundary.
+                  // A batch hatched on a Wednesday will be in "Week 1" until
+                  // the following Wednesday — calendar-week comparisons would
+                  // flip to "Week 2" on the next Monday instead.
                   const isCurrentWeek = batches.some((b: any) => {
-                    const weeks = Math.max(1, dayjs().diff(dayjs(b.dateOfHatch), 'week'));
-                    return Math.min(19, weeks) === std.week;
+                    const ageWks = batchAgeWeeks(b.dateOfHatch);
+                    return Math.min(19, ageWks) === std.week;
                   });
 
                   return (
@@ -370,8 +421,9 @@ export function BrooderControlStandardPanel() {
             </table>
           )}
           <div className="px-4 py-3 text-[10px] text-gray-400 border-t border-gray-50 dark:border-dark-border">
-            HyLine Brown rearing schedule. Weight columns show the expected bird weight at end of each week.
-            Mortality column shows maximum cumulative % mortality allowed. ◀ = current age week for active batch.
+            HyLine Brown rearing schedule. Weight columns show expected bird weight at end of each week.
+            Mortality column shows maximum cumulative % (farm deaths only, arrival DOAs excluded).
+            ◀ = current batch-relative week (days since hatch ÷ 7, not calendar week).
           </div>
         </div>
       )}
