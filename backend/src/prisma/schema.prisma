@@ -148,6 +148,7 @@ enum NotificationType {
   ISSUANCE_PLAN_REJECTED
   ISSUANCE_PLAN_PENDING_REMINDER
   WEEKLY_PLAN_REMINDER
+  WEEKLY_PLAN_EARLY_REMINDER  // Thursday heads-up nudge, distinct from the Saturday "due today" WEEKLY_PLAN_REMINDER
   FEED_ISSUANCE_DAILY_ALERT
   // Brooder control threshold alerts
   BROODER_FEED_OVERISSUE    // feed issued > calculated HyLine daily ration for a level

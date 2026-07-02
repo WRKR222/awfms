@@ -801,7 +801,7 @@ export class IssuancePlanService {
 
     await this.notifications.notifyRole(
       UserRole.STORE,
-      NotificationType.WEEKLY_PLAN_EARLY_REMINDER as any,
+      NotificationType.WEEKLY_PLAN_EARLY_REMINDER,
       'Heads Up — Issuance Plan Due Saturday',
       `The weekly issuance plan for ${dayjs(monday).format('D MMM')} – ${dayjs(monday).add(6, 'day').format('D MMM YYYY')} is due this Saturday. ` +
         `You can start drafting it now and submit on Saturday for Director approval.`,
