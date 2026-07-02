@@ -34,14 +34,21 @@ import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCag
 import { useIssuableStoreItems, FEED_CATEGORIES } from '../../hooks/useIssuableStoreItems';
 
 // Brooder feed logs only accept these 3 feedType enum values server-side
-// (see CreateLevelFeedLogSchema). Store items are matched to a feedType by
-// SKU so a dynamically-issued item can still be logged correctly — SKUs
-// match the ones seeded in prisma/seed.ts and used by IssuancePlanService.
-const SKU_TO_FEED_TYPE: Record<string, 'CHICK_MASH' | 'GROWER_MASH' | 'LAYER_MASH'> = {
-  'FEED-CHICK-MASH':  'CHICK_MASH',
-  'FEED-GROWER-MASH': 'GROWER_MASH',
-  'FEED-LAYER-MASH':  'LAYER_MASH',
-};
+// (see CreateLevelFeedLogSchema). We need to map a dynamically-issued store
+// item to one of them. Matching by exact SKU is fragile — any feed item not
+// created with precisely the original seeded SKU (e.g. one added later
+// through the Store's "Add Item" screen, or with an auto-generated SKU)
+// would silently disappear from this dropdown even though it was properly
+// issued. Instead we match by keyword against both the SKU and the item
+// name (case-insensitive), which is far more forgiving of real-world data
+// entry, and fall back to a raw SKU match for the original seeded items.
+function deriveFeedType(item: { sku: string; name: string }): 'CHICK_MASH' | 'GROWER_MASH' | 'LAYER_MASH' | null {
+  const haystack = `${item.sku} ${item.name}`.toUpperCase();
+  if (haystack.includes('CHICK'))  return 'CHICK_MASH';
+  if (haystack.includes('GROWER')) return 'GROWER_MASH';
+  if (haystack.includes('LAYER'))  return 'LAYER_MASH';
+  return null;
+}
 
 // ── Phase helpers ────────────────────────────────────────────────────────────
 const EARLY_PHASE_DAYS    = 3;
@@ -183,10 +190,10 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
   // Recent dispense dates for the carry-from selector
   const { data: recentLogs } = useRecentFeedLogDates(level.levelId);
 
-  // Feed items actually issued out of the store this week. Only items whose
-  // SKU maps to a known feedType are selectable (see SKU_TO_FEED_TYPE above).
+  // Feed items actually issued out of the store this week. Only items we
+  // can confidently map to a feedType (see deriveFeedType above) are shown.
   const { data: issuableItemsRaw, isLoading: issuableLoading } = useIssuableStoreItems(FEED_CATEGORIES);
-  const feedItems = (issuableItemsRaw ?? []).filter(i => SKU_TO_FEED_TYPE[i.sku]);
+  const feedItems = (issuableItemsRaw ?? []).filter(i => deriveFeedType(i) !== null);
 
   const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
   const lCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1';
@@ -230,7 +237,7 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
       return api.post('/brooder/feed-logs', {
         noFeedIssued:        false,
         levelId:             level.levelId,
-        feedType:            item ? SKU_TO_FEED_TYPE[item.sku] : undefined,
+        feedType:            item ? deriveFeedType(item) ?? undefined : undefined,
         storeItemId:         data.storeItemId,
         entryDate:           data.entryDate,
         quantityDispensedKg: Number(data.quantityDispensedKg),
@@ -254,7 +261,7 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
       return api.post('/brooder/feed-logs', {
         noFeedIssued:        true,
         levelId:             level.levelId,
-        feedType:            item ? SKU_TO_FEED_TYPE[item.sku] : undefined,
+        feedType:            item ? deriveFeedType(item) ?? undefined : undefined,
         storeItemId:         data.storeItemId,
         entryDate:           data.entryDate,
         quantityDispensedKg: 0,
