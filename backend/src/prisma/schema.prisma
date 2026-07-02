@@ -154,6 +154,7 @@ enum NotificationType {
   BROODER_FEED_OVERISSUE    // feed issued > calculated HyLine daily ration for a level
   BROODER_WEIGHT_ANOMALY    // bird weight sample outside HyLine min/max band
   BROODER_MORTALITY_HIGH    // cumulative mortality % exceeds HyLine week ceiling
+  REORDER_ALERT             // store item at/below reorder level after a stock-out
 }
 
 enum IssuancePlanType {

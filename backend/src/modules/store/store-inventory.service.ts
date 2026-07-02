@@ -342,7 +342,7 @@ export class StoreInventoryService {
             userId:     u.id,
             entityId:   dto.storeItemId,
             entityType: 'StoreItem',
-            type:       'REORDER_ALERT' as any,
+            type:       'REORDER_ALERT',
             isRead:     false,
           },
         });
@@ -350,7 +350,7 @@ export class StoreInventoryService {
           await this.prisma.notification.create({
             data: {
               userId:     u.id,
-              type:       'REORDER_ALERT' as any,
+              type:       'REORDER_ALERT',
               title:      `Low stock alert: ${item.name}`,
               message:
                 `${item.name} (${item.sku}) is now at ${updatedItem.currentStock} ${item.unit}, ` +

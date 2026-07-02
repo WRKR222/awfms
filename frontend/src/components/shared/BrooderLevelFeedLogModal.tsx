@@ -194,6 +194,11 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
   // can confidently map to a feedType (see deriveFeedType above) are shown.
   const { data: issuableItemsRaw, isLoading: issuableLoading } = useIssuableStoreItems(FEED_CATEGORIES);
   const feedItems = (issuableItemsRaw ?? []).filter(i => deriveFeedType(i) !== null);
+  // Items Store DID issue this week but whose SKU/name doesn't contain
+  // "chick", "grower", or "layer" — these are silently dropped from
+  // feedItems above. Surfaced separately so the "nothing issued" message
+  // isn't shown when the real problem is an unrecognised item name.
+  const unmatchedIssuedItems = (issuableItemsRaw ?? []).filter(i => deriveFeedType(i) === null);
 
   const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
   const lCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1';
@@ -376,10 +381,18 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
               {issueForm.formState.errors.storeItemId && (
                 <p className="text-red-500 text-xs mt-1">{String(issueForm.formState.errors.storeItemId.message)}</p>
               )}
-              {!issuableLoading && feedItems.length === 0 && (
+              {!issuableLoading && feedItems.length === 0 && unmatchedIssuedItems.length === 0 && (
                 <p className="text-amber-600 dark:text-amber-400 text-xs mt-1 flex items-start gap-1">
                   <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
                   No feed has been issued from the store this week yet. Ask Store to stock-out feed before logging.
+                </p>
+              )}
+              {!issuableLoading && feedItems.length === 0 && unmatchedIssuedItems.length > 0 && (
+                <p className="text-amber-600 dark:text-amber-400 text-xs mt-1 flex items-start gap-1">
+                  <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                  Store issued {unmatchedIssuedItems.map(i => `"${i.name}"`).join(', ')} this week, but the
+                  item name doesn't say "Chick", "Grower", or "Layer", so it can't be matched to a feed type
+                  here. Ask Store to rename the item to include one of those words (e.g. "Chick Mash").
                 </p>
               )}
               {selectedFeedItem && (
