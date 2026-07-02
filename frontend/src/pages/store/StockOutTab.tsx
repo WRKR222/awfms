@@ -168,6 +168,11 @@ export function StockOutTab() {
       qc.invalidateQueries({ queryKey: ['store-items-low'] });
       qc.invalidateQueries({ queryKey: ['feed'] });
       qc.invalidateQueries({ queryKey: ['approved-plan-items'] });
+      // Powers the Lead Attendant's feed/vaccine/supplement/treatment dropdowns
+      // (useIssuableStoreItems) — without this, a freshly stocked-out item
+      // won't appear there until its 15s staleTime lapses and something
+      // triggers a refetch.
+      qc.invalidateQueries({ queryKey: ['store-issuable-items'] });
       reset({ issuedDate: dayjs().format('YYYY-MM-DD') });
       setReviewData(null);
       setShowForm(false);
