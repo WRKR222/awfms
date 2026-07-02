@@ -28,27 +28,88 @@ type FormData = {
   notes?:           string;
 };
 
-/** Fetch all approved issuance plan items so we can gate stock-out */
-function useApprovedPlanItems() {
+const DAY_KEYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] as const;
+
+type EligibilityInfo = {
+  eligible: boolean;
+  remaining: number;      // how much can still be issued today under this authorisation
+  source: 'WEEKLY' | 'EMERGENCY' | null;
+  reason?: string;        // human-readable explanation when NOT eligible
+};
+
+/**
+ * Mirrors the backend's `IssuancePlanService.validateStockOut` gate as closely
+ * as possible so the UI doesn't show a false "approved" green light for items
+ * that were approved on a DIFFERENT week's plan (or a different day's
+ * emergency plan) than the one the user is actually issuing against.
+ *
+ * The backend remains the source of truth — this is a best-effort preview so
+ * users aren't misled by stale/irrelevant approvals. Any discrepancy is still
+ * caught (and now clearly reported, see `create.error` below) on submit.
+ */
+function useIssuanceEligibility(issuedDate: string, stockOutHistory: any[]) {
   return useQuery({
-    queryKey: ['approved-plan-items'],
+    queryKey: ['approved-plan-items', issuedDate],
+    enabled: !!issuedDate,
     queryFn: async () => {
-      const res = await api.get('/store/issuance-plans', { params: { phase: 'DECIDED' } });
-      const plans: any[] = res.data ?? [];
-      // Also include plans still in review that have at least some APPROVED items
-      const res2 = await api.get('/store/issuance-plans');
-      const allPlans: any[] = res2.data ?? [];
-      const approvedItemIds = new Set<string>();
-      allPlans.forEach(plan => {
+      const res = await api.get('/store/issuance-plans');
+      const allPlans: any[] = res.data ?? [];
+
+      const today = dayjs(issuedDate).startOf('day');
+      const dayKey = DAY_KEYS[today.isoWeekday() - 1];
+
+      const byItem = new Map<string, EligibilityInfo>();
+
+      const consider = (info: EligibilityInfo, storeItemId: string) => {
+        const existing = byItem.get(storeItemId);
+        // Prefer whichever authorisation actually leaves remaining quantity
+        if (!existing || (!existing.eligible && info.eligible) || (existing.eligible && info.eligible && info.remaining > existing.remaining)) {
+          byItem.set(storeItemId, info);
+        }
+      };
+
+      allPlans.forEach((plan: any) => {
+        const planStart = dayjs(plan.weekStartDate).startOf('day');
+        const planEnd = dayjs(plan.weekEndDate).endOf('day');
+        const coversToday = !today.isBefore(planStart) && !today.isAfter(planEnd);
+        if (!coversToday) return;
+
         (plan.items ?? []).forEach((item: any) => {
-          if (item.status === 'APPROVED') {
-            approvedItemIds.add(item.storeItemId);
+          if (item.status !== 'APPROVED') return;
+
+          if (plan.type === 'WEEKLY') {
+            const breakdown = (item.dailyBreakdown as Record<string, number> | null) ?? null;
+            const dailyAllowed = breakdown ? Number(breakdown[dayKey] ?? 0) : 0;
+            const alreadyToday = stockOutHistory
+              .filter((so: any) => so.issuancePlanItemId === item.id
+                && dayjs(so.issuedDate).isSame(today, 'day'))
+              .reduce((sum: number, so: any) => sum + Number(so.quantityOut ?? 0), 0);
+            const remaining = Math.max(0, dailyAllowed - alreadyToday);
+
+            consider({
+              eligible: remaining > 0,
+              remaining,
+              source: 'WEEKLY',
+              reason: remaining > 0 ? undefined
+                : `Today's (${dayKey}) approved allowance is ${dailyAllowed}, already issued ${alreadyToday}.`,
+            }, item.storeItemId);
+          }
+
+          if (plan.type === 'EMERGENCY') {
+            const remaining = Math.max(0, Number(item.quantityPlanned ?? 0) - Number(item.quantityIssued ?? 0));
+            consider({
+              eligible: remaining > 0,
+              remaining,
+              source: 'EMERGENCY',
+              reason: remaining > 0 ? undefined : 'Approved emergency quantity has already been fully issued.',
+            }, item.storeItemId);
           }
         });
       });
-      return approvedItemIds;
+
+      return byItem;
     },
-    staleTime: 30_000,
+    staleTime: 15_000,
   });
 }
 
@@ -56,7 +117,6 @@ export function StockOutTab() {
   const qc = useQueryClient();
   const { data: items   = [] } = useStoreItems(true);
   const { data: batches = [] } = useBatches();
-  const { data: approvedItemIds } = useApprovedPlanItems();
   const [showForm, setShowForm] = useState(false);
   const [search, setSearch] = useState('');
   const [reviewData, setReviewData] = useState<FormData | null>(null);
@@ -65,15 +125,24 @@ export function StockOutTab() {
     defaultValues: { issuedDate: dayjs().format('YYYY-MM-DD') },
   });
 
-  const watchedItemId = useWatch({ control, name: 'storeItemId' });
-  const watchedQtyOut = useWatch({ control, name: 'quantityOut' });
-  const selectedItem  = items.find(i => i.id === watchedItemId);
+  const watchedItemId    = useWatch({ control, name: 'storeItemId' });
+  const watchedQtyOut    = useWatch({ control, name: 'quantityOut' });
+  const watchedIssuedDate = useWatch({ control, name: 'issuedDate' }) || dayjs().format('YYYY-MM-DD');
+  const selectedItem     = items.find(i => i.id === watchedItemId);
 
-  // Check if the selected item is approved on any active plan
+  const { data: list = [], isLoading } = useQuery({
+    queryKey: ['store-stock-out'],
+    queryFn: async () => (await api.get('/store/inventory/stock-out')).data as any[],
+  });
+
+  // Date-aware eligibility check — mirrors the backend gate for the
+  // currently selected issued date, instead of "approved on any plan ever".
+  const { data: eligibilityMap } = useIssuanceEligibility(watchedIssuedDate, list);
+  const eligibility = watchedItemId ? eligibilityMap?.get(watchedItemId) : undefined;
   const isItemApproved = !watchedItemId
     ? null
-    : approvedItemIds
-    ? approvedItemIds.has(watchedItemId)
+    : eligibilityMap
+    ? (eligibility?.eligible ?? false)
     : null; // null = still loading
 
   // Balance after issuance (c/d preview)
@@ -83,11 +152,6 @@ export function StockOutTab() {
   const willGoLow = selectedItem && balanceAfter !== null
     ? balanceAfter <= Number(selectedItem.reorderLevel)
     : false;
-
-  const { data: list = [], isLoading } = useQuery({
-    queryKey: ['store-stock-out'],
-    queryFn: async () => (await api.get('/store/inventory/stock-out')).data as any[],
-  });
 
   const create = useMutation({
     mutationFn: (data: FormData) => api.post('/store/inventory/stock-out', {
@@ -153,10 +217,10 @@ export function StockOutTab() {
               <div className="flex items-start gap-2 bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded-xl px-3 py-2 text-xs md:col-span-1">
                 <ShieldX className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-semibold text-red-700 dark:text-red-400">Item not approved for issuance</p>
+                  <p className="font-semibold text-red-700 dark:text-red-400">Item not approved for {dayjs(watchedIssuedDate).format('DD/MM/YYYY')}</p>
                   <p className="text-red-600 dark:text-red-400 mt-0.5">
-                    This item has not been approved on a weekly or emergency issuance plan.
-                    Stock cannot be issued until it is approved.
+                    {eligibility?.reason ??
+                      'This item has no approved weekly or emergency issuance plan covering this date. Stock cannot be issued until it is approved.'}
                   </p>
                 </div>
               </div>
@@ -240,7 +304,11 @@ export function StockOutTab() {
           >
             Review &amp; Confirm
           </button>
-          {create.isError && <p className="text-xs text-red-600">Failed to issue. Check stock levels and required fields.</p>}
+          {create.isError && (
+            <p className="text-xs text-red-600">
+              {(create.error as any)?.response?.data?.message ?? 'Failed to issue. Check stock levels and required fields.'}
+            </p>
+          )}
         </form>
       )}
 
@@ -270,7 +338,9 @@ export function StockOutTab() {
             </div>
 
             {create.isError && (
-              <p className="text-xs text-red-600">Failed to issue. Check stock levels and required fields.</p>
+              <p className="text-xs text-red-600">
+                {(create.error as any)?.response?.data?.message ?? 'Failed to issue. Check stock levels and required fields.'}
+              </p>
             )}
 
             <div className="flex gap-2 pt-1">
