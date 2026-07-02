@@ -38,5 +38,11 @@ export function useIssuableStoreItems(categories: readonly string[]) {
         .then(r => r.data),
     enabled: categories.length > 0,
     staleTime: 15_000,
+    retry: (failureCount, error: any) => {
+      // Don't retry auth/permission failures — retrying won't help and just
+      // delays surfacing the real problem to the user.
+      if (error?.response?.status === 401 || error?.response?.status === 403) return false;
+      return failureCount < 3;
+    },
   });
 }

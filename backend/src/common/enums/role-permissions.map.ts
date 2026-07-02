@@ -7,6 +7,11 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.FEED_VIEW, Permission.FEED_INTAKE_LOG, Permission.FEED_STOCK_VIEW,
     Permission.HEALTH_VIEW, Permission.HEALTH_VACCINATION_LOG, Permission.HEALTH_EVENT_LOG,
     Permission.PRODUCTION_VIEW, Permission.PRODUCTION_ENTRY_CREATE,
+    // FIX: the Brooder feed/vaccine/supplement/treatment logging dropdowns call
+    // GET /store/inventory/issuable-items, which requires INVENTORY_VIEW. Without
+    // it the request 403s and the modal shows the misleading "No feed has been
+    // issued from the store this week yet" message even when Store has issued it.
+    Permission.INVENTORY_VIEW,
   ],
   [UserRole.MANAGER]: [
     Permission.FLOCK_VIEW, Permission.FLOCK_ENTRY_CREATE, Permission.FLOCK_ENTRY_APPROVE,

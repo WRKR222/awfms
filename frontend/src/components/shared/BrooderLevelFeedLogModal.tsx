@@ -192,7 +192,7 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
 
   // Feed items actually issued out of the store this week. Only items we
   // can confidently map to a feedType (see deriveFeedType above) are shown.
-  const { data: issuableItemsRaw, isLoading: issuableLoading } = useIssuableStoreItems(FEED_CATEGORIES);
+  const { data: issuableItemsRaw, isLoading: issuableLoading, isError: issuableError } = useIssuableStoreItems(FEED_CATEGORIES);
   const feedItems = (issuableItemsRaw ?? []).filter(i => deriveFeedType(i) !== null);
   // Items Store DID issue this week but whose SKU/name doesn't contain
   // "chick", "grower", or "layer" — these are silently dropped from
@@ -381,13 +381,21 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
               {issueForm.formState.errors.storeItemId && (
                 <p className="text-red-500 text-xs mt-1">{String(issueForm.formState.errors.storeItemId.message)}</p>
               )}
-              {!issuableLoading && feedItems.length === 0 && unmatchedIssuedItems.length === 0 && (
+              {issuableError && (
+                <p className="text-red-500 text-xs mt-1 flex items-start gap-1">
+                  <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                  Couldn't load issued feed items — this looks like a permissions or
+                  connection problem, not a "nothing issued" situation. Try again, or
+                  contact an admin if it persists.
+                </p>
+              )}
+              {!issuableLoading && !issuableError && feedItems.length === 0 && unmatchedIssuedItems.length === 0 && (
                 <p className="text-amber-600 dark:text-amber-400 text-xs mt-1 flex items-start gap-1">
                   <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
                   No feed has been issued from the store this week yet. Ask Store to stock-out feed before logging.
                 </p>
               )}
-              {!issuableLoading && feedItems.length === 0 && unmatchedIssuedItems.length > 0 && (
+              {!issuableLoading && !issuableError && feedItems.length === 0 && unmatchedIssuedItems.length > 0 && (
                 <p className="text-amber-600 dark:text-amber-400 text-xs mt-1 flex items-start gap-1">
                   <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
                   Store issued {unmatchedIssuedItems.map(i => `"${i.name}"`).join(', ')} this week, but the
