@@ -37,6 +37,7 @@ import { BrooderWeightLogModal }     from '../../components/shared/BrooderWeight
 import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 import { useBrooderCageMap, useBrooderRowsAndLevels } from '../../hooks/useBrooderCageMap';
 import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
+import { useIssuableStoreItems, MEDICATION_CATEGORIES } from '../../hooks/useIssuableStoreItems';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -345,8 +346,8 @@ function SessionLogModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
 
 // ── Daily Entry Modal (water / vaccines / supplements — once per day) ────────────────
 
-interface VaccineItem  { name: string; dose: string; route: string; }
-interface SupplementItem { name: string; dose: string; }
+interface VaccineItem  { storeItemId: string; name: string; dose: string; route: string; quantityUsed: string; }
+interface SupplementItem { storeItemId: string; name: string; dose: string; quantityUsed: string; }
 
 function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () => void }) {
   const qc    = useQueryClient();
@@ -365,26 +366,47 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
   const [supplements, setSupplements] = useState<SupplementItem[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // Vaccines/supplements can only be logged against a medication item Store
+  // has actually issued (stock-out) this week.
+  const { data: medItemsRaw, isLoading: medItemsLoading } = useIssuableStoreItems(MEDICATION_CATEGORIES);
+  const medItems = medItemsRaw ?? [];
+
   const logDate     = watch('logDate');
   const isBackdated = logDate < today;
   const daysBack    = logDate ? dayjs(today).diff(dayjs(logDate), 'day') : 0;
 
-  function addVaccine()    { setVaccines(v => [...v, { name: '', dose: '', route: 'DRINKING_WATER' }]); }
+  function addVaccine()    { setVaccines(v => [...v, { storeItemId: '', name: '', dose: '', route: 'DRINKING_WATER', quantityUsed: '' }]); }
   function removeVaccine(i: number) { setVaccines(v => v.filter((_, j) => j !== i)); }
   function updateVaccine(i: number, field: keyof VaccineItem, val: string) {
-    setVaccines(v => v.map((item, j) => j === i ? { ...item, [field]: val } : item));
+    setVaccines(v => v.map((item, j) => {
+      if (j !== i) return item;
+      const next = { ...item, [field]: val };
+      if (field === 'storeItemId') {
+        const picked = medItems.find(m => m.id === val);
+        next.name = picked?.name ?? '';
+      }
+      return next;
+    }));
   }
 
-  function addSupplement()    { setSupplements(s => [...s, { name: '', dose: '' }]); }
+  function addSupplement()    { setSupplements(s => [...s, { storeItemId: '', name: '', dose: '', quantityUsed: '' }]); }
   function removeSupplement(i: number) { setSupplements(s => s.filter((_, j) => j !== i)); }
   function updateSupplement(i: number, field: keyof SupplementItem, val: string) {
-    setSupplements(s => s.map((item, j) => j === i ? { ...item, [field]: val } : item));
+    setSupplements(s => s.map((item, j) => {
+      if (j !== i) return item;
+      const next = { ...item, [field]: val };
+      if (field === 'storeItemId') {
+        const picked = medItems.find(m => m.id === val);
+        next.name = picked?.name ?? '';
+      }
+      return next;
+    }));
   }
 
   const submit = useMutation({
     mutationFn: async (data: any) => {
-      const cleanVaccines    = vaccines.filter(v => v.name.trim());
-      const cleanSupplements = supplements.filter(s => s.name.trim());
+      const cleanVaccines    = vaccines.filter(v => v.storeItemId && v.name.trim());
+      const cleanSupplements = supplements.filter(s => s.storeItemId && s.name.trim());
 
       // Single POST — backend accepts vaccines[] and supplements[] arrays.
       // No more parallel requests that race against the once-daily uniqueness check.
@@ -394,13 +416,17 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
         logSession:        undefined,   // null/absent = once-daily entry
         waterConsumptionL: data.waterConsumptionL ? Number(data.waterConsumptionL) : undefined,
         vaccines:          cleanVaccines.map(v => ({
-          name:  v.name.trim(),
-          dose:  v.dose.trim(),
-          route: v.route,
+          name:         v.name.trim(),
+          dose:         v.dose.trim(),
+          route:        v.route,
+          storeItemId:  v.storeItemId,
+          quantityUsed: v.quantityUsed ? Number(v.quantityUsed) : undefined,
         })),
         supplements:       cleanSupplements.map(s => ({
-          name: s.name.trim(),
-          dose: s.dose.trim(),
+          name:         s.name.trim(),
+          dose:         s.dose.trim(),
+          storeItemId:  s.storeItemId,
+          quantityUsed: s.quantityUsed ? Number(s.quantityUsed) : undefined,
         })),
         notes:             data.notes || undefined,
       }).then(r => r.data);
@@ -408,6 +434,7 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-logs',     batch.id] });
       qc.invalidateQueries({ queryKey: ['brooder-last-log', batch.id] });
+      qc.invalidateQueries({ queryKey: ['store-issuable-items'] });
       onClose();
     },
     onError: (err: any) => {
@@ -417,8 +444,8 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
 
   function onFormSubmit(data: any) {
     setSubmitError(null);
-    const cleanVaccines    = vaccines.filter(v => v.name.trim());
-    const cleanSupplements = supplements.filter(s => s.name.trim());
+    const cleanVaccines    = vaccines.filter(v => v.storeItemId && v.name.trim());
+    const cleanSupplements = supplements.filter(s => s.storeItemId && s.name.trim());
     if (cleanVaccines.some(v => !v.dose.trim())) { setSubmitError('Each vaccine entry must have a dose.'); return; }
     if (cleanSupplements.some(s => !s.dose.trim())) { setSubmitError('Each supplement entry must have a dose.'); return; }
     submit.mutate(data);
@@ -483,7 +510,15 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
             {vaccines.length === 0 && (
               <p className="text-[11px] text-gray-400 italic">No vaccines added. Tap 'Add vaccine' to log one.</p>
             )}
-            {vaccines.map((v, i) => (
+            {!medItemsLoading && medItems.length === 0 && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400 flex items-start gap-1">
+                <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                No vaccines/medication issued from the store this week yet.
+              </p>
+            )}
+            {vaccines.map((v, i) => {
+              const picked = medItems.find(m => m.id === v.storeItemId);
+              return (
               <div key={i} className="bg-white dark:bg-dark-bg rounded-xl border border-purple-100 dark:border-purple-800 p-3 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-semibold text-purple-600 dark:text-purple-400">Vaccine {i + 1}</span>
@@ -492,9 +527,14 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
                   </button>
                 </div>
                 <div>
-                  <label className={lCls}>Vaccine Name *</label>
-                  <input value={v.name} onChange={e => updateVaccine(i, 'name', e.target.value)}
-                    className={iCls} placeholder="e.g. Newcastle ND1" />
+                  <label className={lCls}>Vaccine *</label>
+                  <select value={v.storeItemId} onChange={e => updateVaccine(i, 'storeItemId', e.target.value)}
+                    className={iCls} disabled={medItemsLoading}>
+                    <option value="">{medItemsLoading ? 'Loading…' : 'Select vaccine…'}</option>
+                    {medItems.map(m => (
+                      <option key={m.id} value={m.id}>{m.name} — residual {m.residual.toFixed(2)} {m.unit.toLowerCase()}</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
@@ -509,8 +549,15 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
                     </select>
                   </div>
                 </div>
+                <div>
+                  <label className={lCls}>Quantity used{picked ? ` (${picked.unit.toLowerCase()})` : ''}</label>
+                  <input value={v.quantityUsed} onChange={e => updateVaccine(i, 'quantityUsed', e.target.value)}
+                    type="number" step="0.01" min="0" className={iCls}
+                    placeholder={picked ? `Residual: ${picked.residual.toFixed(2)} ${picked.unit.toLowerCase()}` : 'Select a vaccine first'} />
+                </div>
               </div>
-            ))}
+              );
+            })}
             <p className="text-[10px] text-purple-500 dark:text-purple-400">
               Vaccines auto-appear in Vaccination History under the Manager's Health page.
             </p>
@@ -530,7 +577,9 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
             {supplements.length === 0 && (
               <p className="text-[11px] text-gray-400 italic">No supplements added. Tap 'Add supplement' to log one.</p>
             )}
-            {supplements.map((s, i) => (
+            {supplements.map((s, i) => {
+              const picked = medItems.find(m => m.id === s.storeItemId);
+              return (
               <div key={i} className="bg-white dark:bg-dark-bg rounded-xl border border-teal-100 dark:border-teal-800 p-3 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-semibold text-teal-600 dark:text-teal-400">Supplement {i + 1}</span>
@@ -539,17 +588,29 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
                   </button>
                 </div>
                 <div>
-                  <label className={lCls}>Supplement Name *</label>
-                  <input value={s.name} onChange={e => updateSupplement(i, 'name', e.target.value)}
-                    className={iCls} placeholder="e.g. Vitamins, Electrolytes" />
+                  <label className={lCls}>Supplement *</label>
+                  <select value={s.storeItemId} onChange={e => updateSupplement(i, 'storeItemId', e.target.value)}
+                    className={iCls} disabled={medItemsLoading}>
+                    <option value="">{medItemsLoading ? 'Loading…' : 'Select supplement…'}</option>
+                    {medItems.map(m => (
+                      <option key={m.id} value={m.id}>{m.name} — residual {m.residual.toFixed(2)} {m.unit.toLowerCase()}</option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className={lCls}>Dose *</label>
                   <input value={s.dose} onChange={e => updateSupplement(i, 'dose', e.target.value)}
                     className={iCls} placeholder="e.g. 2g/L water" />
                 </div>
+                <div>
+                  <label className={lCls}>Quantity used{picked ? ` (${picked.unit.toLowerCase()})` : ''}</label>
+                  <input value={s.quantityUsed} onChange={e => updateSupplement(i, 'quantityUsed', e.target.value)}
+                    type="number" step="0.01" min="0" className={iCls}
+                    placeholder={picked ? `Residual: ${picked.residual.toFixed(2)} ${picked.unit.toLowerCase()}` : 'Select a supplement first'} />
+                </div>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* ── Notes ── */}
@@ -583,9 +644,11 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
 // ── Treatment Log Modal ───────────────────────────────────────────────────────
 
 interface TreatmentEntry {
+  storeItemId:  string;
   drugName:     string;
   dose:         string;
   doseUnit:     string;
+  quantityUsed: string;
   route:        string;
   durationDays: string;
   rowId:        string;
@@ -594,7 +657,7 @@ interface TreatmentEntry {
 }
 
 function emptyTreatment(): TreatmentEntry {
-  return { drugName: '', dose: '', doseUnit: 'ml', route: 'DRINKING_WATER', durationDays: '', rowId: '', levelId: '', notes: '' };
+  return { storeItemId: '', drugName: '', dose: '', doseUnit: 'ml', quantityUsed: '', route: 'DRINKING_WATER', durationDays: '', rowId: '', levelId: '', notes: '' };
 }
 
 function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () => void }) {
@@ -602,6 +665,11 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
   const today = dayjs().format('YYYY-MM-DD');
 
   const { data: rowsAndLevels = [] } = useBrooderRowsAndLevels(true);
+
+  // Treatments can only be logged against a medication item Store has
+  // actually issued (stock-out) this week.
+  const { data: medItemsRaw, isLoading: medItemsLoading } = useIssuableStoreItems(MEDICATION_CATEGORIES);
+  const medItems = medItemsRaw ?? [];
 
   const { register, handleSubmit, watch } = useForm({
     defaultValues: { treatmentDate: today },
@@ -613,20 +681,30 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
   function addTreatment()    { setTreatments(t => [...t, emptyTreatment()]); }
   function removeTreatment(i: number) { setTreatments(t => t.filter((_, j) => j !== i)); }
   function updateTreatment(i: number, field: keyof TreatmentEntry, val: string) {
-    setTreatments(t => t.map((item, j) => j === i ? { ...item, [field]: val } : item));
+    setTreatments(t => t.map((item, j) => {
+      if (j !== i) return item;
+      const next = { ...item, [field]: val };
+      if (field === 'storeItemId') {
+        const picked = medItems.find(m => m.id === val);
+        next.drugName = picked?.name ?? '';
+      }
+      return next;
+    }));
   }
 
   const submit = useMutation({
     mutationFn: async (data: any) => {
-      const clean = treatments.filter(t => t.drugName.trim());
+      const clean = treatments.filter(t => t.storeItemId && t.drugName.trim());
       if (clean.some(t => !t.dose.trim())) throw new Error('Each treatment must have a dose.');
       return Promise.all(clean.map(t =>
         api.post('/flock/brooder-treatment-logs', {
           batchId:      batch.id,
           treatmentDate: data.treatmentDate,
           drugName:     t.drugName.trim(),
+          storeItemId:  t.storeItemId,
           dose:         t.dose.trim(),
           doseUnit:     t.doseUnit,
+          quantityUsed: t.quantityUsed ? Number(t.quantityUsed) : undefined,
           route:        t.route,
           durationDays: t.durationDays ? Number(t.durationDays) : undefined,
           rowId:        t.rowId   || undefined,
@@ -637,6 +715,7 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-treatments', batch.id] });
+      qc.invalidateQueries({ queryKey: ['store-issuable-items'] });
       onClose();
     },
     onError: (err: any) => {
@@ -646,7 +725,7 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
 
   function onFormSubmit(data: any) {
     setSubmitError(null);
-    const clean = treatments.filter(t => t.drugName.trim());
+    const clean = treatments.filter(t => t.storeItemId && t.drugName.trim());
     if (clean.length === 0) { setSubmitError('Add at least one treatment drug.'); return; }
     if (clean.some(t => !t.dose.trim())) { setSubmitError('Each treatment must have a dose.'); return; }
     submit.mutate(data);
@@ -694,9 +773,20 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
                 </div>
 
                 <div>
-                  <label className={lCls}><Pill className="w-3 h-3 inline mr-1 text-red-400" />Drug / Product Name *</label>
-                  <input value={t.drugName} onChange={e => updateTreatment(i, 'drugName', e.target.value)}
-                    className={iCls} placeholder="e.g. Tylosin, Baytril, OTC" />
+                  <label className={lCls}><Pill className="w-3 h-3 inline mr-1 text-red-400" />Drug / Product *</label>
+                  <select value={t.storeItemId} onChange={e => updateTreatment(i, 'storeItemId', e.target.value)}
+                    className={iCls} disabled={medItemsLoading}>
+                    <option value="">{medItemsLoading ? 'Loading…' : 'Select drug…'}</option>
+                    {medItems.map(m => (
+                      <option key={m.id} value={m.id}>{m.name} — residual {m.residual.toFixed(2)} {m.unit.toLowerCase()}</option>
+                    ))}
+                  </select>
+                  {!medItemsLoading && medItems.length === 0 && (
+                    <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1 flex items-start gap-1">
+                      <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                      No medication issued from the store this week yet.
+                    </p>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-3 gap-2">
@@ -716,6 +806,20 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
                     <input value={t.durationDays} onChange={e => updateTreatment(i, 'durationDays', e.target.value)}
                       type="number" min="1" className={iCls} placeholder="e.g. 5" />
                   </div>
+                </div>
+
+                <div>
+                  {(() => {
+                    const picked = medItems.find(m => m.id === t.storeItemId);
+                    return (
+                      <>
+                        <label className={lCls}>Quantity used{picked ? ` (${picked.unit.toLowerCase()})` : ''}</label>
+                        <input value={t.quantityUsed} onChange={e => updateTreatment(i, 'quantityUsed', e.target.value)}
+                          type="number" step="0.01" min="0" className={iCls}
+                          placeholder={picked ? `Residual: ${picked.residual.toFixed(2)} ${picked.unit.toLowerCase()}` : 'Select a drug first'} />
+                      </>
+                    );
+                  })()}
                 </div>
 
                 <div>

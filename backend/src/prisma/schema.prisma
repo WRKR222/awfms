@@ -1326,7 +1326,13 @@ model BrooderLog {
   supplement        String?
   supplementDose    String?  @map("supplement_dose")
   // Multi-vaccine / multi-supplement arrays (preferred — replaces the single columns above)
-  // Stored as JSON arrays of { name, dose, route } / { name, dose }
+  // Stored as JSON arrays of { name, dose, route, storeItemId?, quantityUsed?, unit? } /
+  // { name, dose, storeItemId?, quantityUsed?, unit? }. storeItemId + quantityUsed
+  // + unit were added so vaccine/supplement usage can be deducted from the
+  // StoreItem issued via stock-out for residual (issued - dispensed)
+  // tracking; `unit` is a server-derived snapshot of storeItem.unit at log
+  // time (never trusted from the client). All three are optional for
+  // backward compatibility with entries logged before this was added.
   vaccinesJson      Json?    @map("vaccines_json")      // VaccineEntry[]
   supplementsJson   Json?    @map("supplements_json")   // SupplementEntry[]
   notes             String?
@@ -1358,21 +1364,26 @@ model BrooderTreatmentLog {
   levelId       String?  @map("level_id")
   treatmentDate DateTime @map("treatment_date") @db.Date
   drugName      String   @map("drug_name")
+  storeItemId   String?  @map("store_item_id") // links to the StoreItem actually issued via stock-out; NULL for legacy rows predating this link
   dose          String
   doseUnit      String   @default("ml") @map("dose_unit")
+  quantityUsed  Float?   @map("quantity_used") // amount deducted from the store item's stock unit (for residual tracking) — distinct from `dose`, which is the per-bird/per-litre clinical dosage description
+  quantityUsedUnit String? @map("quantity_used_unit") // snapshot of the linked StoreItem's stock unit at log time — set server-side from storeItem.unit, never trusted from the client
   route         String   @default("DRINKING_WATER")
   durationDays  Int?     @map("duration_days")
   notes         String?
   loggedById    String   @map("logged_by_id")
   createdAt     DateTime @default(now()) @map("created_at")
 
-  batch    Batch        @relation(fields: [batchId], references: [id])
-  loggedBy User         @relation("BrooderTreatmentLoggedBy", fields: [loggedById], references: [id])
-  row      BrooderRow?  @relation(fields: [rowId], references: [id])
-  level    BrooderLevel? @relation(fields: [levelId], references: [id])
+  batch     Batch        @relation(fields: [batchId], references: [id])
+  loggedBy  User         @relation("BrooderTreatmentLoggedBy", fields: [loggedById], references: [id])
+  row       BrooderRow?  @relation(fields: [rowId], references: [id])
+  level     BrooderLevel? @relation(fields: [levelId], references: [id])
+  storeItem StoreItem?   @relation("BrooderTreatmentLogStoreItem", fields: [storeItemId], references: [id])
 
   @@index([batchId])
   @@index([treatmentDate])
+  @@index([storeItemId, treatmentDate])
   @@map("brooder_treatment_logs")
 }
 
@@ -1479,6 +1490,8 @@ model BrooderLevelFeedLog {
   id                  String   @id @default(uuid())
   levelId             String   @map("level_id")
   feedType            String   @map("feed_type")
+  storeItemId         String?  @map("store_item_id") // links to the StoreItem actually issued via stock-out; NULL for legacy rows predating this link
+  unit                String?  @map("unit") // snapshot of the linked StoreItem's stock unit (e.g. "KG", "BAG") at log time — set server-side from storeItem.unit, never trusted from the client. Lets quantityDispensedKg be diffed directly against StoreStockOut.quantityOut for residual tracking.
   entryDate           DateTime @map("entry_date") @db.Date
   quantityDispensedKg Float    @map("quantity_dispensed_kg")
   requiredKgForWeek   Float?   @map("required_kg_for_week") // snapshot of the standard at log time
@@ -1486,10 +1499,12 @@ model BrooderLevelFeedLog {
   loggedById          String   @map("logged_by_id")
   createdAt           DateTime @default(now()) @map("created_at")
 
-  level    BrooderLevel @relation(fields: [levelId], references: [id], onDelete: Cascade)
-  loggedBy User         @relation("BrooderLevelFeedLoggedBy", fields: [loggedById], references: [id])
+  level     BrooderLevel @relation(fields: [levelId], references: [id], onDelete: Cascade)
+  loggedBy  User         @relation("BrooderLevelFeedLoggedBy", fields: [loggedById], references: [id])
+  storeItem StoreItem?   @relation("BrooderFeedLogStoreItem", fields: [storeItemId], references: [id])
 
   @@index([levelId, entryDate])
+  @@index([storeItemId, entryDate])
   @@map("brooder_level_feed_logs")
 }
 
@@ -1567,6 +1582,8 @@ model StoreItem {
   stockOuts       StoreStockOut[]
   simpleStockRequestItems SimpleStockRequestItem[]
   issuancePlanItems       IssuancePlanItem[]
+  brooderFeedLogs         BrooderLevelFeedLog[]     @relation("BrooderFeedLogStoreItem")
+  brooderTreatmentLogs    BrooderTreatmentLog[]     @relation("BrooderTreatmentLogStoreItem")
 
   @@index([category])
   @@index([isActive])

@@ -40,6 +40,21 @@ export class StoreInventoryController {
     return this.svc.getLowStockItems();
   }
 
+  // Items actually issued out of the store this week, in the given
+  // category/categories, with computed dispensed/residual totals.
+  // Used by: the Lead Attendant's feed/vaccine/supplement/treatment
+  // logging dropdowns (only issued items are selectable), and by the
+  // Store's issuance-plan screen (to see leftover stock before re-issuing).
+  @Get('issuable-items')
+  @RequirePermission(Permission.INVENTORY_VIEW)
+  issuableItems(@Query('categories') categories?: string) {
+    const list = (categories ?? '')
+      .split(',')
+      .map(c => c.trim())
+      .filter(Boolean) as any[];
+    return this.svc.getIssuableStoreItems(list);
+  }
+
   @Get('items/:id')
   @RequirePermission(Permission.INVENTORY_VIEW)
   getItem(@Param('id') id: string) {

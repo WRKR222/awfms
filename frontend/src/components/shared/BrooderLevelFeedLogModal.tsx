@@ -31,12 +31,17 @@ import { X, AlertTriangle, Info, CheckCircle, Sprout, Archive } from 'lucide-rea
 import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
 import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
+import { useIssuableStoreItems, FEED_CATEGORIES } from '../../hooks/useIssuableStoreItems';
 
-const FEED_TYPE_OPTIONS = [
-  { value: 'CHICK_MASH',  label: 'Chick & Duckling Mash' },
-  { value: 'GROWER_MASH', label: "Grower's Mash" },
-  { value: 'LAYER_MASH',  label: "Layer's Mash" },
-] as const;
+// Brooder feed logs only accept these 3 feedType enum values server-side
+// (see CreateLevelFeedLogSchema). Store items are matched to a feedType by
+// SKU so a dynamically-issued item can still be logged correctly — SKUs
+// match the ones seeded in prisma/seed.ts and used by IssuancePlanService.
+const SKU_TO_FEED_TYPE: Record<string, 'CHICK_MASH' | 'GROWER_MASH' | 'LAYER_MASH'> = {
+  'FEED-CHICK-MASH':  'CHICK_MASH',
+  'FEED-GROWER-MASH': 'GROWER_MASH',
+  'FEED-LAYER-MASH':  'LAYER_MASH',
+};
 
 // ── Phase helpers ────────────────────────────────────────────────────────────
 const EARLY_PHASE_DAYS    = 3;
@@ -178,13 +183,18 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
   // Recent dispense dates for the carry-from selector
   const { data: recentLogs } = useRecentFeedLogDates(level.levelId);
 
+  // Feed items actually issued out of the store this week. Only items whose
+  // SKU maps to a known feedType are selectable (see SKU_TO_FEED_TYPE above).
+  const { data: issuableItemsRaw, isLoading: issuableLoading } = useIssuableStoreItems(FEED_CATEGORIES);
+  const feedItems = (issuableItemsRaw ?? []).filter(i => SKU_TO_FEED_TYPE[i.sku]);
+
   const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
   const lCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1';
 
   // ── Form (feed issued) ─────────────────────────────────────────────────────
   const issueForm = useForm({
     defaultValues: {
-      feedType:            '',
+      storeItemId:         '',
       entryDate:           today,
       quantityDispensedKg: '',
       notes:               '',
@@ -194,7 +204,7 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
   // ── Form (no feed issued) ──────────────────────────────────────────────────
   const noFeedForm = useForm({
     defaultValues: {
-      feedType:     '',
+      storeItemId:  '',
       entryDate:    today,
       carryFromDate: recentLogs?.[0]?.entryDate ?? '',
       notes:        '',
@@ -211,43 +221,53 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
     ? Math.max(0, Math.round((scheduleKgDay - dispensedToday) * 100) / 100)
     : null;
 
+  const selectedFeedItem = feedItems.find(i => i.id === issueForm.watch('storeItemId'));
+
   // ── Submit: feed issued ────────────────────────────────────────────────────
   const submitIssue = useMutation({
-    mutationFn: (data: any) =>
-      api.post('/brooder/feed-logs', {
+    mutationFn: (data: any) => {
+      const item = feedItems.find(i => i.id === data.storeItemId);
+      return api.post('/brooder/feed-logs', {
         noFeedIssued:        false,
         levelId:             level.levelId,
-        feedType:            data.feedType,
+        feedType:            item ? SKU_TO_FEED_TYPE[item.sku] : undefined,
+        storeItemId:         data.storeItemId,
         entryDate:           data.entryDate,
         quantityDispensedKg: Number(data.quantityDispensedKg),
         notes:               data.notes || undefined,
-      }).then(r => r.data),
+      }).then(r => r.data);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
       qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
       qc.invalidateQueries({ queryKey: ['brooder-level-feed-logs', level.levelId] });
       qc.invalidateQueries({ queryKey: ['brooder-level-feed-logs-recent', level.levelId] });
+      qc.invalidateQueries({ queryKey: ['store-issuable-items'] });
       onClose();
     },
   });
 
   // ── Submit: no feed issued ─────────────────────────────────────────────────
   const submitNoFeed = useMutation({
-    mutationFn: (data: any) =>
-      api.post('/brooder/feed-logs', {
+    mutationFn: (data: any) => {
+      const item = feedItems.find(i => i.id === data.storeItemId);
+      return api.post('/brooder/feed-logs', {
         noFeedIssued:        true,
         levelId:             level.levelId,
-        feedType:            data.feedType,
+        feedType:            item ? SKU_TO_FEED_TYPE[item.sku] : undefined,
+        storeItemId:         data.storeItemId,
         entryDate:           data.entryDate,
         quantityDispensedKg: 0,
         carryFromDate:       data.carryFromDate,
         notes:               data.notes || undefined,
-      }).then(r => r.data),
+      }).then(r => r.data);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
       qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
       qc.invalidateQueries({ queryKey: ['brooder-level-feed-logs', level.levelId] });
       qc.invalidateQueries({ queryKey: ['brooder-level-feed-logs-recent', level.levelId] });
+      qc.invalidateQueries({ queryKey: ['store-issuable-items'] });
       onClose();
     },
   });
@@ -333,16 +353,36 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
             <div>
               <label className={lCls}>Feed type</label>
               <select
-                {...issueForm.register('feedType', { required: 'Select a feed type' })}
+                {...issueForm.register('storeItemId', { required: 'Select a feed type' })}
                 className={iCls}
+                disabled={issuableLoading}
               >
-                <option value="">Select feed type…</option>
-                {FEED_TYPE_OPTIONS.map(o => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
+                <option value="">
+                  {issuableLoading ? 'Loading issued feed…' : 'Select feed type…'}
+                </option>
+                {feedItems.map(item => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} — residual {item.residual.toFixed(2)} {item.unit.toLowerCase()}
+                  </option>
                 ))}
               </select>
-              {issueForm.formState.errors.feedType && (
-                <p className="text-red-500 text-xs mt-1">{String(issueForm.formState.errors.feedType.message)}</p>
+              {issueForm.formState.errors.storeItemId && (
+                <p className="text-red-500 text-xs mt-1">{String(issueForm.formState.errors.storeItemId.message)}</p>
+              )}
+              {!issuableLoading && feedItems.length === 0 && (
+                <p className="text-amber-600 dark:text-amber-400 text-xs mt-1 flex items-start gap-1">
+                  <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                  No feed has been issued from the store this week yet. Ask Store to stock-out feed before logging.
+                </p>
+              )}
+              {selectedFeedItem && (
+                <p className="text-xs mt-1 text-gray-500 dark:text-gray-400">
+                  Issued this week: <strong>{selectedFeedItem.issuedThisWeek.toFixed(2)} {selectedFeedItem.unit.toLowerCase()}</strong>
+                  {' · '}Already dispensed: <strong>{selectedFeedItem.dispensedThisWeek.toFixed(2)} {selectedFeedItem.unit.toLowerCase()}</strong>
+                  {' · '}Residual: <strong className={selectedFeedItem.residual === 0 ? 'text-red-500' : ''}>
+                    {selectedFeedItem.residual.toFixed(2)} {selectedFeedItem.unit.toLowerCase()}
+                  </strong>
+                </p>
               )}
             </div>
 
@@ -459,16 +499,21 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
             <div>
               <label className={lCls}>Feed type in trough</label>
               <select
-                {...noFeedForm.register('feedType', { required: 'Select the feed type currently in the trough' })}
+                {...noFeedForm.register('storeItemId', { required: 'Select the feed type currently in the trough' })}
                 className={iCls}
+                disabled={issuableLoading}
               >
-                <option value="">Select feed type…</option>
-                {FEED_TYPE_OPTIONS.map(o => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
+                <option value="">
+                  {issuableLoading ? 'Loading issued feed…' : 'Select feed type…'}
+                </option>
+                {feedItems.map(item => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} — residual {item.residual.toFixed(2)} {item.unit.toLowerCase()}
+                  </option>
                 ))}
               </select>
-              {noFeedForm.formState.errors.feedType && (
-                <p className="text-red-500 text-xs mt-1">{String(noFeedForm.formState.errors.feedType.message)}</p>
+              {noFeedForm.formState.errors.storeItemId && (
+                <p className="text-red-500 text-xs mt-1">{String(noFeedForm.formState.errors.storeItemId.message)}</p>
               )}
             </div>
 

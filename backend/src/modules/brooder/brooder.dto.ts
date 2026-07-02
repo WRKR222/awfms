@@ -64,6 +64,7 @@ export const CreateLevelFeedLogSchema = z.discriminatedUnion('noFeedIssued', [
     noFeedIssued:         z.literal(false).default(false),
     levelId:              z.string().uuid(),
     feedType:             z.enum(['CHICK_MASH', 'GROWER_MASH', 'LAYER_MASH']),
+    storeItemId:          z.string().uuid().optional(),
     entryDate:            z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     quantityDispensedKg:  z.number().positive().max(5000),
     notes:                z.string().max(500).optional(),
@@ -73,6 +74,7 @@ export const CreateLevelFeedLogSchema = z.discriminatedUnion('noFeedIssued', [
     noFeedIssued:         z.literal(true),
     levelId:              z.string().uuid(),
     feedType:             z.enum(['CHICK_MASH', 'GROWER_MASH', 'LAYER_MASH']),
+    storeItemId:          z.string().uuid().optional(),
     entryDate:            z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     quantityDispensedKg:  z.literal(0).default(0),
     /** ISO date string of the dispensing day whose feed is still in the trough. */

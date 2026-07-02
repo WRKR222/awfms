@@ -5,6 +5,10 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { BatchStage, BirdType, EntryStatus, Prisma } from '@prisma/client';
+import dayjs from 'dayjs';
+import isoWeek from 'dayjs/plugin/isoWeek';
+
+dayjs.extend(isoWeek);
 
 /**
  * FlockService — handles batch lifecycle (registration, listing, culling) and
@@ -17,6 +21,36 @@ import { BatchStage, BirdType, EntryStatus, Prisma } from '@prisma/client';
 @Injectable()
 export class FlockService {
   constructor(private readonly prisma: PrismaService) {}
+
+  // A vaccine/supplement/treatment can only be logged against a store item
+  // that Store has actually issued (stock-out) this week — this stops the
+  // attendant from selecting something that was never physically handed to
+  // them, and keeps residual math (issued - dispensed) accurate. The Mon–Sun
+  // window matches IssuancePlanService.validateStockOut.
+  //
+  // Also returns the store item so its `unit` can be snapshotted onto the
+  // log entry server-side — the unit must come from the store item itself,
+  // never from whatever the client happens to send, or the residual
+  // subtraction (issued qty - dispensed qty) could silently compare
+  // mismatched units.
+  private async getIssuedStoreItemOrThrow(storeItemId: string) {
+    const weekMonday = dayjs().isoWeekday(1).startOf('day').toDate();
+    const weekSunday = dayjs().isoWeekday(7).endOf('day').toDate();
+    const [issued, item] = await Promise.all([
+      this.prisma.storeStockOut.aggregate({
+        where: { storeItemId, issuedDate: { gte: weekMonday, lte: weekSunday } },
+        _sum: { quantityOut: true },
+      }),
+      this.prisma.storeItem.findUnique({ where: { id: storeItemId }, select: { unit: true } }),
+    ]);
+    if (!issued._sum.quantityOut || Number(issued._sum.quantityOut) <= 0) {
+      throw new BadRequestException(
+        'This item has not been issued from the store this week and cannot be logged. Ask Store to issue it first.',
+      );
+    }
+    if (!item) throw new BadRequestException('Store item not found.');
+    return item;
+  }
 
   // ── Batches ────────────────────────────────────────────────────────────────
 
@@ -619,14 +653,22 @@ export class FlockService {
     }
 
     // Normalise vaccines: merge array input + legacy single-vaccine input
-    type VaccineEntry    = { name: string; dose: string; route?: string };
-    type SupplementEntry = { name: string; dose: string };
+    type VaccineEntry    = { name: string; dose: string; route?: string; storeItemId?: string | null; quantityUsed?: number | null; unit?: string | null };
+    type SupplementEntry = { name: string; dose: string; storeItemId?: string | null; quantityUsed?: number | null; unit?: string | null };
 
     const vaccinesArr: VaccineEntry[] = [];
     if (Array.isArray(input.vaccines)) {
       for (const v of input.vaccines) {
         const name = String(v.name ?? '').trim();
-        if (name) vaccinesArr.push({ name, dose: String(v.dose ?? '').trim(), route: v.route ?? 'DRINKING_WATER' });
+        if (name) {
+          vaccinesArr.push({
+            name,
+            dose: String(v.dose ?? '').trim(),
+            route: v.route ?? 'DRINKING_WATER',
+            storeItemId: v.storeItemId || null,
+            quantityUsed: v.quantityUsed != null ? Number(v.quantityUsed) : null,
+          });
+        }
       }
     } else if (input.vaccineGiven && String(input.vaccineGiven).trim()) {
       // Legacy single-vaccine path
@@ -641,7 +683,14 @@ export class FlockService {
     if (Array.isArray(input.supplements)) {
       for (const s of input.supplements) {
         const name = String(s.name ?? '').trim();
-        if (name) supplementsArr.push({ name, dose: String(s.dose ?? '').trim() });
+        if (name) {
+          supplementsArr.push({
+            name,
+            dose: String(s.dose ?? '').trim(),
+            storeItemId: s.storeItemId || null,
+            quantityUsed: s.quantityUsed != null ? Number(s.quantityUsed) : null,
+          });
+        }
       }
     } else if (input.supplement && String(input.supplement).trim()) {
       supplementsArr.push({
@@ -649,6 +698,26 @@ export class FlockService {
         dose: String(input.supplementDose ?? '').trim(),
       });
     }
+
+    // Every vaccine/supplement tagged with a store item must actually have
+    // been issued out of the store this week — checked in parallel. The
+    // item's stock unit is snapshotted onto the entry here (server-side,
+    // authoritative) so the residual subtraction is always unit-consistent.
+    const storeItemIdsToCheck = Array.from(new Set([
+      ...vaccinesArr.map(v => v.storeItemId),
+      ...supplementsArr.map(s => s.storeItemId),
+    ].filter((id): id is string => !!id)));
+    const issuedItems = await Promise.all(
+      storeItemIdsToCheck.map(id => this.getIssuedStoreItemOrThrow(id)),
+    );
+    const unitByStoreItemId = new Map(storeItemIdsToCheck.map((id, i) => [id, issuedItems[i].unit]));
+    for (const v of vaccinesArr) {
+      if (v.storeItemId) v.unit = unitByStoreItemId.get(v.storeItemId) ?? null;
+    }
+    for (const s of supplementsArr) {
+      if (s.storeItemId) s.unit = unitByStoreItemId.get(s.storeItemId) ?? null;
+    }
+
 
     // Auto-create VaccinationRecord for each vaccine so it appears on the
     // manager's Health/Vaccination History page without re-entry.
@@ -724,19 +793,23 @@ export class FlockService {
     if (!input?.dose)     throw new BadRequestException('dose is required');
     const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
+    const issuedItem = input.storeItemId ? await this.getIssuedStoreItemOrThrow(input.storeItemId) : null;
     return (this.prisma as any).brooderTreatmentLog.create({
       data: {
-        batchId:       batch.id,
-        rowId:         input.rowId       ?? null,
-        levelId:       input.levelId     ?? null,
-        treatmentDate: input.treatmentDate ? new Date(input.treatmentDate) : new Date(),
-        drugName:      String(input.drugName).trim(),
-        dose:          String(input.dose).trim(),
-        doseUnit:      input.doseUnit ?? 'ml',
-        route:         input.route    ?? 'DRINKING_WATER',
-        durationDays:  input.durationDays != null ? Number(input.durationDays) : null,
-        notes:         input.notes ?? null,
-        loggedById:    userId,
+        batchId:          batch.id,
+        rowId:            input.rowId       ?? null,
+        levelId:          input.levelId     ?? null,
+        treatmentDate:    input.treatmentDate ? new Date(input.treatmentDate) : new Date(),
+        drugName:         String(input.drugName).trim(),
+        storeItemId:      input.storeItemId || null,
+        dose:             String(input.dose).trim(),
+        doseUnit:         input.doseUnit ?? 'ml',
+        quantityUsed:     input.quantityUsed != null ? Number(input.quantityUsed) : null,
+        quantityUsedUnit: issuedItem?.unit ?? null,
+        route:            input.route    ?? 'DRINKING_WATER',
+        durationDays:     input.durationDays != null ? Number(input.durationDays) : null,
+        notes:            input.notes ?? null,
+        loggedById:       userId,
       },
     });
   }

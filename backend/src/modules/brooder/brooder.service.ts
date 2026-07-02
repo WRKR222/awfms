@@ -51,6 +51,8 @@ import {
   CreateBrooderWeightSampleSchema,
 } from './brooder.dto';
 import dayjs from 'dayjs';
+import isoWeek from 'dayjs/plugin/isoWeek';
+dayjs.extend(isoWeek);
 import { ZodError } from 'zod';
 
 function parseOrThrow<T>(schema: { parse: (v: unknown) => T }, value: unknown): T {
@@ -634,6 +636,32 @@ export class BrooderService {
   async createLevelFeedLog(input: unknown, userId: string) {
     const dto = parseOrThrow(CreateLevelFeedLogSchema, input);
 
+    // A feed type can only be logged against a store item Store has actually
+    // issued (stock-out) this week — keeps the attendant from logging feed
+    // that was never physically handed to them, and keeps residual math
+    // (issued - dispensed) accurate. Mon–Sun window matches the issuance plan.
+    // The unit is snapshotted from the store item itself (never trusted from
+    // the client) so quantityDispensedKg is always diffed against the same
+    // unit the stock-out was recorded in.
+    let feedItemUnit: string | null = null;
+    if (dto.storeItemId) {
+      const weekMonday = dayjs().isoWeekday(1).startOf('day').toDate();
+      const weekSunday = dayjs().isoWeekday(7).endOf('day').toDate();
+      const [issued, item] = await Promise.all([
+        this.prisma.storeStockOut.aggregate({
+          where: { storeItemId: dto.storeItemId, issuedDate: { gte: weekMonday, lte: weekSunday } },
+          _sum: { quantityOut: true },
+        }),
+        this.prisma.storeItem.findUnique({ where: { id: dto.storeItemId }, select: { unit: true } }),
+      ]);
+      if (!issued._sum.quantityOut || Number(issued._sum.quantityOut) <= 0) {
+        throw new BadRequestException(
+          'This feed item has not been issued from the store this week and cannot be logged. Ask Store to issue it first.',
+        );
+      }
+      feedItemUnit = item?.unit ?? null;
+    }
+
     const level = await this.prisma.brooderLevel.findUnique({
       where:   { id: dto.levelId },
       include: { assignment: true },
@@ -711,6 +739,8 @@ export class BrooderService {
       data: {
         levelId:             dto.levelId,
         feedType:            dto.feedType,
+        storeItemId:         dto.storeItemId ?? null,
+        unit:                feedItemUnit,
         entryDate:           new Date(`${dto.entryDate}T00:00:00.000Z`),
         quantityDispensedKg: dto.quantityDispensedKg,
         requiredKgForWeek,

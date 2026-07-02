@@ -10,10 +10,14 @@ import { NotificationsService } from '../../common/notifications/notifications.s
 import { NotificationType, UserRole, StoreItemCategory, StoreItemUnit } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { IssuancePlanService } from './issuance-plan.service';
+import dayjs from 'dayjs';
+import isoWeek from 'dayjs/plugin/isoWeek';
 import {
   IsString, IsOptional, IsNumber, IsBoolean, Min, IsNotEmpty, IsEnum,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+
+dayjs.extend(isoWeek);
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
@@ -430,6 +434,105 @@ export class StoreInventoryService {
         supplierName: s.supplierName,
       };
     });
+  }
+
+  // ── Issuable items + residual (feed / medication) ────────────────────────
+  //
+  // Powers two things:
+  //   1. The Lead Attendant's feed / vaccine / supplement / treatment logging
+  //      dropdowns — only items actually issued out of the store this week
+  //      should be selectable, so the attendant can't log against something
+  //      that was never physically handed to them.
+  //   2. The Store's weekly issuance-plan screen — showing how much of what
+  //      was issued last week is still sitting unused (residual) so Store
+  //      doesn't over-issue the same item again next week.
+  //
+  // "This week" follows the same Mon–Sun window the issuance plan itself
+  // uses (see IssuancePlanService.validateStockOut).
+  async getIssuableStoreItems(categories: StoreItemCategory[]) {
+    const weekMonday = dayjs().isoWeekday(1).startOf('day').toDate();
+    const weekSunday = dayjs().isoWeekday(7).endOf('day').toDate();
+
+    const items = await this.prisma.storeItem.findMany({
+      where: { category: { in: categories }, isActive: true },
+      select: { id: true, name: true, sku: true, unit: true, category: true },
+    });
+    if (items.length === 0) return [];
+    const itemIds = items.map(i => i.id);
+
+    // Issued this week (from store stock-out)
+    const issuedGroups = await this.prisma.storeStockOut.groupBy({
+      by: ['storeItemId'],
+      where: { storeItemId: { in: itemIds }, issuedDate: { gte: weekMonday, lte: weekSunday } },
+      _sum: { quantityOut: true },
+    });
+    const issuedMap = new Map<string, number>(
+      issuedGroups.map(g => [g.storeItemId, Number(g._sum.quantityOut ?? 0)]),
+    );
+
+    // Dispensed this week — feed (BrooderLevelFeedLog)
+    const feedGroups = await this.prisma.brooderLevelFeedLog.groupBy({
+      by: ['storeItemId'],
+      where: { storeItemId: { in: itemIds }, entryDate: { gte: weekMonday, lte: weekSunday } },
+      _sum: { quantityDispensedKg: true },
+    });
+    const dispensedMap = new Map<string, number>();
+    for (const g of feedGroups) {
+      if (!g.storeItemId) continue;
+      dispensedMap.set(g.storeItemId, (dispensedMap.get(g.storeItemId) ?? 0) + Number(g._sum.quantityDispensedKg ?? 0));
+    }
+
+    // Dispensed this week — treatments (BrooderTreatmentLog.quantityUsed)
+    const treatmentGroups = await (this.prisma as any).brooderTreatmentLog.groupBy({
+      by: ['storeItemId'],
+      where: { storeItemId: { in: itemIds }, treatmentDate: { gte: weekMonday, lte: weekSunday } },
+      _sum: { quantityUsed: true },
+    });
+    for (const g of treatmentGroups) {
+      if (!g.storeItemId) continue;
+      dispensedMap.set(g.storeItemId, (dispensedMap.get(g.storeItemId) ?? 0) + Number(g._sum.quantityUsed ?? 0));
+    }
+
+    // Dispensed this week — vaccines/supplements tagged with a storeItemId
+    // inside the brooder_logs JSONB arrays (no direct column to group by).
+    const brooderLogs = await this.prisma.brooderLog.findMany({
+      where: { logDate: { gte: weekMonday, lte: weekSunday } },
+      select: { vaccinesJson: true, supplementsJson: true },
+    });
+    for (const log of brooderLogs) {
+      const entries = [
+        ...((log.vaccinesJson as any[]) ?? []),
+        ...((log.supplementsJson as any[]) ?? []),
+      ];
+      for (const entry of entries) {
+        if (entry?.storeItemId && entry?.quantityUsed != null) {
+          dispensedMap.set(
+            entry.storeItemId,
+            (dispensedMap.get(entry.storeItemId) ?? 0) + Number(entry.quantityUsed ?? 0),
+          );
+        }
+      }
+    }
+
+    return items
+      .map(item => {
+        const issuedThisWeek = issuedMap.get(item.id) ?? 0;
+        const dispensedThisWeek = Math.round((dispensedMap.get(item.id) ?? 0) * 1000) / 1000;
+        const residual = Math.max(0, Math.round((issuedThisWeek - dispensedThisWeek) * 1000) / 1000);
+        return {
+          id: item.id,
+          name: item.name,
+          sku: item.sku,
+          unit: item.unit,
+          category: item.category,
+          issuedThisWeek: Math.round(issuedThisWeek * 1000) / 1000,
+          dispensedThisWeek,
+          residual,
+        };
+      })
+      // Only items actually issued this week are selectable — this is the
+      // hard gate the attendant's dropdowns rely on.
+      .filter(i => i.issuedThisWeek > 0);
   }
 
 }

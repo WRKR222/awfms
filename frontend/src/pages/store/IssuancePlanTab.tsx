@@ -9,6 +9,7 @@ import {
   ClipboardList, Plus, X, CheckCircle, XCircle, FileDown,
   ChevronDown, ChevronUp, AlertTriangle, Zap, Calendar, Pencil,
 } from 'lucide-react';
+import { useIssuableStoreItems, FEED_CATEGORIES, MEDICATION_CATEGORIES } from '../../hooks/useIssuableStoreItems';
 
 const DAY_KEYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] as const;
 type DayKey = typeof DAY_KEYS[number];
@@ -452,6 +453,15 @@ function CreatePlanForm({
     staleTime: 60_000,
   });
 
+  // Current-week residual (issued - dispensed) for feed & medication items,
+  // so Store can see leftover stock still on the floor before issuing more
+  // of the same item and over-supplying.
+  const { data: feedResidual = [] }       = useIssuableStoreItems(FEED_CATEGORIES);
+  const { data: medicationResidual = [] } = useIssuableStoreItems(MEDICATION_CATEGORIES);
+  const residualByItemId = new Map(
+    [...feedResidual, ...medicationResidual].map(r => [r.id, r]),
+  );
+
   const addItem = () => {
     setItems(prev => [
       ...prev,
@@ -681,6 +691,16 @@ function CreatePlanForm({
                       {storeItemsError && (
                         <p className="text-xs text-red-500 mt-1">Could not load store items. Check your connection.</p>
                       )}
+                      {(() => {
+                        const residual = it.storeItemId ? residualByItemId.get(it.storeItemId) : undefined;
+                        if (!residual || residual.residual <= 0) return null;
+                        return (
+                          <p className="text-xs mt-1 text-amber-600 dark:text-amber-400 flex items-start gap-1">
+                            <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                            {residual.residual.toFixed(2)} {residual.unit.toLowerCase()} still unused from this week's issuance — consider issuing less to avoid wastage.
+                          </p>
+                        );
+                      })()}
                     </div>
                     <div>
                       <label className={lCls}>Unit Price (KES)</label>
