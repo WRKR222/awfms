@@ -765,42 +765,57 @@ export class BrooderService {
           // which is correct for @db.Date columns.
           const entryDate = new Date(`${dto.entryDate}T00:00:00.000Z`);
 
-          const existing = await this.prisma.feedIntakeLog.findFirst({
+          // Atomic upsert on the (batchId, entryDate, feedType) unique key.
+          // The previous findFirst → create/update pattern was a
+          // check-then-act race: two feed logs for the same batch/date/
+          // feedType submitted close together (two levels feeding the same
+          // batch, a double-submit, etc.) could both see "no existing row"
+          // and both attempt a create, so the second one failed with P2002.
+          // upsert lets Postgres resolve the race atomically — the DB
+          // itself decides which writer "wins" the insert and which one
+          // falls through to the update branch, and increments are additive
+          // either way so no dispensed feed is lost.
+          const mirrored = await this.prisma.feedIntakeLog.upsert({
             where: {
-              batchId:   batch.id,
-              feedType:  dto.feedType as any,
-              entryDate: {
-                gte: new Date(`${dto.entryDate}T00:00:00.000Z`),
-                lt:  new Date(`${dto.entryDate}T23:59:59.999Z`),
+              batchId_entryDate_feedType: {
+                batchId:   batch.id,
+                entryDate,
+                feedType:  dto.feedType as any,
               },
+            },
+            create: {
+              batchId:             batch.id,
+              houseId:             batch.houseId,
+              feedType:            dto.feedType as any,
+              entryDate,
+              quantityDispensedKg: dto.quantityDispensedKg,
+              wastageKg:           0,
+              recommendedMinKg:    0,
+              recommendedMaxKg:    requiredKgForWeek ?? 0,
+              notes:               `Logged from Brooder cage map — ${level.label}`,
+              recordedById:        userId,
+            },
+            update: {
+              quantityDispensedKg: { increment: dto.quantityDispensedKg },
             },
           });
 
-          if (existing) {
-            await this.prisma.feedIntakeLog.update({
-              where: { id: existing.id },
-              data:  {
-                quantityDispensedKg: { increment: dto.quantityDispensedKg },
-                notes: existing.notes
-                  ? `${existing.notes} | +${dto.quantityDispensedKg}kg via ${level.label}`
-                  : `Logged from Brooder cage map — ${level.label}`,
-              },
-            });
-          } else {
-            await this.prisma.feedIntakeLog.create({
-              data: {
-                batchId:             batch.id,
-                houseId:             batch.houseId,
-                feedType:            dto.feedType as any,
-                entryDate,
-                quantityDispensedKg: dto.quantityDispensedKg,
-                wastageKg:           0,
-                recommendedMinKg:    0,
-                recommendedMaxKg:    requiredKgForWeek ?? 0,
-                notes:               `Logged from Brooder cage map — ${level.label}`,
-                recordedById:        userId,
-              },
-            });
+          // Best-effort, non-critical note-history append. This is a
+          // separate, non-atomic read-then-write, but it only affects the
+          // human-readable audit note text — never the quantity totals or
+          // the row's existence — so a lost race here just means a slightly
+          // less detailed note, not a data-integrity problem.
+          if (mirrored.notes && !mirrored.notes.includes(level.label)) {
+            try {
+              await this.prisma.feedIntakeLog.update({
+                where: { id: mirrored.id },
+                data: {
+                  notes: `${mirrored.notes} | +${dto.quantityDispensedKg}kg via ${level.label}`,
+                },
+              });
+            } catch {
+              // Non-critical — ignore.
+            }
           }
         }
       } catch (mirrorErr: any) {

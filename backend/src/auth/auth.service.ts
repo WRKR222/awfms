@@ -4,6 +4,8 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
+import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -252,8 +254,15 @@ export class AuthService {
       expiresIn: this.ACCESS_TOKEN_EXPIRY,
     });
 
+    // Include a random jti so two tokens issued for the same user within the
+    // same second (e.g. rapid double-click login, retried requests, two
+    // tabs) are never byte-identical. JWTs are a deterministic function of
+    // header+payload+secret+iat, so without a per-token nonce, two calls in
+    // the same second previously produced the exact same signed string,
+    // which then collided on the refresh_tokens.token unique constraint
+    // (P2002) on the second INSERT.
     const refreshToken = this.jwtService.sign(
-      { sub: userId, type: 'refresh' },
+      { sub: userId, type: 'refresh', jti: randomUUID() },
       { expiresIn: this.REFRESH_TOKEN_EXPIRY },
     );
 
@@ -261,9 +270,29 @@ export class AuthService {
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 
-    await this.prisma.refreshToken.create({
-      data: { userId, token: refreshToken, expiresAt },
-    });
+    try {
+      await this.prisma.refreshToken.create({
+        data: { userId, token: refreshToken, expiresAt },
+      });
+    } catch (err) {
+      // Defense in depth: if a collision somehow still occurs (e.g. clock
+      // skew across replicas, or this fix hasn't rolled out everywhere yet),
+      // don't fail the login/refresh — re-sign once with a fresh jti/iat.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        this.logger.warn(
+          `generateTokens: refresh token collision for user ${userId}, retrying with new jti`,
+        );
+        const retryToken = this.jwtService.sign(
+          { sub: userId, type: 'refresh', jti: randomUUID() },
+          { expiresIn: this.REFRESH_TOKEN_EXPIRY },
+        );
+        await this.prisma.refreshToken.create({
+          data: { userId, token: retryToken, expiresAt },
+        });
+        return { accessToken, refreshToken: retryToken };
+      }
+      throw err;
+    }
 
     return { accessToken, refreshToken };
   }
