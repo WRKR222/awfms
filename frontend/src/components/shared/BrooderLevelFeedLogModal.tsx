@@ -218,7 +218,7 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
     defaultValues: {
       storeItemId:  '',
       entryDate:    today,
-      carryFromDate: recentLogs?.[0]?.entryDate ?? '',
+      carryFromDate: recentLogs?.[0]?.entryDate ? dayjs(recentLogs[0].entryDate).format('YYYY-MM-DD') : '',
       notes:        '',
     },
   });
@@ -568,7 +568,7 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
                 >
                   <option value="">Select dispensing date…</option>
                   {recentLogs.map(log => (
-                    <option key={log.id} value={log.entryDate}>
+                    <option key={log.id} value={dayjs(log.entryDate).format('YYYY-MM-DD')}>
                       {dayjs(log.entryDate).format('ddd D MMM YYYY')} — {Number(log.quantityDispensedKg).toFixed(2)} kg
                     </option>
                   ))}
