@@ -7,6 +7,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { BatchStage, BirdType, EntryStatus, Prisma } from '@prisma/client';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
+import { StoreInventoryService } from '../store/store-inventory.service';
 
 dayjs.extend(isoWeek);
 
@@ -20,7 +21,10 @@ dayjs.extend(isoWeek);
  */
 @Injectable()
 export class FlockService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storeInventory: StoreInventoryService,
+  ) {}
 
   // A vaccine/supplement/treatment can only be logged against a store item
   // that Store has actually issued (stock-out) this week — this stops the
@@ -50,6 +54,34 @@ export class FlockService {
     }
     if (!item) throw new BadRequestException('Store item not found.');
     return item;
+  }
+
+  // Hard stock check: getIssuedStoreItemOrThrow only confirms the item was
+  // issued from the store at all this week — it does not confirm anything
+  // is actually LEFT of it. Without this, an attendant could keep logging
+  // vaccines/supplements/treatments against a store item long after its
+  // issued stock was fully consumed, and the residual shown on the
+  // Store/attendant screens would never reach a real floor of 0.
+  //
+  // `alreadyReserved` lets callers account for other entries in the SAME
+  // request that draw against the same storeItemId (e.g. two vaccines in
+  // one daily log both linked to the same bottle) — the DB doesn't know
+  // about those yet since none have been written when this runs.
+  private async assertResidualOrThrow(
+    storeItemId: string,
+    quantityRequested: number,
+    alreadyReserved: number,
+    unit: string | null,
+  ): Promise<number> {
+    const residualInfo = await this.storeInventory.getResidualForItem(storeItemId);
+    const residualBefore = (residualInfo?.residual ?? 0) - alreadyReserved;
+    if (quantityRequested > residualBefore) {
+      throw new BadRequestException(
+        `Not enough of this item left to log. Residual remaining: ${Math.max(0, residualBefore).toFixed(3)} ` +
+        `${unit ?? ''}, requested: ${quantityRequested}. Ask Store to issue more before logging further.`,
+      );
+    }
+    return residualBefore - quantityRequested;
   }
 
   // ── Batches ────────────────────────────────────────────────────────────────
@@ -711,6 +743,24 @@ export class FlockService {
       storeItemIdsToCheck.map(id => this.getIssuedStoreItemOrThrow(id)),
     );
     const unitByStoreItemId = new Map(storeItemIdsToCheck.map((id, i) => [id, issuedItems[i].unit]));
+
+    // Validate residual for every entry tagged with a storeItemId, in order,
+    // tracking how much of each item this same request has already claimed
+    // so two entries in one submission (e.g. two vaccines from the same
+    // bottle) can't each pass the check independently and jointly overdraw.
+    const reservedByItem = new Map<string, number>();
+    for (const entry of [...vaccinesArr, ...supplementsArr]) {
+      if (!entry.storeItemId || entry.quantityUsed == null) continue;
+      const alreadyReserved = reservedByItem.get(entry.storeItemId) ?? 0;
+      await this.assertResidualOrThrow(
+        entry.storeItemId,
+        entry.quantityUsed,
+        alreadyReserved,
+        unitByStoreItemId.get(entry.storeItemId) ?? null,
+      );
+      reservedByItem.set(entry.storeItemId, alreadyReserved + entry.quantityUsed);
+    }
+
     for (const v of vaccinesArr) {
       if (v.storeItemId) v.unit = unitByStoreItemId.get(v.storeItemId) ?? null;
     }
@@ -794,6 +844,14 @@ export class FlockService {
     const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
     const issuedItem = input.storeItemId ? await this.getIssuedStoreItemOrThrow(input.storeItemId) : null;
+    if (input.storeItemId && input.quantityUsed != null) {
+      await this.assertResidualOrThrow(
+        input.storeItemId,
+        Number(input.quantityUsed),
+        0,
+        issuedItem?.unit ?? null,
+      );
+    }
     return (this.prisma as any).brooderTreatmentLog.create({
       data: {
         batchId:          batch.id,

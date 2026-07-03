@@ -35,6 +35,6 @@ import { IssuancePlanCron } from './issuance-plan.cron';
     StockRequestController,
     IssuancePlanController,
   ],
-  exports: [StoreService, TallyVerificationService, StockRequestService, IssuancePlanService],
+  exports: [StoreService, StoreInventoryService, TallyVerificationService, StockRequestService, IssuancePlanService],
 })
 export class StoreModule {}

@@ -606,4 +606,27 @@ export class StoreInventoryService {
       .filter(i => i.issuedThisWeek > 0);
   }
 
+  // ── Single-item residual lookup ─────────────────────────────────────────
+  // Used by BrooderService/FlockService to hard-validate a dispense (feed,
+  // vaccine, supplement, treatment) against what's actually left of a store
+  // item BEFORE writing the log — not just whether it was issued at all.
+  // Reuses getIssuableStoreItems' full computation (earliest-issuance
+  // anchoring, all four dispensing sources) so the number matches exactly
+  // what the attendant/store screens display.
+  async getResidualForItem(
+    storeItemId: string,
+  ): Promise<{ issuedThisWeek: number; dispensedThisWeek: number; residual: number } | null> {
+    const item = await this.prisma.storeItem.findUnique({
+      where:  { id: storeItemId },
+      select: { category: true },
+    });
+    if (!item) return null;
+
+    const list = await this.getIssuableStoreItems([item.category]);
+    const match = list.find(i => i.id === storeItemId);
+    // Not in the list means issuedThisWeek is 0 (getIssuableStoreItems
+    // filters those out) — so residual is 0, nothing left to dispense.
+    return match ?? { issuedThisWeek: 0, dispensedThisWeek: 0, residual: 0 };
+  }
+
 }

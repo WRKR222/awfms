@@ -25,6 +25,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
+import { StoreInventoryService } from '../store/store-inventory.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DASHBOARD_REFRESH_EVENT } from '../../common/events/app-event-bus';
 import { HeatSourceType, UserRole } from '@prisma/client';
@@ -77,6 +78,7 @@ export class BrooderService {
     private readonly prisma:        PrismaService,
     private readonly notifications: NotificationsService,
     private readonly eventEmitter:  EventEmitter2,
+    private readonly storeInventory: StoreInventoryService,
   ) {}
 
   private refresh() {
@@ -644,6 +646,7 @@ export class BrooderService {
     // the client) so quantityDispensedKg is always diffed against the same
     // unit the stock-out was recorded in.
     let feedItemUnit: string | null = null;
+    let residualAfterKg: number | null = null;
     if (dto.storeItemId) {
       const weekMonday = dayjs().isoWeekday(1).startOf('day').toDate();
       const weekSunday = dayjs().isoWeekday(7).endOf('day').toDate();
@@ -660,6 +663,22 @@ export class BrooderService {
         );
       }
       feedItemUnit = item?.unit ?? null;
+
+      // Hard stock check: this only confirmed the item was issued at all —
+      // it does not confirm anything is actually LEFT of it. Without this,
+      // an attendant can keep logging feed against a store item long after
+      // its issued stock has been fully consumed, and the residual shown
+      // on the Store/attendant screens never reaches a real floor of 0.
+      const residualInfo = await this.storeInventory.getResidualForItem(dto.storeItemId);
+      const residualBefore = residualInfo?.residual ?? 0;
+      if (dto.quantityDispensedKg > residualBefore) {
+        throw new BadRequestException(
+          `Not enough of this item left to log. Residual remaining: ${residualBefore.toFixed(3)} ` +
+          `${feedItemUnit ?? 'kg'}, requested: ${dto.quantityDispensedKg}. ` +
+          `Ask Store to issue more before logging further.`,
+        );
+      }
+      residualAfterKg = Math.round((residualBefore - dto.quantityDispensedKg) * 1000) / 1000;
     }
 
     const level = await this.prisma.brooderLevel.findUnique({
@@ -830,7 +849,7 @@ export class BrooderService {
     }
 
     this.refresh();
-    return result;
+    return { ...result, residualAfterKg };
   }
 
   // ── Per-level mortality log (Req 1 + Req 2 + Req 7) ─────────────────────
