@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
@@ -100,6 +101,8 @@ export interface StockOutDto {
 
 @Injectable()
 export class StoreInventoryService {
+  private readonly logger = new Logger(StoreInventoryService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
