@@ -648,18 +648,22 @@ export class BrooderService {
     let feedItemUnit: string | null = null;
     let residualAfterKg: number | null = null;
     if (dto.storeItemId) {
-      const weekMonday = dayjs().isoWeekday(1).startOf('day').toDate();
-      const weekSunday = dayjs().isoWeekday(7).endOf('day').toDate();
+      // All-time check, matching the residual ledger model in
+      // StoreInventoryService.getIssuableStoreItems — an item issued in any
+      // prior week that still has unconsumed stock is still legitimately
+      // issuable today. A calendar-week bound here would reject a
+      // perfectly valid backdated entry (e.g. logging a feeding from a day
+      // that falls in the previous Mon–Sun window).
       const [issued, item] = await Promise.all([
         this.prisma.storeStockOut.aggregate({
-          where: { storeItemId: dto.storeItemId, issuedDate: { gte: weekMonday, lte: weekSunday } },
+          where: { storeItemId: dto.storeItemId },
           _sum: { quantityOut: true },
         }),
         this.prisma.storeItem.findUnique({ where: { id: dto.storeItemId }, select: { unit: true } }),
       ]);
       if (!issued._sum.quantityOut || Number(issued._sum.quantityOut) <= 0) {
         throw new BadRequestException(
-          'This feed item has not been issued from the store this week and cannot be logged. Ask Store to issue it first.',
+          'This feed item has never been issued from the store and cannot be logged. Ask Store to issue it first.',
         );
       }
       feedItemUnit = item?.unit ?? null;

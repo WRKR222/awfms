@@ -38,18 +38,22 @@ export class FlockService {
   // subtraction (issued qty - dispensed qty) could silently compare
   // mismatched units.
   private async getIssuedStoreItemOrThrow(storeItemId: string) {
-    const weekMonday = dayjs().isoWeekday(1).startOf('day').toDate();
-    const weekSunday = dayjs().isoWeekday(7).endOf('day').toDate();
+    // All-time check, matching the residual ledger model in
+    // StoreInventoryService.getIssuableStoreItems — an item that was issued
+    // last week (or any week) and still has unconsumed stock is still
+    // legitimately issuable today. A calendar-week bound here would reject
+    // a perfectly valid backdated entry the same way the residual
+    // calculation used to.
     const [issued, item] = await Promise.all([
       this.prisma.storeStockOut.aggregate({
-        where: { storeItemId, issuedDate: { gte: weekMonday, lte: weekSunday } },
+        where: { storeItemId },
         _sum: { quantityOut: true },
       }),
       this.prisma.storeItem.findUnique({ where: { id: storeItemId }, select: { unit: true } }),
     ]);
     if (!issued._sum.quantityOut || Number(issued._sum.quantityOut) <= 0) {
       throw new BadRequestException(
-        'This item has not been issued from the store this week and cannot be logged. Ask Store to issue it first.',
+        'This item has never been issued from the store and cannot be logged. Ask Store to issue it first.',
       );
     }
     if (!item) throw new BadRequestException('Store item not found.');
