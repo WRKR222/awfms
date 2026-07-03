@@ -460,44 +460,89 @@ export class StoreInventoryService {
     if (items.length === 0) return [];
     const itemIds = items.map(i => i.id);
 
-    // Issued this week (from store stock-out)
+    // Issued this week (from store stock-out). We also grab the EARLIEST
+    // issuedDate per item this week — see the dispensed-side comment below
+    // for why.
     const issuedGroups = await this.prisma.storeStockOut.groupBy({
       by: ['storeItemId'],
       where: { storeItemId: { in: itemIds }, issuedDate: { gte: weekMonday, lte: weekSunday } },
       _sum: { quantityOut: true },
+      _min: { issuedDate: true },
     });
     const issuedMap = new Map<string, number>(
       issuedGroups.map(g => [g.storeItemId, Number(g._sum.quantityOut ?? 0)]),
     );
 
+    // Per-item lower bound for counting dispensed amounts. Defaults to
+    // weekMonday, but is pulled earlier to each item's own earliest
+    // stock-out date this week (never later than weekMonday, since
+    // issuedDate is already constrained to >= weekMonday above).
+    //
+    // Why this matters: attendants routinely log feed dispenses *after the
+    // fact* (they feed the birds, then log it later that day or the next
+    // morning). If the resulting entryDate rolls earlier than "today's"
+    // calendar Monday — e.g. it's genuinely from a day that's still part of
+    // this item's issuance cycle but happens to sit right at a calendar-week
+    // seam — a hard `entryDate >= weekMonday` cutoff silently drops that
+    // dispense from the sum, and the residual on screen never decreases
+    // even though the feed really was used. The brooder cage map avoids
+    // this exact trap by anchoring its own weekly window to the batch's
+    // hatch date instead of the calendar (see getCageMap's feedByLevel
+    // comment); this does the equivalent for the store-item residual by
+    // anchoring to the item's real issuance date instead of "today".
+    const earliestIssuedByItem = new Map<string, Date>();
+    for (const g of issuedGroups) {
+      if (g._min.issuedDate) earliestIssuedByItem.set(g.storeItemId, g._min.issuedDate);
+    }
+    const dispensedLookbackStart = issuedGroups.length
+      ? new Date(Math.min(weekMonday.getTime(), ...issuedGroups.map(g => g._min.issuedDate!.getTime())))
+      : weekMonday;
+    const dispensedLookbackEnd = new Date(); // dispensing can't be logged for the future
+
+    const withinItemWindow = (storeItemId: string | null, entryDate: Date): boolean => {
+      if (!storeItemId) return false;
+      const cutoff = earliestIssuedByItem.get(storeItemId) ?? weekMonday;
+      return entryDate.getTime() >= cutoff.getTime() && entryDate.getTime() <= dispensedLookbackEnd.getTime();
+    };
+
     // Dispensed this week — feed (BrooderLevelFeedLog)
-    const feedGroups = await this.prisma.brooderLevelFeedLog.groupBy({
-      by: ['storeItemId'],
-      where: { storeItemId: { in: itemIds }, entryDate: { gte: weekMonday, lte: weekSunday } },
-      _sum: { quantityDispensedKg: true },
+    const feedLogsForResidual = await this.prisma.brooderLevelFeedLog.findMany({
+      where: {
+        storeItemId: { in: itemIds },
+        entryDate: { gte: dispensedLookbackStart, lte: dispensedLookbackEnd },
+      },
+      select: { storeItemId: true, entryDate: true, quantityDispensedKg: true },
     });
     const dispensedMap = new Map<string, number>();
-    for (const g of feedGroups) {
-      if (!g.storeItemId) continue;
-      dispensedMap.set(g.storeItemId, (dispensedMap.get(g.storeItemId) ?? 0) + Number(g._sum.quantityDispensedKg ?? 0));
+    for (const f of feedLogsForResidual) {
+      if (!withinItemWindow(f.storeItemId, f.entryDate)) continue;
+      dispensedMap.set(
+        f.storeItemId!,
+        (dispensedMap.get(f.storeItemId!) ?? 0) + Number(f.quantityDispensedKg ?? 0),
+      );
     }
 
     // Dispensed this week — treatments (BrooderTreatmentLog.quantityUsed)
-    const treatmentGroups = await (this.prisma as any).brooderTreatmentLog.groupBy({
-      by: ['storeItemId'],
-      where: { storeItemId: { in: itemIds }, treatmentDate: { gte: weekMonday, lte: weekSunday } },
-      _sum: { quantityUsed: true },
+    const treatmentLogsForResidual = await (this.prisma as any).brooderTreatmentLog.findMany({
+      where: {
+        storeItemId: { in: itemIds },
+        treatmentDate: { gte: dispensedLookbackStart, lte: dispensedLookbackEnd },
+      },
+      select: { storeItemId: true, treatmentDate: true, quantityUsed: true },
     });
-    for (const g of treatmentGroups) {
-      if (!g.storeItemId) continue;
-      dispensedMap.set(g.storeItemId, (dispensedMap.get(g.storeItemId) ?? 0) + Number(g._sum.quantityUsed ?? 0));
+    for (const t of treatmentLogsForResidual) {
+      if (!withinItemWindow(t.storeItemId, t.treatmentDate)) continue;
+      dispensedMap.set(
+        t.storeItemId!,
+        (dispensedMap.get(t.storeItemId!) ?? 0) + Number(t.quantityUsed ?? 0),
+      );
     }
 
     // Dispensed this week — vaccines/supplements tagged with a storeItemId
     // inside the brooder_logs JSONB arrays (no direct column to group by).
     const brooderLogs = await this.prisma.brooderLog.findMany({
-      where: { logDate: { gte: weekMonday, lte: weekSunday } },
-      select: { vaccinesJson: true, supplementsJson: true },
+      where: { logDate: { gte: dispensedLookbackStart, lte: dispensedLookbackEnd } },
+      select: { logDate: true, vaccinesJson: true, supplementsJson: true },
     });
     for (const log of brooderLogs) {
       const entries = [
@@ -505,7 +550,7 @@ export class StoreInventoryService {
         ...((log.supplementsJson as any[]) ?? []),
       ];
       for (const entry of entries) {
-        if (entry?.storeItemId && entry?.quantityUsed != null) {
+        if (entry?.storeItemId && entry?.quantityUsed != null && withinItemWindow(entry.storeItemId, log.logDate)) {
           dispensedMap.set(
             entry.storeItemId,
             (dispensedMap.get(entry.storeItemId) ?? 0) + Number(entry.quantityUsed ?? 0),
@@ -519,6 +564,29 @@ export class StoreInventoryService {
         const issuedThisWeek = issuedMap.get(item.id) ?? 0;
         const dispensedThisWeek = Math.round((dispensedMap.get(item.id) ?? 0) * 1000) / 1000;
         const residual = Math.max(0, Math.round((issuedThisWeek - dispensedThisWeek) * 1000) / 1000);
+
+        // DIAGNOSTIC — kept at debug level, safe to leave on in production.
+        // Helps root-cause "residual not decreasing" reports by making the
+        // exact cutoffs and per-item inputs visible in logs, instead of
+        // only seeing the final number the attendant/store sees on screen.
+        // The two most common causes this surfaces:
+        //   1. Item was issued in a *different* Mon–Sun window than the
+        //      dispense — e.g. feed issued last week, dispensed as
+        //      carryover this week. Look for issuedThisWeek === 0 with
+        //      dispensedThisWeek > 0.
+        //   2. Feed was dispensed against a *different* storeItemId each
+        //      time (e.g. two separate catalog entries for what looks like
+        //      the same physical feed) — compare the `id` here against the
+        //      storeItemId actually recorded on the BrooderLevelFeedLog
+        //      rows in the DB.
+        if ((item.category as any) === 'FEED' || (item.category as any) === 'FEED_SUPPLEMENT') {
+          const cutoff = earliestIssuedByItem.get(item.id) ?? weekMonday;
+          this.logger.debug(
+            `[Residual] item=${item.name} (${item.id}) issuedWindow=[${weekMonday.toISOString()}..${weekSunday.toISOString()}] ` +
+            `dispensedCutoff=${cutoff.toISOString()} issuedThisWeek=${issuedThisWeek} dispensedThisWeek=${dispensedThisWeek} residual=${residual}`,
+          );
+        }
+
         return {
           id: item.id,
           name: item.name,
