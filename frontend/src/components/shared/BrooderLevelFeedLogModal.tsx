@@ -160,11 +160,15 @@ function ScheduleBanner({
 }
 
 // ── Recent feed-log dates for "carry-from" picker ────────────────────────────
+// Fetched at a generous limit (covers a full brooder cycle, ~6 weeks) so the
+// dispensed-dates exclusion set below (used to block double-logging) doesn't
+// miss older entries — the dropdown itself still only shows the 10 most
+// recent for usability.
 function useRecentFeedLogDates(levelId: string) {
   return useQuery<{ id: string; entryDate: string; quantityDispensedKg: number }[]>({
     queryKey: ['brooder-level-feed-logs-recent', levelId],
     queryFn:  () =>
-      api.get(`/brooder/levels/${levelId}/feed-logs?limit=10`).then(r =>
+      api.get(`/brooder/levels/${levelId}/feed-logs?limit=100`).then(r =>
         // Filter to entries that actually dispensed feed (>0 kg)
         (r.data as any[]).filter((e: any) => Number(e.quantityDispensedKg) > 0),
       ),
@@ -189,6 +193,28 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
 
   // Recent dispense dates for the carry-from selector
   const { data: recentLogs } = useRecentFeedLogDates(level.levelId);
+  // Only the 10 most recent are shown in the carry-from dropdown; recentLogs
+  // itself covers a much wider window so dispensedDates below stays accurate.
+  const carryFromOptions = recentLogs?.slice(0, 10) ?? [];
+
+  // Dates that already have feed dispensed against this level — used to stop
+  // the "Feed Issued" date field from being set to a day that's already
+  // recorded as fed (would silently double-log rather than editing the entry).
+  const dispensedDates = new Set((recentLogs ?? []).map(l => dayjs(l.entryDate).format('YYYY-MM-DD')));
+
+  // Shared date guard: no date may fall before the birds' arrival (date of
+  // hatch/placement), and — for the "Feed Issued" field specifically — no
+  // date that's already had feed dispensed may be reused.
+  function validateEntryDate(value: string, opts: { blockAlreadyDispensed: boolean }) {
+    if (!value) return true;
+    if (dateOfHatch && dayjs(value).isBefore(dayjs(dateOfHatch), 'day')) {
+      return `Birds weren't placed yet — earliest date is ${dayjs(dateOfHatch).format('D MMM YYYY')}`;
+    }
+    if (opts.blockAlreadyDispensed && dispensedDates.has(value)) {
+      return 'Feed has already been dispensed on this date — pick a different date';
+    }
+    return true;
+  }
 
   // Feed items actually issued out of the store this week. Only items we
   // can confidently map to a feedType (see deriveFeedType above) are shown.
@@ -418,10 +444,16 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
             <div>
               <label className={lCls}>Date</label>
               <input
-                {...issueForm.register('entryDate', { required: true })}
-                type="date" max={today}
+                {...issueForm.register('entryDate', {
+                  required: 'Select a date',
+                  validate: value => validateEntryDate(value, { blockAlreadyDispensed: true }),
+                })}
+                type="date" max={today} min={dateOfHatch ?? undefined}
                 className={iCls}
               />
+              {issueForm.formState.errors.entryDate && (
+                <p className="text-red-500 text-xs mt-1">{String(issueForm.formState.errors.entryDate.message)}</p>
+              )}
             </div>
 
             {/* Quantity — no max enforced */}
@@ -549,10 +581,16 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
             <div>
               <label className={lCls}>Check date (today)</label>
               <input
-                {...noFeedForm.register('entryDate', { required: true })}
-                type="date" max={today}
+                {...noFeedForm.register('entryDate', {
+                  required: 'Select a date',
+                  validate: value => validateEntryDate(value, { blockAlreadyDispensed: true }),
+                })}
+                type="date" max={today} min={dateOfHatch ?? undefined}
                 className={iCls}
               />
+              {noFeedForm.formState.errors.entryDate && (
+                <p className="text-red-500 text-xs mt-1">{String(noFeedForm.formState.errors.entryDate.message)}</p>
+              )}
             </div>
 
             {/* Carry-from date */}
@@ -561,13 +599,13 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
                 Feed was dispensed on…
                 <span className="ml-1 font-normal text-gray-400">— which day's feed are the birds eating?</span>
               </label>
-              {recentLogs && recentLogs.length > 0 ? (
+              {carryFromOptions.length > 0 ? (
                 <select
                   {...noFeedForm.register('carryFromDate', { required: 'Select the dispensing date' })}
                   className={iCls}
                 >
                   <option value="">Select dispensing date…</option>
-                  {recentLogs.map(log => (
+                  {carryFromOptions.map(log => (
                     <option key={log.id} value={dayjs(log.entryDate).format('YYYY-MM-DD')}>
                       {dayjs(log.entryDate).format('ddd D MMM YYYY')} — {Number(log.quantityDispensedKg).toFixed(2)} kg
                     </option>
@@ -578,8 +616,9 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
                   {...noFeedForm.register('carryFromDate', {
                     required: 'Enter the date feed was dispensed',
                     pattern:  { value: /^\d{4}-\d{2}-\d{2}$/, message: 'Use YYYY-MM-DD format' },
+                    validate: value => validateEntryDate(value, { blockAlreadyDispensed: false }),
                   })}
-                  type="date" max={today}
+                  type="date" max={today} min={dateOfHatch ?? undefined}
                   className={iCls}
                 />
               )}
