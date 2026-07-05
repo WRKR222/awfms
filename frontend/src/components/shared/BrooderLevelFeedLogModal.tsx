@@ -259,7 +259,6 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
     ? Math.max(0, Math.round((scheduleKgDay - dispensedToday) * 100) / 100)
     : null;
 
-  const selectedFeedItem = feedItems.find(i => i.id === issueForm.watch('storeItemId'));
 
   // ── Submit: feed issued ────────────────────────────────────────────────────
   const submitIssue = useMutation({
@@ -400,7 +399,7 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
                 </option>
                 {feedItems.map(item => (
                   <option key={item.id} value={item.id}>
-                    {item.name} — residual {item.residual.toFixed(2)} {item.unit.toLowerCase()}
+                    {item.name}
                   </option>
                 ))}
               </select>
@@ -429,15 +428,11 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
                   here. Ask Store to rename the item to include one of those words (e.g. "Chick Mash").
                 </p>
               )}
-              {selectedFeedItem && (
-                <p className="text-xs mt-1 text-gray-500 dark:text-gray-400">
-                  Issued this week: <strong>{selectedFeedItem.issuedThisWeek.toFixed(2)} {selectedFeedItem.unit.toLowerCase()}</strong>
-                  {' · '}Already dispensed: <strong>{selectedFeedItem.dispensedThisWeek.toFixed(2)} {selectedFeedItem.unit.toLowerCase()}</strong>
-                  {' · '}Residual: <strong className={selectedFeedItem.residual === 0 ? 'text-red-500' : ''}>
-                    {selectedFeedItem.residual.toFixed(2)} {selectedFeedItem.unit.toLowerCase()}
-                  </strong>
-                </p>
-              )}
+              {/* NOTE: deliberately not showing issued/dispensed/residual figures here —
+                  actual feed stock remaining is Store's concern (they use it to avoid
+                  over-issuing). Showing it to attendants was confusing and unnecessary;
+                  the server still hard-blocks a dispense that exceeds real residual
+                  stock (see createLevelFeedLog), so nothing is lost by hiding it. */}
             </div>
 
             {/* Date */}
@@ -568,7 +563,7 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
                 </option>
                 {feedItems.map(item => (
                   <option key={item.id} value={item.id}>
-                    {item.name} — residual {item.residual.toFixed(2)} {item.unit.toLowerCase()}
+                    {item.name}
                   </option>
                 ))}
               </select>

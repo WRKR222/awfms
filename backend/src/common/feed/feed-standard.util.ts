@@ -75,6 +75,31 @@ const HYLINE_SCHEDULE: HyLineWeekStandard[] = [
   { week: 19, phase: 'Prelayer',       feedingGramsPerBird: 89.0, weeklyIntakeKgPerBird: 0.62, weightMinG: 1467, weightMaxG: 1551, cumulativeMortalityPct: 2.1 },
 ];
 
+/**
+ * Canonical 1-indexed HyLine week number for a batch, given its hatch date.
+ *
+ * Week 1 = ageInDays 0-6, Week 2 = ageInDays 7-13, Week 3 = ageInDays 14-20, etc.
+ * i.e. `Math.floor(ageInDays / 7) + 1`, clamped to a minimum of 1.
+ *
+ * IMPORTANT — do not compute this as `dayjs(a).diff(dayjs(b), 'week')` clamped
+ * with `Math.max(1, ...)`. dayjs's week-diff is already the 0-indexed
+ * "brooder week index" (0 for the first 7 days, 1 for the next 7, etc.), so
+ * clamping it to a minimum of 1 silently freezes the result at 1 for the
+ * *entire second week* too (both 0 and 1 clamp/pass-through to 1), and every
+ * later week ends up one behind where it should be. This was happening at
+ * several call sites — always compute the week number through this helper
+ * instead so the whole app agrees on the same number.
+ *
+ * @param dateOfHatch   - batch hatch date
+ * @param referenceDate - the date to evaluate the age at (defaults to today)
+ */
+export function batchAgeWeeks(dateOfHatch: Date, referenceDate: Date = new Date()): number {
+  const ageInDays = Math.floor(
+    (referenceDate.getTime() - dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
+  );
+  return Math.max(1, Math.floor(Math.max(0, ageInDays) / 7) + 1);
+}
+
 /** Returns the HyLine standard for a given age in weeks (1-indexed, clamped to 1-19). */
 export function hylineStandard(ageWeeks: number): HyLineWeekStandard {
   const week = Math.max(1, Math.min(19, Math.round(ageWeeks)));

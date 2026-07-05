@@ -138,7 +138,15 @@ function RowLine({ row }: { row: FeedRequirementRow }) {
 
 // ── Main widget ───────────────────────────────────────────────────────────────
 
-export function BrooderFeedRequirement() {
+interface Props {
+  // Store keeps the residual carry-forward / net-to-issue figures visible
+  // (they need them to plan issuance and avoid over-issuing). Attendants
+  // don't need — and were finding it confusing to see — a "residual feed"
+  // number here, so BrooderPage passes showResidual={false}.
+  showResidual?: boolean;
+}
+
+export function BrooderFeedRequirement({ showResidual = true }: Props) {
   const { data, isLoading } = useBrooderFeedSummary();
 
   if (isLoading) {
@@ -187,7 +195,7 @@ export function BrooderFeedRequirement() {
         </div>
 
         {/* Residual carry-forward & net to issue */}
-        {residual > 0 && (
+        {showResidual && residual > 0 && (
           <div className="flex items-center gap-1.5 text-[10px] text-green-700 dark:text-green-400 font-medium">
             <Archive className="w-3 h-3" />
             <span>

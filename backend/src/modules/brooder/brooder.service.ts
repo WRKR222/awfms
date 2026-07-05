@@ -34,6 +34,7 @@ import {
   brooderRequiredFeedKg,
   brooderAdjustedWeeklyFeedKg,
   brooderWeekStart,
+  batchAgeWeeks,
   checkWeightViolation,
   checkMortalityViolation,
   getFeedingPhase,
@@ -273,7 +274,7 @@ export class BrooderService {
         let hylineWeek: number | null = null;
 
         if (batch && a) {
-          ageWeeks = Math.max(1, dayjs().diff(dayjs(batch.dateOfHatch), 'week'));
+          ageWeeks = batchAgeWeeks(batch.dateOfHatch);
           const std = hylineStandard(ageWeeks);
           hylineWeek = std.week;
           // Use adjusted weekly feed (early/transition days contribute 0 or 50%),
@@ -329,7 +330,7 @@ export class BrooderService {
             batchCode:        batch.batchCode,
             strain:           batch.strain,
             stage:            batch.stage,
-            ageWeeks:         Math.max(1, dayjs().diff(dayjs(batch.dateOfHatch), 'week')),
+            ageWeeks:         batchAgeWeeks(batch.dateOfHatch),
             quantityReceived: batch.quantityReceived,
             dateOfHatch:      dayjs(batch.dateOfHatch).format('YYYY-MM-DD'),
           } : null,
@@ -699,7 +700,7 @@ export class BrooderService {
       const batch = await this.prisma.batch.findUnique({ where: { id: level.assignment.batchId } });
       if (batch) {
         const entryDateObj = new Date(dto.entryDate);
-        ageWeeks          = dayjs(dto.entryDate).diff(dayjs(batch.dateOfHatch), 'week');
+        ageWeeks          = batchAgeWeeks(batch.dateOfHatch, entryDateObj);
         // Anchored to the batch's own hatch date, not the calendar week —
         // see brooderWeekStart() in feed-standard.util.ts.
         const weekStart   = brooderWeekStart(batch.dateOfHatch, entryDateObj);
@@ -915,7 +916,7 @@ export class BrooderService {
     // responsibility.  The effective starting population is:
     //   quantityReceived − mortalityOnArrival
     // and farm deaths are counted only from that adjusted baseline.
-    const ageWeeks = dayjs(dto.logDate).diff(dayjs(batch.dateOfHatch), 'week');
+    const ageWeeks = batchAgeWeeks(batch.dateOfHatch, new Date(dto.logDate));
     const effectiveBirdsReceived = batch.quantityReceived - (batch.mortalityOnArrival ?? 0);
     // currentBirdCount has already been decremented by totalLost in the
     // transaction above, so we must add totalLost back to get the pre-event
@@ -1026,7 +1027,7 @@ export class BrooderService {
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
-    const ageWeeks     = dayjs(dto.sampleDate).diff(dayjs(batch.dateOfHatch), 'week');
+    const ageWeeks     = batchAgeWeeks(batch.dateOfHatch, new Date(dto.sampleDate));
     const averageG     = dto.totalWeightG / dto.sampleCount;
     const weightCheck  = checkWeightViolation(averageG, ageWeeks);
     const std          = weightCheck.standard;
@@ -1109,9 +1110,9 @@ export class BrooderService {
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
-    // A batch placed today has diff = 0 weeks, but is in its first week of
+    // A batch placed today has age 0 days, but is in its first week of
     // life — HyLine weeks are 1-indexed, so floor at 1 for display and lookup.
-    const ageWeeks   = Math.max(1, dayjs().diff(dayjs(batch.dateOfHatch), 'week'));
+    const ageWeeks   = batchAgeWeeks(batch.dateOfHatch);
     // Mortalities on arrival (DOA birds) are not the farm's responsibility.
     // Exclude them from both the baseline population and the death count so
     // they do not inflate the cumulative mortality % or trigger HyLine alerts.
@@ -1224,7 +1225,7 @@ export class BrooderService {
         // (which counts the full standard ration for early days and 50% for
         // transition days), windowed to this batch's own hatch-relative brooder
         // week.  Any feed issued beyond this estimate is treated as residual.
-        const ageWeeks   = dayjs().diff(dayjs(batch.dateOfHatch), 'week');
+        const ageWeeks   = batchAgeWeeks(batch.dateOfHatch, now);
         const batchWeekStart = brooderWeekStart(batch.dateOfHatch, now);
         const estimatedConsumedKg = brooderAdjustedWeeklyFeedKg(
           a.birdCount, ageWeeks, batch.dateOfHatch, batchWeekStart, now,
@@ -1320,6 +1321,82 @@ export class BrooderService {
     };
   }
 
+  // ── Daily feed breakdown (PM analysis — spot skipped days) ────────────────
+  //
+  // Returns how much feed was actually dispensed farm-wide on each day of
+  // the current CALENDAR week (Sun–Sat, same window as getFeedRequirementSummary's
+  // `weekStart`) so the PM can see at a glance whether any day was skipped
+  // entirely — e.g. an attendant missed a shift and no feed log exists for
+  // that date at all.
+  //
+  // This is deliberately a plain per-calendar-date total, independent of the
+  // per-batch hatch-anchored "brooder week" used elsewhere for schedule /
+  // residual math — the PM wants "what happened each day this week", not a
+  // per-batch-relative window that resets on a different day for every batch.
+  //
+  // Only days from the earliest active assignment's placedDate onward are
+  // eligible to be flagged "skipped" (a day before any birds were placed
+  // isn't a missed feeding, there was nothing to feed yet). Days after
+  // today are never included.
+  async getDailyFeedBreakdown() {
+    const weekStart = dayjs().startOf('week');
+    const today      = dayjs().startOf('day');
+    const numDays    = today.diff(weekStart, 'day') + 1;
+
+    const [logs, earliestAssignment] = await Promise.all([
+      this.prisma.brooderLevelFeedLog.findMany({
+        where:  { entryDate: { gte: weekStart.toDate() } },
+        select: { entryDate: true, quantityDispensedKg: true },
+      }),
+      this.prisma.brooderLevelAssignment.findFirst({
+        where:   { level: { isActive: true } },
+        orderBy: { placedDate: 'asc' },
+        select:  { placedDate: true },
+      }).catch(() => null),
+    ]);
+
+    const totalsByDate: Record<string, number> = {};
+    for (const log of logs) {
+      const key = dayjs(log.entryDate).format('YYYY-MM-DD');
+      totalsByDate[key] = (totalsByDate[key] ?? 0) + log.quantityDispensedKg;
+    }
+
+    const eligibleFrom = earliestAssignment?.placedDate
+      ? dayjs(earliestAssignment.placedDate).startOf('day')
+      : null;
+
+    const days: Array<{
+      date:        string;
+      dayLabel:    string;
+      dispensedKg: number;
+      skipped:     boolean;
+    }> = [];
+
+    for (let i = 0; i < numDays; i++) {
+      const d   = weekStart.add(i, 'day');
+      const key = d.format('YYYY-MM-DD');
+      const dispensedKg = Math.round((totalsByDate[key] ?? 0) * 100) / 100;
+      // Only eligible to be flagged if birds had already been placed by this date.
+      const eligible = eligibleFrom ? !d.isBefore(eligibleFrom) : false;
+      days.push({
+        date:        key,
+        dayLabel:    d.format('ddd D MMM'),
+        dispensedKg,
+        skipped:     eligible && dispensedKg === 0,
+      });
+    }
+
+    const totalKg     = Math.round(days.reduce((s, d) => s + d.dispensedKg, 0) * 100) / 100;
+    const skippedDays = days.filter(d => d.skipped).map(d => d.dayLabel);
+
+    return {
+      weekStart:  weekStart.format('YYYY-MM-DD'),
+      days,
+      totalKg,
+      skippedDays,
+    };
+  }
+
   // ── Missed-feed flagging (yesterday's ration not fully given) ────────────
   //
   // Surfaced on Lead Attendant and PM home pages so a shortfall is caught
@@ -1385,7 +1462,7 @@ export class BrooderService {
       const batch = batchMap[a.batchId];
       if (!batch || a.birdCount <= 0) continue;
 
-      const ageWeeksYesterday = yesterday.diff(dayjs(batch.dateOfHatch), 'week');
+      const ageWeeksYesterday = batchAgeWeeks(batch.dateOfHatch, yesterdayDate);
       const feedingPhase = getFeedingPhase(batch.dateOfHatch, yesterdayDate);
 
       // EARLY phase (Days 1–2): never flag as missed — inconsistent eating is normal.

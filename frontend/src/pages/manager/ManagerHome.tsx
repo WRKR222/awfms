@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
+import { BrooderDailyFeedLog } from '../../components/shared/BrooderDailyFeedLog';
 import { BrooderMissedFeedAlert } from '../../components/shared/BrooderMissedFeedAlert';
 import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 import dayjs from '../../lib/dayjs';
@@ -129,6 +130,20 @@ export function ManagerHome() {
           </div>
         </div>
         <BrooderFeedSummary />
+      </div>
+
+      {/* ── Brooder Daily Feed Log (spot skipped days) ── */}
+      <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-7 h-7 bg-amber-500 rounded-xl flex items-center justify-center flex-shrink-0">
+            <Flame className="w-3.5 h-3.5 text-white" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-gray-800 dark:text-gray-100">Brooder — Daily Feed Log</p>
+            <p className="text-[10px] text-gray-400">Feed issued each day this week — for spotting skipped days</p>
+          </div>
+        </div>
+        <BrooderDailyFeedLog />
       </div>
 
       {/* ── Brooder Required vs Dispensed Feed (per row/level, this week) ── */}

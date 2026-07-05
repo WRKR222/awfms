@@ -47,6 +47,17 @@ export class BrooderController {
     return this.svc.getFeedRequirementSummary();
   }
 
+  /** GET /brooder/daily-feed-breakdown
+   *  Per-calendar-day feed totals for the current week (Sun–Sat), so the
+   *  PM can spot any day that was skipped entirely. Not the same window as
+   *  feed-requirement-summary's per-batch hatch-anchored week — this is a
+   *  plain calendar view for day-by-day analysis. */
+  @Get('daily-feed-breakdown')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getDailyFeedBreakdown() {
+    return this.svc.getDailyFeedBreakdown();
+  }
+
   /** GET /brooder/missed-feed-alerts
    *  Flags any row/level whose required ration for YESTERDAY was not fully
    *  dispensed by the time the day rolled over. Surfaced on Lead Attendant

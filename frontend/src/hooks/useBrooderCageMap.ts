@@ -180,6 +180,31 @@ export function useMissedFeedAlerts() {
   });
 }
 
+// ── Daily feed breakdown (calendar week, for PM analysis) ───────────────────
+
+export interface DailyFeedBreakdownDay {
+  date:        string;
+  dayLabel:    string;
+  dispensedKg: number;
+  skipped:     boolean;
+}
+
+export interface DailyFeedBreakdownResponse {
+  weekStart:   string;
+  days:        DailyFeedBreakdownDay[];
+  totalKg:     number;
+  skippedDays: string[];
+}
+
+export function useDailyFeedBreakdown() {
+  return useQuery<DailyFeedBreakdownResponse>({
+    queryKey:      ['brooder-daily-feed-breakdown'],
+    queryFn:       () => api.get('/brooder/daily-feed-breakdown').then(r => r.data),
+    staleTime:     60_000,
+    refetchInterval: 5 * 60_000,
+  });
+}
+
 export function useAssignBrooderLevel() {
   const qc = useQueryClient();
   return useMutation({

@@ -12,14 +12,16 @@
 // ── Week calculation (IMPORTANT) ───────────────────────────────────────────
 // The "current week" row in the standard table and the week number shown on
 // the mortality status card are determined using the BATCH-RELATIVE week
-// (days since hatch ÷ 7), NOT the calendar week.  Batches almost never
-// hatch on a calendar Monday, so calendar-week comparisons will routinely
-// point to the wrong row in the HyLine schedule.
+// (days since hatch ÷ 7, 1-indexed), NOT the calendar week.  Batches almost
+// never hatch on a calendar Monday, so calendar-week comparisons will
+// routinely point to the wrong row in the HyLine schedule.
 //
 // The batch age in weeks is computed as:
-//   Math.max(1, Math.floor(daysSinceHatch / 7))
-// matching the backend's `dayjs(today).diff(dayjs(batch.dateOfHatch), 'week')`
-// which DayJS calculates as a floor of the fractional week difference.
+//   Math.max(1, Math.floor(daysSinceHatch / 7) + 1)
+// matching the backend's `batchAgeWeeks()` in feed-standard.util.ts.
+// Do NOT use `dayjs(today).diff(dayjs(batch.dateOfHatch), 'week')` clamped
+// with Math.max(1, ...) — that expression is 0-indexed, so the clamp only
+// fixes week 1 and silently freezes every later week one behind.
 //
 // ── Mortality display (IMPORTANT) ──────────────────────────────────────────
 // The mortality percentage and "deaths from N birds" display use
@@ -96,12 +98,19 @@ interface FeedSummary {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
- * Batch-relative age in completed weeks.
- * DayJS diff('week') floors the fractional week, matching the backend.
- * Minimum 1 so a batch placed today shows "Week 1" not "Week 0".
+ * Batch-relative age in completed weeks (1-indexed HyLine week number).
+ * Week 1 = days 0-6 since hatch, Week 2 = days 7-13, etc.
+ *
+ * IMPORTANT: this must NOT be computed as `Math.max(1, dayjs().diff(dateOfHatch, 'week'))`.
+ * dayjs's week-diff is already 0-indexed (0 for the first 7 days, 1 for the
+ * next 7, etc.), so clamping it to a minimum of 1 silently freezes the
+ * result at 1 for the entire second week too, and every later week ends up
+ * one behind where it should be. Mirrors the backend's `batchAgeWeeks()`
+ * in feed-standard.util.ts — keep both in sync.
  */
 function batchAgeWeeks(dateOfHatch: string): number {
-  return Math.max(1, dayjs().diff(dayjs(dateOfHatch), 'week'));
+  const ageInDays = dayjs().diff(dayjs(dateOfHatch), 'day');
+  return Math.max(1, Math.floor(Math.max(0, ageInDays) / 7) + 1);
 }
 
 function pctBar(actual: number, ceiling: number) {
