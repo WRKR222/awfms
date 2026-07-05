@@ -1446,6 +1446,100 @@ export class BrooderService {
     };
   }
 
+  // ── Feed issuance calendar (PM analysis — current + past weeks) ───────────
+  //
+  // Multi-week version of getDailyFeedBreakdown, for the PM to review feed
+  // issuance history rather than only the current calendar week. Returns one
+  // entry per week (most recent first), each with the same per-day shape
+  // used by the single-week widget so the frontend can reuse the same
+  // day-cell rendering.
+  //
+  // Deliberately a separate endpoint (rather than adding a `weeks` param to
+  // getDailyFeedBreakdown) so the existing single-week PM-home widget keeps
+  // its small, fast payload — this heavier query is only fetched when the
+  // PM opens the feed history panel, keeping the dashboard itself light.
+  //
+  // `weeks` is clamped to a sane range so a stray large value can't force a
+  // huge scan of feed logs.
+  async getFeedIssuanceCalendar(weeks = 4) {
+    const clampedWeeks = Math.max(1, Math.min(12, Math.round(weeks) || 4));
+
+    const currentWeekStart = dayjs().startOf('week');
+    const rangeStart       = currentWeekStart.subtract(clampedWeeks - 1, 'week');
+    const today            = dayjs().startOf('day');
+
+    const [logs, earliestAssignment] = await Promise.all([
+      this.prisma.brooderLevelFeedLog.findMany({
+        where:  { entryDate: { gte: rangeStart.toDate() } },
+        select: { entryDate: true, quantityDispensedKg: true },
+      }),
+      this.prisma.brooderLevelAssignment.findFirst({
+        where:   { level: { isActive: true } },
+        orderBy: { placedDate: 'asc' },
+        select:  { placedDate: true },
+      }).catch(() => null),
+    ]);
+
+    const totalsByDate: Record<string, number> = {};
+    for (const log of logs) {
+      const key = dayjs(log.entryDate).format('YYYY-MM-DD');
+      totalsByDate[key] = (totalsByDate[key] ?? 0) + log.quantityDispensedKg;
+    }
+
+    const eligibleFrom = earliestAssignment?.placedDate
+      ? dayjs(earliestAssignment.placedDate).startOf('day')
+      : null;
+
+    const weekList: Array<{
+      weekStart:     string;
+      weekLabel:     string;
+      isCurrentWeek: boolean;
+      days: Array<{ date: string; dayLabel: string; dispensedKg: number; skipped: boolean }>;
+      totalKg:       number;
+      skippedDays:   string[];
+    }> = [];
+
+    for (let w = 0; w < clampedWeeks; w++) {
+      const weekStart = rangeStart.add(w, 'week');
+      if (weekStart.isAfter(today)) break; // don't emit future weeks
+
+      const isCurrentWeek = weekStart.isSame(currentWeekStart, 'day');
+      const days: Array<{ date: string; dayLabel: string; dispensedKg: number; skipped: boolean }> = [];
+
+      for (let i = 0; i < 7; i++) {
+        const d = weekStart.add(i, 'day');
+        if (d.isAfter(today)) break; // stop at today within the current week
+        const key = d.format('YYYY-MM-DD');
+        const dispensedKg = Math.round((totalsByDate[key] ?? 0) * 100) / 100;
+        const eligible = eligibleFrom ? !d.isBefore(eligibleFrom) : false;
+        days.push({
+          date:        key,
+          dayLabel:    d.format('ddd D MMM'),
+          dispensedKg,
+          skipped:     eligible && dispensedKg === 0,
+        });
+      }
+
+      const totalKg     = Math.round(days.reduce((s, d) => s + d.dispensedKg, 0) * 100) / 100;
+      const skippedDays = days.filter(d => d.skipped).map(d => d.dayLabel);
+
+      weekList.push({
+        weekStart:     weekStart.format('YYYY-MM-DD'),
+        weekLabel:     `${weekStart.format('D MMM')} – ${weekStart.add(6, 'day').format('D MMM YYYY')}`,
+        isCurrentWeek,
+        days,
+        totalKg,
+        skippedDays,
+      });
+    }
+
+    // Most recent week first — the PM opens this to check "how are we doing
+    // lately", not to scroll from the oldest week down.
+    weekList.reverse();
+
+    return { weeks: weekList };
+  }
+
   // ── Missed-feed flagging (yesterday's ration not fully given) ────────────
   //
   // Surfaced on Lead Attendant and PM home pages so a shortfall is caught

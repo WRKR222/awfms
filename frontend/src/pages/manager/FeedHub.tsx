@@ -12,6 +12,7 @@ import {
   ChevronUp, Truck, Info, Calendar, Hash, DollarSign, FileText,
   BarChart3, Layers, Clock
 } from 'lucide-react';
+import { BrooderFeedCalendar } from '../../components/shared/BrooderFeedCalendar';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type FeedType =
@@ -526,6 +527,9 @@ export function FeedHub() {
           </div>
         )}
       </div>
+
+      {/* ── Feed issuance history (current + past weeks, collapsed by default) ── */}
+      <BrooderFeedCalendar />
 
       {/* ── Delivery history ── */}
       <div>

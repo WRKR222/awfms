@@ -205,6 +205,33 @@ export function useDailyFeedBreakdown() {
   });
 }
 
+// ── Feed issuance calendar (current + past weeks, for PM history review) ────
+// Separate, on-demand hook (not auto-refetched like the home-page widget
+// above) — only fetched once the PM opens the feed history panel, so it
+// never adds weight to the dashboard's default load.
+
+export interface FeedIssuanceCalendarWeek {
+  weekStart:     string;
+  weekLabel:     string;
+  isCurrentWeek: boolean;
+  days:          DailyFeedBreakdownDay[];
+  totalKg:       number;
+  skippedDays:   string[];
+}
+
+export interface FeedIssuanceCalendarResponse {
+  weeks: FeedIssuanceCalendarWeek[];
+}
+
+export function useFeedIssuanceCalendar(weeks: number, enabled = true) {
+  return useQuery<FeedIssuanceCalendarResponse>({
+    queryKey: ['brooder-feed-issuance-calendar', weeks],
+    queryFn:  () => api.get(`/brooder/feed-issuance-calendar?weeks=${weeks}`).then(r => r.data),
+    staleTime: 60_000,
+    enabled,
+  });
+}
+
 export function useAssignBrooderLevel() {
   const qc = useQueryClient();
   return useMutation({

@@ -58,6 +58,18 @@ export class BrooderController {
     return this.svc.getDailyFeedBreakdown();
   }
 
+  /** GET /brooder/feed-issuance-calendar?weeks=4
+   *  Same per-day breakdown as daily-feed-breakdown, but for the current
+   *  week PLUS a configurable number of past weeks (default 4, capped at
+   *  12), returned most-recent-week-first. Powers the PM's "feed issuance
+   *  history" panel — a separate, on-demand endpoint so the lightweight
+   *  single-week widget on the PM home page isn't affected. */
+  @Get('feed-issuance-calendar')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getFeedIssuanceCalendar(@Query('weeks') weeks?: string) {
+    return this.svc.getFeedIssuanceCalendar(weeks ? parseInt(weeks, 10) : 4);
+  }
+
   /** GET /brooder/missed-feed-alerts
    *  Flags any row/level whose required ration for YESTERDAY was not fully
    *  dispensed by the time the day rolled over. Surfaced on Lead Attendant
