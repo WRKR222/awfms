@@ -257,6 +257,145 @@ export function earlyPhaseAdvisoryDailyKg(birdCount: number, ageWeeks: number): 
 }
 
 /**
+ * A single mortality/culling event, as recorded on `BrooderLevelMortalityLog`.
+ *
+ * `date` is the log's business day (matches `logDate`, a date-only column).
+ * `occurredAt`, if provided, is used as a best-effort clock time for that
+ * event (typically the log's `createdAt`) so a mid-day death can be prorated
+ * against the feed already eaten that day. If `occurredAt` doesn't fall on
+ * `date` (e.g. a death from last night logged the next morning), the event
+ * is treated as having happened at the END of `date` — i.e. the population
+ * drop only applies starting the following day. This is the safe default:
+ * we only know the death happened "sometime that day," so we don't discount
+ * feed for hours the bird may still have been alive and eating.
+ */
+export interface MortalityDayEvent {
+  date: Date;
+  count: number;
+  occurredAt?: Date;
+}
+
+/**
+ * Mortality-aware version of `brooderAdjustedWeeklyFeedKg`.
+ *
+ * The plain version multiplies a single (current) bird count by the daily
+ * ration for every day of the week to date. That silently re-prices days
+ * that have ALREADY happened using today's (lower, post-mortality) bird
+ * count — e.g. a batch that started the week at 100 birds and lost 5 on Day
+ * 1 would have Day 1 itself costed at 95 birds instead of the 100 that were
+ * actually present and eating that day.
+ *
+ * This version reconstructs the population day-by-day instead:
+ *   • Day 1 is costed at the population alive during Day 1.
+ *   • Once birds are lost, every subsequent day uses the reduced count.
+ *   • A mid-day loss (has a same-day `occurredAt`) splits that single day
+ *     between the pre-loss and post-loss population, weighted by time of
+ *     day, instead of charging the whole day to one count or the other.
+ *
+ * @param currentBirdCount        - live bird count for the level RIGHT NOW
+ *                                   (i.e. after all mortality to date, same
+ *                                   value BrooderLevelAssignment.birdCount
+ *                                   already holds)
+ * @param ageWeeks                - batch age in completed weeks (ration lookup)
+ * @param dateOfHatch              - batch hatch date (for EARLY/TRANSITION phase)
+ * @param weekStart                - start of the batch-relative brooder week
+ * @param upToDate                 - only count days up to and including this date
+ * @param mortalityEventsThisWeek  - every mortality/culling event for this
+ *                                   level with `date` in [weekStart, upToDate].
+ *                                   Events outside that window are ignored.
+ */
+export function brooderAdjustedWeeklyFeedKgWithMortality(
+  currentBirdCount: number,
+  ageWeeks: number,
+  dateOfHatch: Date,
+  weekStart: Date,
+  upToDate: Date,
+  mortalityEventsThisWeek: MortalityDayEvent[],
+): number {
+  const kgPerBirdPerDay = hylineGramsPerBirdPerDay(ageWeeks) / 1000;
+
+  const wStart = new Date(weekStart);
+  wStart.setUTCHours(0, 0, 0, 0);
+  const cutoff = new Date(upToDate);
+  cutoff.setUTCHours(0, 0, 0, 0);
+
+  // Keep only events that actually fall inside the window we're pricing.
+  const dayKey = (d: Date) => {
+    const x = new Date(d);
+    x.setUTCHours(0, 0, 0, 0);
+    return x.getTime();
+  };
+  const events = mortalityEventsThisWeek.filter(
+    e => dayKey(e.date) >= wStart.getTime() && dayKey(e.date) <= cutoff.getTime(),
+  );
+
+  // Population at the very start of the week = current population + every
+  // bird lost during the week so far (currentBirdCount already has all of
+  // this week's losses subtracted out, so we add them back to walk forward).
+  const totalLossesThisWeek = events.reduce((s, e) => s + e.count, 0);
+  let population = currentBirdCount + totalLossesThisWeek;
+
+  const eventsByDay = new Map<number, MortalityDayEvent[]>();
+  for (const e of events) {
+    const key = dayKey(e.date);
+    if (!eventsByDay.has(key)) eventsByDay.set(key, []);
+    eventsByDay.get(key)!.push(e);
+  }
+
+  let totalKg = 0;
+
+  for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
+    const day = new Date(wStart);
+    day.setUTCDate(day.getUTCDate() + dayOffset);
+    if (day.getTime() > cutoff.getTime()) break;
+
+    const phase = getFeedingPhase(dateOfHatch, day);
+    // Matches brooderAdjustedWeeklyFeedKg: EARLY & STANDARD days are costed
+    // at the full ration, TRANSITION days at 50%.
+    const multiplier = phase === 'TRANSITION' ? 0.5 : 1;
+
+    const dayEvents = (eventsByDay.get(day.getTime()) ?? []).slice().sort((a, b) => {
+      const at = a.occurredAt ? a.occurredAt.getTime() : Infinity;
+      const bt = b.occurredAt ? b.occurredAt.getTime() : Infinity;
+      return at - bt;
+    });
+
+    let runningPop = population;
+    let segmentStartFraction = 0; // 0 = start of day, 1 = end of day
+
+    for (const e of dayEvents) {
+      let fraction = 1; // default: death priced as end-of-day (no proration)
+      if (e.occurredAt) {
+        const sameDay =
+          e.occurredAt.getUTCFullYear() === day.getUTCFullYear() &&
+          e.occurredAt.getUTCMonth() === day.getUTCMonth() &&
+          e.occurredAt.getUTCDate() === day.getUTCDate();
+        if (sameDay) {
+          const secondsIntoDay =
+            e.occurredAt.getUTCHours() * 3600 +
+            e.occurredAt.getUTCMinutes() * 60 +
+            e.occurredAt.getUTCSeconds();
+          fraction = secondsIntoDay / 86400;
+        }
+      }
+      fraction = Math.max(segmentStartFraction, Math.min(1, fraction));
+
+      totalKg += runningPop * kgPerBirdPerDay * multiplier * (fraction - segmentStartFraction);
+      runningPop -= e.count;
+      segmentStartFraction = fraction;
+    }
+
+    // Remainder of the day (or the whole day, if no events) at whatever the
+    // population is after all of that day's losses have been applied.
+    totalKg += runningPop * kgPerBirdPerDay * multiplier * (1 - segmentStartFraction);
+
+    population = runningPop; // carries forward into the next day
+  }
+
+  return Math.round(totalKg * 100) / 100;
+}
+
+/**
  * Computes the adjusted weekly feed requirement for a batch that started
  * mid-week or is still in the early / transition phase this week.
  *

@@ -579,7 +579,9 @@ export class DashboardController {
           survivalRate: batch.quantityReceived > 0
             ? +((batch.currentBirdCount / batch.quantityReceived) * 100).toFixed(1)
             : null,
-          ageWeeks:         Math.floor(ageDays / 7),
+          // 1-indexed HyLine week (days 0-6 = week 1, 7-13 = week 2, ...). Must
+          // match the canonical batchAgeWeeks() in feed-standard.util.ts.
+          ageWeeks:         Math.max(1, Math.floor(Math.max(0, ageDays) / 7) + 1),
           supplierName:     batch.supplier?.name ?? null,
           lastLog:          lastLog ?? null,
           lastFeedEntry:    lastFeedEntry,

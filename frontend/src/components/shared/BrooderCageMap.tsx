@@ -76,7 +76,9 @@ function BatchCard({ batch }: { batch: BrooderBatch }) {
   const ageDays = batch.dateOfHatch
     ? dayjs().diff(dayjs(batch.dateOfHatch), 'day')
     : null;
-  const ageWeeks = ageDays != null ? Math.floor(ageDays / 7) : null;
+  // 1-indexed HyLine week (days 0-6 = week 1, 7-13 = week 2, ...). Must match
+  // the canonical batchAgeWeeks() in backend/feed-standard.util.ts.
+  const ageWeeks = ageDays != null ? Math.max(1, Math.floor(Math.max(0, ageDays) / 7) + 1) : null;
   const ageDisplay =
     ageDays != null
       ? `${ageDays}d (${ageWeeks}w)`

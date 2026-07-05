@@ -84,7 +84,9 @@ function BatchCard({ batch, onTransfer, onEdit }: { batch: any; onTransfer?: (id
   const stage = STAGE_CONFIG[resolvedStageKey];
   const birdType = BIRD_TYPE_LABELS[batch.birdType] ?? { label: batch.birdType, tip: '' };
   const ageDays = dayjs().diff(dayjs(batch.dateOfHatch), 'day');
-  const ageWeeks = Math.floor(ageDays / 7);
+  // 1-indexed HyLine week (days 0-6 = week 1, 7-13 = week 2, ...). Must match
+  // the canonical batchAgeWeeks() in backend/feed-standard.util.ts.
+  const ageWeeks = Math.max(1, Math.floor(Math.max(0, ageDays) / 7) + 1);
   const survivalRate = batch.quantityReceived > 0
     ? ((batch.currentBirdCount / batch.quantityReceived) * 100).toFixed(1)
     : '—';

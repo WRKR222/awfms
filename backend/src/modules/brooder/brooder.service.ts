@@ -33,6 +33,8 @@ import {
   hylineStandard,
   brooderRequiredFeedKg,
   brooderAdjustedWeeklyFeedKg,
+  brooderAdjustedWeeklyFeedKgWithMortality,
+  MortalityDayEvent,
   brooderWeekStart,
   batchAgeWeeks,
   checkWeightViolation,
@@ -238,6 +240,30 @@ export class BrooderService {
       }
     }
 
+    // This week's mortality/culling events per level — needed to reconstruct
+    // the day-by-day population for brooderAdjustedWeeklyFeedKgWithMortality
+    // (see feed-standard.util.ts). Same earliest-week-start batching trick as
+    // feedLogs above; filtered per-level below since each batch's brooder
+    // week can start on a different date.
+    const mortalityLogs = levelIds.length
+      ? await (this.prisma as any).brooderLevelMortalityLog.findMany({
+          where: { levelId: { in: levelIds }, logDate: { gte: earliestWeekStart } },
+        })
+      : [];
+    const mortalityEventsByLevel: Record<string, MortalityDayEvent[]> = {};
+    for (const m of mortalityLogs) {
+      const levelWeekStart = weekStartByLevel[m.levelId];
+      if (levelWeekStart && m.logDate.getTime() >= levelWeekStart.getTime()) {
+        const count = (m.mortalityCount ?? 0) + (m.cullingCount ?? 0);
+        if (count <= 0) continue;
+        (mortalityEventsByLevel[m.levelId] ??= []).push({
+          date: m.logDate,
+          count,
+          occurredAt: m.createdAt,
+        });
+      }
+    }
+
     // Today's feed dispensed per level (for over-issue guard display)
     const todayStr = dayjs().format('YYYY-MM-DD');
     const todayFeedByLevel: Record<string, number> = {};
@@ -281,8 +307,9 @@ export class BrooderService {
           // windowed to this batch's OWN hatch-relative brooder week so it
           // matches dispensedKgThisWeek's window above.
           const levelWeekStart = brooderWeekStart(batch.dateOfHatch);
-          requiredKgThisWeek = brooderAdjustedWeeklyFeedKg(
+          requiredKgThisWeek = brooderAdjustedWeeklyFeedKgWithMortality(
             a.birdCount, ageWeeks, batch.dateOfHatch, levelWeekStart, today,
+            mortalityEventsByLevel[level.id] ?? [],
           );
           // Daily ration is always the standard HyLine figure — enforcement
           // is relaxed in early/transition phases but the figure is still
@@ -704,8 +731,19 @@ export class BrooderService {
         // Anchored to the batch's own hatch date, not the calendar week —
         // see brooderWeekStart() in feed-standard.util.ts.
         const weekStart   = brooderWeekStart(batch.dateOfHatch, entryDateObj);
-        requiredKgForWeek = brooderAdjustedWeeklyFeedKg(
+        const weekMortalityLogs = await (this.prisma as any).brooderLevelMortalityLog.findMany({
+          where: { levelId: dto.levelId, logDate: { gte: weekStart, lte: entryDateObj } },
+        });
+        const weekMortalityEvents: MortalityDayEvent[] = weekMortalityLogs
+          .map((m: any) => ({
+            date: m.logDate,
+            count: (m.mortalityCount ?? 0) + (m.cullingCount ?? 0),
+            occurredAt: m.createdAt,
+          }))
+          .filter((e: MortalityDayEvent) => e.count > 0);
+        requiredKgForWeek = brooderAdjustedWeeklyFeedKgWithMortality(
           level.assignment.birdCount, ageWeeks, batch.dateOfHatch, weekStart, entryDateObj,
+          weekMortalityEvents,
         );
         dailyRationKg     = brooderRequiredFeedKg(level.assignment.birdCount, ageWeeks, 1);
 
@@ -1227,8 +1265,19 @@ export class BrooderService {
         // week.  Any feed issued beyond this estimate is treated as residual.
         const ageWeeks   = batchAgeWeeks(batch.dateOfHatch, now);
         const batchWeekStart = brooderWeekStart(batch.dateOfHatch, now);
-        const estimatedConsumedKg = brooderAdjustedWeeklyFeedKg(
+        const weekMortalityLogs = await (this.prisma as any).brooderLevelMortalityLog.findMany({
+          where: { levelId: level.id, logDate: { gte: batchWeekStart, lte: now } },
+        });
+        const weekMortalityEvents: MortalityDayEvent[] = weekMortalityLogs
+          .map((m: any) => ({
+            date: m.logDate,
+            count: (m.mortalityCount ?? 0) + (m.cullingCount ?? 0),
+            occurredAt: m.createdAt,
+          }))
+          .filter((e: MortalityDayEvent) => e.count > 0);
+        const estimatedConsumedKg = brooderAdjustedWeeklyFeedKgWithMortality(
           a.birdCount, ageWeeks, batch.dateOfHatch, batchWeekStart, now,
+          weekMortalityEvents,
         );
 
         const residual = earlyPhaseResidualKg(issuedKg, estimatedConsumedKg);
