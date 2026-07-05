@@ -9,7 +9,6 @@ import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
 import { BrooderDailyFeedLog } from '../../components/shared/BrooderDailyFeedLog';
-import { BrooderMissedFeedAlert } from '../../components/shared/BrooderMissedFeedAlert';
 import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 import dayjs from '../../lib/dayjs';
 
@@ -66,9 +65,6 @@ export function ManagerHome() {
         <p className="text-xl md:text-2xl font-bold mt-1">{greeting}, {firstName}! 👋</p>
         <p className="text-sm opacity-75 mt-0.5">Production Manager Dashboard</p>
       </div>
-
-      {/* Missed feed alert — yesterday's required ration not fully given */}
-      <BrooderMissedFeedAlert />
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

@@ -1,5 +1,5 @@
 // src/pages/store/IssuancePlanTab.tsx
-// Store (create draft any day / submit Saturday) | Director (approve/reject) | Accountant (read-only)
+// Store (create draft / submit any day) | Director (approve/reject) | Accountant (read-only)
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
@@ -7,7 +7,7 @@ import { useAuthStore } from '../../stores/auth.store';
 import dayjs from '../../lib/dayjs';
 import {
   ClipboardList, Plus, X, CheckCircle, XCircle, FileDown,
-  ChevronDown, ChevronUp, AlertTriangle, Zap, Calendar, Pencil,
+  ChevronDown, ChevronUp, AlertTriangle, Zap, Pencil,
 } from 'lucide-react';
 import { useIssuableStoreItems, FEED_CATEGORIES, MEDICATION_CATEGORIES } from '../../hooks/useIssuableStoreItems';
 
@@ -51,7 +51,7 @@ function fmtKES(n: number) {
   return `KES ${n.toLocaleString('en-KE', { minimumFractionDigits: 2 })}`;
 }
 
-/** Returns the Monday of the NEXT week (the plan is built on Saturday for next week) */
+/** Returns the Monday of the NEXT week (the plan is built ahead for next week) */
 function nextMonday() {
   const today = dayjs();
   const daysUntilMon = (8 - today.day()) % 7 || 7;
@@ -60,9 +60,6 @@ function nextMonday() {
   return today.add(daysUntilMon, 'day');
 }
 
-function isSaturday() {
-  return dayjs().day() === 6;
-}
 
 // ─── Per-item row: its own status badge + approve/reject/edit actions ────────
 
@@ -357,15 +354,12 @@ function PlanCard({
                 onClick={() => submitMutation.mutate()}
                 disabled={
                   submitMutation.isPending ||
-                  (!isSaturday() && plan.type === 'WEEKLY') ||
                   (plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim())
                 }
                 title={
-                  !isSaturday() && plan.type === 'WEEKLY'
-                    ? 'Weekly plans must be submitted on Saturdays — you can keep editing the draft until then'
-                    : plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim()
-                      ? 'A reason is required before this emergency plan can be submitted'
-                      : ''
+                  plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim()
+                    ? 'A reason is required before this emergency plan can be submitted'
+                    : ''
                 }
                 className="flex items-center gap-1.5 bg-brand-green text-white px-4 py-2 rounded-xl text-xs font-semibold disabled:opacity-50"
               >
@@ -577,14 +571,6 @@ function CreatePlanForm({
         </div>
 
         <div className="p-5 space-y-5">
-          {/* Saturday notice for weekly — drafts can be created any day */}
-          {!isEditing && type === 'WEEKLY' && !isSaturday() && (
-            <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-xl px-4 py-3 text-sm text-blue-700 dark:text-blue-400">
-              <Calendar className="w-4 h-4 flex-shrink-0" />
-              You can save this draft now. Come back Saturday to submit it for Director approval.
-            </div>
-          )}
-
           {/* Re-approval notice when editing items that are already decided */}
           {isEditing && editingPlan.items?.some((i: any) => ['APPROVED', 'REJECTED'].includes(i.status)) && (
             <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
@@ -839,15 +825,10 @@ export function IssuancePlanTab() {
             <button
               onClick={() => setShowCreate('WEEKLY')}
               className="flex items-center gap-1.5 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-mid transition-colors"
-              title="Create weekly issuance plan — submit on Saturday for Director approval"
+              title="Create weekly issuance plan"
             >
               <Plus className="w-4 h-4" /> Weekly Plan
             </button>
-            {!isSaturday() && (
-              <span className="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1">
-                <Calendar className="w-3.5 h-3.5" /> Draft now, submit Saturday
-              </span>
-            )}
             <button
               onClick={() => setShowCreate('EMERGENCY')}
               className="flex items-center gap-1.5 bg-amber-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-amber-600 transition-colors"
@@ -883,7 +864,7 @@ export function IssuancePlanTab() {
             No issuance plans found
           </p>
           {canCreate && (
-            <p className="text-xs text-gray-400 mt-1">Draft a weekly plan anytime — submit on Saturday for Director approval.</p>
+            <p className="text-xs text-gray-400 mt-1">Draft and submit a weekly plan anytime for Director approval.</p>
           )}
         </div>
       ) : (

@@ -17,7 +17,6 @@ import { useAuthStore } from '../../stores/auth.store';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
-import { BrooderMissedFeedAlert } from '../../components/shared/BrooderMissedFeedAlert';
 
 // ── Mirrors resolvePageMode in EggCollectionPage exactly ──────────────────────
 type PageMode =
@@ -264,9 +263,6 @@ export function AttendantHome() {
         <p className="text-xl md:text-2xl font-bold mt-1">{greeting}, {firstName}! 👋</p>
         <p className="text-sm opacity-75 mt-0.5">Submit your AM and PM egg-collection sessions below.</p>
       </div>
-
-      {/* Missed feed alert — yesterday's required ration not fully given */}
-      <BrooderMissedFeedAlert />
 
       {/* Returned-session alerts — sourced from today's egg sessions */}
       {returnedSessions.length > 0 && (

@@ -21,10 +21,6 @@ dayjs.extend(utc);
 const DAY_KEYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] as const;
 type DayKey = (typeof DAY_KEYS)[number];
 
-function isSaturday(): boolean {
-  return dayjs().day() === 6;
-}
-
 function sundayOf(monday: Date): Date {
   return dayjs.utc(monday).add(6, 'day').endOf('day').toDate();
 }
@@ -103,8 +99,7 @@ export class IssuancePlanService {
   // ─────────────────────────────────────────────────────────────────────────────
   // CREATE
   // Store can create a DRAFT on any day of the week.
-  // Weekly plans can only be SUBMITTED on Saturday — creating a draft early is
-  // encouraged so the director can review and approve it on that same Saturday.
+  // Weekly plans can now also be SUBMITTED any day of the week.
   // ─────────────────────────────────────────────────────────────────────────────
 
   async createPlan(
@@ -131,7 +126,7 @@ export class IssuancePlanService {
     }
 
     // No day-of-week gate on CREATE — Store can draft at any time.
-    // The submit endpoint enforces Saturday for weekly plans.
+    // No day-of-week gate on SUBMIT either — Store can submit whenever the draft is ready.
 
     const enrichedItems = dto.items.map((item) => {
       let qtyPlanned = Number(item.quantityPlanned ?? 0);
@@ -336,7 +331,7 @@ export class IssuancePlanService {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // SUBMIT (Store: DRAFT → every item PENDING_DIRECTOR, phase → PENDING_DIRECTOR)
-  // Weekly plans must be submitted on Saturday. Director notified immediately.
+  // Weekly plans can be submitted any day of the week. Director notified immediately.
   // ─────────────────────────────────────────────────────────────────────────────
 
   async submitPlan(id: string, userId: string) {
@@ -350,12 +345,6 @@ export class IssuancePlanService {
     }
     if (plan.items.length === 0) {
       throw new BadRequestException('Cannot submit an issuance plan with no items');
-    }
-
-    if (plan.type === 'WEEKLY' && !isSaturday()) {
-      throw new BadRequestException(
-        'Weekly issuance plans can only be submitted on Saturdays for the following week',
-      );
     }
 
     if (plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim()) {
