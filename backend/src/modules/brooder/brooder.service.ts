@@ -382,9 +382,20 @@ export class BrooderService {
           // Use adjusted weekly feed (early/transition days contribute 0 or 50%),
           // windowed to this batch's OWN hatch-relative brooder week so it
           // matches dispensedKgThisWeek's window above.
+          //
+          // This projects the FULL 7-day week (not just days elapsed so far),
+          // so "Schedule" reads as a true weekly total that lines up with
+          // birds × g/bird/day × 7. Days that have already happened are still
+          // priced at whatever the actual population was that day — mortality
+          // events are applied on the specific day they're logged against
+          // (logDate), whether entered live or backdated — and any days still
+          // ahead in the week are projected at the current (latest known)
+          // population, since no future mortality can be known yet.
           const levelWeekStart = brooderWeekStart(batch.dateOfHatch);
+          const levelWeekEnd = new Date(levelWeekStart);
+          levelWeekEnd.setUTCDate(levelWeekEnd.getUTCDate() + 6);
           requiredKgThisWeek = brooderAdjustedWeeklyFeedKgWithMortality(
-            a.birdCount, ageWeeks, batch.dateOfHatch, levelWeekStart, today,
+            a.birdCount, ageWeeks, batch.dateOfHatch, levelWeekStart, levelWeekEnd,
             mortalityEventsByLevel[level.id] ?? [],
           );
           // Daily ration is always the standard HyLine figure — enforcement
@@ -1742,8 +1753,16 @@ export class BrooderService {
     // Daily grand totals (NEW)
     const totalDailyRationKg      = rows.reduce((s, r) => s + r.dailyRationKg, 0);
     const totalDispensedKgToday   = rows.reduce((s, r) => s + r.dispensedKgToday, 0);
-    // Net amount Store should issue this week after deducting ALL residuals
-    const netToIssueKg = Math.max(0, Math.round((totalRequiredKg - totalResidualKg) * 100) / 100);
+    // Net amount Store still needs to issue this week: the full-week
+    // schedule requirement, minus feed already issued this week, minus any
+    // carry-forward/early-phase residual credit. Previously this omitted
+    // totalDispensedKg entirely, so Net-to-Issue was showing the same figure
+    // as Schedule even after feed had already gone out — this restores
+    // "Schedule − Issued − Residual" as the actual outstanding need.
+    const netToIssueKg = Math.max(
+      0,
+      Math.round((totalRequiredKg - totalDispensedKg - totalResidualKg) * 100) / 100,
+    );
 
     return {
       weekStart:                    dayjs().startOf('week').toDate(),
