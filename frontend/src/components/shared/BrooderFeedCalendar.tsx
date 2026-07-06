@@ -5,13 +5,12 @@
 // past weeks, so the PM can review feed issuance history rather than only
 // ever seeing "this week".
 //
-// Deliberately built as a collapsed-by-default panel that only fetches data
-// once opened (see useFeedIssuanceCalendar's `enabled` flag): the PM home
-// page already carries a compact "this week" widget (BrooderDailyFeedLog)
-// for at-a-glance use, so this heavier, multi-week history view lives here
-// instead, tucked away on the Feed Hub page and collapsed until requested.
-// That keeps the dashboard itself from getting congested while still making
-// the full history available one click away.
+// Lives on the PM dashboard (ManagerHome). To avoid piling more onto an
+// already busy dashboard: it opens showing only THIS week by default (a
+// single compact bar-chart row, same footprint as the widget it replaced);
+// past weeks are opt-in — picking a "past N weeks" pill is what triggers
+// the heavier multi-week fetch (see useFeedIssuanceCalendar's `enabled`
+// flag), and the whole panel can be collapsed away entirely via its header.
 
 import { useState } from 'react';
 import { AlertTriangle, CalendarRange, ChevronDown, ChevronUp, Wheat } from 'lucide-react';
@@ -76,8 +75,11 @@ function WeekRow({ week }: { week: import('../../hooks/useBrooderCageMap').FeedI
 }
 
 export function BrooderFeedCalendar() {
-  const [open, setOpen] = useState(false);
-  const [weeks, setWeeks] = useState(4);
+  // Open by default so "feed given so far this week" is visible at a glance
+  // without an extra click — only the *past-weeks* history is opt-in (via
+  // the range pills below), which is where the real payload weight is.
+  const [open, setOpen] = useState(true);
+  const [weeks, setWeeks] = useState(1);
 
   // Only fetches once the panel is opened — keeps this off the default
   // page-load cost entirely.
@@ -93,9 +95,9 @@ export function BrooderFeedCalendar() {
           <CalendarRange className="w-4 h-4 text-amber-500" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">Feed Issuance History</p>
+          <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">Feed Issuance — This Week &amp; History</p>
           <p className="text-xs text-gray-400 dark:text-gray-500">
-            Daily feed dispensed, current week and past weeks
+            Feed dispensed per day · tap a range below for past weeks
           </p>
         </div>
         {open ? <ChevronUp className="w-4 h-4 text-gray-400 flex-shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-400 flex-shrink-0" />}

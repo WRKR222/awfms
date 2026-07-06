@@ -8,7 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
-import { BrooderDailyFeedLog } from '../../components/shared/BrooderDailyFeedLog';
+import { BrooderFeedCalendar } from '../../components/shared/BrooderFeedCalendar';
 import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 import dayjs from '../../lib/dayjs';
 
@@ -128,19 +128,11 @@ export function ManagerHome() {
         <BrooderFeedSummary />
       </div>
 
-      {/* ── Brooder Daily Feed Log (spot skipped days) ── */}
-      <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <div className="w-7 h-7 bg-amber-500 rounded-xl flex items-center justify-center flex-shrink-0">
-            <Flame className="w-3.5 h-3.5 text-white" />
-          </div>
-          <div>
-            <p className="text-xs font-bold text-gray-800 dark:text-gray-100">Brooder — Daily Feed Log</p>
-            <p className="text-[10px] text-gray-400">Feed issued each day this week — for spotting skipped days</p>
-          </div>
-        </div>
-        <BrooderDailyFeedLog />
-      </div>
+      {/* ── Brooder Feed Issuance Calendar (this week, expandable to past weeks) ──
+          Shows this week's daily totals by default; past-week history and its
+          extra data fetch only happen if the PM taps a range pill, so it
+          doesn't add weight to the dashboard unless actually requested. */}
+      <BrooderFeedCalendar />
 
       {/* ── Brooder Required vs Dispensed Feed (per row/level, this week) ── */}
       <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4">
