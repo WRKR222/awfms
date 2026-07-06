@@ -115,6 +115,20 @@ interface BrooderLog {
   level?:            { label: string } | null;
 }
 
+// Per-day feed/mortality rollup from GET /brooder/batches/:id/population-record-sheet.
+// `source` tells you which method covered that date — GENERAL means the Lead
+// Attendant used General Record (whole batch, no row/level breakdown);
+// ROW_LEVEL means it came from the per-row/level feed & mortality logs. The
+// backend enforces these are mutually exclusive per (batch, date), so a date
+// only ever has one source.
+interface PopulationRecordDay {
+  date:           string;
+  source:         'GENERAL' | 'ROW_LEVEL' | null;
+  feedKg:         number;
+  mortalityCount: number;
+  cullingCount:   number;
+}
+
 interface TreatmentLog {
   id:            string;
   batchId:       string;
@@ -134,7 +148,13 @@ interface TreatmentLog {
 // ── Session timeline (grouped log history display) ────────────────────────────
 
 function sessionMeta(s?: string | null) {
-  return SESSION_OPTIONS.find(o => o.value === s) ?? { icon: '📋', label: 'General', color: 'text-gray-500' };
+  // NOTE: a null/missing logSession means this is a Daily Entry (environmental
+  // readings logged once for the day rather than per MORNING/MIDDAY/EVENING
+  // session) — NOT a "General Record". General Records are a separate concept
+  // (batch-wide feed/mortality logged when birds can't be tracked per row/
+  // level) rendered by <PopulationRecordSummary>, so the label here must stay
+  // distinct from that term or the two get confused in the timeline.
+  return SESSION_OPTIONS.find(o => o.value === s) ?? { icon: '📋', label: 'Daily', color: 'text-gray-500' };
 }
 
 function SessionEntry({ log }: { log: BrooderLog }) {
@@ -894,6 +914,40 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
   );
 }
 
+function PopulationRecordSummary({ record }: { record: PopulationRecordDay }) {
+  const isGeneral = record.source === 'GENERAL';
+  return (
+    <div className="flex gap-2 items-start">
+      <div className="flex flex-col items-center pt-0.5">
+        <ClipboardList className="w-3.5 h-3.5 text-gray-500" />
+        <div className="w-px flex-1 bg-gray-200 dark:bg-gray-700 mt-1 min-h-[8px]" />
+      </div>
+      <div className="pb-3 flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-gray-500">
+            Feed &amp; Mortality
+          </span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+            isGeneral
+              ? 'bg-gray-100 dark:bg-gray-700 text-gray-500'
+              : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+          }`}>
+            {isGeneral ? 'General Record — whole batch' : 'Row/Level breakdown'}
+          </span>
+        </div>
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-600 dark:text-gray-300">
+          {record.feedKg > 0 && <span>Feed: <strong>{record.feedKg.toFixed(2)}kg</strong></span>}
+          {record.mortalityCount > 0 && <span>Deaths: <strong>{record.mortalityCount}</strong></span>}
+          {record.cullingCount > 0 && <span>Culled: <strong>{record.cullingCount}</strong></span>}
+          {record.feedKg === 0 && record.mortalityCount === 0 && record.cullingCount === 0 && (
+            <span className="text-gray-400 italic">No feed/mortality recorded</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Batch panel — inline below the cage map ───────────────────────────────────
 
 function BatchPanel({ batch }: { batch: BrooderBatch }) {
@@ -926,6 +980,18 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
     staleTime: 30_000,
   });
 
+  // Per-day feed/mortality rollup, merging General Record entries with
+  // row/level entries and tagging which method covered each date. Using the
+  // rollup endpoint (rather than fetching the two raw general-log lists
+  // separately) means the "which days are covered, and how" logic lives in
+  // one place on the backend instead of being re-derived in the UI.
+  const { data: populationSheet = [] } = useQuery<PopulationRecordDay[]>({
+    queryKey: ['brooder-population-record-sheet', batch.id],
+    queryFn:  () => api.get(`/brooder/batches/${batch.id}/population-record-sheet?days=30`).then(r => r.data).catch(() => []),
+    enabled:  historyOpen,
+    staleTime: 30_000,
+  });
+
   // Last log for header summary
   const { data: lastArr = [] } = useQuery<BrooderLog[]>({
     queryKey: ['brooder-last-log', batch.id],
@@ -947,6 +1013,24 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
     }
     return Object.entries(map).sort(([a], [b]) => (a < b ? 1 : -1));
   }, [logs]);
+
+  // Lookup by date for the feed/mortality rollup (population-record-sheet).
+  // Kept separate from `grouped` since these aren't environmental readings —
+  // a different data type entirely, and shouldn't count toward the
+  // MORNING/MIDDAY/EVENING/Daily completeness tally above.
+  const populationByDate = useMemo(() => {
+    const map: Record<string, PopulationRecordDay> = {};
+    for (const row of populationSheet) map[row.date] = row;
+    return map;
+  }, [populationSheet]);
+
+  // Union of every date that has EITHER an environmental log OR a
+  // feed/mortality rollup entry, so a day logged only via General Record
+  // still shows up in History instead of being invisible.
+  const allDates = useMemo(() => {
+    const dates = new Set<string>([...grouped.map(([d]) => d), ...Object.keys(populationByDate)]);
+    return Array.from(dates).sort((a, b) => (a < b ? 1 : -1));
+  }, [grouped, populationByDate]);
 
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4 space-y-4">
@@ -1028,20 +1112,22 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
       {historyOpen && (
         <div className="border-t border-gray-100 dark:border-dark-border pt-3 space-y-4">
           <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Environment Log History</p>
-          {grouped.length === 0
+          {allDates.length === 0
             ? <p className="text-xs text-gray-400 text-center py-4">No logs yet.</p>
-            : grouped.map(([date, dayLogs]) => {
+            : allDates.map(date => {
+                const dayLogs      = grouped.find(([d]) => d === date)?.[1] ?? [];
+                const popRecord    = populationByDate[date];
                 const isToday  = date === today;
                 const daysAgo  = dayjs(today).diff(dayjs(date), 'day');
                 const dateLabel = isToday ? 'Today' : daysAgo === 1 ? 'Yesterday' : `${daysAgo}d ago`;
                 const sessionLogs = dayLogs.filter(l => l.logSession != null);
                 const hasDailyLog = dayLogs.some(l => l.logSession == null);
                 const totalLogged = sessionLogs.length + (hasDailyLog ? 1 : 0);
-                const TOTAL_EXPECTED = 4; // MORNING + MIDDAY + EVENING + General daily
+                const TOTAL_EXPECTED = 4; // MORNING + MIDDAY + EVENING + Daily — environmental readings only
                 return (
                   <div key={date}>
                     {/* Day header */}
-                    <div className="flex items-center gap-2 mb-2">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <span className="text-xs font-bold text-gray-700 dark:text-gray-200">
                         {dayjs(date).format('ddd D MMM YYYY')}
                       </span>
@@ -1051,7 +1137,7 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
                         : 'bg-gray-100 dark:bg-gray-700 text-gray-500'
                       }`}>{dateLabel}</span>
                       <span className="text-[10px] text-gray-400">
-                        {totalLogged}/{TOTAL_EXPECTED} entries
+                        {totalLogged}/{TOTAL_EXPECTED} environmental
                         {totalLogged < TOTAL_EXPECTED && (
                           <span className="ml-1 text-amber-500">· {TOTAL_EXPECTED - totalLogged} pending</span>
                         )}
@@ -1061,17 +1147,34 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
                           </span>
                         )}
                       </span>
+                      {popRecord && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+                          popRecord.source === 'GENERAL'
+                            ? 'bg-gray-100 dark:bg-gray-700 text-gray-500'
+                            : 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+                        }`}>
+                          {popRecord.source === 'GENERAL' ? 'General Record' : 'Row/Level'}
+                        </span>
+                      )}
                     </div>
-                    {/* Sessions as timeline */}
-                    <div className="pl-2">
-                      {dayLogs
-                        .sort((a, b) => {
-                          const order = { MORNING: 0, MIDDAY: 1, EVENING: 2 };
-                          return (order[a.logSession as keyof typeof order] ?? 3) -
-                                 (order[b.logSession as keyof typeof order] ?? 3);
-                        })
-                        .map(log => <SessionEntry key={log.id} log={log} />)}
-                    </div>
+                    {/* Sessions as timeline (environmental readings — Morning/Midday/Evening/Daily) */}
+                    {dayLogs.length > 0 && (
+                      <div className="pl-2">
+                        {dayLogs
+                          .sort((a, b) => {
+                            const order = { MORNING: 0, MIDDAY: 1, EVENING: 2 };
+                            return (order[a.logSession as keyof typeof order] ?? 3) -
+                                   (order[b.logSession as keyof typeof order] ?? 3);
+                          })
+                          .map(log => <SessionEntry key={log.id} log={log} />)}
+                      </div>
+                    )}
+                    {/* Feed & mortality rollup for the day (General Record or Row/Level) */}
+                    {popRecord && (
+                      <div className="pl-2 mt-1">
+                        <PopulationRecordSummary record={popRecord} />
+                      </div>
+                    )}
                   </div>
                 );
               })}
