@@ -294,6 +294,8 @@ model User {
   brooderHeatLogs          BrooderHeatLog[]         @relation("BrooderHeatLoggedBy")
   brooderLevelFeedLogs     BrooderLevelFeedLog[]    @relation("BrooderLevelFeedLoggedBy")
   brooderMortalityLogs     BrooderLevelMortalityLog[] @relation("BrooderMortalityLoggedBy")
+  brooderGeneralFeedLogs      BrooderGeneralFeedLog[]      @relation("BrooderGeneralFeedLoggedBy")
+  brooderGeneralMortalityLogs BrooderGeneralMortalityLog[] @relation("BrooderGeneralMortalityLoggedBy")
 
   @@map("users")
 }
@@ -406,6 +408,8 @@ model Batch {
   dailyEggAggregates    DailyEggAggregate[]
   brooderLevelAssignments  BrooderLevelAssignment[]
   brooderMortalityLogs     BrooderLevelMortalityLog[]
+  brooderGeneralFeedLogs      BrooderGeneralFeedLog[]
+  brooderGeneralMortalityLogs BrooderGeneralMortalityLog[]
 
   @@index([houseId])
   @@index([stage])
@@ -1559,6 +1563,59 @@ model BrooderLevelMortalityLog {
   @@map("brooder_level_mortality_logs")
 }
 
+/// Batch-wide ("general population") feed log, for when the Lead Attendant
+/// cannot break the count down by individual row/level — e.g. a single mixed
+/// trough, a small batch not yet split across the cage map, or a day where
+/// levels weren't tracked separately. Mutually exclusive with
+/// BrooderLevelFeedLog on a (batch, date) basis: the service refuses to
+/// create one if the other already exists for that batch + date, so the
+/// same feeding is never counted twice when totals are rolled up.
+model BrooderGeneralFeedLog {
+  id                  String   @id @default(uuid())
+  batchId             String   @map("batch_id")
+  feedType            FeedType @map("feed_type")
+  storeItemId         String?  @map("store_item_id") // links to the StoreItem actually issued via stock-out; NULL for entries logged without a store link
+  unit                String?  @map("unit")           // snapshot of the linked StoreItem's stock unit at log time
+  entryDate           DateTime @map("entry_date") @db.Date
+  quantityDispensedKg Float    @map("quantity_dispensed_kg")
+  requiredKgForDay    Float?   @map("required_kg_for_day") // snapshot of the whole-batch HyLine daily ration at log time
+  notes               String?
+  loggedById          String   @map("logged_by_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  batch     Batch      @relation(fields: [batchId], references: [id])
+  loggedBy  User       @relation("BrooderGeneralFeedLoggedBy", fields: [loggedById], references: [id])
+  storeItem StoreItem? @relation("BrooderGeneralFeedLogStoreItem", fields: [storeItemId], references: [id])
+
+  // No per-day uniqueness — mirrors BrooderLevelFeedLog, which also allows
+  // multiple feedings (e.g. morning + evening) logged the same day.
+  @@index([batchId, entryDate])
+  @@index([storeItemId, entryDate])
+  @@map("brooder_general_feed_logs")
+}
+
+/// Batch-wide ("general population") mortality/culling log — the same
+/// escape hatch as BrooderGeneralFeedLog above, for mortality. Mutually
+/// exclusive with BrooderLevelMortalityLog on a (batch, date) basis.
+model BrooderGeneralMortalityLog {
+  id             String   @id @default(uuid())
+  batchId        String   @map("batch_id")
+  logDate        DateTime @map("log_date") @db.Date
+  mortalityCount Int      @default(0) @map("mortality_count")
+  cullingCount   Int      @default(0) @map("culling_count")
+  cause          String?
+  notes          String?
+  loggedById     String   @map("logged_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  batch    Batch @relation(fields: [batchId], references: [id])
+  loggedBy User  @relation("BrooderGeneralMortalityLoggedBy", fields: [loggedById], references: [id])
+
+  @@index([batchId, logDate])
+  @@map("brooder_general_mortality_logs")
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ─── PHASE 2: STORE INVENTORY MANAGEMENT ─────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1586,6 +1643,7 @@ model StoreItem {
   issuancePlanItems       IssuancePlanItem[]
   brooderFeedLogs         BrooderLevelFeedLog[]     @relation("BrooderFeedLogStoreItem")
   brooderTreatmentLogs    BrooderTreatmentLog[]     @relation("BrooderTreatmentLogStoreItem")
+  brooderGeneralFeedLogs  BrooderGeneralFeedLog[]   @relation("BrooderGeneralFeedLogStoreItem")
 
   @@index([category])
   @@index([isActive])

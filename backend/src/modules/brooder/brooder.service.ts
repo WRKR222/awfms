@@ -53,6 +53,8 @@ import {
   CreateLevelFeedLogSchema,
   CreateLevelMortalityLogSchema,
   CreateBrooderWeightSampleSchema,
+  CreateGeneralFeedLogSchema,
+  CreateGeneralMortalityLogSchema,
 } from './brooder.dto';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
@@ -99,6 +101,80 @@ export class BrooderService {
       this.notifications.notifyRole(UserRole.MANAGER, type as any, title, message, { entityId, entityType: 'Brooder' }),
       this.notifications.notifyRole(UserRole.OWNER,   type as any, title, message, { entityId, entityType: 'Brooder' }),
     ]);
+  }
+
+  // ── General-population vs. row/level clash guards ────────────────────────
+  //
+  // The "general population record sheet" lets a Lead Attendant who cannot
+  // break feed/mortality down by row+level record it against the whole
+  // batch instead. Because BrooderLevelFeedLog/BrooderLevelMortalityLog and
+  // BrooderGeneralFeedLog/BrooderGeneralMortalityLog are separate tables
+  // that both ultimately roll up into the same batch totals, the two must
+  // never both hold data for the same (batch, date) — that would double
+  // count. These four guards enforce that mutual exclusion in both
+  // directions, at write time, in the application layer.
+
+  /** All row/level IDs currently assigned to a batch (current occupancy only —
+   *  mirrors the same limitation as the rest of the cage-map code, which has
+   *  no historical-assignment table to look further back than "now"). */
+  private async getBatchLevelIds(batchId: string): Promise<string[]> {
+    const assignments = await this.prisma.brooderLevelAssignment.findMany({
+      where:  { batchId },
+      select: { levelId: true },
+    });
+    return assignments.map(a => a.levelId);
+  }
+
+  private async assertNoLevelSpecificFeedLog(batchId: string, entryDate: Date) {
+    const levelIds = await this.getBatchLevelIds(batchId);
+    if (levelIds.length === 0) return;
+    const existing = await this.prisma.brooderLevelFeedLog.findFirst({
+      where: { levelId: { in: levelIds }, entryDate },
+    });
+    if (existing) {
+      throw new ConflictException(
+        'Feed has already been logged at row/level detail for this batch on this date. ' +
+        'To avoid double counting, continue logging by row/level for this date instead of ' +
+        'using the general population sheet.',
+      );
+    }
+  }
+
+  private async assertNoGeneralFeedLog(batchId: string, entryDate: Date) {
+    const existing = await this.prisma.brooderGeneralFeedLog.findFirst({
+      where: { batchId, entryDate },
+    });
+    if (existing) {
+      throw new ConflictException(
+        'A general population feed entry already exists for this batch on this date. ' +
+        'To avoid double counting, edit or delete that entry instead of logging by row/level.',
+      );
+    }
+  }
+
+  private async assertNoLevelSpecificMortalityLog(batchId: string, logDate: Date) {
+    const existing = await this.prisma.brooderLevelMortalityLog.findFirst({
+      where: { batchId, logDate },
+    });
+    if (existing) {
+      throw new ConflictException(
+        'Mortality has already been logged at row/level detail for this batch on this date. ' +
+        'To avoid double counting, continue logging by row/level for this date instead of ' +
+        'using the general population sheet.',
+      );
+    }
+  }
+
+  private async assertNoGeneralMortalityLog(batchId: string, logDate: Date) {
+    const existing = await this.prisma.brooderGeneralMortalityLog.findFirst({
+      where: { batchId, logDate },
+    });
+    if (existing) {
+      throw new ConflictException(
+        'A general population mortality entry already exists for this batch on this date. ' +
+        'To avoid double counting, edit or delete that entry instead of logging by row/level.',
+      );
+    }
   }
 
   // ── Control standard reference table ─────────────────────────────────────
@@ -666,6 +742,20 @@ export class BrooderService {
   async createLevelFeedLog(input: unknown, userId: string) {
     const dto = parseOrThrow(CreateLevelFeedLogSchema, input);
 
+    // Guard against double counting: if the whole batch has already been
+    // fed on the general population sheet for this date, a row/level entry
+    // for the same date would count that feeding twice when totals roll up.
+    const levelForClashCheck = await this.prisma.brooderLevel.findUnique({
+      where: { id: dto.levelId },
+      select: { assignment: { select: { batchId: true } } },
+    });
+    if (levelForClashCheck?.assignment) {
+      await this.assertNoGeneralFeedLog(
+        levelForClashCheck.assignment.batchId,
+        new Date(`${dto.entryDate}T00:00:00.000Z`),
+      );
+    }
+
     // A feed type can only be logged against a store item Store has actually
     // issued (stock-out) this week — keeps the attendant from logging feed
     // that was never physically handed to them, and keeps residual math
@@ -912,6 +1002,9 @@ export class BrooderService {
       throw new BadRequestException('Batch ID does not match the batch assigned to this level');
     }
 
+    // Guard against double counting against the general population sheet.
+    await this.assertNoGeneralMortalityLog(dto.batchId, new Date(dto.logDate));
+
     const totalLost = dto.mortalityCount + dto.cullingCount;
     if (totalLost > level.assignment.birdCount) {
       throw new BadRequestException(
@@ -1028,6 +1121,306 @@ export class BrooderService {
         loggedBy: { select: { id: true, fullName: true } },
       },
     });
+  }
+
+  // ── General (batch-wide) population feed log ─────────────────────────────
+  //
+  // For a Lead Attendant who cannot break feed dispensed down by row/level.
+  // Records against the whole batch's live population instead. Refused if
+  // row/level-specific feed already exists for the same batch + date.
+  // Supports backdating like its row/level counterpart.
+
+  async createGeneralFeedLog(input: unknown, userId: string) {
+    const dto = parseOrThrow(CreateGeneralFeedLogSchema, input);
+    const entryDate = new Date(`${dto.entryDate}T00:00:00.000Z`);
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    // ── Clash guard: block only if row/level data already covers this date.
+    // Multiple general feed entries on the same date (e.g. morning + evening)
+    // ARE allowed — this mirrors BrooderLevelFeedLog, which has no per-day
+    // uniqueness either. The only thing that must never happen is BOTH a
+    // general and a row/level entry existing for the same batch + date.
+    await this.assertNoLevelSpecificFeedLog(dto.batchId, entryDate);
+
+    // Same store-item residual bookkeeping as the row/level version — a
+    // feed type can only be logged against a store item Store has actually
+    // issued, and only up to whatever residual is left of it.
+    let feedItemUnit: string | null = null;
+    let residualAfterKg: number | null = null;
+    if (dto.storeItemId) {
+      const [issued, item] = await Promise.all([
+        this.prisma.storeStockOut.aggregate({
+          where: { storeItemId: dto.storeItemId },
+          _sum: { quantityOut: true },
+        }),
+        this.prisma.storeItem.findUnique({ where: { id: dto.storeItemId }, select: { unit: true } }),
+      ]);
+      if (!issued._sum.quantityOut || Number(issued._sum.quantityOut) <= 0) {
+        throw new BadRequestException(
+          'This feed item has never been issued from the store and cannot be logged. Ask Store to issue it first.',
+        );
+      }
+      feedItemUnit = item?.unit ?? null;
+
+      const residualInfo = await this.storeInventory.getResidualForItem(dto.storeItemId);
+      const residualBefore = residualInfo?.residual ?? 0;
+      if (dto.quantityDispensedKg > residualBefore) {
+        throw new BadRequestException(
+          `Not enough of this item left to log. Residual remaining: ${residualBefore.toFixed(3)} ` +
+          `${feedItemUnit ?? 'kg'}, requested: ${dto.quantityDispensedKg}. ` +
+          `Ask Store to issue more before logging further.`,
+        );
+      }
+      residualAfterKg = Math.round((residualBefore - dto.quantityDispensedKg) * 1000) / 1000;
+    }
+
+    // Whole-batch daily ration reference (advisory — mirrors the "schedule
+    // is a reference, not an enforced cap" principle already used for
+    // row/level feed logs' informational banners).
+    const ageWeeks = batchAgeWeeks(batch.dateOfHatch, entryDate);
+    const dailyRationKg = brooderRequiredFeedKg(batch.currentBirdCount, ageWeeks, 1);
+
+    const result = await this.prisma.brooderGeneralFeedLog.create({
+      data: {
+        batchId:             dto.batchId,
+        feedType:            dto.feedType,
+        storeItemId:         dto.storeItemId ?? null,
+        unit:                feedItemUnit,
+        entryDate,
+        quantityDispensedKg: dto.quantityDispensedKg,
+        requiredKgForDay:    dailyRationKg,
+        notes:               dto.notes ?? null,
+        loggedById:          userId,
+      },
+    });
+
+    // Mirror into FeedIntakeLog so farm-wide stock deduction stays consistent
+    // with the row/level path. Best-effort — never surfaces as a 500.
+    try {
+      const mirrored = await this.prisma.feedIntakeLog.upsert({
+        where: {
+          batchId_entryDate_feedType: {
+            batchId:   dto.batchId,
+            entryDate,
+            feedType:  dto.feedType as any,
+          },
+        },
+        create: {
+          batchId:             dto.batchId,
+          houseId:             batch.houseId,
+          feedType:            dto.feedType as any,
+          entryDate,
+          quantityDispensedKg: dto.quantityDispensedKg,
+          wastageKg:           0,
+          notes:               `General population sheet entry${dto.notes ? ` | ${dto.notes}` : ''}`,
+          recordedById:        userId,
+        },
+        update: {
+          quantityDispensedKg: { increment: dto.quantityDispensedKg },
+        },
+      });
+      if (mirrored.notes && !mirrored.notes.includes('General population')) {
+        try {
+          await this.prisma.feedIntakeLog.update({
+            where: { id: mirrored.id },
+            data: { notes: `${mirrored.notes} | +${dto.quantityDispensedKg}kg via General population sheet` },
+          });
+        } catch { /* non-critical */ }
+      }
+    } catch (mirrorErr: any) {
+      this.logger.warn(
+        `[BrooderGeneralFeedLog] FeedIntakeLog mirror failed for batch ${dto.batchId} ` +
+        `on ${dto.entryDate} (${mirrorErr?.code ?? mirrorErr?.message}). ` +
+        `Brooder log was saved. PM should reconcile stock manually if needed.`,
+      );
+    }
+
+    this.refresh();
+    return { ...result, residualAfterKg };
+  }
+
+  async listGeneralFeedLogs(batchId: string, limit = 30) {
+    return this.prisma.brooderGeneralFeedLog.findMany({
+      where:   { batchId },
+      orderBy: { entryDate: 'desc' },
+      take:    limit,
+      include: { loggedBy: { select: { id: true, fullName: true } } },
+    });
+  }
+
+  // ── General (batch-wide) population mortality log ────────────────────────
+  //
+  // Same escape hatch as above, for mortality/culling. Decrements
+  // Batch.currentBirdCount directly (there's no level to decrement) and
+  // runs the same Req 7 cumulative-mortality check as the row/level path.
+
+  async createGeneralMortalityLog(input: unknown, userId: string) {
+    const dto = parseOrThrow(CreateGeneralMortalityLogSchema, input);
+    const logDate = new Date(dto.logDate);
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const totalLost = dto.mortalityCount + dto.cullingCount;
+    if (totalLost > batch.currentBirdCount) {
+      throw new BadRequestException(
+        `Cannot record ${totalLost} deaths/cullings — this batch only has ${batch.currentBirdCount} birds.`,
+      );
+    }
+
+    // ── Clash guard: block only if row/level data already covers this date.
+    // Multiple general mortality entries on the same date ARE allowed (a
+    // morning check and an evening check, for example) — this mirrors how
+    // row/level mortality logs already behave (no per-day uniqueness there
+    // either). The only thing that must never happen is BOTH a general and
+    // a row/level entry existing for the same batch + date, since that
+    // would double count when totals are rolled up.
+    await this.assertNoLevelSpecificMortalityLog(dto.batchId, logDate);
+
+    const [log] = await this.prisma.$transaction([
+      this.prisma.brooderGeneralMortalityLog.create({
+        data: {
+          batchId:        dto.batchId,
+          logDate,
+          mortalityCount: dto.mortalityCount,
+          cullingCount:   dto.cullingCount,
+          cause:          dto.cause ?? null,
+          notes:          dto.notes ?? null,
+          loggedById:     userId,
+        },
+      }),
+      this.prisma.batch.update({
+        where: { id: dto.batchId },
+        data:  { currentBirdCount: { decrement: totalLost } },
+      }),
+    ]);
+
+    // ── Req 7: cumulative mortality vs. HyLine standard (same as row/level) ─
+    const ageWeeks = batchAgeWeeks(batch.dateOfHatch, logDate);
+    const effectiveBirdsReceived = batch.quantityReceived - (batch.mortalityOnArrival ?? 0);
+    const farmDeaths = effectiveBirdsReceived - (batch.currentBirdCount - totalLost);
+    const mortalityCheck = checkMortalityViolation(farmDeaths, effectiveBirdsReceived, ageWeeks);
+
+    if (mortalityCheck.violated) {
+      const title   = `⚠ Brooder Mortality Alert — ${batch.batchCode}`;
+      const message = `${mortalityCheck.message} (General population sheet). Actual: ${mortalityCheck.actualPct}%, Standard: ≤${mortalityCheck.standardPct}%.`;
+      await this.alertRoles('BROODER_MORTALITY_HIGH', title, message, dto.batchId);
+      this.logger.warn(`[BrooderControl] ${title}: ${message}`);
+    }
+
+    // Farm Events: emit HealthEvent so this appears in the manager's Farm
+    // Events history alongside row/level entries. Best-effort.
+    try {
+      const causeNote  = dto.cause ? ` (${dto.cause})` : '';
+      const eventNotes =
+        `Brooder mortality — General population sheet.` +
+        (dto.mortalityCount > 0 ? ` Deaths: ${dto.mortalityCount}.` : '') +
+        (dto.cullingCount   > 0 ? ` Culled: ${dto.cullingCount}.`   : '') +
+        causeNote +
+        (dto.notes ? ` Notes: ${dto.notes}` : '');
+
+      await this.prisma.healthEvent.create({
+        data: {
+          batchId:       dto.batchId,
+          eventType:     'BIRD_MORTALITY' as any,
+          eventDate:     logDate,
+          affectedCount: totalLost,
+          outcome:       eventNotes,
+          recordedById:  userId,
+        },
+      });
+    } catch (_) { /* best-effort — mortality log itself already succeeded */ }
+
+    this.refresh();
+    return {
+      ...log,
+      updatedBirdCount:   batch.currentBirdCount - totalLost,
+      mortalityViolation: mortalityCheck.violated ? mortalityCheck : null,
+    };
+  }
+
+  async listGeneralMortalityLogs(batchId: string, limit = 30) {
+    return this.prisma.brooderGeneralMortalityLog.findMany({
+      where:   { batchId },
+      orderBy: { logDate: 'desc' },
+      take:    limit,
+      include: { loggedBy: { select: { id: true, fullName: true } } },
+    });
+  }
+
+  // ── Combined population record sheet ─────────────────────────────────────
+  //
+  // Per-calendar-day rollup of feed + mortality for a batch, merging
+  // general-population entries with row/level entries so the Lead
+  // Attendant can see, at a glance, which days already have data and by
+  // which method — useful for spotting gaps before backdating an entry.
+  async getPopulationRecordSheet(batchId: string, days = 30) {
+    const since = dayjs().subtract(days, 'day').startOf('day').toDate();
+
+    const levelIds = await this.getBatchLevelIds(batchId);
+
+    const [generalFeed, levelFeed, generalMortality, levelMortality] = await Promise.all([
+      this.prisma.brooderGeneralFeedLog.findMany({
+        where: { batchId, entryDate: { gte: since } },
+      }),
+      levelIds.length
+        ? this.prisma.brooderLevelFeedLog.findMany({
+            where: { levelId: { in: levelIds }, entryDate: { gte: since } },
+          })
+        : Promise.resolve([]),
+      this.prisma.brooderGeneralMortalityLog.findMany({
+        where: { batchId, logDate: { gte: since } },
+      }),
+      this.prisma.brooderLevelMortalityLog.findMany({
+        where: { batchId, logDate: { gte: since } },
+      }),
+    ]);
+
+    const byDate = new Map<string, {
+      date: string;
+      source: 'GENERAL' | 'ROW_LEVEL' | null;
+      feedKg: number;
+      mortalityCount: number;
+      cullingCount: number;
+    }>();
+
+    const ensure = (date: string) => {
+      if (!byDate.has(date)) {
+        byDate.set(date, { date, source: null, feedKg: 0, mortalityCount: 0, cullingCount: 0 });
+      }
+      return byDate.get(date)!;
+    };
+
+    for (const f of generalFeed) {
+      const key = dayjs(f.entryDate).format('YYYY-MM-DD');
+      const row = ensure(key);
+      row.source = 'GENERAL';
+      row.feedKg += f.quantityDispensedKg;
+    }
+    for (const f of levelFeed) {
+      const key = dayjs(f.entryDate).format('YYYY-MM-DD');
+      const row = ensure(key);
+      row.source = 'ROW_LEVEL';
+      row.feedKg += f.quantityDispensedKg;
+    }
+    for (const m of generalMortality) {
+      const key = dayjs(m.logDate).format('YYYY-MM-DD');
+      const row = ensure(key);
+      row.source = 'GENERAL';
+      row.mortalityCount += m.mortalityCount;
+      row.cullingCount   += m.cullingCount;
+    }
+    for (const m of levelMortality) {
+      const key = dayjs(m.logDate).format('YYYY-MM-DD');
+      const row = ensure(key);
+      row.source = 'ROW_LEVEL';
+      row.mortalityCount += m.mortalityCount;
+      row.cullingCount   += m.cullingCount;
+    }
+
+    return Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date));
   }
 
   // ── Bird weight — check against HyLine standard (Req 6 + Req 7) ─────────

@@ -24,7 +24,7 @@ import {
   Bird, Thermometer, Droplets, Sun, Plus, X, AlertTriangle,
   ChevronDown, ChevronUp, Flame, Calendar, Clock, HeartCrack,
   Syringe, Pill, FlaskConical, Stethoscope, CheckCircle2,
-  Gauge, Wind, ChevronRight,
+  Gauge, Wind, ChevronRight, ClipboardList,
 } from 'lucide-react';
 import { BrooderCageMapGrid }        from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement }    from '../../components/shared/BrooderFeedRequirement';
@@ -33,6 +33,7 @@ import { BrooderReassignModal }      from '../../components/shared/BrooderReassi
 import { BrooderHeatLogModal }       from '../../components/shared/BrooderHeatLogModal';
 import { BrooderLevelFeedLogModal }  from '../../components/shared/BrooderLevelFeedLogModal';
 import { BrooderMortalityLogModal }  from '../../components/shared/BrooderMortalityLogModal';
+import { BrooderGeneralRecordModal } from '../../components/shared/BrooderGeneralRecordModal';
 import { BrooderWeightLogModal }     from '../../components/shared/BrooderWeightLogModal';
 import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 import { useBrooderCageMap, useBrooderRowsAndLevels } from '../../hooks/useBrooderCageMap';
@@ -899,6 +900,7 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
   const [showSessionLog,  setShowSessionLog]  = useState(false);
   const [showDailyEntry,  setShowDailyEntry]  = useState(false);
   const [showTreatment,   setShowTreatment]   = useState(false);
+  const [showGeneralRecord, setShowGeneralRecord] = useState(false);
   const [historyOpen,   setHistoryOpen]   = useState(false);
   const [treatHistOpen, setTreatHistOpen] = useState(false);
 
@@ -1004,6 +1006,12 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
           <Stethoscope className="w-3.5 h-3.5" />
           Treatment
         </button>
+        <button onClick={() => setShowGeneralRecord(true)}
+          className="flex items-center gap-1.5 bg-gray-700 dark:bg-gray-600 text-white rounded-xl px-4 py-2.5 text-xs font-semibold hover:bg-gray-800 transition-colors"
+          title="Log feed or mortality for the whole batch when you can't break it down by row/level">
+          <ClipboardList className="w-3.5 h-3.5" />
+          General Record
+        </button>
         <button onClick={() => setHistoryOpen(o => !o)}
           className="flex items-center gap-1.5 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl px-4 py-2.5 text-xs font-semibold hover:bg-gray-50 dark:hover:bg-dark-bg transition-colors">
           History
@@ -1101,6 +1109,9 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
       {showSessionLog && <SessionLogModal batch={batch} onClose={() => setShowSessionLog(false)} />}
       {showDailyEntry && <DailyEntryModal batch={batch} onClose={() => setShowDailyEntry(false)} />}
       {showTreatment && <TreatmentModal batch={batch} onClose={() => setShowTreatment(false)} />}
+      {showGeneralRecord && (
+        <BrooderGeneralRecordModal batch={batch} onClose={() => setShowGeneralRecord(false)} />
+      )}
     </div>
   );
 }

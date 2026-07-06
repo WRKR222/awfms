@@ -162,6 +162,47 @@ export class BrooderController {
     return this.svc.getBatchMortalityLogs(batchId);
   }
 
+  // ── General (batch-wide) population feed & mortality logs ───────────────
+  // For when the Lead Attendant cannot track feed/mortality per row/level
+  // and needs to record it against the whole population instead. The
+  // service blocks these if row/level-specific entries already exist for
+  // the same batch + date (and vice versa) to prevent double counting.
+  // Both support backdating.
+
+  @Get('batches/:batchId/general-feed-logs')
+  @RequirePermission(Permission.FEED_VIEW)
+  listGeneralFeedLogs(@Param('batchId') batchId: string, @Query('limit') limit?: string) {
+    return this.svc.listGeneralFeedLogs(batchId, limit ? Number(limit) : 30);
+  }
+
+  @Post('general-feed-logs')
+  @RequirePermission(Permission.FEED_INTAKE_LOG)
+  createGeneralFeedLog(@Body() body: any, @CurrentUser() user: any) {
+    return this.svc.createGeneralFeedLog(body, user.id);
+  }
+
+  @Get('batches/:batchId/general-mortality-logs')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  listGeneralMortalityLogs(@Param('batchId') batchId: string, @Query('limit') limit?: string) {
+    return this.svc.listGeneralMortalityLogs(batchId, limit ? Number(limit) : 30);
+  }
+
+  @Post('general-mortality-logs')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  createGeneralMortalityLog(@Body() body: any, @CurrentUser() user: any) {
+    return this.svc.createGeneralMortalityLog(body, user.id);
+  }
+
+  /** GET /brooder/batches/:batchId/population-record-sheet?days=30
+   *  Per-day rollup of feed + mortality for a batch, merging general and
+   *  row/level entries, so the attendant can see which days already have
+   *  data (and by which method) before adding a backdated entry. */
+  @Get('batches/:batchId/population-record-sheet')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getPopulationRecordSheet(@Param('batchId') batchId: string, @Query('days') days?: string) {
+    return this.svc.getPopulationRecordSheet(batchId, days ? Number(days) : 30);
+  }
+
   // ── Bird weight samples (Req 6 + Req 7) ─────────────────────────────────
   /** POST /brooder/weight-samples
    *  Req 6: Returns the HyLine standard band for the batch's age week.

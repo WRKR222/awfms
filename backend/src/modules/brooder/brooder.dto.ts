@@ -104,6 +104,44 @@ export const CreateLevelMortalityLogSchema = z.object({
 );
 export type CreateLevelMortalityLogDto = z.infer<typeof CreateLevelMortalityLogSchema>;
 
+// ── General (batch-wide) population feed log ──────────────────────────────
+// Used when the Lead Attendant cannot break feed down by individual
+// row/level — records against the whole batch instead. The server refuses
+// to save this if row/level-specific feed has already been logged for the
+// same batch + date (see BrooderService.assertNoLevelSpecificFeedLog),
+// so totals are never double-counted.
+export const CreateGeneralFeedLogSchema = z.object({
+  batchId:             z.string().uuid(),
+  feedType:            z.enum([
+    'CHICK_MASH', 'GROWER_MASH', 'LAYER_MASH',
+    'KIENYEJI_STARTER', 'KIENYEJI_GROWER', 'KIENYEJI_FINISHER',
+  ]),
+  storeItemId:         z.string().uuid().optional(),
+  entryDate:           z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  quantityDispensedKg: z.number().positive().max(20000),
+  notes:               z.string().max(500).optional(),
+});
+export type CreateGeneralFeedLogDto = z.infer<typeof CreateGeneralFeedLogSchema>;
+
+// ── General (batch-wide) population mortality log ─────────────────────────
+// Same escape hatch as above, for mortality/culling. Mutually exclusive
+// with row/level mortality logs for the same batch + date.
+export const CreateGeneralMortalityLogSchema = z.object({
+  batchId:        z.string().uuid(),
+  logDate:        z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  mortalityCount: z.number().int().min(0).default(0),
+  cullingCount:   z.number().int().min(0).default(0),
+  cause: z.enum([
+    'DISEASE', 'INJURY', 'HEAT_STRESS', 'PREDATOR',
+    'CULLED_SICK', 'CULLED_LOW_PRODUCTIVITY', 'CULLED_OVERPOPULATION', 'UNKNOWN',
+  ]).optional(),
+  notes: z.string().max(500).optional(),
+}).refine(
+  d => d.mortalityCount + d.cullingCount > 0,
+  { message: 'At least one of mortalityCount or cullingCount must be > 0' },
+);
+export type CreateGeneralMortalityLogDto = z.infer<typeof CreateGeneralMortalityLogSchema>;
+
 // ── Bird weight sample (checked against HyLine control standard) ──────────
 // Preferred: pass levelId — the service derives batchId + rowId from the
 // level's active assignment, so weight can be logged from any occupied
