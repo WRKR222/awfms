@@ -1,7 +1,7 @@
 {
   "name": "awfms-backend",
   "version": "1.0.0",
-  "description": "Anza Whole Foods Farm Management System \u2014 NestJS API",
+  "description": "Anza Whole Foods Farm Management System — NestJS API",
   "private": true,
   "scripts": {
     "build": "nest build",
@@ -74,8 +74,5 @@
     "ts-jest": "^29.1.2",
     "tsconfig-paths": "^4.2.0",
     "typescript-eslint": "^8.59.2"
-  },
-  "prisma": {
-    "seed": "node prisma/seed.js"
   }
 }
