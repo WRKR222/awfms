@@ -15,19 +15,25 @@
 --   totals are never double-counted. Both support backdating like their
 --   row/level counterparts.
 --
--- Fix (2026-07-06): all primary keys and foreign keys in this project are
--- TEXT (Prisma `String @id @default(uuid())`, no `@db.Uuid`), not native
--- Postgres UUID — see brooder_treatment_logs in
--- 20260626000000_brooder_daily_log_v2 for the established pattern. The
--- original version of this migration used native UUID columns, which
--- cannot form a foreign key against the TEXT-typed batches.id/users.id/
--- store_items.id columns (Postgres error 42804). Corrected to TEXT below.
+-- Fix (2026-07-06): this project's ID columns are NOT uniformly typed.
+-- batches.id and users.id are TEXT (Prisma `String @id @default(uuid())`,
+-- no `@db.Uuid` — see brooder_treatment_logs in
+-- 20260626000000_brooder_daily_log_v2). store_items.id, however, was
+-- created as native Postgres UUID back in
+-- 20260508120000_phase2_store_changes, and every later migration that
+-- references it (e.g. 20260702000000_brooder_store_item_residual_links)
+-- correctly uses UUID for the FK column. The original version of this
+-- migration used UUID for everything, which failed against the
+-- TEXT-typed batches.id/users.id (42804). The following fix then
+-- over-corrected to TEXT for everything, which fails the opposite way
+-- against the UUID-typed store_items.id (42804). Each FK column below is
+-- now typed to match what its specific referenced table actually uses.
 
 CREATE TABLE IF NOT EXISTS "brooder_general_feed_logs" (
   "id"                     TEXT             NOT NULL DEFAULT gen_random_uuid()::text,
   "batch_id"               TEXT             NOT NULL REFERENCES "batches"("id"),
   "feed_type"              "FeedType"       NOT NULL,
-  "store_item_id"          TEXT             REFERENCES "store_items"("id") ON DELETE SET NULL,
+  "store_item_id"          UUID             REFERENCES "store_items"("id") ON DELETE SET NULL,
   "unit"                   TEXT,
   "entry_date"             DATE             NOT NULL,
   "quantity_dispensed_kg"  DOUBLE PRECISION NOT NULL,
