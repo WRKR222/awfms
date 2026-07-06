@@ -28,6 +28,7 @@
     "node_modules",
     "dist",
     "prisma",
+    "prisma.config.ts",
     "scripts",
     "src/modules/__tests__"
   ]
