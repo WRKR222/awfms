@@ -87,7 +87,51 @@ const HYLINE_SCHEDULE: HyLineWeekStandard[] = [
  * @param dateOfHatch   - batch hatch date
  * @param referenceDate - the date to evaluate the age at (defaults to today)
  */
-export function batchAgeWeeks(dateOfHatch: Date, referenceDate: Date = new Date()): number {
+/**
+ * ── Farm-local "today" ──────────────────────────────────────────────────
+ *
+ * Every "which day/week is this batch on" calculation below compares
+ * `dateOfHatch` / `entryDate` / `logDate` (calendar dates the farm enters
+ * in ITS OWN local day) against "now". If "now" is taken as the bare
+ * server clock (`new Date()`) and the server runs in UTC — which is the
+ * default for Railway and most cloud hosts — while the farm operates in
+ * Africa/Nairobi (UTC+3), there's a real ~3-hour window every single day
+ * (from Nairobi's local midnight until the server's UTC clock also rolls
+ * over) where the farm has already turned over to a new calendar day but
+ * the server still thinks it's the previous one.
+ *
+ * Any week boundary that falls inside that window — e.g. the Week 1 →
+ * Week 2 changeover between Day 7 and Day 8 — gets computed against the
+ * WRONG day for those 3 hours: entries the farm considers "Day 8" still
+ * get bucketed into "Day 7"'s (still "current") week, so the two days'
+ * feed shows up merged together until the server clock catches up. This
+ * is why brooder control live status can briefly show feed issued for
+ * both Day 7 and Day 8 under what's still labeled as one week.
+ *
+ * Fix: shift "now" by the farm's fixed UTC offset before doing any
+ * calendar-day arithmetic, so "today" always means the farm's local day,
+ * not the server's. Africa/Nairobi does not observe DST, so a constant
+ * offset is safe and never needs seasonal adjustment.
+ */
+export const FARM_UTC_OFFSET_HOURS = 3; // Africa/Nairobi (EAT), fixed year-round
+
+/** "Now", shifted so its UTC calendar fields read as the farm's local wall-clock. */
+export function farmNow(): Date {
+  return new Date(Date.now() + FARM_UTC_OFFSET_HOURS * 60 * 60 * 1000);
+}
+
+/**
+ * Today's calendar date in the farm's local timezone, expressed as a UTC
+ * midnight Date — the same convention used for `dateOfHatch` / `entryDate`
+ * / `logDate` (all `@db.Date` columns) — so it can be compared or diffed
+ * against them directly with no further conversion.
+ */
+export function farmTodayUtcMidnight(): Date {
+  const shifted = farmNow();
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()));
+}
+
+export function batchAgeWeeks(dateOfHatch: Date, referenceDate: Date = farmNow()): number {
   const ageInDays = Math.floor(
     (referenceDate.getTime() - dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
   );
@@ -183,7 +227,7 @@ export function withTolerance(kg: number, tolerance = 0.1): { min: number; max: 
  * @param dateOfHatch   - batch hatch date
  * @param referenceDate - the date whose containing brooder-week we want (defaults to today)
  */
-export function brooderWeekStart(dateOfHatch: Date, referenceDate: Date = new Date()): Date {
+export function brooderWeekStart(dateOfHatch: Date, referenceDate: Date = farmNow()): Date {
   const ageInDays = Math.floor(
     (referenceDate.getTime() - dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
   );

@@ -33,6 +33,11 @@ export interface BrooderLevelData {
   dispensedKgThisWeek: number;
   dispensedKgToday:    number;          // NEW — for over-issue guard in modal
   feedVariancePercent: number | null;
+  // NEW — where this week's feed came from. 'GENERAL' or 'MIXED' means at
+  // least some of it was logged via the general-population sheet rather
+  // than against this specific row/level, which is why feedVariancePercent
+  // is null in that case (can't score an estimate against the standard).
+  feedSource: 'ROW_LEVEL' | 'GENERAL' | 'MIXED' | null;
   // Weight control — latest sample logged against this row/level this week.
   weightCheck: {
     sampleDate:     string;
@@ -81,6 +86,7 @@ export interface FeedRequirementLevel {
   dispensedKgThisWeek: number;
   dispensedKgToday:    number;
   feedVariancePercent: number | null;
+  feedSource:          'ROW_LEVEL' | 'GENERAL' | 'MIXED' | null;
   exactMatch:          boolean;
 }
 

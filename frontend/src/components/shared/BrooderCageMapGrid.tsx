@@ -145,6 +145,9 @@ function LevelCell({
             {level.requiredKgThisWeek != null && (
               <p className={`text-[9px] mt-0.5 ${varianceColor(level.feedVariancePercent)}`}>
                 Week: {level.dispensedKgThisWeek}/{level.requiredKgThisWeek}kg
+                {(level.feedSource === 'GENERAL' || level.feedSource === 'MIXED') && (
+                  <span className="text-white/30"> · incl. general log</span>
+                )}
               </p>
             )}
             {level.weightCheck && (

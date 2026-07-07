@@ -33,10 +33,13 @@ import {
 import { useBrooderFeedSummary, type FeedRequirementRow, type FeedRequirementLevel } from '../../hooks/useBrooderCageMap';
 
 // ── Schedule vs actual pill ───────────────────────────────────────────────────
-function VariancePill({ pct }: { pct: number | null }) {
+function VariancePill({ pct, viaGeneral }: { pct: number | null; viaGeneral?: boolean }) {
   if (pct === null) {
-    // requiredKgThisWeek is 0 — no birds or data not yet available
-    return <span className="text-[10px] text-gray-400 italic">No schedule</span>;
+    return (
+      <span className="text-[10px] text-gray-400 italic">
+        {viaGeneral ? 'Via general log' : 'No schedule'}
+      </span>
+    );
   }
   if (Math.abs(pct) <= 1) {
     return (
@@ -125,7 +128,7 @@ function RowLine({ row }: { row: FeedRequirementRow }) {
                     {l.dispensedKgThisWeek}
                     <span className="text-gray-300 dark:text-gray-600">/{l.requiredKgThisWeek ?? '—'}kg</span>
                   </span>
-                  <VariancePill pct={lvlVariance ?? null} />
+                  <VariancePill pct={lvlVariance ?? null} viaGeneral={l.feedSource === 'GENERAL' || l.feedSource === 'MIXED'} />
                 </div>
               </div>
             );

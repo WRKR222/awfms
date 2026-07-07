@@ -40,6 +40,8 @@ import {
   checkMortalityViolation,
   isEarlyPhaseNotEating,
   NOT_EATING_ALERT_DAYS,
+  farmNow,
+  farmTodayUtcMidnight,
 } from '../../common/feed/feed-standard.util';
 import {
   AssignLevelSchema,
@@ -263,8 +265,9 @@ export class BrooderService {
       : [];
     const batchMap = Object.fromEntries(batches.map(b => [b.id, b]));
 
-    // Today's heat log per row
-    const today = dayjs().startOf('day').toDate();
+    // Today's heat log per row — farm-local calendar day (see farmTodayUtcMidnight
+    // for why this can't just be dayjs().startOf('day') on the server clock).
+    const today = farmTodayUtcMidnight();
     const heatLogs = await this.prisma.brooderHeatLog.findMany({
       where: { rowId: { in: rows.map(r => r.id) }, logDate: { gte: today } },
       orderBy: { createdAt: 'desc' },
@@ -296,7 +299,7 @@ export class BrooderService {
     // in one query, then filter per-level (each may have a different start).
     const earliestWeekStart = weekStartValues.length
       ? new Date(Math.min(...weekStartValues.map(d => d.getTime())))
-      : dayjs().startOf('week').toDate();
+      : dayjs(farmNow()).startOf('week').toDate();
 
     const feedLogs = levelIds.length
       ? await this.prisma.brooderLevelFeedLog.findMany({
@@ -308,6 +311,59 @@ export class BrooderService {
       const levelWeekStart = weekStartByLevel[f.levelId];
       if (levelWeekStart && f.entryDate.getTime() >= levelWeekStart.getTime()) {
         feedByLevel[f.levelId] = (feedByLevel[f.levelId] ?? 0) + f.quantityDispensedKg;
+      }
+    }
+
+    // ── General-population feed, folded into the same live-status view ────
+    //
+    // A Lead Attendant who can't attribute feed to a specific row/level logs
+    // it against the whole batch instead (BrooderGeneralFeedLog — see
+    // createGeneralFeedLog). assertNoLevelSpecificFeedLog/assertNoGeneralFeedLog
+    // guarantee a batch never has BOTH sources for the same date, but until
+    // now this endpoint only ever read BrooderLevelFeedLog, so a batch fed
+    // entirely via the general sheet showed up here as if nothing had been
+    // fed at all. Fixed by reading BrooderGeneralFeedLog too, apportioning
+    // it pro-rata across the batch's levels (by live bird count) so each
+    // level's "dispensed" figure reflects reality either way.
+    //
+    // The apportioned amount can't be checked against any one row/level's
+    // schedule with confidence though — a general entry says nothing about
+    // how much of it actually reached THIS row — so any level whose batch
+    // has a general entry in the current brooder week gets its schedule %
+    // (feedVariancePercent) suppressed rather than shown as a possibly
+    // misleading number.
+    const batchWeekStart: Record<string, Date> = {};
+    const batchBirdTotal: Record<string, number> = {};
+    for (const row of rows) {
+      for (const level of row.levels) {
+        const a = level.assignment;
+        if (!a) continue;
+        const batch = batchMap[a.batchId];
+        if (batch && !batchWeekStart[a.batchId]) {
+          batchWeekStart[a.batchId] = brooderWeekStart(batch.dateOfHatch);
+        }
+        batchBirdTotal[a.batchId] = (batchBirdTotal[a.batchId] ?? 0) + a.birdCount;
+      }
+    }
+
+    const generalFeedLogs = batchIds.length
+      ? await this.prisma.brooderGeneralFeedLog.findMany({
+          where: { batchId: { in: batchIds }, entryDate: { gte: earliestWeekStart } },
+        })
+      : [];
+    const generalFeedThisWeekByBatch: Record<string, number> = {};
+    const generalFeedTodayByBatch: Record<string, number> = {};
+    const hasGeneralThisWeekByBatch: Record<string, boolean> = {};
+    for (const f of generalFeedLogs) {
+      const start = batchWeekStart[f.batchId];
+      if (start && f.entryDate.getTime() >= start.getTime()) {
+        generalFeedThisWeekByBatch[f.batchId] =
+          (generalFeedThisWeekByBatch[f.batchId] ?? 0) + f.quantityDispensedKg;
+        hasGeneralThisWeekByBatch[f.batchId] = true;
+      }
+      if (dayjs(f.entryDate).format('YYYY-MM-DD') === todayStr) {
+        generalFeedTodayByBatch[f.batchId] =
+          (generalFeedTodayByBatch[f.batchId] ?? 0) + f.quantityDispensedKg;
       }
     }
 
@@ -336,7 +392,7 @@ export class BrooderService {
     }
 
     // Today's feed dispensed per level (for over-issue guard display)
-    const todayStr = dayjs().format('YYYY-MM-DD');
+    const todayStr = dayjs(today).format('YYYY-MM-DD');
     const todayFeedByLevel: Record<string, number> = {};
     for (const f of feedLogs) {
       if (dayjs(f.entryDate).format('YYYY-MM-DD') === todayStr) {
@@ -398,8 +454,28 @@ export class BrooderService {
           // shown as an advisory reference on the UI.
           dailyRationKg = brooderRequiredFeedKg(a.birdCount, ageWeeks, 1);
         }
-        const dispensedThisWeek = feedByLevel[level.id] ?? 0;
-        const dispensedToday    = todayFeedByLevel[level.id] ?? 0;
+        // Pro-rata share of this batch's general-population feed, by this
+        // level's share of the batch's live bird count (only relevant when
+        // the batch has any general-sheet entries in-window — see above).
+        const usedGeneralThisWeek = a ? !!hasGeneralThisWeekByBatch[a.batchId] : false;
+        const birdShare = a && batchBirdTotal[a.batchId] > 0
+          ? a.birdCount / batchBirdTotal[a.batchId]
+          : 0;
+        const generalShareThisWeek = a
+          ? (generalFeedThisWeekByBatch[a.batchId] ?? 0) * birdShare
+          : 0;
+        const generalShareToday = a
+          ? (generalFeedTodayByBatch[a.batchId] ?? 0) * birdShare
+          : 0;
+
+        const rowLevelDispensedThisWeek = feedByLevel[level.id] ?? 0;
+        const dispensedThisWeek = rowLevelDispensedThisWeek + generalShareThisWeek;
+        const dispensedToday    = (todayFeedByLevel[level.id] ?? 0) + generalShareToday;
+        const feedSource: 'ROW_LEVEL' | 'GENERAL' | 'MIXED' | null =
+          rowLevelDispensedThisWeek > 0 && usedGeneralThisWeek ? 'MIXED'
+          : usedGeneralThisWeek ? 'GENERAL'
+          : rowLevelDispensedThisWeek > 0 ? 'ROW_LEVEL'
+          : null;
 
         // ── Weight check (this week, this exact row/level) ─────────────────
         const latestWeight = latestWeightByLevel[level.id] ?? null;
@@ -448,8 +524,15 @@ export class BrooderService {
           requiredKgThisWeek,
           dispensedKgThisWeek: Math.round(dispensedThisWeek * 100) / 100,
           dispensedKgToday:    Math.round(dispensedToday    * 100) / 100,
+          feedSource,
+          // Schedule % is only meaningful when we know feed actually reached
+          // THIS row/level. A general-population entry is batch-wide — this
+          // level's share above is only an estimate, apportioned pro-rata by
+          // bird count — so it isn't scored against the standard for weeks
+          // where general logging was used instead of row/level logging.
+          // The (apportioned) dispensed total above is still shown either way.
           feedVariancePercent:
-            requiredKgThisWeek && requiredKgThisWeek > 0
+            !usedGeneralThisWeek && requiredKgThisWeek && requiredKgThisWeek > 0
               ? Math.round(((dispensedThisWeek - requiredKgThisWeek) / requiredKgThisWeek) * 1000) / 10
               : null,
           weightCheck,
@@ -1650,6 +1733,7 @@ export class BrooderService {
             requiredKgThisWeek:  l.requiredKgThisWeek,
             dispensedKgThisWeek: l.dispensedKgThisWeek,
             feedVariancePercent: l.feedVariancePercent,
+            feedSource:          l.feedSource,
             exactMatch:          l.feedVariancePercent === 0,
             // daily (NEW)
             dispensedKgToday:    l.dispensedKgToday,
@@ -1875,9 +1959,9 @@ export class BrooderService {
   // actually dispensed to it on that calendar date.
 
   async getMissedFeedAlerts() {
-    const yesterday    = dayjs().subtract(1, 'day').startOf('day');
-    const yesterdayDate = yesterday.toDate();
-    const yesterdayStr  = yesterday.format('YYYY-MM-DD');
+    // Farm-local yesterday — not the server's, see farmTodayUtcMidnight().
+    const yesterdayDate = new Date(farmTodayUtcMidnight().getTime() - 24 * 60 * 60 * 1000);
+    const yesterdayStr  = dayjs(yesterdayDate).format('YYYY-MM-DD');
 
     // Fetch all currently-assigned active levels, then filter by placedDate in
     // the loop — Prisma does not allow scalar filters inside a nested-relation
@@ -1918,6 +2002,19 @@ export class BrooderService {
       dispensedByLevel[f.levelId] = (dispensedByLevel[f.levelId] ?? 0) + f.quantityDispensedKg;
     }
 
+    // A batch fed via the general-population sheet instead of row/level has
+    // no per-level breakdown to check against the standard — that's the
+    // whole point of the general sheet — so it must never be reported here
+    // as having "missed" feed just because BrooderLevelFeedLog is empty for
+    // it. Skip any batch that has a general entry for yesterday.
+    const generalFeedYesterday = batchIds.length
+      ? await this.prisma.brooderGeneralFeedLog.findMany({
+          where: { batchId: { in: batchIds }, entryDate: yesterdayDate },
+          select: { batchId: true },
+        })
+      : [];
+    const batchesUsedGeneralYesterday = new Set(generalFeedYesterday.map(f => f.batchId));
+
     const alerts: Array<{
       levelId: string; levelLabel: string; rowId: string; rowLabel: string;
       batchId: string; batchCode: string; date: string;
@@ -1928,6 +2025,7 @@ export class BrooderService {
       const a = level.assignment!;
       const batch = batchMap[a.batchId];
       if (!batch || a.birdCount <= 0) continue;
+      if (batchesUsedGeneralYesterday.has(a.batchId)) continue;
 
       const ageWeeksYesterday = batchAgeWeeks(batch.dateOfHatch, yesterdayDate);
 
@@ -1967,7 +2065,7 @@ export class BrooderService {
   // even if inconsistently.  Zero intake through Day 7 requires investigation.
 
   async checkEarlyPhaseNotEating(): Promise<void> {
-    const now = new Date();
+    const now = farmNow();
 
     // Find all active batches that are at or past Day 7
     const batchCandidates = await this.prisma.batch.findMany({
@@ -1982,15 +2080,26 @@ export class BrooderService {
     });
 
     for (const batch of batchCandidates) {
-      // Sum all feed consumed by this batch since hatch
-      const feedLogs = await this.prisma.brooderLevelFeedLog.aggregate({
-        where: {
-          level: { assignment: { batchId: batch.id } },
-          entryDate: { gte: batch.dateOfHatch },
-        },
-        _sum: { quantityDispensedKg: true },
-      });
-      const totalConsumedKg = Number(feedLogs._sum.quantityDispensedKg ?? 0);
+      // Sum all feed consumed by this batch since hatch — both row/level
+      // entries AND general-population sheet entries. A batch fed entirely
+      // via the general sheet has zero BrooderLevelFeedLog rows by design,
+      // so checking that table alone would wrongly flag it as not eating.
+      const [levelFeed, generalFeed] = await Promise.all([
+        this.prisma.brooderLevelFeedLog.aggregate({
+          where: {
+            level: { assignment: { batchId: batch.id } },
+            entryDate: { gte: batch.dateOfHatch },
+          },
+          _sum: { quantityDispensedKg: true },
+        }),
+        this.prisma.brooderGeneralFeedLog.aggregate({
+          where: { batchId: batch.id, entryDate: { gte: batch.dateOfHatch } },
+          _sum: { quantityDispensedKg: true },
+        }),
+      ]);
+      const totalConsumedKg =
+        Number(levelFeed._sum.quantityDispensedKg ?? 0) +
+        Number(generalFeed._sum.quantityDispensedKg ?? 0);
 
       if (isEarlyPhaseNotEating(batch.dateOfHatch, totalConsumedKg, now)) {
         const ageInDays = Math.floor(
