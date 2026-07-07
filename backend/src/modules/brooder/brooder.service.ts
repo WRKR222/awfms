@@ -1797,12 +1797,16 @@ export class BrooderService {
   // isn't a missed feeding, there was nothing to feed yet). Days after
   // today are never included.
   async getDailyFeedBreakdown() {
-    const weekStart = dayjs().startOf('week');
-    const today      = dayjs().startOf('day');
+    const today      = dayjs(farmTodayUtcMidnight());
+    const weekStart  = today.startOf('week');
     const numDays    = today.diff(weekStart, 'day') + 1;
 
-    const [logs, earliestAssignment] = await Promise.all([
+    const [logs, generalLogs, earliestAssignment] = await Promise.all([
       this.prisma.brooderLevelFeedLog.findMany({
+        where:  { entryDate: { gte: weekStart.toDate() } },
+        select: { entryDate: true, quantityDispensedKg: true },
+      }),
+      this.prisma.brooderGeneralFeedLog.findMany({
         where:  { entryDate: { gte: weekStart.toDate() } },
         select: { entryDate: true, quantityDispensedKg: true },
       }),
@@ -1814,7 +1818,7 @@ export class BrooderService {
     ]);
 
     const totalsByDate: Record<string, number> = {};
-    for (const log of logs) {
+    for (const log of [...logs, ...generalLogs]) {
       const key = dayjs(log.entryDate).format('YYYY-MM-DD');
       totalsByDate[key] = (totalsByDate[key] ?? 0) + log.quantityDispensedKg;
     }
@@ -1873,12 +1877,16 @@ export class BrooderService {
   async getFeedIssuanceCalendar(weeks = 4) {
     const clampedWeeks = Math.max(1, Math.min(12, Math.round(weeks) || 4));
 
-    const currentWeekStart = dayjs().startOf('week');
+    const today            = dayjs(farmTodayUtcMidnight());
+    const currentWeekStart = today.startOf('week');
     const rangeStart       = currentWeekStart.subtract(clampedWeeks - 1, 'week');
-    const today            = dayjs().startOf('day');
 
-    const [logs, earliestAssignment] = await Promise.all([
+    const [logs, generalLogs, earliestAssignment] = await Promise.all([
       this.prisma.brooderLevelFeedLog.findMany({
+        where:  { entryDate: { gte: rangeStart.toDate() } },
+        select: { entryDate: true, quantityDispensedKg: true },
+      }),
+      this.prisma.brooderGeneralFeedLog.findMany({
         where:  { entryDate: { gte: rangeStart.toDate() } },
         select: { entryDate: true, quantityDispensedKg: true },
       }),
@@ -1890,7 +1898,7 @@ export class BrooderService {
     ]);
 
     const totalsByDate: Record<string, number> = {};
-    for (const log of logs) {
+    for (const log of [...logs, ...generalLogs]) {
       const key = dayjs(log.entryDate).format('YYYY-MM-DD');
       totalsByDate[key] = (totalsByDate[key] ?? 0) + log.quantityDispensedKg;
     }
