@@ -397,25 +397,58 @@ export class FlockService {
     }
 
     // mortalityOnArrival correction:
-    // quantityReceived = birds assigned to brooder (currentBirdCount) + mortalityOnArrival.
-    // When the PM records or corrects mortality on arrival, currentBirdCount stays fixed
-    // (the brooder already has those birds), and quantityReceived is recalculated as
-    // currentBirdCount + newMortalityOnArrival. This ensures the formula always holds.
-    // mortalityOnArrival is flagged for records only and does NOT feed the cumulative threshold.
+    //
+    // quantityReceived is fixed at intake (birds off the truck) and must NEVER
+    // be derived from currentBirdCount on an edit — currentBirdCount decreases
+    // over the batch's life as on-farm mortality/culling is logged (see the
+    // `currentBirdCount: { decrement: delta }` calls elsewhere in this file),
+    // so by the time anyone edits the batch, currentBirdCount no longer has
+    // anything to do with what arrived off the truck.
+    //
+    // The previous version of this block ran
+    //   newQuantityReceived = batch.currentBirdCount + newMortalityOnArrival
+    // on every save where `mortalityOnArrival` was present in the payload —
+    // which is EVERY save, since the edit form always submits this field
+    // (it has a default value, it isn't conditionally included). That silently
+    // rewrote quantityReceived down to ~currentBirdCount on every single batch
+    // edit — including edits that only touched dateOfHatch or a typo fix —
+    // permanently discarding every on-farm death recorded since intake from
+    // the received/survival baseline. Symptom: survival rate (currentBirdCount
+    // / quantityReceived) would jump back to ~100% after any edit.
+    //
+    // Fixed by (a) only acting when mortalityOnArrival actually changed, and
+    // (b) applying that change as a DELTA on the existing quantityReceived —
+    // so a DOA correction shifts the baseline by exactly the correction,
+    // and nothing else touches it.
     if (input.mortalityOnArrival !== undefined) {
       const newMortalityOnArrival = Number(input.mortalityOnArrival);
       if (!Number.isFinite(newMortalityOnArrival) || newMortalityOnArrival < 0) {
         throw new BadRequestException('mortalityOnArrival must be zero or a positive number');
       }
-      // quantityReceived = current live birds + DOA; currentBirdCount stays unchanged.
-      const newQuantityReceived = batch.currentBirdCount + newMortalityOnArrival;
-      data.mortalityOnArrival = newMortalityOnArrival;
-      data.quantityReceived   = newQuantityReceived;
-      // currentBirdCount is intentionally NOT changed here — the brooder already holds those birds.
+      const oldMortalityOnArrival = batch.mortalityOnArrival ?? 0;
+      if (newMortalityOnArrival !== oldMortalityOnArrival) {
+        const delta = newMortalityOnArrival - oldMortalityOnArrival;
+        const newQuantityReceived = batch.quantityReceived + delta;
+        // Guard the invariant this correction must preserve:
+        //   quantityReceived - mortalityOnArrival - farmDeaths = currentBirdCount
+        // i.e. quantityReceived - mortalityOnArrival can never drop below
+        // currentBirdCount, or on-farm deaths would go negative.
+        if (newQuantityReceived - newMortalityOnArrival < batch.currentBirdCount) {
+          throw new BadRequestException(
+            `Mortality on arrival can't be corrected to ${newMortalityOnArrival}: that would put ` +
+            `total received (${newQuantityReceived}) below birds currently accounted for on the farm ` +
+            `(${batch.currentBirdCount} live + on-farm deaths already logged).`,
+          );
+        }
+        data.mortalityOnArrival = newMortalityOnArrival;
+        data.quantityReceived   = newQuantityReceived;
+      }
+      // currentBirdCount is intentionally NEVER touched here — on-farm
+      // mortality/culling logs are the only thing allowed to move it.
     }
 
-    // quantityReceived is only updated via the mortalityOnArrival correction above
-    // to preserve the invariant: quantityReceived = currentBirdCount + mortalityOnArrival.
+    // quantityReceived is only ever adjusted via the mortalityOnArrival delta
+    // correction above, and only when that value actually changed.
 
     if (Object.keys(data).length === 0) {
       return this.getBatch(id);
@@ -503,6 +536,54 @@ export class FlockService {
           where: { id: entry.batchId },
           data: { currentBirdCount: { decrement: delta } },
         });
+
+        // General (not-row-specific) mortality/culling logged here must also be
+        // reflected on whichever production-house rows the batch currently
+        // occupies. Without this, BatchCageAssignment.birdCount per row goes
+        // stale the moment a batch spans more than one row: currentBirdCount
+        // (and therefore the survival rate) drops correctly, but the cage-map
+        // keeps showing the old per-row counts, so the row-level birds never
+        // add up to the batch total and per-row survival looks unaffected by
+        // deaths that were, in fact, recorded.
+        //
+        // We distribute `delta` across active row assignments proportionally
+        // to their current occupancy (largest-remainder method, so the parts
+        // sum to exactly `delta` with no fractional birds), then decrement
+        // each row by its share.
+        const rowAssignments = await tx.batchCageAssignment.findMany({
+          where: { batchId: entry.batchId },
+          select: { rowId: true, birdCount: true },
+        });
+        const rowTotal = rowAssignments.reduce((s, r) => s + r.birdCount, 0);
+
+        if (rowAssignments.length > 0 && rowTotal > 0) {
+          const shares = rowAssignments.map((r) => {
+            const exact = (r.birdCount / rowTotal) * delta;
+            const floor = Math.floor(exact);
+            return { rowId: r.rowId, birdCount: r.birdCount, floor, remainder: exact - floor };
+          });
+
+          const allocated = shares.reduce((s, r) => s + r.floor, 0);
+          let remaining = delta - allocated;
+
+          // Hand out the leftover birds (from flooring) to the rows with the
+          // largest fractional remainder first, so the total still equals delta.
+          const byRemainderDesc = [...shares].sort((a, b) => b.remainder - a.remainder);
+          for (let i = 0; i < byRemainderDesc.length && remaining > 0; i++) {
+            byRemainderDesc[i].floor += 1;
+            remaining--;
+          }
+
+          for (const share of shares) {
+            const decrementBy = Math.min(share.floor, share.birdCount);
+            if (decrementBy > 0) {
+              await tx.batchCageAssignment.update({
+                where: { rowId: share.rowId },
+                data: { birdCount: { decrement: decrementBy } },
+              });
+            }
+          }
+        }
       }
       return updated;
     });

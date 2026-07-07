@@ -690,9 +690,15 @@ function EditBatchModal({ batch, onClose }: { batch: any; onClose: () => void })
 
   const mortalityOnArrival = Number(watch('mortalityOnArrival') || 0);
   const mortalityChanged = mortalityOnArrival !== (batch.mortalityOnArrival ?? 0);
-  // currentBirdCount stays fixed (brooder birds don't change).
-  // quantityReceived is recalculated as: currentBirdCount + mortalityOnArrival.
-  const projectedQuantityReceived = batch.currentBirdCount + mortalityOnArrival;
+  // Must mirror FlockService.updateBatch's actual formula exactly, or this
+  // preview lies to the PM about what will be saved:
+  //   newQuantityReceived = quantityReceived + (newMoA - oldMoA)
+  // NOT currentBirdCount + mortalityOnArrival — currentBirdCount has already
+  // been reduced by every on-farm death/culling logged since intake, so that
+  // formula would silently erase all of that recorded mortality from the
+  // received/survival baseline the moment this form is saved.
+  const mortalityOnArrivalDelta = mortalityOnArrival - (batch.mortalityOnArrival ?? 0);
+  const projectedQuantityReceived = batch.quantityReceived + mortalityOnArrivalDelta;
 
   const onSubmit = (data: any) => {
     update.mutate(
@@ -732,17 +738,30 @@ function EditBatchModal({ batch, onClose }: { batch: any; onClose: () => void })
 
         <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-4">
 
-          {/* Quantity received breakdown — shown for context */}
+          {/* Quantity received breakdown — shown for context.
+              Birds in Brooder + Died on Arrival only equals Total Received
+              before any on-farm mortality is logged. Once deaths/culling are
+              recorded on the farm, currentBirdCount drops but quantityReceived
+              (the fixed intake baseline) doesn't — so that gap has to be shown
+              explicitly or the numbers on this screen won't add up and it'll
+              look like birds vanished. */}
           <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 space-y-1">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-y-1">
               <div>
-                <p className={lCls}>Birds in Brooder</p>
+                <p className={lCls}>Currently on Farm</p>
                 <p className="text-sm font-bold text-brand-green">{batch.currentBirdCount?.toLocaleString()}</p>
               </div>
               <span className="text-gray-300 dark:text-gray-600 text-lg font-light">+</span>
               <div className="text-center">
                 <p className={lCls}>Died on Arrival</p>
                 <p className="text-sm font-bold text-amber-600 dark:text-amber-400">{batch.mortalityOnArrival ?? 0}</p>
+              </div>
+              <span className="text-gray-300 dark:text-gray-600 text-lg font-light">+</span>
+              <div className="text-center">
+                <p className={lCls}>On-Farm Deaths/Culled</p>
+                <p className="text-sm font-bold text-red-500 dark:text-red-400">
+                  {Math.max(0, (batch.quantityReceived ?? 0) - (batch.currentBirdCount ?? 0) - (batch.mortalityOnArrival ?? 0)).toLocaleString()}
+                </p>
               </div>
               <span className="text-gray-300 dark:text-gray-600 text-lg font-light">=</span>
               <div className="text-right">
@@ -807,13 +826,19 @@ function EditBatchModal({ batch, onClose }: { batch: any; onClose: () => void })
               Birds that died before being assigned to the brooder. Noted for records only —
               does <strong>not</strong> count toward the cumulative mortality threshold.
             </p>
-            {/* Live formula: show updated quantityReceived */}
+            {/* Live formula: show updated quantityReceived as a delta off the
+                existing baseline, matching what the backend will actually save. */}
             {mortalityChanged && (
               <div className="mt-2 rounded-lg px-3 py-2 text-xs font-medium bg-brand-green/5 dark:bg-brand-green/10 text-gray-700 dark:text-gray-300 border border-brand-green/20 flex items-center justify-between">
                 <span>
-                  Brooder birds: <strong>{batch.currentBirdCount?.toLocaleString()}</strong>
-                  {' '}+ DOA: <strong>{mortalityOnArrival}</strong>
-                  {' '}= Total received: <strong>{projectedQuantityReceived.toLocaleString()}</strong>
+                  Total received: <strong>{batch.quantityReceived?.toLocaleString()}</strong>
+                  {' '}{mortalityOnArrivalDelta >= 0 ? '+' : '−'}{' '}
+                  <strong>{Math.abs(mortalityOnArrivalDelta)}</strong>
+                  {' '}(DOA correction) = <strong>{projectedQuantityReceived.toLocaleString()}</strong>
+                  <br />
+                  <span className="text-[10px] text-gray-400">
+                    Birds already recorded as dead/culled on the farm since intake are unaffected.
+                  </span>
                 </span>
               </div>
             )}
