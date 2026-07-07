@@ -75,16 +75,28 @@ interface FeedSummaryRow {
   levels: {
     levelId:             string;
     label:               string;
+    batchCode:           string | null;
     birdCount:           number;
     hylineWeek:          number | null;
     dailyRationKg:       number | null;
+    requiredKgThisWeek:  number | null;
+    dispensedKgThisWeek: number;
+    // The batch-relative (hatch-anchored) week this level's weekly figures
+    // actually cover — NOT the calendar week. Different batches/levels can
+    // have different windows here; that's expected, see brooder.service.ts.
+    weekStart:           string | null;
+    weekEnd:             string | null;
     dispensedKgToday:    number;
     feedVariancePercent: number | null;
   }[];
 }
 
 interface FeedSummary {
-  weekStart:                string;
+  // Farm-wide aggregate across every occupied row/level — there is no
+  // single calendar week backing totalRequiredKgThisWeek/totalDispensedKgThisWeek
+  // below, since each level's contribution uses its own batch's hatch-anchored
+  // week (see rows[].levels[].weekStart/weekEnd for the real per-batch dates).
+  scope:                    string;
   totalChicks:              number;
   totalRequiredKgThisWeek:  number;
   totalDispensedKgThisWeek: number;
@@ -282,7 +294,10 @@ export function BrooderControlStandardPanel() {
           {/* Feed summary */}
           <div>
             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">
-              Feed — This Week (schedule reference)
+              Feed — Farm-wide (schedule reference)
+            </p>
+            <p className="text-[10px] text-gray-400 -mt-1 mb-2">
+              Sum of every occupied level, each on its own batch's week — see breakdown below for a single batch's figures and dates.
             </p>
             {feedLoading ? (
               <div className="h-16 bg-gray-50 dark:bg-dark-bg rounded-xl animate-pulse" />
@@ -346,6 +361,39 @@ export function BrooderControlStandardPanel() {
                     ))}
                   </div>
                 )}
+
+                {/* ── Per-batch/level breakdown ──────────────────────────────
+                    The farm-wide totals above blend every batch's own
+                    hatch-anchored week together. This is where a manager can
+                    check ONE batch's actual Schedule/Issued figures and the
+                    exact date range those figures cover — which will rarely
+                    match the calendar week shown in the Feed Issuance widget
+                    elsewhere on this dashboard. */}
+                <div className="border border-gray-100 dark:border-dark-border rounded-xl divide-y divide-gray-100 dark:divide-dark-border overflow-hidden">
+                  {feedSummary.rows.flatMap(r => r.levels).filter(l => l.batchCode).map(l => (
+                    <div key={l.levelId} className="flex items-center justify-between px-3 py-2 text-xs">
+                      <div>
+                        <p className="font-semibold text-gray-700 dark:text-gray-200">
+                          {l.batchCode} · {l.label}
+                        </p>
+                        <p className="text-[10px] text-gray-400">
+                          {l.weekStart && l.weekEnd
+                            ? `Week of ${dayjs(l.weekStart).format('D MMM')} – ${dayjs(l.weekEnd).format('D MMM')} (batch's own week, not calendar)`
+                            : 'No hatch date on record'}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-gray-700 dark:text-gray-200">
+                          {l.dispensedKgThisWeek.toFixed(1)} / {(l.requiredKgThisWeek ?? 0).toFixed(1)} kg
+                        </p>
+                        <p className="text-[10px] text-gray-400">issued / schedule</p>
+                      </div>
+                    </div>
+                  ))}
+                  {feedSummary.rows.flatMap(r => r.levels).filter(l => l.batchCode).length === 0 && (
+                    <p className="text-xs text-gray-400 text-center py-3">No occupied levels</p>
+                  )}
+                </div>
               </div>
             ) : (
               <p className="text-xs text-gray-400 text-center py-4">No brooder data</p>

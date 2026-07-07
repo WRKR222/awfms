@@ -1721,6 +1721,25 @@ export class BrooderService {
             l.dailyRationKg && l.dailyRationKg > 0
               ? Math.round(((l.dispensedKgToday - l.dailyRationKg) / l.dailyRationKg) * 1000) / 10
               : null;
+          // ── This level's OWN batch-relative week window ───────────────────
+          // `requiredKgThisWeek` / `dispensedKgThisWeek` above are computed
+          // over THIS batch's hatch-anchored week (see brooderWeekStart() in
+          // feed-standard.util.ts) — which will differ from every other
+          // level's window unless their batches happen to share a hatch
+          // date, and will differ from the calendar week too. Surfacing the
+          // actual window here is what lets the UI show "which days does
+          // this number actually cover" instead of leaving the reader to
+          // assume it matches the calendar-week panel elsewhere in the app
+          // (it usually won't).
+          let weekStart: string | null = null;
+          let weekEnd:   string | null = null;
+          if (l.batch?.dateOfHatch) {
+            const wStart = brooderWeekStart(new Date(`${l.batch.dateOfHatch}T00:00:00.000Z`));
+            const wEnd   = new Date(wStart);
+            wEnd.setUTCDate(wEnd.getUTCDate() + 6);
+            weekStart = dayjs(wStart).format('YYYY-MM-DD');
+            weekEnd   = dayjs(wEnd).format('YYYY-MM-DD');
+          }
           return {
             levelId:             l.levelId,
             levelNumber:         l.levelNumber,
@@ -1732,6 +1751,8 @@ export class BrooderService {
             dailyRationKg:       l.dailyRationKg,
             requiredKgThisWeek:  l.requiredKgThisWeek,
             dispensedKgThisWeek: l.dispensedKgThisWeek,
+            weekStart,
+            weekEnd,
             feedVariancePercent: l.feedVariancePercent,
             feedSource:          l.feedSource,
             exactMatch:          l.feedVariancePercent === 0,
@@ -1762,7 +1783,18 @@ export class BrooderService {
     );
 
     return {
-      weekStart:                    dayjs().startOf('week').toDate(),
+      // NOTE: this endpoint sums EVERY occupied row/level across ALL active
+      // batches. Each level's own requiredKgThisWeek/dispensedKgThisWeek
+      // (and now weekStart/weekEnd, added per-level above) is computed over
+      // THAT batch's own hatch-anchored brooder week — batches started on
+      // different dates have different week windows. There is deliberately
+      // no single "weekStart" for the totals below; a previous version of
+      // this endpoint returned `dayjs().startOf('week')` here, which looked
+      // like the calendar week the totals covered but had no actual
+      // relationship to how they were computed — removed to avoid that
+      // false impression. Use `rows[].levels[].weekStart/weekEnd` for the
+      // real per-batch window backing any individual figure.
+      scope:                        'farm-wide-aggregate-per-batch-week' as const,
       today:                        dayjs().format('YYYY-MM-DD'),
       totalChicks:                  map.totalChicks,
       // weekly
