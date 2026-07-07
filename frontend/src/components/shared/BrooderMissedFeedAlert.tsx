@@ -5,10 +5,10 @@
 // The schedule is advisory; this alert helps the attendant / PM notice if
 // birds may have been under-fed, so they can investigate and catch up.
 //
-// Thresholds (mirrored from brooder.service.ts):
-//   TRANSITION phase  — alert if <50% of schedule was given (large carry-overs expected)
-//   STANDARD phase    — alert if shortfall > 0.05 kg (rounding tolerance)
-//   EARLY phase       — no alert (inconsistent eating is normal in Days 1–2)
+// Threshold (mirrored from brooder.service.ts): alert if shortfall > 0.05 kg
+// (rounding tolerance), applied uniformly regardless of batch age. A batch
+// that isn't eating at all yet is caught separately by the
+// BROODER_EARLY_PHASE_NOT_EATING alert, not by relaxing this one.
 
 import { AlertTriangle, Info } from 'lucide-react';
 import { useMissedFeedAlerts } from '../../hooks/useBrooderCageMap';

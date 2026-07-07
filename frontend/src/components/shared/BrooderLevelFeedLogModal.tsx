@@ -4,12 +4,13 @@
 // feed was issued because birds are still consuming carry-forward feed
 // from an earlier day.
 //
-// KEY DESIGN PRINCIPLE — Feeding schedule is ADVISORY ONLY:
-//   The HyLine ration (g/bird/day × population) is displayed as a daily
-//   and weekly reference so the attendant knows the expected consumption.
-//   It is NEVER enforced as a maximum.  The attendant records what was
-//   actually issued; the system compares against the schedule to calculate
-//   residual carry-forward feed for the store issuance plan.
+// KEY DESIGN PRINCIPLE — Feeding schedule is the daily cap, enforced from
+// Day 1: the HyLine ration (g/bird/day × population) is the maximum a level
+// may be issued in a single day. The server rejects any entry that would
+// push the day's total above that cap (see BrooderService.createLevelFeedLog).
+// There's no more EARLY/TRANSITION leniency window — a batch that genuinely
+// isn't eating yet is caught separately by the BROODER_EARLY_PHASE_NOT_EATING
+// alert, not by relaxing this cap.
 //
 // Two entry modes:
 //   1. Feed issued     — standard entry with feed type and kg amount.
@@ -18,16 +19,11 @@
 //                        still in the trough.  quantityDispensedKg = 0.
 //                        This lets the system correctly attribute daily
 //                        and weekly consumption against the schedule.
-//
-// Phase banners (informational only):
-//   EARLY (Days 1–2)       — chicks still learning; carry-forward very common.
-//   TRANSITION (Days 3–6)  — eating more regularly; partial carry-overs normal.
-//   STANDARD (Week 2+)     — established pattern; schedule closely followed.
 
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm, Controller } from 'react-hook-form';
-import { X, AlertTriangle, Info, CheckCircle, Sprout, Archive } from 'lucide-react';
+import { X, AlertTriangle, Info, Archive } from 'lucide-react';
 import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
 import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
@@ -50,20 +46,6 @@ function deriveFeedType(item: { sku: string; name: string }): 'CHICK_MASH' | 'GR
   return null;
 }
 
-// ── Phase helpers ────────────────────────────────────────────────────────────
-const EARLY_PHASE_DAYS    = 3;
-const TRANSITION_END_DAYS = 7;
-
-type FeedingPhase = 'EARLY' | 'TRANSITION' | 'STANDARD';
-
-function getFeedingPhase(dateOfHatch: string | null | undefined, today: string): FeedingPhase {
-  if (!dateOfHatch) return 'STANDARD';
-  const ageInDays = dayjs(today).diff(dayjs(dateOfHatch), 'day');
-  if (ageInDays < EARLY_PHASE_DAYS)    return 'EARLY';
-  if (ageInDays < TRANSITION_END_DAYS) return 'TRANSITION';
-  return 'STANDARD';
-}
-
 // ── Props ────────────────────────────────────────────────────────────────────
 interface Props {
   level:   BrooderLevelData;
@@ -71,53 +53,7 @@ interface Props {
   onClose: () => void;
 }
 
-// ── Phase info banner (informational only — no enforcement) ──────────────────
-function PhaseBanner({ phase, scheduleKgDay }: {
-  phase:         FeedingPhase;
-  scheduleKgDay: number | null;
-}) {
-  if (phase === 'STANDARD') return null;
-
-  const isEarly   = phase === 'EARLY';
-  const dayRange  = isEarly ? 'Days 1–2' : 'Days 3–6';
-  const name      = isEarly ? 'Early learning phase' : 'Transition phase';
-  const cls       = isEarly
-    ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300'
-    : 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300';
-
-  return (
-    <div className={`mx-5 mt-4 rounded-xl p-3 text-xs flex items-start gap-2 border ${cls}`}>
-      <Sprout className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-      <div className="space-y-1">
-        <p className="font-semibold">{name} ({dayRange}) — schedule is advisory</p>
-        {isEarly ? (
-          <p>
-            Day-old chicks are still learning to eat. Feed placed on Day 1 often
-            lasts 2 or more days — <strong>no new issuance may be needed today</strong>.
-            {scheduleKgDay !== null && (
-              <> The daily schedule reference is <strong>{scheduleKgDay.toFixed(2)} kg</strong>.
-              You may issue any amount; any surplus is tracked automatically.</>
-            )}
-          </p>
-        ) : (
-          <p>
-            Chicks should be eating more regularly now. Small carry-overs from
-            earlier days are still normal.
-            {scheduleKgDay !== null && (
-              <> Daily schedule reference: <strong>{scheduleKgDay.toFixed(2)} kg</strong>.</>
-            )}
-          </p>
-        )}
-        <p className="opacity-80">
-          Any unconsumed feed is tracked and deducted from the next store
-          issuance — no waste counted against the farm.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// ── Schedule reference banner (STANDARD phase, informational only) ───────────
+// ── Schedule reference banner (shown every day — the cap is always enforced) ──
 function ScheduleBanner({
   scheduleKgDay,
   hylineWeek,
@@ -140,19 +76,19 @@ function ScheduleBanner({
       <div className="space-y-0.5">
         <p className="font-semibold">
           HyLine Week {hylineWeek} schedule — {scheduleKgDay.toFixed(2)} kg/day
-          ({birdCount.toLocaleString()} birds) · <span className="font-normal opacity-75">advisory only</span>
+          ({birdCount.toLocaleString()} birds) · <span className="font-normal opacity-75">daily cap</span>
         </p>
         <p>
           Dispensed today: <strong>{dispensedToday.toFixed(2)} kg</strong>
-          {remaining > 0 && <> · Schedule balance: <strong>{remaining.toFixed(2)} kg</strong></>}
+          {remaining > 0 && <> · Remaining today: <strong>{remaining.toFixed(2)} kg</strong></>}
           {overBy > 0 && (
-            <> · <span className="text-amber-600 dark:text-amber-300 font-semibold">
-              +{overBy.toFixed(2)} kg above schedule
-            </span> — surplus tracked as carry-forward</>
+            <> · <span className="text-red-600 dark:text-red-400 font-semibold">
+              +{overBy.toFixed(2)} kg over cap
+            </span></>
           )}
         </p>
         <p className="opacity-70 text-[10px]">
-          You may issue any amount. The schedule is used only for planning store issuance and residual feed tracking.
+          This is the maximum that can be issued today — the server will reject anything above it.
         </p>
       </div>
     </div>
@@ -183,7 +119,6 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
   const today = dayjs().format('YYYY-MM-DD');
 
   const dateOfHatch  = level.batch?.dateOfHatch ?? null;
-  const feedingPhase = getFeedingPhase(dateOfHatch, today);
 
   const scheduleKgDay  = level.dailyRationKg   ?? null;
   const dispensedToday = level.dispensedKgToday ?? 0;
@@ -365,11 +300,8 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
           </button>
         </div>
 
-        {/* ── Phase info banner ────────────────────────────────────────────── */}
-        <PhaseBanner phase={feedingPhase} scheduleKgDay={scheduleKgDay} />
-
-        {/* ── Standard schedule reference banner ──────────────────────────── */}
-        {feedingPhase === 'STANDARD' && scheduleKgDay !== null && level.hylineWeek !== null && !noFeedIssued && (
+        {/* ── Schedule reference banner (daily cap, always enforced) ────────── */}
+        {scheduleKgDay !== null && level.hylineWeek !== null && !noFeedIssued && (
           <ScheduleBanner
             scheduleKgDay={scheduleKgDay}
             hylineWeek={level.hylineWeek}
@@ -479,16 +411,15 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
               )}
             </div>
 
-            {/* Advisory note when above schedule */}
+            {/* Warning when the entry would exceed the daily cap */}
             {overBy > 0 && qty > 0 && (
-              <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
-                <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-3 text-xs text-red-700 dark:text-red-400 flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-semibold">Above schedule (+{overBy.toFixed(2)} kg) — allowed</p>
+                  <p className="font-semibold">Above daily cap by {overBy.toFixed(2)} kg — will be rejected</p>
                   <p className="mt-0.5">
-                    The schedule is advisory only. The extra {overBy.toFixed(2)} kg will be
-                    automatically tracked as a carry-forward and deducted from the
-                    next store issuance — no manual adjustment needed.
+                    This level's daily cap is {scheduleKgDay?.toFixed(2)} kg. Reduce the quantity,
+                    or issue the excess tomorrow instead.
                   </p>
                 </div>
               </div>
@@ -501,11 +432,7 @@ export function BrooderLevelFeedLogModal({ level, row, onClose }: Props) {
                 {...issueForm.register('notes')}
                 rows={2}
                 className={`${iCls} resize-none`}
-                placeholder={
-                  feedingPhase === 'EARLY'
-                    ? 'e.g. Topped up — some feed still present from Day 1…'
-                    : 'Any observations…'
-                }
+                placeholder="Any observations…"
               />
             </div>
 

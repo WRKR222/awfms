@@ -32,19 +32,14 @@ import { HeatSourceType, UserRole } from '@prisma/client';
 import {
   hylineStandard,
   brooderRequiredFeedKg,
-  brooderAdjustedWeeklyFeedKg,
   brooderAdjustedWeeklyFeedKgWithMortality,
   MortalityDayEvent,
   brooderWeekStart,
   batchAgeWeeks,
   checkWeightViolation,
   checkMortalityViolation,
-  getFeedingPhase,
-  isEarlyPhase,
   isEarlyPhaseNotEating,
-  earlyPhaseResidualKg,
-  EARLY_PHASE_DAYS,
-  TRANSITION_END_DAYS,
+  NOT_EATING_ALERT_DAYS,
 } from '../../common/feed/feed-standard.util';
 import {
   AssignLevelSchema,
@@ -395,7 +390,7 @@ export class BrooderService {
           const levelWeekEnd = new Date(levelWeekStart);
           levelWeekEnd.setUTCDate(levelWeekEnd.getUTCDate() + 6);
           requiredKgThisWeek = brooderAdjustedWeeklyFeedKgWithMortality(
-            a.birdCount, ageWeeks, batch.dateOfHatch, levelWeekStart, levelWeekEnd,
+            a.birdCount, ageWeeks, levelWeekStart, levelWeekEnd,
             mortalityEventsByLevel[level.id] ?? [],
           );
           // Daily ration is always the standard HyLine figure — enforcement
@@ -843,21 +838,17 @@ export class BrooderService {
           }))
           .filter((e: MortalityDayEvent) => e.count > 0);
         requiredKgForWeek = brooderAdjustedWeeklyFeedKgWithMortality(
-          level.assignment.birdCount, ageWeeks, batch.dateOfHatch, weekStart, entryDateObj,
+          level.assignment.birdCount, ageWeeks, weekStart, entryDateObj,
           weekMortalityEvents,
         );
         dailyRationKg     = brooderRequiredFeedKg(level.assignment.birdCount, ageWeeks, 1);
 
-        const feedingPhase = getFeedingPhase(batch.dateOfHatch, entryDateObj);
-
-        // ── Req 3 (phase-aware): Control over-issuance ───────────────────
-        // • EARLY phase (Days 1–2): hard-block is LIFTED.  Chicks haven't
-        //   established eating patterns.  The attendant may top up feed
-        //   above the daily ration; a warning is logged but no exception.
-        //   The over-issue is automatically tracked as early-phase residual
-        //   and will be deducted from the next store issuance request.
-        // • TRANSITION phase (Days 3–6): same relaxed rule — soft warn only.
-        // • STANDARD phase (Week 2+): original hard-block enforced.
+        // ── Req 3: Control over-issuance ──────────────────────────────────
+        // Hard-blocked at the daily ration for every day of a batch's life —
+        // no more EARLY/TRANSITION leniency window. Batches that genuinely
+        // aren't eating yet are caught separately by the
+        // BROODER_EARLY_PHASE_NOT_EATING alert (checkEarlyPhaseNotEating),
+        // not by relaxing this guard.
         const entryDateStart = new Date(`${dto.entryDate}T00:00:00.000Z`);
         const entryDateEnd   = new Date(`${dto.entryDate}T23:59:59.999Z`);
         const todayIssued = await this.prisma.brooderLevelFeedLog.aggregate({
@@ -871,25 +862,14 @@ export class BrooderService {
         const totalAfterKg    = Number(alreadyIssuedKg) + dto.quantityDispensedKg;
 
         if (dailyRationKg !== null && totalAfterKg > dailyRationKg) {
-          if (feedingPhase === 'STANDARD') {
-            // Week 2+: hard block
-            throw new BadRequestException(
-              `Feed issuance blocked: this level's daily ration is ${dailyRationKg.toFixed(2)} kg ` +
-              `for ${level.assignment.birdCount} birds at week ${ageWeeks} (HyLine standard). ` +
-              `Already issued today: ${Number(alreadyIssuedKg).toFixed(2)} kg. ` +
-              `Requested ${dto.quantityDispensedKg} kg would bring total to ${totalAfterKg.toFixed(2)} kg ` +
-              `(+${(totalAfterKg - dailyRationKg).toFixed(2)} kg over ration). ` +
-              `Reduce the quantity or use the excess to offset tomorrow's issuance.`,
-            );
-          } else {
-            // EARLY / TRANSITION: soft warn — allow issuance, log the event.
-            this.logger.warn(
-              `[EarlyPhase] Level ${dto.levelId} (${feedingPhase}) — over-advisory issuance. ` +
-              `Advisory daily cap: ${dailyRationKg.toFixed(2)} kg, total after this entry: ` +
-              `${totalAfterKg.toFixed(2)} kg (+${(totalAfterKg - dailyRationKg).toFixed(2)} kg). ` +
-              `This excess will be tracked as a residual carry-forward.`,
-            );
-          }
+          throw new BadRequestException(
+            `Feed issuance blocked: this level's daily ration is ${dailyRationKg.toFixed(2)} kg ` +
+            `for ${level.assignment.birdCount} birds at week ${ageWeeks} (HyLine standard). ` +
+            `Already issued today: ${Number(alreadyIssuedKg).toFixed(2)} kg. ` +
+            `Requested ${dto.quantityDispensedKg} kg would bring total to ${totalAfterKg.toFixed(2)} kg ` +
+            `(+${(totalAfterKg - dailyRationKg).toFixed(2)} kg over ration). ` +
+            `Reduce the quantity or use the excess to offset tomorrow's issuance.`,
+          );
         }
       }
     }
@@ -1616,83 +1596,16 @@ export class BrooderService {
       // Graceful fallback — issuance plan data not critical to display
     }
 
-    // ── Early-phase residual: feed placed in week 1 that birds didn't consume
-    // If this week contains any levels still in EARLY or TRANSITION phase,
-    // compute how much of the issued starter feed is sitting unconsumed.
-    // This amount is added to residualCarryForwardKg so the net issuance
-    // request to the store is reduced accordingly (no double-stocking).
-    let earlyPhaseResidual = 0;
-    try {
-      const now           = new Date();
+    // Early-phase residual removed along with the EARLY/TRANSITION/STANDARD
+    // phase system — it only ever applied to Week-1 batches, and the concern
+    // it was meant to catch (feed placed but not eaten) is now handled by the
+    // BROODER_EARLY_PHASE_NOT_EATING alert (checkEarlyPhaseNotEating) rather
+    // than by discounting the schedule/residual figures. `earlyPhaseResidual`
+    // is kept at 0 below purely so the API response shape (and the frontend
+    // fields that read it) don't need to change.
+    const earlyPhaseResidual = 0;
 
-      // Gather all active assigned levels that are still in early/transition
-      const earlyLevels = await this.prisma.brooderLevel.findMany({
-        where: { isActive: true, assignment: { isNot: null } },
-        select: {
-          id: true,
-          assignment: { select: { batchId: true, birdCount: true } },
-        },
-      });
-
-      const batchIdsForEarly = Array.from(
-        new Set(earlyLevels.map(l => l.assignment!.batchId)),
-      );
-      const earlyBatches = batchIdsForEarly.length
-        ? await this.prisma.batch.findMany({
-            where: { id: { in: batchIdsForEarly } },
-            select: { id: true, dateOfHatch: true },
-          })
-        : [];
-      const earlyBatchMap = Object.fromEntries(earlyBatches.map(b => [b.id, b]));
-
-      for (const level of earlyLevels) {
-        const a = level.assignment!;
-        const batch = earlyBatchMap[a.batchId];
-        if (!batch) continue;
-        const phase = getFeedingPhase(batch.dateOfHatch, now);
-        if (phase === 'STANDARD') continue; // not in early/transition — skip
-
-        // Sum ALL feed issued to this level since batch hatch (early phase window)
-        const earlyWindowStart = batch.dateOfHatch;
-        const issued = await this.prisma.brooderLevelFeedLog.aggregate({
-          where: {
-            levelId:   level.id,
-            entryDate: { gte: earlyWindowStart },
-          },
-          _sum: { quantityDispensedKg: true },
-        });
-        const issuedKg = Number(issued._sum.quantityDispensedKg ?? 0);
-
-        // Estimate actual consumption: use the adjusted weekly figure
-        // (which counts the full standard ration for early days and 50% for
-        // transition days), windowed to this batch's own hatch-relative brooder
-        // week.  Any feed issued beyond this estimate is treated as residual.
-        const ageWeeks   = batchAgeWeeks(batch.dateOfHatch, now);
-        const batchWeekStart = brooderWeekStart(batch.dateOfHatch, now);
-        const weekMortalityLogs = await (this.prisma as any).brooderLevelMortalityLog.findMany({
-          where: { levelId: level.id, logDate: { gte: batchWeekStart, lte: now } },
-        });
-        const weekMortalityEvents: MortalityDayEvent[] = weekMortalityLogs
-          .map((m: any) => ({
-            date: m.logDate,
-            count: (m.mortalityCount ?? 0) + (m.cullingCount ?? 0),
-            occurredAt: m.createdAt,
-          }))
-          .filter((e: MortalityDayEvent) => e.count > 0);
-        const estimatedConsumedKg = brooderAdjustedWeeklyFeedKgWithMortality(
-          a.birdCount, ageWeeks, batch.dateOfHatch, batchWeekStart, now,
-          weekMortalityEvents,
-        );
-
-        const residual = earlyPhaseResidualKg(issuedKg, estimatedConsumedKg);
-        earlyPhaseResidual += residual;
-      }
-      earlyPhaseResidual = Math.round(earlyPhaseResidual * 100) / 100;
-    } catch (_) {
-      // Non-critical — graceful fallback
-    }
-
-    // Combine standard carry-forward + early-phase residual
+    // Combine standard carry-forward + early-phase residual (always 0 now)
     const totalResidualKg = Math.round((residualCarryForwardKg + earlyPhaseResidual) * 100) / 100;
 
     const rows = map.rows.map(row => {
@@ -2009,7 +1922,6 @@ export class BrooderService {
       levelId: string; levelLabel: string; rowId: string; rowLabel: string;
       batchId: string; batchCode: string; date: string;
       requiredKg: number; dispensedKg: number; shortfallKg: number;
-      feedingPhase: string;
     }> = [];
 
     for (const level of levels) {
@@ -2018,20 +1930,15 @@ export class BrooderService {
       if (!batch || a.birdCount <= 0) continue;
 
       const ageWeeksYesterday = batchAgeWeeks(batch.dateOfHatch, yesterdayDate);
-      const feedingPhase = getFeedingPhase(batch.dateOfHatch, yesterdayDate);
-
-      // EARLY phase (Days 1–2): never flag as missed — inconsistent eating is normal.
-      if (feedingPhase === 'EARLY') continue;
 
       const requiredKg  = brooderRequiredFeedKg(a.birdCount, ageWeeksYesterday, 1);
       const dispensedKg = Math.round((dispensedByLevel[level.id] ?? 0) * 100) / 100;
 
-      // TRANSITION phase (Days 3–6): alert only if less than 50% of ration was given.
-      // Day-1 carry-over may still be in the feeder so partial issuance is expected.
-      // STANDARD phase: alert if any shortfall > 0.05 kg (rounding tolerance).
-      const threshold = feedingPhase === 'TRANSITION'
-        ? requiredKg * 0.5  // 50% of ration must have been given
-        : requiredKg - 0.05; // standard: allow 0.05 kg rounding noise
+      // Uniform threshold for every day of a batch's life — allow 0.05 kg of
+      // rounding noise, flag anything short of that. No more EARLY/TRANSITION
+      // leniency window; a batch that genuinely isn't eating yet is caught by
+      // the separate BROODER_EARLY_PHASE_NOT_EATING alert instead.
+      const threshold = requiredKg - 0.05;
 
       if (requiredKg > 0 && dispensedKg < threshold) {
         alerts.push({
@@ -2045,7 +1952,6 @@ export class BrooderService {
           requiredKg:  Math.round(requiredKg * 100) / 100,
           dispensedKg,
           shortfallKg: Math.round((requiredKg - dispensedKg) * 100) / 100,
-          feedingPhase,
         });
       }
     }
@@ -2069,7 +1975,7 @@ export class BrooderService {
         isActive:    true,
         stage:       'BROODING' as any,
         dateOfHatch: {
-          lte: new Date(now.getTime() - TRANSITION_END_DAYS * 24 * 60 * 60 * 1000),
+          lte: new Date(now.getTime() - NOT_EATING_ALERT_DAYS * 24 * 60 * 60 * 1000),
         },
       },
       select: { id: true, batchCode: true, dateOfHatch: true },
