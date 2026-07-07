@@ -279,12 +279,16 @@ export class BrooderService {
     }
 
     // This week's feed dispensed per level — anchored to each batch's OWN
-    // hatch-relative "brooder week" (Week 1 = days 0-6 since hatch, etc.),
-    // not the calendar week. Chicks rarely hatch exactly on a calendar
-    // week boundary, so a calendar-week window can silently exclude a
-    // feed log backdated to a day that's still within the chicks' first
-    // week of life but has rolled into a new calendar week. See
-    // brooderWeekStart() in feed-standard.util.ts for details.
+    // arrival-relative "brooder week" (Week 1 = days 0-6 since the birds
+    // were RECEIVED on the farm, Week 2 = days 7-13, etc.), not the
+    // calendar week and not hatch date. Feed control is about what the
+    // farm has actually been feeding these birds since it took custody of
+    // them, which starts on dateReceived — dateOfHatch may be days earlier
+    // (transit time) and isn't when feeding at this farm began. Birds also
+    // rarely arrive exactly on a calendar week boundary, so a calendar-week
+    // window can silently exclude a feed log backdated to a day that's
+    // still within the batch's first week on the farm but has rolled into a
+    // new calendar week. See brooderWeekStart() in feed-standard.util.ts.
     const levelIds = rows.flatMap(r => r.levels).map(l => l.id);
 
     const weekStartByLevel: Record<string, Date> = {};
@@ -292,7 +296,7 @@ export class BrooderService {
       for (const level of row.levels) {
         const a = level.assignment;
         const batch = a ? batchMap[a.batchId] : null;
-        if (batch) weekStartByLevel[level.id] = brooderWeekStart(batch.dateOfHatch);
+        if (batch) weekStartByLevel[level.id] = brooderWeekStart(batch.dateReceived);
       }
     }
     const weekStartValues = Object.values(weekStartByLevel);
@@ -341,7 +345,7 @@ export class BrooderService {
         if (!a) continue;
         const batch = batchMap[a.batchId];
         if (batch && !batchWeekStart[a.batchId]) {
-          batchWeekStart[a.batchId] = brooderWeekStart(batch.dateOfHatch);
+          batchWeekStart[a.batchId] = brooderWeekStart(batch.dateReceived);
         }
         batchBirdTotal[a.batchId] = (batchBirdTotal[a.batchId] ?? 0) + a.birdCount;
       }
@@ -427,11 +431,13 @@ export class BrooderService {
         let hylineWeek: number | null = null;
 
         if (batch && a) {
-          ageWeeks = batchAgeWeeks(batch.dateOfHatch);
+          // Feed schedule age/week is anchored to dateReceived, not
+          // dateOfHatch — see the weekStartByLevel comment above.
+          ageWeeks = batchAgeWeeks(batch.dateReceived);
           const std = hylineStandard(ageWeeks);
           hylineWeek = std.week;
           // Use adjusted weekly feed (early/transition days contribute 0 or 50%),
-          // windowed to this batch's OWN hatch-relative brooder week so it
+          // windowed to this batch's OWN arrival-relative brooder week so it
           // matches dispensedKgThisWeek's window above.
           //
           // This projects the FULL 7-day week (not just days elapsed so far),
@@ -442,7 +448,7 @@ export class BrooderService {
           // (logDate), whether entered live or backdated — and any days still
           // ahead in the week are projected at the current (latest known)
           // population, since no future mortality can be known yet.
-          const levelWeekStart = brooderWeekStart(batch.dateOfHatch);
+          const levelWeekStart = brooderWeekStart(batch.dateReceived);
           const levelWeekEnd = new Date(levelWeekStart);
           levelWeekEnd.setUTCDate(levelWeekEnd.getUTCDate() + 6);
           requiredKgThisWeek = brooderAdjustedWeeklyFeedKgWithMortality(
@@ -518,6 +524,7 @@ export class BrooderService {
             ageWeeks:         batchAgeWeeks(batch.dateOfHatch),
             quantityReceived: batch.quantityReceived,
             dateOfHatch:      dayjs(batch.dateOfHatch).format('YYYY-MM-DD'),
+            dateReceived:     dayjs(batch.dateReceived).format('YYYY-MM-DD'),
           } : null,
           hylineWeek,
           dailyRationKg,
@@ -906,10 +913,12 @@ export class BrooderService {
       const batch = await this.prisma.batch.findUnique({ where: { id: level.assignment.batchId } });
       if (batch) {
         const entryDateObj = new Date(dto.entryDate);
-        ageWeeks          = batchAgeWeeks(batch.dateOfHatch, entryDateObj);
-        // Anchored to the batch's own hatch date, not the calendar week —
-        // see brooderWeekStart() in feed-standard.util.ts.
-        const weekStart   = brooderWeekStart(batch.dateOfHatch, entryDateObj);
+        // Anchored to the batch's own dateReceived (day the farm took
+        // custody), not dateOfHatch and not the calendar week — see
+        // weekStartByLevel comment in getCageMap() and brooderWeekStart()
+        // in feed-standard.util.ts.
+        ageWeeks          = batchAgeWeeks(batch.dateReceived, entryDateObj);
+        const weekStart   = brooderWeekStart(batch.dateReceived, entryDateObj);
         const weekMortalityLogs = await (this.prisma as any).brooderLevelMortalityLog.findMany({
           where: { levelId: dto.levelId, logDate: { gte: weekStart, lte: entryDateObj } },
         });
@@ -1253,7 +1262,7 @@ export class BrooderService {
     // Whole-batch daily ration reference (advisory — mirrors the "schedule
     // is a reference, not an enforced cap" principle already used for
     // row/level feed logs' informational banners).
-    const ageWeeks = batchAgeWeeks(batch.dateOfHatch, entryDate);
+    const ageWeeks = batchAgeWeeks(batch.dateReceived, entryDate);
     const dailyRationKg = brooderRequiredFeedKg(batch.currentBirdCount, ageWeeks, 1);
 
     const result = await this.prisma.brooderGeneralFeedLog.create({
@@ -1723,18 +1732,19 @@ export class BrooderService {
               : null;
           // ── This level's OWN batch-relative week window ───────────────────
           // `requiredKgThisWeek` / `dispensedKgThisWeek` above are computed
-          // over THIS batch's hatch-anchored week (see brooderWeekStart() in
-          // feed-standard.util.ts) — which will differ from every other
-          // level's window unless their batches happen to share a hatch
-          // date, and will differ from the calendar week too. Surfacing the
-          // actual window here is what lets the UI show "which days does
-          // this number actually cover" instead of leaving the reader to
-          // assume it matches the calendar-week panel elsewhere in the app
-          // (it usually won't).
+          // over THIS batch's arrival-anchored week (see brooderWeekStart()
+          // in feed-standard.util.ts) — anchored to dateReceived (Day 1 =
+          // the day the birds were received on the farm), not dateOfHatch.
+          // This will differ from every other level's window unless their
+          // batches happen to share the same intake date, and will differ
+          // from the calendar week too. Surfacing the actual window here is
+          // what lets the UI show "which days does this number actually
+          // cover" instead of leaving the reader to assume it matches the
+          // calendar-week panel elsewhere in the app (it usually won't).
           let weekStart: string | null = null;
           let weekEnd:   string | null = null;
-          if (l.batch?.dateOfHatch) {
-            const wStart = brooderWeekStart(new Date(`${l.batch.dateOfHatch}T00:00:00.000Z`));
+          if (l.batch?.dateReceived) {
+            const wStart = brooderWeekStart(new Date(`${l.batch.dateReceived}T00:00:00.000Z`));
             const wEnd   = new Date(wStart);
             wEnd.setUTCDate(wEnd.getUTCDate() + 6);
             weekStart = dayjs(wStart).format('YYYY-MM-DD');
@@ -2028,7 +2038,7 @@ export class BrooderService {
     const batchIds = Array.from(new Set(levels.map(l => l.assignment!.batchId)));
     const batches = await this.prisma.batch.findMany({
       where: { id: { in: batchIds } },
-      select: { id: true, batchCode: true, dateOfHatch: true },
+      select: { id: true, batchCode: true, dateOfHatch: true, dateReceived: true },
     });
     const batchMap = Object.fromEntries(batches.map(b => [b.id, b]));
 
@@ -2067,7 +2077,7 @@ export class BrooderService {
       if (!batch || a.birdCount <= 0) continue;
       if (batchesUsedGeneralYesterday.has(a.batchId)) continue;
 
-      const ageWeeksYesterday = batchAgeWeeks(batch.dateOfHatch, yesterdayDate);
+      const ageWeeksYesterday = batchAgeWeeks(batch.dateReceived, yesterdayDate);
 
       const requiredKg  = brooderRequiredFeedKg(a.birdCount, ageWeeksYesterday, 1);
       const dispensedKg = Math.round((dispensedByLevel[level.id] ?? 0) * 100) / 100;
@@ -2107,20 +2117,24 @@ export class BrooderService {
   async checkEarlyPhaseNotEating(): Promise<void> {
     const now = farmNow();
 
-    // Find all active batches that are at or past Day 7
+    // Find all active batches that are at or past Day 7 since arrival.
+    // Anchored to dateReceived, not dateOfHatch — a bird can't eat at this
+    // farm before the farm has it, and transit time between hatch and
+    // arrival would otherwise make this alert fire (or its "days old" text
+    // read) too early relative to when the batch actually started feeding here.
     const batchCandidates = await this.prisma.batch.findMany({
       where: {
-        isActive:    true,
-        stage:       'BROODING' as any,
-        dateOfHatch: {
+        isActive:     true,
+        stage:        'BROODING' as any,
+        dateReceived: {
           lte: new Date(now.getTime() - NOT_EATING_ALERT_DAYS * 24 * 60 * 60 * 1000),
         },
       },
-      select: { id: true, batchCode: true, dateOfHatch: true },
+      select: { id: true, batchCode: true, dateReceived: true },
     });
 
     for (const batch of batchCandidates) {
-      // Sum all feed consumed by this batch since hatch — both row/level
+      // Sum all feed consumed by this batch since arrival — both row/level
       // entries AND general-population sheet entries. A batch fed entirely
       // via the general sheet has zero BrooderLevelFeedLog rows by design,
       // so checking that table alone would wrongly flag it as not eating.
@@ -2128,12 +2142,12 @@ export class BrooderService {
         this.prisma.brooderLevelFeedLog.aggregate({
           where: {
             level: { assignment: { batchId: batch.id } },
-            entryDate: { gte: batch.dateOfHatch },
+            entryDate: { gte: batch.dateReceived },
           },
           _sum: { quantityDispensedKg: true },
         }),
         this.prisma.brooderGeneralFeedLog.aggregate({
-          where: { batchId: batch.id, entryDate: { gte: batch.dateOfHatch } },
+          where: { batchId: batch.id, entryDate: { gte: batch.dateReceived } },
           _sum: { quantityDispensedKg: true },
         }),
       ]);
@@ -2141,15 +2155,15 @@ export class BrooderService {
         Number(levelFeed._sum.quantityDispensedKg ?? 0) +
         Number(generalFeed._sum.quantityDispensedKg ?? 0);
 
-      if (isEarlyPhaseNotEating(batch.dateOfHatch, totalConsumedKg, now)) {
+      if (isEarlyPhaseNotEating(batch.dateReceived, totalConsumedKg, now)) {
         const ageInDays = Math.floor(
-          (now.getTime() - batch.dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
+          (now.getTime() - batch.dateReceived.getTime()) / (1000 * 60 * 60 * 24),
         );
         await this.alertRoles(
           'BROODER_FEED_OVERISSUE' as any, // reuse closest existing type; extend enum if needed
           `Early-Phase Feeding Concern — ${batch.batchCode}`,
-          `Batch ${batch.batchCode} is now ${ageInDays} days old and has recorded zero ` +
-          `feed consumption since arrival. Day-old chicks typically begin eating by Day 4–6. ` +
+          `Batch ${batch.batchCode} is now ${ageInDays} days since arrival and has recorded ` +
+          `zero feed consumption. Day-old chicks typically begin eating by Day 4–6. ` +
           `Please inspect the batch immediately — check feeder placement, feed quality, ` +
           `and chick health status.`,
           batch.id,

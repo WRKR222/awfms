@@ -70,10 +70,10 @@ const HYLINE_SCHEDULE: HyLineWeekStandard[] = [
 ];
 
 /**
- * Canonical 1-indexed HyLine week number for a batch, given its hatch date.
+ * Canonical 1-indexed HyLine week number for a batch, given an anchor date.
  *
- * Week 1 = ageInDays 0-6, Week 2 = ageInDays 7-13, Week 3 = ageInDays 14-20, etc.
- * i.e. `Math.floor(ageInDays / 7) + 1`, clamped to a minimum of 1.
+ * Week 1 = daysSinceAnchor 0-6, Week 2 = daysSinceAnchor 7-13, Week 3 = daysSinceAnchor 14-20, etc.
+ * i.e. `Math.floor(daysSinceAnchor / 7) + 1`, clamped to a minimum of 1.
  *
  * IMPORTANT — do not compute this as `dayjs(a).diff(dayjs(b), 'week')` clamped
  * with `Math.max(1, ...)`. dayjs's week-diff is already the 0-indexed
@@ -84,7 +84,16 @@ const HYLINE_SCHEDULE: HyLineWeekStandard[] = [
  * several call sites — always compute the week number through this helper
  * instead so the whole app agrees on the same number.
  *
- * @param dateOfHatch   - batch hatch date
+ * @param anchorDate    - the date Day 1 counts from. Callers pass different
+ *                        dates depending on what's biologically/operationally
+ *                        correct for that check: mortality-rate and weight
+ *                        checks against the HyLine standard use `dateOfHatch`
+ *                        (genetics/biology are tied to true age), while feed
+ *                        control (schedule, issuance windows, over-issue
+ *                        guards) uses `dateReceived` (feed control is about
+ *                        what the farm has fed since it took custody of the
+ *                        birds, not since they hatched — see brooderWeekStart()
+ *                        below for the full reasoning).
  * @param referenceDate - the date to evaluate the age at (defaults to today)
  */
 /**
@@ -131,9 +140,9 @@ export function farmTodayUtcMidnight(): Date {
   return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()));
 }
 
-export function batchAgeWeeks(dateOfHatch: Date, referenceDate: Date = farmNow()): number {
+export function batchAgeWeeks(anchorDate: Date, referenceDate: Date = farmNow()): number {
   const ageInDays = Math.floor(
-    (referenceDate.getTime() - dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
+    (referenceDate.getTime() - anchorDate.getTime()) / (1000 * 60 * 60 * 24),
   );
   return Math.max(1, Math.floor(Math.max(0, ageInDays) / 7) + 1);
 }
@@ -210,29 +219,35 @@ export function withTolerance(kg: number, tolerance = 0.1): { min: number; max: 
  * Returns the start (UTC midnight) of the batch-relative "brooder week"
  * containing `referenceDate`.
  *
- * Weeks here are anchored to the batch's `dateOfHatch` rather than the
- * calendar (Mon–Sun / Sun–Sat) week: Week 1 = days 0–6 since hatch,
- * Week 2 = days 7–13, etc.
+ * Weeks here are anchored to an operational `anchorDate` rather than the
+ * calendar (Mon–Sun / Sun–Sat) week: Week 1 = days 0–6 since the anchor,
+ * Week 2 = days 7–13, etc. For feed control this anchor is `dateReceived`
+ * (Day 1 = the day the birds were received on the farm) — feed issuance,
+ * schedule, and over-issue checks are about what the farm has fed since it
+ * took custody of the birds, not since they hatched, which may have been
+ * days earlier during transit.
  *
- * Why this matters: chicks almost never hatch exactly on a calendar week
- * boundary, so the calendar week and the chicks' first week of life rarely
- * line up. If "this week's" dispensed/required feed totals are windowed by
- * calendar week, a feed log backdated to a day that has rolled into a new
- * calendar week — but is still within the same brooder week for that batch —
- * silently falls outside the window and never shows up in the weekly totals.
- * Anchoring the window to the hatch date instead fixes that for every batch,
- * and is most noticeable in Week 1 because that's the week most likely to
- * straddle a calendar boundary.
+ * Why the anchor matters at all (vs. calendar week): chicks/batches almost
+ * never arrive exactly on a calendar week boundary, so the calendar week and
+ * a batch's first week on the farm rarely line up. If "this week's"
+ * dispensed/required feed totals are windowed by calendar week, a feed log
+ * backdated to a day that has rolled into a new calendar week — but is still
+ * within the same brooder week for that batch — silently falls outside the
+ * window and never shows up in the weekly totals. Anchoring the window to
+ * the batch's own intake date instead fixes that for every batch, and is
+ * most noticeable in Week 1 because that's the week most likely to straddle
+ * a calendar boundary.
  *
- * @param dateOfHatch   - batch hatch date
+ * @param anchorDate    - the date Day 1 counts from (see batchAgeWeeks() above
+ *                        for which date each caller should pass)
  * @param referenceDate - the date whose containing brooder-week we want (defaults to today)
  */
-export function brooderWeekStart(dateOfHatch: Date, referenceDate: Date = farmNow()): Date {
+export function brooderWeekStart(anchorDate: Date, referenceDate: Date = farmNow()): Date {
   const ageInDays = Math.floor(
-    (referenceDate.getTime() - dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
+    (referenceDate.getTime() - anchorDate.getTime()) / (1000 * 60 * 60 * 24),
   );
   const weekIndex = Math.floor(Math.max(0, ageInDays) / 7); // 0-indexed brooder week number
-  const start = new Date(dateOfHatch);
+  const start = new Date(anchorDate);
   start.setUTCHours(0, 0, 0, 0);
   start.setUTCDate(start.getUTCDate() + weekIndex * 7);
   return start;
@@ -373,27 +388,27 @@ export function brooderAdjustedWeeklyFeedKgWithMortality(
 
 /**
  * Returns true if a batch has recorded zero feed consumption at all by
- * Day 8 of life — a clinical concern (chicks should be eating inconsistently
- * by Day 4-6 even in the worst case) that warrants a
+ * Day 8 since arrival — a clinical concern (chicks should be eating
+ * inconsistently by Day 4-6 even in the worst case) that warrants a
  * BROODER_EARLY_PHASE_NOT_EATING alert to managers.
  *
  * This is a standalone health-monitoring check — it does not discount or
  * adjust the feed schedule in any way, it purely watches for "no feed
  * logged at all" as a red flag worth investigating.
  *
- * @param dateOfHatch       - batch hatch date
- * @param totalConsumedKg   - total feed consumed since hatch
+ * @param dateReceived      - date the batch was received on the farm (Day 1)
+ * @param totalConsumedKg   - total feed consumed since arrival
  * @param referenceDate     - evaluation date (defaults to today)
  */
 export const NOT_EATING_ALERT_DAYS = 8; // flag if zero consumption by Day 8
 
 export function isEarlyPhaseNotEating(
-  dateOfHatch: Date,
+  dateReceived: Date,
   totalConsumedKg: number,
   referenceDate: Date = new Date(),
 ): boolean {
   const ageInDays = Math.floor(
-    (referenceDate.getTime() - dateOfHatch.getTime()) / (1000 * 60 * 60 * 24),
+    (referenceDate.getTime() - dateReceived.getTime()) / (1000 * 60 * 60 * 24),
   );
   return ageInDays >= NOT_EATING_ALERT_DAYS && totalConsumedKg <= 0;
 }

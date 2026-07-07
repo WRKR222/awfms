@@ -94,8 +94,8 @@ interface FeedSummaryRow {
 interface FeedSummary {
   // Farm-wide aggregate across every occupied row/level — there is no
   // single calendar week backing totalRequiredKgThisWeek/totalDispensedKgThisWeek
-  // below, since each level's contribution uses its own batch's hatch-anchored
-  // week (see rows[].levels[].weekStart/weekEnd for the real per-batch dates).
+  // below, since each level's contribution uses its own batch's
+  // dateReceived-anchored week (Day 1 = day birds were received on the farm).
   scope:                    string;
   totalChicks:              number;
   totalRequiredKgThisWeek:  number;
