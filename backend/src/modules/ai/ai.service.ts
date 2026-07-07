@@ -35,11 +35,16 @@ export class AiService {
   // ONCE with an explicit instruction to answer more concisely so the saved
   // report is always a complete (if shorter) piece of writing rather than a
   // sentence that stops halfway through.
-  private async callClaude(prompt: string, maxTokens = 800): Promise<string | null> {
+  // `model` lets a specific call (e.g. the Director's on-demand batch report)
+  // override ANTHROPIC_MODEL and point at a more capable model without
+  // affecting the cheaper, higher-frequency cron reports that also call this
+  // helper.
+  private async callClaude(prompt: string, maxTokens = 800, model?: string): Promise<string | null> {
     if (!this.anthropic) return null;
+    const resolvedModel = model ?? this.config.get<string>('ANTHROPIC_MODEL') ?? 'claude-sonnet-4-6';
     try {
       const msg = await this.anthropic.messages.create({
-        model: this.config.get<string>('ANTHROPIC_MODEL') ?? 'claude-sonnet-4-6',
+        model: resolvedModel,
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }],
       });
@@ -47,10 +52,10 @@ export class AiService {
       let text = block.type === 'text' ? block.text : null;
 
       if (msg.stop_reason === 'max_tokens') {
-        this.logger.warn(`Claude response truncated at max_tokens=${maxTokens} — retrying once with a tighter length cap`);
+        this.logger.warn(`Claude response truncated at max_tokens=${maxTokens} (model: ${resolvedModel}) — retrying once with a tighter length cap`);
         const wordCap = Math.max(120, Math.floor(maxTokens * 0.55));
         const retryMsg = await this.anthropic.messages.create({
-          model: this.config.get<string>('ANTHROPIC_MODEL') ?? 'claude-sonnet-4-6',
+          model: resolvedModel,
           max_tokens: maxTokens,
           messages: [{
             role: 'user',
@@ -69,9 +74,9 @@ export class AiService {
 
       return text;
     } catch (err: any) {
-      this.logger.error(`Claude API error: ${err.message} (status: ${err.status ?? 'unknown'})`);
+      this.logger.error(`Claude API error: ${err.message} (status: ${err.status ?? 'unknown'}, model: ${resolvedModel})`);
       if (err.status === 401) this.logger.error('Claude API: invalid API key — check ANTHROPIC_API_KEY in Railway env vars');
-      if (err.status === 404) this.logger.error(`Claude API: model not found — check ANTHROPIC_MODEL env var (current: ${this.config.get('ANTHROPIC_MODEL') ?? 'claude-sonnet-4-6'})`);
+      if (err.status === 404) this.logger.error(`Claude API: model not found — check ANTHROPIC_MODEL / ANTHROPIC_MODEL_BATCH_REPORT env vars (current: ${resolvedModel})`);
       return null;
     }
   }
@@ -751,6 +756,220 @@ Provide 3-5 improvement suggestions. Each should be: (a) specific to the data ab
   }
 
   // ────────────────────────────────────────────────────────────────────────────
+  // Helper: pull EVERY brooder-stage data point recorded for a batch and
+  // compute the comparisons a director actually needs to spot a problem.
+  //
+  // Before this existed, generateBatchReport only ever looked at
+  // EggCollectionSession + FeedIntakeLog + Batch.currentBirdCount — none of
+  // which are even populated while a batch is in the brooder. Meanwhile 11
+  // separate tables (BrooderLog, BrooderTreatmentLog, BrooderHeatLog,
+  // BrooderLevelFeedLog, BrooderGeneralFeedLog, BrooderLevelMortalityLog,
+  // BrooderGeneralMortalityLog, BirdWeightSample, VaccinationRecord,
+  // VaccinationSchedule, HealthEvent) sat completely unused by any report.
+  // That's exactly why the Director's brooder-batch reports read as shallow —
+  // the model was never given the data to analyse in the first place, no
+  // matter how capable it is.
+  //
+  // This pulls all of it for one batch and pre-computes the comparisons that
+  // actually reveal gaps/issues (mortality vs the HyLine control-standard
+  // ceiling, weight vs the expected band for that age, vaccines due vs
+  // vaccines actually given, environmental log completeness), so the prompt
+  // can ask the model to reason over real numbers instead of guessing.
+  // ────────────────────────────────────────────────────────────────────────────
+  private async getBrooderDeepDive(batch: {
+    id: string;
+    birdType: string;
+    quantityReceived: number;
+    dateReceived: Date;
+  }) {
+    const batchId = batch.id;
+    const ageWeeks = dayjs().diff(dayjs(batch.dateReceived), 'week');
+    const ageDays = dayjs().diff(dayjs(batch.dateReceived), 'day');
+
+    const [
+      brooderLogs,
+      levelAssignments,
+      generalFeedLogs,
+      levelMortalityLogs,
+      generalMortalityLogs,
+      treatmentLogs,
+      weightSamples,
+      vaccinationRecords,
+      vaccinationSchedule,
+      healthEvents,
+      controlStandards,
+    ] = await Promise.all([
+      this.prisma.brooderLog.findMany({
+        where: { batchId },
+        select: { logDate: true, temperature: true, humidityPercent: true, waterConsumptionL: true, lightIntensityLux: true, lightingOk: true },
+        orderBy: { logDate: 'asc' },
+      }),
+      this.prisma.brooderLevelAssignment.findMany({
+        where: { batchId },
+        select: {
+          levelId: true, birdCount: true, placedDate: true,
+          level: { select: { label: true, row: { select: { label: true } } } },
+        },
+      }),
+      this.prisma.brooderGeneralFeedLog.findMany({
+        where: { batchId },
+        select: { entryDate: true, quantityDispensedKg: true, requiredKgForDay: true },
+      }),
+      this.prisma.brooderLevelMortalityLog.findMany({
+        where: { batchId },
+        select: { logDate: true, mortalityCount: true, cullingCount: true, cause: true },
+      }),
+      this.prisma.brooderGeneralMortalityLog.findMany({
+        where: { batchId },
+        select: { logDate: true, mortalityCount: true, cullingCount: true, cause: true },
+      }),
+      this.prisma.brooderTreatmentLog.findMany({
+        where: { batchId },
+        select: { treatmentDate: true, drugName: true, dose: true, doseUnit: true, route: true, durationDays: true },
+        orderBy: { treatmentDate: 'desc' },
+      }),
+      this.prisma.birdWeightSample.findMany({
+        where: { batchId },
+        select: { sampleDate: true, averageWeightG: true, ageWeeks: true, sampleCount: true },
+        orderBy: { sampleDate: 'desc' },
+        take: 12,
+      }),
+      this.prisma.vaccinationRecord.findMany({
+        where: { batchId },
+        select: { vaccineName: true, administeredDate: true, route: true },
+        orderBy: { administeredDate: 'asc' },
+      }),
+      this.prisma.vaccinationSchedule.findMany({
+        where: { birdType: batch.birdType as any, isActive: true },
+        select: { vaccineName: true, ageWeeks: true, route: true },
+        orderBy: { ageWeeks: 'asc' },
+      }),
+      this.prisma.healthEvent.findMany({
+        where: { batchId },
+        select: { eventType: true, eventDate: true, affectedCount: true, symptoms: true, diagnosis: true, treatment: true, outcome: true, isResolved: true },
+        orderBy: { eventDate: 'desc' },
+      }),
+      this.prisma.brooderControlStandard.findMany({
+        select: { week: true, expectedWeightMinG: true, expectedWeightMaxG: true, cumulativeMortalityPct: true, feedingGramsPerBird: true },
+        orderBy: { week: 'asc' },
+      }),
+    ]);
+
+    // Per-level feed logs need the level IDs from the assignments above.
+    const levelIds = levelAssignments.map(a => a.levelId);
+    const levelFeedLogs = levelIds.length
+      ? await this.prisma.brooderLevelFeedLog.findMany({
+          where: { levelId: { in: levelIds } },
+          select: { entryDate: true, quantityDispensedKg: true, requiredKgForWeek: true },
+        })
+      : [];
+
+    // ── Environmental completeness & readings ─────────────────────────────
+    const tempReadings = brooderLogs.map(l => l.temperature).filter((t): t is number => t != null);
+    const humidityReadings = brooderLogs.map(l => l.humidityPercent).filter((h): h is number => h != null);
+    const lightingIssues = brooderLogs.filter(l => l.lightingOk === false).length;
+    // Brooder logs are expected up to 3x/day (AM/midday/PM); use that as the
+    // ceiling for a rough completeness ratio rather than a hard requirement.
+    const expectedEnvLogs = Math.max(1, ageDays * 3);
+    const envCompletenessPct = Math.min(100, Math.round((brooderLogs.length / expectedEnvLogs) * 100));
+
+    // ── Feed vs required ration (level + general, kept separate — the two
+    // are mutually exclusive per batch+date by design, so summing both
+    // dispensed totals is safe and won't double count) ────────────────────
+    const totalFeedDispensedKg =
+      levelFeedLogs.reduce((s, f) => s + f.quantityDispensedKg, 0) +
+      generalFeedLogs.reduce((s, f) => s + f.quantityDispensedKg, 0);
+    const feedEntryCount = levelFeedLogs.length + generalFeedLogs.length;
+
+    // ── Mortality & culling vs the HyLine control-standard ceiling ─────────
+    const totalMortality =
+      levelMortalityLogs.reduce((s, m) => s + m.mortalityCount, 0) +
+      generalMortalityLogs.reduce((s, m) => s + m.mortalityCount, 0);
+    const totalCulling =
+      levelMortalityLogs.reduce((s, m) => s + m.cullingCount, 0) +
+      generalMortalityLogs.reduce((s, m) => s + m.cullingCount, 0);
+    const cumulativeMortalityPct = batch.quantityReceived > 0
+      ? (totalMortality / batch.quantityReceived) * 100
+      : 0;
+    const causeCounts = new Map<string, number>();
+    for (const m of [...levelMortalityLogs, ...generalMortalityLogs]) {
+      if (!m.cause) continue;
+      causeCounts.set(m.cause, (causeCounts.get(m.cause) ?? 0) + m.mortalityCount);
+    }
+    const currentStandard = controlStandards.find(s => s.week === Math.min(19, Math.max(1, ageWeeks)));
+    const mortalityCeilingPct = currentStandard ? Number(currentStandard.cumulativeMortalityPct) : null;
+    const mortalityOverCeiling = mortalityCeilingPct != null && cumulativeMortalityPct > mortalityCeilingPct;
+
+    // ── Bird weight vs expected band for the batch's current age ───────────
+    const latestWeight = weightSamples[0] ?? null;
+    const weightStandard = latestWeight
+      ? controlStandards.find(s => s.week === Math.min(19, Math.max(1, latestWeight.ageWeeks)))
+      : null;
+    const weightBandStatus = latestWeight && weightStandard
+      ? (Number(latestWeight.averageWeightG) < Number(weightStandard.expectedWeightMinG) ? 'BELOW_BAND'
+        : Number(latestWeight.averageWeightG) > Number(weightStandard.expectedWeightMaxG) ? 'ABOVE_BAND'
+        : 'WITHIN_BAND')
+      : 'NO_DATA';
+
+    // ── Vaccination coverage gaps ───────────────────────────────────────────
+    const givenNames = new Set(vaccinationRecords.map(v => v.vaccineName.toLowerCase().trim()));
+    const dueVaccines = vaccinationSchedule.filter(s => s.ageWeeks <= ageWeeks);
+    const missedVaccines = dueVaccines.filter(s => !givenNames.has(s.vaccineName.toLowerCase().trim()));
+
+    // ── Health events & treatments ──────────────────────────────────────────
+    const unresolvedHealthEvents = healthEvents.filter(e => !e.isResolved);
+
+    return {
+      ageWeeks, ageDays,
+      environment: {
+        logCount: brooderLogs.length,
+        expectedLogCount: expectedEnvLogs,
+        completenessPct: envCompletenessPct,
+        avgTemp: this.avgOf(tempReadings),
+        minTemp: tempReadings.length ? Math.min(...tempReadings) : null,
+        maxTemp: tempReadings.length ? Math.max(...tempReadings) : null,
+        avgHumidity: this.avgOf(humidityReadings),
+        lightingIssues,
+      },
+      feed: {
+        totalDispensedKg: totalFeedDispensedKg,
+        entryCount: feedEntryCount,
+      },
+      mortality: {
+        total: totalMortality,
+        culling: totalCulling,
+        cumulativePct: cumulativeMortalityPct,
+        ceilingPct: mortalityCeilingPct,
+        overCeiling: mortalityOverCeiling,
+        byCause: Array.from(causeCounts.entries()).map(([cause, count]) => ({ cause, count })),
+      },
+      weight: latestWeight ? {
+        sampleDate: latestWeight.sampleDate,
+        averageWeightG: Number(latestWeight.averageWeightG),
+        ageWeeks: latestWeight.ageWeeks,
+        sampleCount: latestWeight.sampleCount,
+        expectedMinG: weightStandard ? Number(weightStandard.expectedWeightMinG) : null,
+        expectedMaxG: weightStandard ? Number(weightStandard.expectedWeightMaxG) : null,
+        status: weightBandStatus,
+      } : null,
+      vaccination: {
+        given: vaccinationRecords.map(v => ({ name: v.vaccineName, date: v.administeredDate, route: v.route })),
+        missed: missedVaccines.map(s => ({ name: s.vaccineName, dueAtWeek: s.ageWeeks, route: s.route })),
+      },
+      health: {
+        totalEvents: healthEvents.length,
+        unresolved: unresolvedHealthEvents.map(e => ({
+          type: e.eventType, date: e.eventDate, affected: e.affectedCount, symptoms: e.symptoms,
+        })),
+      },
+      treatments: treatmentLogs.map(t => ({
+        date: t.treatmentDate, drug: t.drugName, dose: `${t.dose}${t.doseUnit}`, route: t.route, durationDays: t.durationDays,
+      })),
+      levelsOccupied: levelAssignments.map(a => `${a.level.row.label}/${a.level.label} (${a.birdCount} birds)`),
+    };
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
   // On-demand: generate a report for ONE specific batch (active or recently
   // closed/sold/discarded). Unlike the AI-05 cron (generateBatchForecasts),
   // this has NO age/stage/data-volume gating — it works for any existing
@@ -852,21 +1071,57 @@ Provide 3-5 improvement suggestions. Each should be: (a) specific to the data ab
         (batch.closedAt ? ` Closed ${dayjs(batch.closedAt).format('D MMM YYYY')}.` : '')
       : `This batch is currently ACTIVE, in the ${batch.stage} stage.`;
 
-    const prompt = `You are a commercial poultry expert reviewing one specific batch for Anza Whole Foods farm in Kenya. Write a clear, comprehensible report for the Director — plain English, specific numbers, no jargon. If a figure below has no data, say so plainly instead of guessing.
+    // ── Brooder deep-dive: every environment, feed, mortality, weight,
+    // vaccination, health and treatment data point recorded for this batch.
+    // Populated regardless of current stage — a GROWER/PRODUCTION batch still
+    // has a brooding history worth reporting gaps in, and it's simply empty
+    // arrays for a batch that never had brooder data logged.
+    const bd = await this.getBrooderDeepDive(batch);
+
+    const brooderSection = `
+BROODER ENVIRONMENT: ${bd.environment.logCount} log(s) recorded out of a rough expected ${bd.environment.expectedLogCount} (up to 3x/day) — ${bd.environment.completenessPct}% logging completeness.${bd.environment.logCount > 0
+      ? ` Avg temperature ${bd.environment.avgTemp.toFixed(1)}°C (range ${bd.environment.minTemp}–${bd.environment.maxTemp}°C), avg humidity ${bd.environment.avgHumidity.toFixed(1)}%, ${bd.environment.lightingIssues} log(s) flagged a lighting problem.`
+      : ' No environmental readings recorded at all — this is a significant gap for a brooding batch.'}
+BROODER FEED: ${bd.feed.entryCount > 0 ? `${bd.feed.totalDispensedKg.toFixed(1)} kg dispensed across ${bd.feed.entryCount} logged feeding(s) (level + general-population logs combined).` : 'no brooder-level feed logs recorded.'}
+BROODER MORTALITY/CULLING: ${bd.mortality.total} death(s), ${bd.mortality.culling} culled. Cumulative mortality ${bd.mortality.cumulativePct.toFixed(2)}%${bd.mortality.ceilingPct != null ? ` vs the HyLine control-standard ceiling of ${bd.mortality.ceilingPct.toFixed(2)}% for week ${ageWeeks} — ${bd.mortality.overCeiling ? 'THIS BATCH IS OVER THE CEILING, flag it clearly' : 'within the expected ceiling'}.` : ' (no matching control-standard week found to compare against).'}${bd.mortality.byCause.length ? ` Causes recorded: ${bd.mortality.byCause.map(c => `${c.cause} (${c.count})`).join(', ')}.` : ''}
+BIRD WEIGHT: ${bd.weight ? `latest sample ${dayjs(bd.weight.sampleDate).format('D MMM YYYY')} at ${bd.weight.ageWeeks} week(s): average ${bd.weight.averageWeightG}g from ${bd.weight.sampleCount} bird(s) sampled.${bd.weight.expectedMinG != null ? ` Expected band for that age: ${bd.weight.expectedMinG}–${bd.weight.expectedMaxG}g — this batch is ${bd.weight.status.replace('_', ' ')}.` : ''}` : 'no weight samples recorded for this batch.'}
+VACCINATION: ${bd.vaccination.given.length} record(s) administered${bd.vaccination.given.length ? ` (${bd.vaccination.given.map(v => v.name).join(', ')})` : ''}.${bd.vaccination.missed.length ? ` GAP: ${bd.vaccination.missed.length} vaccine(s) due by this age were not found in the records — ${bd.vaccination.missed.map(m => `${m.name} (due wk ${m.dueAtWeek})`).join(', ')}. Flag this clearly.` : ' No overdue vaccines found against the active schedule.'}
+HEALTH EVENTS: ${bd.health.totalEvents} total logged, ${bd.health.unresolved.length} UNRESOLVED.${bd.health.unresolved.length ? ` Unresolved: ${bd.health.unresolved.map(e => `${e.type} on ${dayjs(e.date).format('D MMM')} affecting ${e.affected} bird(s)${e.symptoms ? ` (symptoms: ${e.symptoms})` : ''}`).join('; ')}.` : ''}
+TREATMENTS ADMINISTERED: ${bd.treatments.length ? bd.treatments.map(t => `${t.drug} ${t.dose} via ${t.route} on ${dayjs(t.date).format('D MMM')}${t.durationDays ? ` for ${t.durationDays}d` : ''}`).join('; ') : 'none recorded.'}
+BROODER LOCATION: ${bd.levelsOccupied.length ? bd.levelsOccupied.join(', ') : 'no brooder row/level assignment on record.'}`;
+
+    const prompt = `You are a commercial poultry expert producing a FULL-SCALE, detailed report for the Director of Anza Whole Foods farm in Kenya, reviewing every data point collected for one specific batch. Plain English, specific numbers, no jargon — but do not shorten this into a summary. Go through EVERY section below individually. If a figure has no data, say so plainly and treat that itself as a gap worth flagging, rather than skipping it.
 
 BATCH: ${batch.batchCode} (${batch.birdType}, ${batch.strain}) in ${batch.house.name}
 ${statusNote}
 AGE: ${ageWeeks} week(s) since arrival (hatched ${dayjs(batch.dateOfHatch).format('D MMM YYYY')}, received ${dayjs(batch.dateReceived).format('D MMM YYYY')})
 BIRDS: started with ${batch.quantityReceived.toLocaleString()}, currently ${batch.currentBirdCount.toLocaleString()}${survivalRate ? ` (${survivalRate}% survival)` : ''}
 EGG PRODUCTION: ${totalEggs > 0 ? `${totalEggs.toLocaleString()} eggs across ${dailyHdp.length} fully-recorded day(s)` : 'no egg collection data recorded for this batch'}${avgHdp != null ? `, average daily HDP (AM+PM combined) ${avgHdp.toFixed(1)}%` : ''}
-FEED: ${totalFeedKg > 0 ? `${totalFeedKg.toFixed(1)} kg consumed${fcr ? `, FCR ${fcr} kg feed per egg` : ''}` : 'no feed intake data recorded for this batch'}
-DATA COMPLETENESS: ${completenessFlags
+PRODUCTION-HOUSE FEED: ${totalFeedKg > 0 ? `${totalFeedKg.toFixed(1)} kg consumed${fcr ? `, FCR ${fcr} kg feed per egg` : ''}` : 'no production-house feed intake data recorded for this batch'}
+${brooderSection}
+DATA COMPLETENESS (egg/feed/flock approval workflow): ${completenessFlags
       ? `${eggPending} egg session(s) pending approval, ${eggReturned} returned for correction; ${feedPending} feed log(s) pending, ${feedReturned} returned; ${flockPending} flock entry pending, ${flockReturned} returned; ${storeDiscrepancies} store-intake discrepancy flag(s) raised.`
       : 'all egg, feed and flock entries for this batch are fully approved with no outstanding store discrepancies.'}
 
-Write 2-3 short paragraphs covering: (1) an overall assessment of how this batch has performed given its age/stage and the data available, (2) flock health and survival, (3) ${batch.isActive ? 'a recommendation on next steps or what to watch for' : 'a closing assessment of how this batch performed overall'}. If data completeness issues are significant, briefly note them. End with 1-2 specific, actionable recommendations. Keep the ENTIRE response under 280 words — be concise enough to finish completely rather than running long and getting cut off.`;
+Write a full-scale report with these named sections, covering every data point above — do not skip the brooder data even if the batch has moved past brooding stage, since gaps there are still relevant history:
+1. **Overall Assessment** — how this batch has performed given its age/stage
+2. **Flock Health & Survival** — mortality, culling, causes, vs the control-standard ceiling
+3. **Growth & Nutrition** — feed adherence and bird weight vs the expected band
+4. **Environmental Conditions** — brooder temperature/humidity/lighting and logging completeness
+5. **Vaccination & Health Events** — coverage gaps, unresolved health events, treatments given
+6. **Data Gaps & Issues** — an explicit list of every gap, anomaly, or missing data point found across all sections above (this section is mandatory even if the answer is "no significant gaps found")
+7. **Recommendations** — ${batch.isActive ? '3-5 specific, actionable next steps' : 'a closing assessment of how this batch performed overall plus lessons for future batches'}
 
-    const content = await this.callClaude(prompt, 700);
+This is meant to be read carefully by the Director, not skimmed — be thorough rather than brief. There is no strict word limit, but keep every sentence carrying real information (no filler).`;
+
+    // Use the higher-capability model configured for this specific report (if
+    // set) rather than the cheaper model used for the automated cron reports —
+    // see ANTHROPIC_MODEL_BATCH_REPORT in app.config.ts / .env.example.
+    const batchReportModel = this.config.get<string>('ANTHROPIC_MODEL_BATCH_REPORT')
+      || this.config.get<string>('ANTHROPIC_MODEL')
+      || 'claude-sonnet-4-6';
+
+    const content = await this.callClaude(prompt, 4000, batchReportModel);
     if (!content) {
       throw new BadRequestException('The AI service did not return a report. Please try again in a moment.');
     }
@@ -883,9 +1138,11 @@ Write 2-3 short paragraphs covering: (1) an overall assessment of how this batch
           fcr: fcr ?? undefined,
           isActive: batch.isActive,
           manuallyRequested: true,
+          modelUsed: batchReportModel,
           completeness: {
             eggPending, eggReturned, feedPending, feedReturned, flockPending, flockReturned, storeDiscrepancies,
           },
+          brooder: bd,
         },
       },
     });

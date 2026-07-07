@@ -21,6 +21,15 @@ const envSchema = z.object({
   R2_PUBLIC_URL: z.string().url().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'),
+  // Optional override for the on-demand Director batch report only (AiService
+  // .generateBatchReport). This report is the most data-dense one we produce —
+  // it now pulls every brooder/health/vaccination data point for a batch, not
+  // just eggs/feed/survival — so it benefits most from a higher-capability
+  // model. Falls back to ANTHROPIC_MODEL if unset, so nothing breaks if this
+  // var is never added. Deliberately kept separate from ANTHROPIC_MODEL so the
+  // cheaper automated cron reports (weekly/improvement-suggestions) aren't
+  // forced onto the pricier model too.
+  ANTHROPIC_MODEL_BATCH_REPORT: z.string().optional(),
   FEED_ALERT_THRESHOLD_DAYS: z.coerce.number().default(3),
   MORTALITY_ALERT_PCT_ABOVE_AVG: z.coerce.number().default(15),
 });
