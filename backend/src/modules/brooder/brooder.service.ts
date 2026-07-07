@@ -268,6 +268,7 @@ export class BrooderService {
     // Today's heat log per row — farm-local calendar day (see farmTodayUtcMidnight
     // for why this can't just be dayjs().startOf('day') on the server clock).
     const today = farmTodayUtcMidnight();
+    const todayStr = dayjs(today).format('YYYY-MM-DD');
     const heatLogs = await this.prisma.brooderHeatLog.findMany({
       where: { rowId: { in: rows.map(r => r.id) }, logDate: { gte: today } },
       orderBy: { createdAt: 'desc' },
@@ -392,7 +393,6 @@ export class BrooderService {
     }
 
     // Today's feed dispensed per level (for over-issue guard display)
-    const todayStr = dayjs(today).format('YYYY-MM-DD');
     const todayFeedByLevel: Record<string, number> = {};
     for (const f of feedLogs) {
       if (dayjs(f.entryDate).format('YYYY-MM-DD') === todayStr) {
