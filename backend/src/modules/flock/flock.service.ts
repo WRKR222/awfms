@@ -638,6 +638,112 @@ export class FlockService {
     });
   }
 
+  // ── Data repair: quantityReceived corruption ──────────────────────────────
+  //
+  // Batches saved through the old (pre-fix) updateBatch() could have had
+  // quantityReceived silently overwritten to ~currentBirdCount + mortalityOnArrival
+  // on any edit, discarding on-farm mortality from the received/survival
+  // baseline. That code path is fixed (see updateBatch() above), but this
+  // repairs data that was already corrupted before the fix was deployed.
+  //
+  // The corruption only ever touches quantityReceived — currentBirdCount,
+  // mortalityOnArrival, and every mortality log table are untouched by it —
+  // so the correct original value can always be reconstructed:
+  //
+  //   quantityReceived = currentBirdCount + mortalityOnArrival
+  //                     + SUM(mortalityCount + cullingCount) across every
+  //                       mortality/culling record ever logged for the batch
+  //                       (FlockDailyEntry[APPROVED], BrooderLevelMortalityLog,
+  //                       BrooderGeneralMortalityLog)
+  //
+  // Exposed as two endpoints (see FlockController): a read-only preview and
+  // an apply step that requires an explicit confirm flag. Mirrors
+  // scripts/repair-batch-quantity-received.ts for teams that can't run a CLI
+  // script directly against the database.
+  async previewQuantityReceivedRepair(batchId?: string) {
+    return this.computeQuantityReceivedRepair(batchId, false);
+  }
+
+  async applyQuantityReceivedRepair(batchId?: string) {
+    return this.computeQuantityReceivedRepair(batchId, true);
+  }
+
+  private async computeQuantityReceivedRepair(batchId: string | undefined, apply: boolean) {
+    const batches = await this.prisma.batch.findMany({
+      where: batchId ? { id: batchId } : {},
+      select: {
+        id: true, batchCode: true,
+        quantityReceived: true, currentBirdCount: true, mortalityOnArrival: true,
+      },
+      orderBy: { batchCode: 'asc' },
+    });
+
+    const results: Array<{
+      batchId: string; batchCode: string;
+      currentQuantityReceived: number; recomputedQuantityReceived: number;
+      currentBirdCount: number; mortalityOnArrival: number; farmMortalityLogged: number;
+      needsReview: boolean; applied: boolean;
+    }> = [];
+
+    for (const batch of batches) {
+      const [entryAgg, levelAgg, generalAgg] = await Promise.all([
+        this.prisma.flockDailyEntry.aggregate({
+          where: { batchId: batch.id, status: EntryStatus.APPROVED },
+          _sum: { mortalityCount: true, cullingCount: true },
+        }),
+        this.prisma.brooderLevelMortalityLog.aggregate({
+          where: { batchId: batch.id },
+          _sum: { mortalityCount: true, cullingCount: true },
+        }),
+        this.prisma.brooderGeneralMortalityLog.aggregate({
+          where: { batchId: batch.id },
+          _sum: { mortalityCount: true, cullingCount: true },
+        }),
+      ]);
+
+      const totalFarmMortality =
+        (entryAgg._sum.mortalityCount ?? 0) + (entryAgg._sum.cullingCount ?? 0) +
+        (levelAgg._sum.mortalityCount ?? 0) + (levelAgg._sum.cullingCount ?? 0) +
+        (generalAgg._sum.mortalityCount ?? 0) + (generalAgg._sum.cullingCount ?? 0);
+
+      const moa = batch.mortalityOnArrival ?? 0;
+      const correctQuantityReceived = batch.currentBirdCount + moa + totalFarmMortality;
+
+      if (correctQuantityReceived === batch.quantityReceived) continue; // already correct
+
+      const needsReview = correctQuantityReceived < batch.currentBirdCount + moa;
+
+      const result = {
+        batchId: batch.id,
+        batchCode: batch.batchCode,
+        currentQuantityReceived: batch.quantityReceived,
+        recomputedQuantityReceived: correctQuantityReceived,
+        currentBirdCount: batch.currentBirdCount,
+        mortalityOnArrival: moa,
+        farmMortalityLogged: totalFarmMortality,
+        needsReview,
+        applied: false,
+      };
+
+      if (!needsReview && apply) {
+        await this.prisma.batch.update({
+          where: { id: batch.id },
+          data: { quantityReceived: correctQuantityReceived },
+        });
+        result.applied = true;
+      }
+
+      results.push(result);
+    }
+
+    return {
+      mode: apply ? 'apply' : 'dry-run',
+      batchesChecked: batches.length,
+      mismatches: results.length,
+      results,
+    };
+  }
+
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private async resolveSupplier(supplierId?: string, supplierName?: string) {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { BatchLifecycleService } from './batch-lifecycle.service';
 import { BatchStage } from '@prisma/client';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -122,6 +122,28 @@ export class FlockController {
   @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
   createBrooderTreatmentLog(@Body() body: any, @CurrentUser() user: any) {
     return this.svc.createBrooderTreatmentLog(body, user.id);
+  }
+
+  // ── Admin: repair batches corrupted by the old quantityReceived bug ──────
+  // See FlockService.computeQuantityReceivedRepair() for how the correct
+  // value is reconstructed. Preview is read-only; apply requires an explicit
+  // confirm flag so this can never be triggered by an accidental click/replay.
+  @Get('admin/repair-quantity-received')
+  @RequirePermission(Permission.FLOCK_BATCH_MANAGE)
+  previewQuantityReceivedRepair(@Query('batchId') batchId?: string) {
+    return this.svc.previewQuantityReceivedRepair(batchId);
+  }
+
+  @Post('admin/repair-quantity-received/apply')
+  @RequirePermission(Permission.FLOCK_BATCH_MANAGE)
+  applyQuantityReceivedRepair(@Body() body: { batchId?: string; confirm?: boolean }) {
+    if (!body?.confirm) {
+      throw new BadRequestException(
+        'Set confirm: true to apply this repair. Call GET admin/repair-quantity-received first ' +
+        '(optionally with ?batchId=) and review the results before applying.',
+      );
+    }
+    return this.svc.applyQuantityReceivedRepair(body.batchId);
   }
 }
 
