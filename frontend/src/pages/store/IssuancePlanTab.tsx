@@ -60,6 +60,19 @@ function nextMonday() {
   return today.add(daysUntilMon, 'day');
 }
 
+/** Returns the Monday of the CURRENT week (for a catch-up plan when last
+ *  Saturday's submission was missed). */
+function thisMonday() {
+  const today = dayjs();
+  const daysSinceMon = (today.day() + 6) % 7; // Mon->0, Tue->1, ... Sun->6
+  return today.subtract(daysSinceMon, 'day');
+}
+
+/** True if today (local) is Saturday. */
+function isTodaySaturday() {
+  return dayjs().day() === 6;
+}
+
 
 // ─── Per-item row: its own status badge + approve/reject/edit actions ────────
 
@@ -249,6 +262,11 @@ function PlanCard({
   const pendingCount = items.length - approvedCount - rejectedCount;
 
   const canSubmit = userRole === 'STORE' && plan.phase === 'DRAFT';
+  // Next-week weekly plans may only be submitted on Saturday; a plan for the
+  // current week is treated as a catch-up (missed last Saturday) and can be
+  // submitted any day. Emergency plans are never gated by day of week.
+  const isNextWeekPlan = plan.type === 'WEEKLY' && dayjs(plan.weekStartDate).isSame(nextMonday(), 'day');
+  const blockedBySaturdayRule = isNextWeekPlan && !isTodaySaturday();
   // Store edits while DRAFT. Director edits their queue (PENDING_DIRECTOR, or re-opens APPROVED/REJECTED).
   const ROLE_EDIT_ITEM_STATUSES: Record<string, string[]> = {
     STORE: ['PENDING_DIRECTOR'],
@@ -354,10 +372,13 @@ function PlanCard({
                 onClick={() => submitMutation.mutate()}
                 disabled={
                   submitMutation.isPending ||
-                  (plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim())
+                  (plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim()) ||
+                  blockedBySaturdayRule
                 }
                 title={
-                  plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim()
+                  blockedBySaturdayRule
+                    ? "This is a next-week plan — it can only be submitted on Saturday. If you missed last Saturday, edit it (or create a new plan) for the current week instead."
+                    : plan.type === 'EMERGENCY' && !plan.emergencyReason?.trim()
                     ? 'A reason is required before this emergency plan can be submitted'
                     : ''
                 }
@@ -366,6 +387,11 @@ function PlanCard({
                 <CheckCircle className="w-3.5 h-3.5" />
                 {submitMutation.isPending ? 'Submitting…' : 'Submit for Approval'}
               </button>
+            )}
+            {canSubmit && blockedBySaturdayRule && (
+              <p className="w-full text-xs text-amber-600 dark:text-amber-400">
+                Next week's plan — submission opens this Saturday. Missed last Saturday? Edit this plan for the current week instead.
+              </p>
             )}
 
             {canPdf && (
@@ -405,8 +431,13 @@ function CreatePlanForm({
   onCreated: () => void;
 }) {
   const qc = useQueryClient();
-  const mon = editingPlan ? dayjs(editingPlan.weekStartDate) : nextMonday();
   const isEditing = !!editingPlan;
+  // For a new plan, Store chooses whether this targets the CURRENT farm week
+  // (a catch-up plan, e.g. she missed last Saturday's submission) or the
+  // NEXT one (the normal advance plan, submittable only this coming
+  // Saturday). Editing an existing plan keeps its original week.
+  const [weekChoice, setWeekChoice] = useState<'CURRENT' | 'NEXT'>('NEXT');
+  const mon = editingPlan ? dayjs(editingPlan.weekStartDate) : (weekChoice === 'CURRENT' ? thisMonday() : nextMonday());
   const [notes, setNotes] = useState(editingPlan?.notes ?? '');
   const [emergencyReason, setEmergencyReason] = useState(editingPlan?.emergencyReason ?? '');
   const [items, setItems] = useState<
@@ -558,11 +589,11 @@ function CreatePlanForm({
                   ? `Edit ${type === 'EMERGENCY' ? 'Emergency' : 'Weekly'} Plan — ${editingPlan.planRef}`
                   : type === 'EMERGENCY' ? 'Emergency Issuance Plan' : 'New Weekly Issuance Plan'}
               </p>
-              {type === 'WEEKLY' && (
-                <p className="text-xs text-gray-400">
-                  Week of {mon.format('D MMM')} – {mon.add(6, 'day').format('D MMM YYYY')}
-                </p>
-              )}
+              <p className="text-xs text-gray-400">
+                Week of {mon.format('D MMM')} – {mon.add(6, 'day').format('D MMM YYYY')}
+                {!isEditing && weekChoice === 'CURRENT' && ' · Current week (catch-up)'}
+                {!isEditing && weekChoice === 'NEXT' && ' · Next week'}
+              </p>
             </div>
           </div>
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg">
@@ -571,6 +602,56 @@ function CreatePlanForm({
         </div>
 
         <div className="p-5 space-y-5">
+          {/* Target week — Store picks current (catch-up) or next week */}
+          {!isEditing && (
+            <div>
+              <label className={lCls}>Target Week</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setWeekChoice('CURRENT')}
+                  className={`rounded-xl px-3 py-2 text-xs font-semibold border text-left transition-colors ${
+                    weekChoice === 'CURRENT'
+                      ? 'bg-brand-green/10 border-brand-green text-brand-green'
+                      : 'border-gray-200 dark:border-dark-border text-gray-500 dark:text-gray-400'
+                  }`}
+                >
+                  Current Week
+                  <span className="block font-normal text-[11px] mt-0.5">
+                    {thisMonday().format('D MMM')} – {thisMonday().add(6, 'day').format('D MMM')}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWeekChoice('NEXT')}
+                  className={`rounded-xl px-3 py-2 text-xs font-semibold border text-left transition-colors ${
+                    weekChoice === 'NEXT'
+                      ? 'bg-brand-green/10 border-brand-green text-brand-green'
+                      : 'border-gray-200 dark:border-dark-border text-gray-500 dark:text-gray-400'
+                  }`}
+                >
+                  Next Week
+                  <span className="block font-normal text-[11px] mt-0.5">
+                    {nextMonday().format('D MMM')} – {nextMonday().add(6, 'day').format('D MMM')}
+                  </span>
+                </button>
+              </div>
+              {type === 'WEEKLY' && weekChoice === 'CURRENT' && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1.5 flex items-start gap-1">
+                  <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                  Use this if you weren't able to submit last Saturday — a current-week plan can be submitted today.
+                </p>
+              )}
+              {type === 'WEEKLY' && weekChoice === 'NEXT' && (
+                <p className="text-xs text-gray-400 mt-1.5">
+                  {isTodaySaturday()
+                    ? 'It\'s Saturday — you can submit this plan today.'
+                    : 'This plan can only be submitted this coming Saturday.'}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Re-approval notice when editing items that are already decided */}
           {isEditing && editingPlan.items?.some((i: any) => ['APPROVED', 'REJECTED'].includes(i.status)) && (
             <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
@@ -864,7 +945,7 @@ export function IssuancePlanTab() {
             No issuance plans found
           </p>
           {canCreate && (
-            <p className="text-xs text-gray-400 mt-1">Draft and submit a weekly plan anytime for Director approval.</p>
+            <p className="text-xs text-gray-400 mt-1">Draft anytime for Director approval — current-week plans can be submitted any day, next-week plans on Saturday.</p>
           )}
         </div>
       ) : (

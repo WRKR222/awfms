@@ -50,8 +50,9 @@ export class IssuancePlanController {
   }
 
   // ── Create / Submit (Store only) ───────────────────────────────────────────
-  // Store can create a DRAFT on any day of the week.
-  // Submission of weekly plans is enforced to Saturday by the service.
+  // Store can create a DRAFT for the current or next farm week, on any day.
+  // Submission of a next-week weekly plan is enforced to Saturday by the
+  // service; a current-week (catch-up) plan can be submitted any day.
 
   @Post()
   @RequirePermission(Permission.INVENTORY_MANAGE)

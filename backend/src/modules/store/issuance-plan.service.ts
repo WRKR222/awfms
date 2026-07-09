@@ -14,6 +14,7 @@ import isoWeek from 'dayjs/plugin/isoWeek';
 import utc from 'dayjs/plugin/utc';
 import PDFDocument from 'pdfkit';
 import { Response } from 'express';
+import { farmNow } from '../../common/feed/feed-standard.util';
 
 dayjs.extend(isoWeek);
 dayjs.extend(utc);
@@ -23,6 +24,16 @@ type DayKey = (typeof DAY_KEYS)[number];
 
 function sundayOf(monday: Date): Date {
   return dayjs.utc(monday).add(6, 'day').endOf('day').toDate();
+}
+
+/** Monday of the farm-local (Africa/Nairobi) week containing "now". */
+function farmThisMonday() {
+  return dayjs.utc(farmNow()).isoWeekday(1).startOf('day');
+}
+
+/** Monday of the farm-local week following the one containing "now". */
+function farmNextMonday() {
+  return farmThisMonday().add(7, 'day');
 }
 
 // ─── Feed type labels / SKUs for the PM feed plan auto-injection ──────────────
@@ -98,8 +109,9 @@ export class IssuancePlanService {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // CREATE
-  // Store can create a DRAFT on any day of the week.
-  // Weekly plans can now also be SUBMITTED any day of the week.
+  // Store can create a DRAFT for the CURRENT farm week or the NEXT one, on any
+  // day of the week. Submission of the resulting plan is gated in submitPlan():
+  // current-week (catch-up) plans go any day, next-week plans only on Saturday.
   // ─────────────────────────────────────────────────────────────────────────────
 
   async createPlan(
@@ -330,8 +342,15 @@ export class IssuancePlanService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // SUBMIT (Store: DRAFT → every item PENDING_DIRECTOR, phase → PENDING_DIRECTOR)
-  // Weekly plans can be submitted any day of the week. Director notified immediately.
+  // SUBMIT (Store: DRAFT to every item PENDING_DIRECTOR, phase to PENDING_DIRECTOR)
+  //
+  // Weekly plans target either the CURRENT farm week or the NEXT one:
+  //   - Current-week plan: a catch-up submission (missed last Saturday for the
+  //     week already under way) - can be submitted any day.
+  //   - Next-week plan: the normal advance submission - must happen on Saturday.
+  // A plan for any other week is treated as catch-up and isn't gated (the
+  // create form only offers "current" or "next", so this shouldn't normally
+  // occur). Emergency plans are never gated by day of week.
   // ─────────────────────────────────────────────────────────────────────────────
 
   async submitPlan(id: string, userId: string) {
@@ -351,6 +370,22 @@ export class IssuancePlanService {
       throw new BadRequestException(
         'A reason is required before an emergency issuance plan can be submitted.',
       );
+    }
+
+    if (plan.type === 'WEEKLY') {
+      const farmToday = dayjs.utc(farmNow());
+      const planMonday = dayjs.utc(plan.weekStartDate).startOf('day');
+      const isNextWeekPlan = planMonday.isSame(farmNextMonday(), 'day');
+
+      if (isNextWeekPlan && farmToday.isoWeekday() !== 6) {
+        throw new BadRequestException(
+          'This plan is for next week (' +
+            planMonday.format('D MMM') +
+            ' - ' +
+            planMonday.add(6, 'day').format('D MMM YYYY') +
+            ') and can only be submitted on Saturday. If you missed last Saturday and need to catch up, create or edit a plan for the current week instead - those can be submitted any day.',
+        );
+      }
     }
 
     // Ensure all items are PENDING_DIRECTOR (in case any were pre-loaded as drafts)
