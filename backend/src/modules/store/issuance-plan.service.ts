@@ -14,7 +14,6 @@ import isoWeek from 'dayjs/plugin/isoWeek';
 import utc from 'dayjs/plugin/utc';
 import PDFDocument from 'pdfkit';
 import { Response } from 'express';
-import { farmNow } from '../../common/feed/feed-standard.util';
 
 dayjs.extend(isoWeek);
 dayjs.extend(utc);
@@ -24,16 +23,6 @@ type DayKey = (typeof DAY_KEYS)[number];
 
 function sundayOf(monday: Date): Date {
   return dayjs.utc(monday).add(6, 'day').endOf('day').toDate();
-}
-
-/** Monday of the farm-local (Africa/Nairobi) week containing "now". */
-function farmThisMonday() {
-  return dayjs.utc(farmNow()).isoWeekday(1).startOf('day');
-}
-
-/** Monday of the farm-local week following the one containing "now". */
-function farmNextMonday() {
-  return farmThisMonday().add(7, 'day');
 }
 
 // ─── Feed type labels / SKUs for the PM feed plan auto-injection ──────────────
@@ -109,9 +98,8 @@ export class IssuancePlanService {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // CREATE
-  // Store can create a DRAFT for the CURRENT farm week or the NEXT one, on any
-  // day of the week. Submission of the resulting plan is gated in submitPlan():
-  // current-week (catch-up) plans go any day, next-week plans only on Saturday.
+  // Store can create a DRAFT on any day of the week.
+  // Weekly plans can now also be SUBMITTED any day of the week.
   // ─────────────────────────────────────────────────────────────────────────────
 
   async createPlan(
@@ -342,15 +330,8 @@ export class IssuancePlanService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // SUBMIT (Store: DRAFT to every item PENDING_DIRECTOR, phase to PENDING_DIRECTOR)
-  //
-  // Weekly plans target either the CURRENT farm week or the NEXT one:
-  //   - Current-week plan: a catch-up submission (missed last Saturday for the
-  //     week already under way) - can be submitted any day.
-  //   - Next-week plan: the normal advance submission - must happen on Saturday.
-  // A plan for any other week is treated as catch-up and isn't gated (the
-  // create form only offers "current" or "next", so this shouldn't normally
-  // occur). Emergency plans are never gated by day of week.
+  // SUBMIT (Store: DRAFT → every item PENDING_DIRECTOR, phase → PENDING_DIRECTOR)
+  // Weekly plans can be submitted any day of the week. Director notified immediately.
   // ─────────────────────────────────────────────────────────────────────────────
 
   async submitPlan(id: string, userId: string) {
@@ -370,22 +351,6 @@ export class IssuancePlanService {
       throw new BadRequestException(
         'A reason is required before an emergency issuance plan can be submitted.',
       );
-    }
-
-    if (plan.type === 'WEEKLY') {
-      const farmToday = dayjs.utc(farmNow());
-      const planMonday = dayjs.utc(plan.weekStartDate).startOf('day');
-      const isNextWeekPlan = planMonday.isSame(farmNextMonday(), 'day');
-
-      if (isNextWeekPlan && farmToday.isoWeekday() !== 6) {
-        throw new BadRequestException(
-          'This plan is for next week (' +
-            planMonday.format('D MMM') +
-            ' - ' +
-            planMonday.add(6, 'day').format('D MMM YYYY') +
-            ') and can only be submitted on Saturday. If you missed last Saturday and need to catch up, create or edit a plan for the current week instead - those can be submitted any day.',
-        );
-      }
     }
 
     // Ensure all items are PENDING_DIRECTOR (in case any were pre-loaded as drafts)
@@ -898,6 +863,7 @@ export class IssuancePlanService {
   async streamPdf(id: string, res: Response) {
     const plan = await this.getPlan(id);
     const approvedItems = plan.items.filter((i: any) => i.status === 'APPROVED');
+    const isEmergency = plan.type === 'EMERGENCY';
 
     if (approvedItems.length === 0) {
       throw new BadRequestException(
@@ -905,48 +871,86 @@ export class IssuancePlanService {
       );
     }
 
-    const doc = new PDFDocument({ margin: 50, size: 'A4' });
+    const doc = new PDFDocument({ margin: 50, size: 'A4', bufferPages: true });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="IssuancePlan-${plan.planRef}.pdf"`);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${isEmergency ? 'EmergencyIssuancePlan' : 'IssuancePlan'}-${plan.planRef}.pdf"`,
+    );
     doc.pipe(res);
 
     const brand = '#2d7a4f';
     const light = '#f5f5f5';
+    const pageBottom = doc.page.height - doc.page.margins.bottom;
+    const colWidths = isEmergency
+      ? [200, 70, 90, 90, 125]
+      : [150, 50, 50, 50, 50, 50, 50, 55, 70];
+    const headers = isEmergency
+      ? ['Item', 'Qty', 'Unit Price (KES)', 'Line Total (KES)', 'Approved By']
+      : ['Item', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN', 'Approved By'];
+    const tableWidth = colWidths.reduce((a, b) => a + b, 0);
 
-    doc.fontSize(18).fillColor(brand).text('AWFMS — Issuance Plan', { align: 'left' }).moveDown(0.2);
+    // Draws the table header row at the current doc.y and returns the y just below it.
+    const drawTableHeader = () => {
+      const top = doc.y;
+      doc.rect(50, top, tableWidth, 16).fill(brand);
+      let hx = 50;
+      headers.forEach((h, i) => {
+        doc
+          .fillColor('#fff')
+          .fontSize(7.5)
+          .text(h, hx + 3, top + 4, { width: colWidths[i] - 4, align: i === 0 ? 'left' : 'center' });
+        hx += colWidths[i];
+      });
+      return top + 17;
+    };
+
+    // Ensures there's room for one more row; if not, starts a new page and redraws the header.
+    const ensureRowSpace = (rowY: number, rowHeight: number) => {
+      if (rowY + rowHeight > pageBottom) {
+        doc.addPage();
+        doc.y = 50;
+        return drawTableHeader();
+      }
+      return rowY;
+    };
 
     doc
-      .fontSize(10)
-      .fillColor('#333')
-      .text(`Plan Ref: ${plan.planRef}`)
-      .text(`Week: ${dayjs(plan.weekStartDate).format('D MMM YYYY')} – ${dayjs(plan.weekEndDate).format('D MMM YYYY')}`)
-      .text(`Type: ${plan.type}`)
-      .text(`Approved items: ${approvedItems.length} of ${plan.items.length}`)
-      .moveDown(0.5);
+      .fontSize(18)
+      .fillColor(brand)
+      .text(isEmergency ? 'AWFMS — Emergency Issuance Plan' : 'AWFMS — Issuance Plan', { align: 'left' })
+      .moveDown(0.2);
+
+    doc.fontSize(10).fillColor('#333').text(`Plan Ref: ${plan.planRef}`);
+
+    if (isEmergency) {
+      doc.text(`Date Raised: ${dayjs(plan.createdAt ?? plan.weekStartDate).format('D MMM YYYY')}`);
+      doc.text(`Approved items: ${approvedItems.length} of ${plan.items.length}`);
+      if (plan.emergencyReason) {
+        doc.moveDown(0.3).fontSize(9).fillColor('#a33').text(`Reason for emergency: ${plan.emergencyReason}`);
+      }
+    } else {
+      doc
+        .text(`Week: ${dayjs(plan.weekStartDate).format('D MMM YYYY')} – ${dayjs(plan.weekEndDate).format('D MMM YYYY')}`)
+        .text(`Type: ${plan.type}`)
+        .text(`Approved items: ${approvedItems.length} of ${plan.items.length}`);
+    }
+    doc.moveDown(0.5);
 
     if (plan.notes) {
-      doc.fontSize(9).text(`Notes: ${plan.notes}`).moveDown(0.3);
+      doc.fontSize(9).fillColor('#333').text(`Notes: ${plan.notes}`).moveDown(0.3);
     }
 
     doc.moveDown(0.5);
     doc.fontSize(11).fillColor(brand).text('Approved Items', { underline: true }).moveDown(0.4);
 
-    const colWidths = [150, 50, 50, 50, 50, 50, 50, 55, 70];
-    const headers = ['Item', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN', 'Approved By'];
-    const tableTop = doc.y;
+    let rowY = drawTableHeader();
+    const rowHeight = 15;
 
-    doc.rect(50, tableTop, 575, 16).fill(brand);
-    let x = 50;
-    headers.forEach((h, i) => {
-      doc.fillColor('#fff').fontSize(7.5).text(h, x + 3, tableTop + 4, { width: colWidths[i] - 4, align: i === 0 ? 'left' : 'center' });
-      x += colWidths[i];
-    });
-
-    let rowY = tableTop + 17;
     approvedItems.forEach((item: any, idx: number) => {
-      const breakdown = item.dailyBreakdown as Record<string, number> | null;
+      rowY = ensureRowSpace(rowY, rowHeight);
       const bg = idx % 2 === 0 ? '#fff' : light;
-      doc.rect(50, rowY, 575, 14).fill(bg);
+      doc.rect(50, rowY, tableWidth, 14).fill(bg);
 
       let cx = 50;
       doc
@@ -955,27 +959,54 @@ export class IssuancePlanService {
         .text(`${item.storeItem.name} (${item.storeItem.unit})`, cx + 3, rowY + 3, { width: colWidths[0] - 4 });
       cx += colWidths[0];
 
-      DAY_KEYS.forEach((k, i) => {
-        const val = breakdown ? (breakdown[k] ?? 0).toFixed(2) : '—';
-        doc.text(val, cx + 3, rowY + 3, { width: colWidths[i + 1] - 4, align: 'center' });
-        cx += colWidths[i + 1];
-      });
+      if (isEmergency) {
+        const qty = Number(item.quantityPlanned ?? 0);
+        const unitPrice = Number(item.unitPriceKes ?? 0);
+        doc.text(qty.toFixed(2), cx + 3, rowY + 3, { width: colWidths[1] - 4, align: 'center' });
+        cx += colWidths[1];
+        doc.text(unitPrice.toFixed(2), cx + 3, rowY + 3, { width: colWidths[2] - 4, align: 'center' });
+        cx += colWidths[2];
+        doc.text((qty * unitPrice).toFixed(2), cx + 3, rowY + 3, { width: colWidths[3] - 4, align: 'center' });
+        cx += colWidths[3];
+        doc.text(item.directorApprovedBy?.fullName ?? '—', cx + 3, rowY + 3, { width: colWidths[4] - 4, align: 'center' });
+      } else {
+        const breakdown = item.dailyBreakdown as Record<string, number> | null;
+        DAY_KEYS.forEach((k, i) => {
+          const val = breakdown ? (breakdown[k] ?? 0).toFixed(2) : '—';
+          doc.text(val, cx + 3, rowY + 3, { width: colWidths[i + 1] - 4, align: 'center' });
+          cx += colWidths[i + 1];
+        });
+        doc.text(item.directorApprovedBy?.fullName ?? '—', cx + 3, rowY + 3, { width: colWidths[8] - 4, align: 'center' });
+      }
+      rowY += rowHeight;
 
-      doc.text(item.directorApprovedBy?.fullName ?? '—', cx + 3, rowY + 3, { width: colWidths[8] - 4, align: 'center' });
-      rowY += 15;
+      if (isEmergency && item.notes) {
+        rowY = ensureRowSpace(rowY, rowHeight);
+        doc
+          .fillColor('#666')
+          .fontSize(6.5)
+          .text(`Note: ${item.notes}`, 53, rowY + 1, { width: tableWidth - 6 });
+        rowY += rowHeight;
+      }
     });
 
-    const otherItems = plan.items.filter((i: any) => i.status !== 'APPROVED');
-    if (otherItems.length > 0) {
-      doc.moveDown(1.5);
-      doc.fontSize(10).fillColor('#888').text('Not Approved / Pending (excluded above)', { underline: true }).moveDown(0.3);
-      otherItems.forEach((item: any) => {
-        const label =
-          item.status === 'REJECTED'
-            ? `Rejected — ${item.rejectionReason ?? 'no reason given'}`
-            : 'Awaiting Director';
-        doc.fontSize(8).fillColor('#999').text(`• ${item.storeItem.name}: ${label}`);
-      });
+    doc.y = rowY;
+
+    // Weekly plans surface pending/rejected items for context; emergency plans
+    // are approved item-by-item at issue time, so this section is skipped there.
+    if (!isEmergency) {
+      const otherItems = plan.items.filter((i: any) => i.status !== 'APPROVED');
+      if (otherItems.length > 0) {
+        doc.moveDown(1.5);
+        doc.fontSize(10).fillColor('#888').text('Not Approved / Pending (excluded above)', { underline: true }).moveDown(0.3);
+        otherItems.forEach((item: any) => {
+          const label =
+            item.status === 'REJECTED'
+              ? `Rejected — ${item.rejectionReason ?? 'no reason given'}`
+              : 'Awaiting Director';
+          doc.fontSize(8).fillColor('#999').text(`• ${item.storeItem.name}: ${label}`);
+        });
+      }
     }
 
     const totalKes = approvedItems.reduce(
@@ -992,7 +1023,12 @@ export class IssuancePlanService {
       .moveDown(2)
       .fontSize(8)
       .fillColor('#888')
-      .text('This document is computer-generated. Only Director-approved items are listed as authorised.', { align: 'center' });
+      .text(
+        isEmergency
+          ? 'This document is computer-generated. It reflects only this emergency plan; it does not include any weekly issuance plan items.'
+          : 'This document is computer-generated. Only Director-approved items are listed as authorised.',
+        { align: 'center' },
+      );
 
     doc.end();
   }

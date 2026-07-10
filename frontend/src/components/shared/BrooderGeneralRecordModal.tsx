@@ -20,14 +20,28 @@ import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
 import { useIssuableStoreItems, FEED_CATEGORIES } from '../../hooks/useIssuableStoreItems';
 
-const FEED_TYPE_OPTIONS = [
-  { value: 'CHICK_MASH',        label: 'Chick Mash' },
-  { value: 'GROWER_MASH',       label: 'Grower Mash' },
-  { value: 'LAYER_MASH',        label: 'Layer Mash' },
-  { value: 'KIENYEJI_STARTER',  label: 'Kienyeji Starter' },
-  { value: 'KIENYEJI_GROWER',   label: 'Kienyeji Grower' },
-  { value: 'KIENYEJI_FINISHER', label: 'Kienyeji Finisher' },
-] as const;
+// Brooder feed logs only accept these FeedType enum values server-side. We
+// need to map a dynamically-issued store item to one of them by keyword,
+// same approach as BrooderLevelFeedLogModal (per-row/per-level logging) —
+// this keeps the two entry paths consistent and both fed only by what
+// Store has actually issued, rather than a hardcoded list of all feed
+// types regardless of whether any of it was ever handed out.
+type FeedTypeValue =
+  | 'CHICK_MASH' | 'GROWER_MASH' | 'LAYER_MASH'
+  | 'KIENYEJI_STARTER' | 'KIENYEJI_GROWER' | 'KIENYEJI_FINISHER';
+
+function deriveFeedType(item: { sku: string; name: string }): FeedTypeValue | null {
+  const haystack = `${item.sku} ${item.name}`.toUpperCase();
+  if (haystack.includes('KIENYEJI')) {
+    if (haystack.includes('STARTER'))  return 'KIENYEJI_STARTER';
+    if (haystack.includes('GROWER'))   return 'KIENYEJI_GROWER';
+    if (haystack.includes('FINISHER')) return 'KIENYEJI_FINISHER';
+  }
+  if (haystack.includes('CHICK'))  return 'CHICK_MASH';
+  if (haystack.includes('GROWER')) return 'GROWER_MASH';
+  if (haystack.includes('LAYER'))  return 'LAYER_MASH';
+  return null;
+}
 
 const CAUSE_OPTIONS = [
   { value: 'DISEASE',                 label: 'Disease' },
@@ -134,12 +148,18 @@ export function BrooderGeneralRecordModal({ batch, onClose }: Props) {
 function GeneralFeedForm({ batch, today, onClose, qc }: {
   batch: BatchLite; today: string; onClose: () => void; qc: ReturnType<typeof useQueryClient>;
 }) {
-  const { data: feedItems = [] } = useIssuableStoreItems(FEED_CATEGORIES);
+  const { data: issuableItemsRaw, isLoading: issuableLoading, isError: issuableError } = useIssuableStoreItems(FEED_CATEGORIES);
+  // Only items Store has actually issued this week, and that we can
+  // confidently map to a feedType (see deriveFeedType above), are shown.
+  const feedItems = (issuableItemsRaw ?? []).filter(i => deriveFeedType(i) !== null);
+  // Issued items whose name/SKU doesn't match a known feed type keyword —
+  // surfaced separately so the "nothing issued" message isn't shown when
+  // the real problem is an unrecognised item name.
+  const unmatchedIssuedItems = (issuableItemsRaw ?? []).filter(i => deriveFeedType(i) === null);
 
   const { register, handleSubmit, watch, formState: { errors } } = useForm({
     defaultValues: {
       entryDate:           today,
-      feedType:            'CHICK_MASH',
       storeItemId:         '',
       quantityDispensedKg: '',
       notes:               '',
@@ -147,15 +167,17 @@ function GeneralFeedForm({ batch, today, onClose, qc }: {
   });
 
   const submit = useMutation({
-    mutationFn: (data: any) =>
-      api.post('/brooder/general-feed-logs', {
+    mutationFn: (data: any) => {
+      const item = feedItems.find(i => i.id === data.storeItemId);
+      return api.post('/brooder/general-feed-logs', {
         batchId:             batch.id,
         entryDate:           data.entryDate,
-        feedType:            data.feedType,
-        storeItemId:         data.storeItemId || undefined,
+        feedType:            item ? deriveFeedType(item) ?? undefined : undefined,
+        storeItemId:         data.storeItemId,
         quantityDispensedKg: Number(data.quantityDispensedKg),
         notes:               data.notes || undefined,
-      }).then(r => r.data),
+      }).then(r => r.data);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['batches'] });
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
@@ -173,33 +195,48 @@ function GeneralFeedForm({ batch, today, onClose, qc }: {
         <input {...register('entryDate', { required: true })} type="date" max={today} className={iCls} />
       </div>
 
-      {/* Feed type dropdown */}
+      {/* Feed type — only items Store has actually issued this week, same as
+          per-row/per-level logging */}
       <div>
         <label className={lCls}>Feed type</label>
-        <select {...register('feedType', { required: true })} className={iCls}>
-          {FEED_TYPE_OPTIONS.map(o => (
-            <option key={o.value} value={o.value}>{o.label}</option>
+        <select
+          {...register('storeItemId', { required: 'Select a feed type' })}
+          className={iCls}
+          disabled={issuableLoading}
+        >
+          <option value="">
+            {issuableLoading ? 'Loading issued feed…' : 'Select feed type…'}
+          </option>
+          {feedItems.map(it => (
+            <option key={it.id} value={it.id}>{it.name}</option>
           ))}
         </select>
-      </div>
-
-      {/* Optional linked store item, for residual tracking */}
-      {feedItems.length > 0 && (
-        <div>
-          <label className={lCls}>Store item issued (optional)</label>
-          <select {...register('storeItemId')} className={iCls}>
-            <option value="">Not linked to a specific store item</option>
-            {feedItems.map(it => (
-              <option key={it.id} value={it.id}>
-                {it.name} — residual {it.residual.toFixed(2)} {it.unit}
-              </option>
-            ))}
-          </select>
-          <p className="text-[10px] text-gray-400 mt-1">
-            Linking lets the system track leftover stock for this item automatically.
+        {errors.storeItemId && (
+          <p className="text-red-500 text-xs mt-1">{String(errors.storeItemId.message)}</p>
+        )}
+        {issuableError && (
+          <p className="text-red-500 text-xs mt-1 flex items-start gap-1">
+            <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+            Couldn't load issued feed items — this looks like a permissions or
+            connection problem, not a "nothing issued" situation. Try again, or
+            contact an admin if it persists.
           </p>
-        </div>
-      )}
+        )}
+        {!issuableLoading && !issuableError && feedItems.length === 0 && unmatchedIssuedItems.length === 0 && (
+          <p className="text-amber-600 dark:text-amber-400 text-xs mt-1 flex items-start gap-1">
+            <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+            No feed has been issued from the store this week yet. Ask Store to stock-out feed before logging.
+          </p>
+        )}
+        {!issuableLoading && !issuableError && feedItems.length === 0 && unmatchedIssuedItems.length > 0 && (
+          <p className="text-amber-600 dark:text-amber-400 text-xs mt-1 flex items-start gap-1">
+            <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+            Store issued {unmatchedIssuedItems.map(i => `"${i.name}"`).join(', ')} this week, but the
+            item name doesn't say "Chick", "Grower", "Layer", or "Kienyeji", so it can't be matched to a
+            feed type here. Ask Store to rename the item to include one of those words (e.g. "Chick Mash").
+          </p>
+        )}
+      </div>
 
       {/* Quantity */}
       <div>
