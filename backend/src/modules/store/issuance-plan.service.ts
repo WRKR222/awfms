@@ -909,7 +909,7 @@ export class IssuancePlanService {
     const ensureRowSpace = (rowY: number, rowHeight: number) => {
       if (rowY + rowHeight > pageBottom) {
         doc.addPage();
-        doc.y = 50;
+        (doc as any).y = 50;
         return drawTableHeader();
       }
       return rowY;
@@ -990,7 +990,7 @@ export class IssuancePlanService {
       }
     });
 
-    doc.y = rowY;
+    (doc as any).y = rowY;
 
     // Weekly plans surface pending/rejected items for context; emergency plans
     // are approved item-by-item at issue time, so this section is skipped there.
