@@ -207,6 +207,58 @@ export function brooderRequiredFeedKg(
   return Math.round(((birdCount * perDay * days) / 1000) * 100) / 100;
 }
 
+/**
+ * Splits an integer `total` (e.g. deaths logged on the general-population
+ * sheet, which has no row/level breakdown) across a set of weighted
+ * recipients (e.g. a batch's levels, weighted by each level's live bird
+ * count), returning integer shares that sum EXACTLY to `total`.
+ *
+ * Plain proportional rounding (`Math.round(total * share)`) can over- or
+ * under-allocate by a bird or two once you sum every recipient — e.g. 7
+ * deaths split 3 ways by weight might round to 2+2+2=6 or 3+3+3=9, neither
+ * of which matches the 7 actually recorded. This uses the "largest
+ * remainder" method instead: give everyone their floor share first, then
+ * hand out the few leftover units to whoever had the largest fractional
+ * remainder, so the total always reconciles exactly.
+ *
+ * Recipients with zero or negative weight get 0 and are excluded from the
+ * remainder distribution. If every weight is zero (or `total` is 0), every
+ * recipient gets 0.
+ */
+export function apportionByShare(
+  total: number,
+  weights: Record<string, number>,
+): Record<string, number> {
+  const ids = Object.keys(weights);
+  const result: Record<string, number> = {};
+  for (const id of ids) result[id] = 0;
+
+  const totalWeight = ids.reduce((s, id) => s + Math.max(0, weights[id] ?? 0), 0);
+  if (total <= 0 || totalWeight <= 0) return result;
+
+  const exact = ids.map(id => ({
+    id,
+    value: (Math.max(0, weights[id] ?? 0) / totalWeight) * total,
+  }));
+
+  let allocated = 0;
+  for (const e of exact) {
+    result[e.id] = Math.floor(e.value);
+    allocated += result[e.id];
+  }
+
+  let remainder = Math.round(total - allocated);
+  const byRemainder = exact
+    .map(e => ({ id: e.id, frac: e.value - Math.floor(e.value) }))
+    .sort((a, b) => b.frac - a.frac);
+
+  for (let i = 0; i < byRemainder.length && remainder > 0; i++, remainder--) {
+    result[byRemainder[i].id] += 1;
+  }
+
+  return result;
+}
+
 /** Min/max recommended intake band (±10%) for a given quantity. */
 export function withTolerance(kg: number, tolerance = 0.1): { min: number; max: number } {
   return {

@@ -42,6 +42,7 @@ import {
   NOT_EATING_ALERT_DAYS,
   farmNow,
   farmTodayUtcMidnight,
+  apportionByShare,
 } from '../../common/feed/feed-standard.util';
 import {
   AssignLevelSchema,
@@ -391,6 +392,52 @@ export class BrooderService {
         (mortalityEventsByLevel[m.levelId] ??= []).push({
           date: m.logDate,
           count,
+          occurredAt: m.createdAt,
+        });
+      }
+    }
+
+    // ── General-population mortality, folded into the same day-by-day
+    // reconstruction used for the weekly schedule ──────────────────────────
+    //
+    // A batch whose deaths were recorded on the general sheet (no row/level
+    // breakdown — see assertNoLevelSpecificMortalityLog/assertNoGeneralMortalityLog,
+    // which guarantee a batch never has BOTH sources for the same date) would
+    // otherwise never show up in mortalityEventsByLevel at all, so
+    // requiredKgThisWeek below kept costing every day of the week at the full
+    // pre-death population — including backdated general entries for days
+    // that have already passed and days feed simply hasn't been issued for
+    // yet. Apportion each general entry across the batch's levels pro-rata
+    // by live bird count (same signal used above for general feed, and now
+    // also used to decrement each level's birdCount at log-creation time —
+    // see createGeneralMortalityLog) and add it into the same per-level event
+    // list so it's priced exactly like a row/level entry would have been.
+    const levelWeightsByBatch: Record<string, Record<string, number>> = {};
+    for (const row of rows) {
+      for (const level of row.levels) {
+        const a = level.assignment;
+        if (!a) continue;
+        (levelWeightsByBatch[a.batchId] ??= {})[level.id] = a.birdCount;
+      }
+    }
+
+    const generalMortalityLogs = batchIds.length
+      ? await (this.prisma as any).brooderGeneralMortalityLog.findMany({
+          where: { batchId: { in: batchIds }, logDate: { gte: earliestWeekStart } },
+        })
+      : [];
+    for (const m of generalMortalityLogs) {
+      const count = (m.mortalityCount ?? 0) + (m.cullingCount ?? 0);
+      if (count <= 0) continue;
+      const weights = levelWeightsByBatch[m.batchId] ?? {};
+      const apportioned = apportionByShare(count, weights);
+      for (const [levelId, share] of Object.entries(apportioned)) {
+        if (share <= 0) continue;
+        const levelWeekStart = weekStartByLevel[levelId];
+        if (!levelWeekStart || m.logDate.getTime() < levelWeekStart.getTime()) continue;
+        (mortalityEventsByLevel[levelId] ??= []).push({
+          date: m.logDate,
+          count: share,
           occurredAt: m.createdAt,
         });
       }
@@ -1362,6 +1409,31 @@ export class BrooderService {
     // would double count when totals are rolled up.
     await this.assertNoLevelSpecificMortalityLog(dto.batchId, logDate);
 
+    // ── Apportion the loss across this batch's levels ────────────────────
+    // The general sheet has no row/level breakdown, but every level's
+    // BrooderLevelAssignment.birdCount still needs to reflect these deaths —
+    // otherwise it silently drifts from Batch.currentBirdCount forever, and
+    // every downstream feed-schedule figure for that level (dailyRationKg,
+    // requiredKgThisWeek, the birdCount shown on the cage map) keeps costing
+    // birds that are no longer alive. Split it pro-rata by each level's
+    // current live bird count (best available signal for where the birds
+    // actually are), using the largest-remainder method so the shares sum
+    // to exactly `totalLost` with no birds gained or lost to rounding.
+    const levelAssignments = await this.prisma.brooderLevelAssignment.findMany({
+      where: { batchId: dto.batchId },
+    });
+    const weights = Object.fromEntries(levelAssignments.map(la => [la.levelId, la.birdCount]));
+    const apportioned = apportionByShare(totalLost, weights);
+    const levelDecrementOps = levelAssignments
+      .map(la => ({ levelId: la.levelId, share: Math.min(apportioned[la.levelId] ?? 0, la.birdCount) }))
+      .filter(x => x.share > 0)
+      .map(x =>
+        this.prisma.brooderLevelAssignment.update({
+          where: { levelId: x.levelId },
+          data:  { birdCount: { decrement: x.share } },
+        }),
+      );
+
     const [log] = await this.prisma.$transaction([
       this.prisma.brooderGeneralMortalityLog.create({
         data: {
@@ -1378,6 +1450,7 @@ export class BrooderService {
         where: { id: dto.batchId },
         data:  { currentBirdCount: { decrement: totalLost } },
       }),
+      ...levelDecrementOps,
     ]);
 
     // ── Req 7: cumulative mortality vs. HyLine standard (same as row/level) ─
