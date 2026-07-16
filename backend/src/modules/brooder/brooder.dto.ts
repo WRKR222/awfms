@@ -23,6 +23,19 @@ export type AssignCageDto = z.infer<typeof AssignCageSchema>;
 export const AssignLevelSchema = AssignCageSchema;
 export type AssignLevelDto = AssignCageDto;
 
+// ── Whole-level placement, split equally across the level's cages ────────
+// birdCount here is the LEVEL total (not per-cage) — the service divides it
+// evenly across every cage on the level (remainder going to the first N
+// cages), so a Lead Attendant can place e.g. 1,200 birds on a level without
+// typing a count into 44 individual cages one at a time.
+export const AssignLevelEquallySchema = z.object({
+  batchId:    z.string().uuid(),
+  birdCount:  z.number().int().min(1),
+  placedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  notes:      z.string().max(500).optional(),
+});
+export type AssignLevelEquallyDto = z.infer<typeof AssignLevelEquallySchema>;
+
 // ── Heat logs ────────────────────────────────────────────────────────────
 export const CreateCharcoalHeatLogSchema = z.object({
   rowId:       z.string().uuid(),

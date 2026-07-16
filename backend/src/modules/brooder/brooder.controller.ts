@@ -106,6 +106,20 @@ export class BrooderController {
     return this.svc.removeCageAssignment(cageId);
   }
 
+  /** POST /brooder/levels/:levelId/assign-equally
+   *  Places `birdCount` (the LEVEL total) for one batch, split evenly
+   *  across every cage on that level, instead of assigning cages one at a
+   *  time. See BrooderService.assignLevelEqually for the split rule. */
+  @Post('levels/:levelId/assign-equally')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  assignLevelEqually(
+    @Param('levelId') levelId: string,
+    @Body() body: any,
+    @CurrentUser() user: any,
+  ) {
+    return this.svc.assignLevelEqually(levelId, body, user.id);
+  }
+
   // ── Heat logs ────────────────────────────────────────────────────────────
   @Get('rows/:rowId/heat-logs')
   @RequirePermission(Permission.FLOCK_VIEW)

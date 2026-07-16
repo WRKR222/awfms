@@ -278,6 +278,23 @@ export function useAssignBrooderCage() {
   });
 }
 
+/** Places a batch's birds across a whole level in one call, split evenly
+ *  across that level's cages — see BrooderLevelAssignModal's "equal split"
+ *  mode. `birdCount` here is the LEVEL total, not a per-cage count. */
+export function useAssignBrooderLevelEqually() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ levelId, data }: { levelId: string; data: any }) =>
+      api.post(`/brooder/levels/${levelId}/assign-equally`, data).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
+      qc.invalidateQueries({ queryKey: ['brooder-rows-and-levels'] });
+      qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
+      qc.invalidateQueries({ queryKey: ['batches'] });
+    },
+  });
+}
+
 export function useRemoveBrooderCageAssignment() {
   const qc = useQueryClient();
   return useMutation({

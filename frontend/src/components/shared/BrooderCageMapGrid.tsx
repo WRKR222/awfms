@@ -9,7 +9,7 @@
 
 import { useState } from 'react';
 import {
-  Flame, Zap, Bird, AlertTriangle, CheckCircle2, Clock, Layers, XCircle, ArrowLeftRight, Scale,
+  Flame, Zap, Bird, AlertTriangle, CheckCircle2, Clock, Layers, XCircle, ArrowLeftRight, Scale, Grid3x3,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import {
@@ -85,6 +85,12 @@ function LevelCell({
   onLogWeight:    (level: BrooderLevelData) => void;
 }) {
   const occupied = !!level.assignment;
+  const [showCages, setShowCages] = useState(false);
+
+  const occupiedCages = level.cages.filter(c => c.assignment);
+  const cageCounts = occupiedCages.map(c => c.assignment!.birdCount);
+  const minPerCage = cageCounts.length ? Math.min(...cageCounts) : 0;
+  const maxPerCage = cageCounts.length ? Math.max(...cageCounts) : 0;
 
   const feedStatus = (() => {
     if (!occupied || level.dailyRationKg === null) return null;
@@ -159,11 +165,50 @@ function LevelCell({
                 <span className="text-white/30">({level.weightCheck.minG}-{level.weightCheck.maxG}g)</span>
               </p>
             )}
+            {occupiedCages.length > 0 && (
+              <p className="text-[9px] mt-0.5 text-white/30 flex items-center gap-1">
+                <Grid3x3 className="w-2.5 h-2.5" />
+                {occupiedCages.length}/{level.cages.length} cages
+                {' · '}
+                {minPerCage === maxPerCage ? `${minPerCage}/cage` : `${minPerCage}-${maxPerCage}/cage`}
+              </p>
+            )}
           </>
         ) : (
           <p className="text-[10px] text-white/25 mt-2">Empty</p>
         )}
       </button>
+
+      {/* ── Per-cage breakdown — collapsed by default (44 cages/level is a
+           lot of chrome); tap to see exactly how the level's birds are
+           split across its individual cages. ── */}
+      {occupiedCages.length > 0 && (
+        <div className="border-t border-white/5">
+          <button
+            onClick={e => { e.stopPropagation(); setShowCages(v => !v); }}
+            className="w-full flex items-center justify-center gap-1 py-1 text-[9px] text-white/30 hover:text-white/60 transition-colors"
+          >
+            {showCages ? 'Hide cages' : `Show ${level.cages.length} cages`}
+          </button>
+          {showCages && (
+            <div className="px-2 pb-2 grid grid-cols-6 gap-0.5">
+              {level.cages.map(c => (
+                <div
+                  key={c.cageId}
+                  title={`${c.label}${c.assignment ? ` — ${c.assignment.birdCount} birds` : ' — empty'}`}
+                  className={`rounded-[3px] text-[7px] leading-none flex items-center justify-center h-5 ${
+                    c.assignment
+                      ? 'bg-amber-500/20 text-amber-200 border border-amber-500/30'
+                      : 'bg-white/5 text-white/20 border border-white/5'
+                  }`}
+                >
+                  {c.assignment ? c.assignment.birdCount : ''}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Action bar — lives BELOW content, never overlaps ── */}
       {occupied && (

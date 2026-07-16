@@ -47,6 +47,7 @@ import {
 import {
   AssignCageSchema,
   AssignLevelSchema,
+  AssignLevelEquallySchema,
   CreateHeatLogSchema,
   StopBulbHeatLogSchema,
   CreateLevelFeedLogSchema,
@@ -880,6 +881,111 @@ export class BrooderService {
     throw new BadRequestException(
       'Level-level assignment has been replaced by per-cage assignment. Use POST /brooder/cages/:cageId/assign.',
     );
+  }
+
+  /**
+   * Place `birdCount` birds from ONE batch onto a whole level in one call,
+   * splitting the total evenly across every cage on that level (remainder —
+   * when birdCount doesn't divide evenly — goes 1-per-cage to the first N
+   * cages, so counts never differ by more than 1 bird). This is the "divide
+   * equally into their respective cages" placement path: a Lead Attendant
+   * assigns a batch to a row+level once instead of typing a count into up
+   * to 44 individual cages.
+   *
+   * Only ever touches cages already empty or already holding `dto.batchId`
+   * — a level's cages must all belong to one batch, same rule assignCage
+   * enforces per-cage. Re-running this (e.g. after mortality) redistributes
+   * the batch's current count for THIS level evenly again; it never moves
+   * or divides birds belonging to any other batch.
+   */
+  async assignLevelEqually(levelId: string, input: unknown, userId: string) {
+    const dto = parseOrThrow(AssignLevelEquallySchema, input);
+
+    const level = await this.prisma.brooderLevel.findUnique({
+      where: { id: levelId },
+      include: { cages: { orderBy: { cageNumber: 'asc' }, include: { assignment: true } } },
+    });
+    if (!level) throw new NotFoundException('Brooder level not found');
+    if (level.cages.length === 0) {
+      throw new BadRequestException('This level has no cages configured.');
+    }
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    // All of this level's occupied cages must already belong to this batch —
+    // never silently reassign another batch's birds to make room.
+    const foreignCage = level.cages.find(c => c.assignment && c.assignment.batchId !== dto.batchId);
+    if (foreignCage) {
+      throw new BadRequestException(
+        `${level.label} already has cages assigned to a different batch. ` +
+        `Clear it first or use per-cage reassignment.`,
+      );
+    }
+
+    const existingAssignmentsForBatch = await this.prisma.brooderCageAssignment.findMany({
+      where: { batchId: dto.batchId },
+    });
+    const isAlreadyPlaced  = batch.location === 'BROODER';
+    const hasAnyAssignment = existingAssignmentsForBatch.length > 0;
+    if (!isAlreadyPlaced && hasAnyAssignment) {
+      throw new BadRequestException(
+        'Only batches currently in the Brooder can be assigned to a cage.',
+      );
+    }
+
+    // Overflow guard against the batch's total received count — exclude
+    // this level's own cages since we're about to replace their counts.
+    const thisLevelCageIds = new Set(level.cages.map(c => c.id));
+    const siblingsTotal = existingAssignmentsForBatch
+      .filter(a => !thisLevelCageIds.has(a.cageId))
+      .reduce((s, a) => s + a.birdCount, 0);
+    const newTotal = siblingsTotal + dto.birdCount;
+    if (newTotal > batch.quantityReceived) {
+      throw new BadRequestException(
+        `Cannot assign ${dto.birdCount} birds to ${level.label}: total would be ${newTotal} ` +
+        `but batch ${batch.batchCode} only received ${batch.quantityReceived} birds. ` +
+        `You can place at most ${batch.quantityReceived - siblingsTotal} birds here.`,
+      );
+    }
+
+    // ── Equal split: base count per cage, +1 to the first `remainder` cages ──
+    const cageCount = level.cages.length;
+    const base      = Math.floor(dto.birdCount / cageCount);
+    const remainder = dto.birdCount % cageCount;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      for (let i = 0; i < cageCount; i++) {
+        const cage  = level.cages[i];
+        const count = base + (i < remainder ? 1 : 0);
+
+        if (count === 0) {
+          if (cage.assignment) await tx.brooderCageAssignment.delete({ where: { cageId: cage.id } });
+          continue;
+        }
+        await tx.brooderCageAssignment.upsert({
+          where: { cageId: cage.id },
+          create: {
+            cageId: cage.id, batchId: dto.batchId, birdCount: count,
+            placedDate: new Date(dto.placedDate), notes: dto.notes ?? null, assignedById: userId,
+          },
+          update: {
+            batchId: dto.batchId, birdCount: count,
+            placedDate: new Date(dto.placedDate), notes: dto.notes ?? null, assignedById: userId,
+          },
+        });
+      }
+      await this.recomputeLevelRollup(tx, levelId, userId);
+      await tx.batch.update({ where: { id: dto.batchId }, data: { location: 'BROODER' } });
+      return {
+        levelId,
+        cagesAssigned: base > 0 ? cageCount : remainder,
+        birdsPerCage:  base,
+        extraCages:    remainder,
+      };
+    });
+    this.refresh();
+    return result;
   }
 
   async removeCageAssignment(cageId: string) {
