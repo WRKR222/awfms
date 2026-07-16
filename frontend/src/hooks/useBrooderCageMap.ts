@@ -17,6 +17,10 @@ export interface BrooderCageData {
     birdCount:  number;
     placedDate: string;
     notes:      string | null;
+    /** True when this cage holds birds deliberately separated from the
+     *  rest of their batch (sick, injured, under observation, etc.). */
+    isIsolation:     boolean;
+    isolationReason: string | null;
   } | null;
 }
 

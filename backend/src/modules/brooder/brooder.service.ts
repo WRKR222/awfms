@@ -597,10 +597,12 @@ export class BrooderService {
             label:      cage.label,
             isActive:   cage.isActive,
             assignment: cage.assignment ? {
-              batchId:    cage.assignment.batchId,
-              birdCount:  cage.assignment.birdCount,
-              placedDate: cage.assignment.placedDate,
-              notes:      cage.assignment.notes,
+              batchId:         cage.assignment.batchId,
+              birdCount:       cage.assignment.birdCount,
+              placedDate:      cage.assignment.placedDate,
+              notes:           cage.assignment.notes,
+              isIsolation:     cage.assignment.isIsolation,
+              isolationReason: cage.assignment.isolationReason,
             } : null,
           })),
           batch: batch ? {
@@ -851,15 +853,20 @@ export class BrooderService {
         ? existingTargetAssignment.birdCount + dto.birdCount
         : dto.birdCount;
 
+      const isIsolation     = dto.isIsolation ?? false;
+      const isolationReason = isIsolation ? (dto.isolationReason ?? null) : null;
+
       const result = await tx.brooderCageAssignment.upsert({
         where:  { cageId },
         create: {
           cageId, batchId: dto.batchId, birdCount: finalBirdCount,
           placedDate: new Date(dto.placedDate), notes: dto.notes ?? null, assignedById: userId,
+          isIsolation, isolationReason,
         },
         update: {
           batchId: dto.batchId, birdCount: finalBirdCount,
           placedDate: new Date(dto.placedDate), notes: dto.notes ?? null, assignedById: userId,
+          isIsolation, isolationReason,
         },
       });
       await this.recomputeLevelRollup(tx, cage.levelId, userId);
@@ -1405,9 +1412,7 @@ export class BrooderService {
     const mortalityCheck = checkMortalityViolation(farmDeaths, effectiveBirdsReceived, ageWeeks);
 
     if (mortalityCheck.violated) {
-      const rowLabel = cage.level.row
-        ? `Row ${cage.level.row.rowNumber}`
-        : 'Unknown Row';
+      const rowLabel = cage.level.row?.label ?? 'Unknown Row';
       const title   = `⚠ Brooder Mortality Alert — ${batch.batchCode}`;
       const message = `${mortalityCheck.message} (${rowLabel}, ${cage.level.label}, ${cage.label}). Actual: ${mortalityCheck.actualPct}%, Standard: ≤${mortalityCheck.standardPct}%.`;
       await this.alertRoles('BROODER_MORTALITY_HIGH', title, message, dto.batchId);

@@ -1479,9 +1479,18 @@ model BrooderCageAssignment {
   birdCount    Int      @default(0) @map("bird_count")
   placedDate   DateTime @map("placed_date") @db.Date
   notes        String?
+  /// Marks this cage as holding birds deliberately separated from the rest
+  /// of their batch (e.g. sick, injured, or under observation), rather than
+  /// a normal part of the level's population.
+  isIsolation      Boolean @default(false) @map("is_isolation")
+  /// Why these birds were isolated. Required by the API whenever
+  /// isIsolation is true (enforced in AssignCageSchema, not at the DB
+  /// level, since existing non-isolation rows have no reason to backfill).
+  isolationReason  String? @map("isolation_reason")
   assignedById String   @map("assigned_by_id")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
+
 
   cage       BrooderCage @relation(fields: [cageId], references: [id], onDelete: Cascade)
   batch      Batch       @relation(fields: [batchId], references: [id])

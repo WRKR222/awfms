@@ -15,7 +15,19 @@ export const AssignCageSchema = z.object({
    *  Required on all reassignments; optional only for a fresh placement
    *  into an empty cage. */
   sourceCageId: z.string().uuid().optional(),
-});
+  /** Marks the DESTINATION cage as an isolation cage — birds deliberately
+   *  separated from the rest of their batch (sick, injured, under
+   *  observation, etc.). Defaults to false for a normal placement/move. */
+  isIsolation:     z.boolean().optional().default(false),
+  /** Required whenever isIsolation is true; ignored otherwise. */
+  isolationReason: z.string().trim().max(300).optional(),
+}).refine(
+  d => !d.isIsolation || (!!d.isolationReason && d.isolationReason.length >= 3),
+  {
+    message: 'A reason (at least 3 characters) is required to mark a cage as isolation',
+    path: ['isolationReason'],
+  },
+);
 export type AssignCageDto = z.infer<typeof AssignCageSchema>;
 
 // Retained only for reading historical/legacy level-level assignment rows

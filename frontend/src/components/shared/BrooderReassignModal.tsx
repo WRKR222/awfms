@@ -14,7 +14,7 @@
 import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import {
-  X, Bird, Layers, AlertTriangle, ArrowRight, MoveRight,
+  X, Bird, Layers, AlertTriangle, ArrowRight, MoveRight, Lock,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import {
@@ -52,6 +52,7 @@ export function BrooderReassignModal({
     const opts: {
       rowLabel: string; levelLabel: string; cageId: string; cageLabel: string;
       existingBirdCount: number; batchId: string | null;
+      isIsolation: boolean; isolationReason: string | null;
     }[] = [];
     for (const r of allRows) {
       for (const l of r.levels) {
@@ -64,6 +65,8 @@ export function BrooderReassignModal({
             cageLabel:         c.label,
             existingBirdCount: c.assignment?.birdCount ?? 0,
             batchId:           c.assignment?.batchId ?? null,
+            isIsolation:       c.assignment?.isIsolation ?? false,
+            isolationReason:   c.assignment?.isolationReason ?? null,
           });
         }
       }
@@ -79,18 +82,22 @@ export function BrooderReassignModal({
       birdCount:         sourceBirdCount || '',
       placedDate:        dayjs().format('YYYY-MM-DD'),
       notes:             '',
+      isIsolation:       false,
+      isolationReason:   '',
     },
   });
 
-  const watchedDestId    = watch('destinationCageId');
-  const watchedBirdCount = watch('birdCount');
-  const selectedDest     = destinationOptions.find(o => o.cageId === watchedDestId);
+  const watchedDestId      = watch('destinationCageId');
+  const watchedBirdCount   = watch('birdCount');
+  const watchedIsIsolation = watch('isIsolation');
+  const selectedDest       = destinationOptions.find(o => o.cageId === watchedDestId);
 
   const exceedsSource =
     !!watchedBirdCount && Number(watchedBirdCount) > sourceBirdCount;
 
   const submit = (data: any) => {
     if (exceedsSource || !data.destinationCageId || !sourceCage) return;
+    if (data.isIsolation && (!data.isolationReason || data.isolationReason.trim().length < 3)) return;
     assign.mutate(
       {
         // POST to the DESTINATION cage
@@ -102,6 +109,8 @@ export function BrooderReassignModal({
           notes:        data.notes || undefined,
           // Tell the backend to decrement the SOURCE cage
           sourceCageId: sourceCage.cageId,
+          isIsolation:     !!data.isIsolation,
+          isolationReason: data.isIsolation ? data.isolationReason.trim() : undefined,
         },
       },
       { onSuccess: onClose },
@@ -184,6 +193,7 @@ export function BrooderReassignModal({
               {destinationOptions.map(o => (
                 <option key={o.cageId} value={o.cageId}>
                   {o.rowLabel} · {o.levelLabel} · {o.cageLabel}
+                  {o.isIsolation ? '  🔒 ISOLATION' : ''}
                   {o.existingBirdCount > 0
                     ? `  (has ${o.existingBirdCount.toLocaleString()} birds — will merge)`
                     : '  (empty)'}
@@ -195,6 +205,58 @@ export function BrooderReassignModal({
                 <AlertTriangle className="w-3 h-3" />
                 {errors.destinationCageId.message as string}
               </p>
+            )}
+            {selectedDest?.isIsolation && (
+              <p className="text-purple-600 dark:text-purple-400 text-xs mt-1 flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                This cage is already an isolation cage{selectedDest.isolationReason ? ` (${selectedDest.isolationReason})` : ''}.
+                Check "Mark as isolation" below to keep it flagged, or leave it unchecked to lift the isolation status.
+              </p>
+            )}
+          </div>
+
+          {/* ── Isolation ── */}
+          <div className={`rounded-xl border p-3 ${
+            watchedIsIsolation
+              ? 'border-purple-300 dark:border-purple-700 bg-purple-50 dark:bg-purple-900/20'
+              : 'border-gray-200 dark:border-dark-border'
+          }`}>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                {...register('isIsolation')}
+                className="mt-0.5 w-4 h-4 accent-purple-600"
+              />
+              <span className="text-sm">
+                <span className="font-semibold text-gray-800 dark:text-gray-100 flex items-center gap-1">
+                  <Lock className="w-3.5 h-3.5 text-purple-500" />
+                  Mark destination as an isolation cage
+                </span>
+                <span className="block text-xs text-gray-400 mt-0.5">
+                  Use this when separating these birds from the rest of the batch
+                  (e.g. sick, injured, or under observation).
+                </span>
+              </span>
+            </label>
+            {watchedIsIsolation && (
+              <div className="mt-3">
+                <label className={lCls}>Reason for isolation *</label>
+                <textarea
+                  {...register('isolationReason', {
+                    validate: v => !watchedIsIsolation || (!!v && v.trim().length >= 3)
+                      || 'Enter a reason (at least 3 characters)',
+                  })}
+                  rows={2}
+                  className={`${iCls} resize-none`}
+                  placeholder="e.g. Suspected respiratory infection — under observation"
+                />
+                {errors.isolationReason && (
+                  <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    {errors.isolationReason.message as string}
+                  </p>
+                )}
+              </div>
             )}
           </div>
 
@@ -313,7 +375,10 @@ export function BrooderReassignModal({
             </button>
             <button
               type="submit"
-              disabled={assign.isPending || exceedsSource || !sourceCage || destinationOptions.length === 0}
+              disabled={
+                assign.isPending || exceedsSource || !sourceCage || destinationOptions.length === 0 ||
+                (watchedIsIsolation && !!errors.isolationReason)
+              }
               className="flex-1 bg-blue-500 text-white rounded-xl py-3 font-semibold disabled:opacity-60"
             >
               {assign.isPending ? 'Moving…' : 'Move Birds'}

@@ -9,7 +9,7 @@
 
 import { useState } from 'react';
 import {
-  Flame, Zap, Bird, AlertTriangle, CheckCircle2, Clock, Layers, XCircle, ArrowLeftRight, Scale, Grid3x3,
+  Flame, Zap, Bird, AlertTriangle, CheckCircle2, Clock, Layers, XCircle, ArrowLeftRight, Scale, Grid3x3, Lock,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import {
@@ -92,6 +92,10 @@ function LevelCell({
   const minPerCage = cageCounts.length ? Math.min(...cageCounts) : 0;
   const maxPerCage = cageCounts.length ? Math.max(...cageCounts) : 0;
 
+  const isolationCages = occupiedCages.filter(c => c.assignment!.isIsolation);
+  const isolationBirdCount = isolationCages.reduce((s, c) => s + c.assignment!.birdCount, 0);
+  const hasIsolation = isolationCages.length > 0;
+
   const feedStatus = (() => {
     if (!occupied || level.dailyRationKg === null) return null;
     const dispensedToday = level.dispensedKgToday ?? 0;
@@ -106,9 +110,11 @@ function LevelCell({
   return (
     <div className={`w-full rounded-lg border transition-colors flex flex-col ${
       occupied
-        ? weightFlagged
-          ? 'bg-red-950/30 border-red-700/50 hover:border-red-500/70'
-          : 'bg-amber-950/30 border-amber-700/40 hover:border-amber-500/60'
+        ? hasIsolation
+          ? 'bg-purple-950/30 border-purple-600/50 hover:border-purple-400/70'
+          : weightFlagged
+            ? 'bg-red-950/30 border-red-700/50 hover:border-red-500/70'
+            : 'bg-amber-950/30 border-amber-700/40 hover:border-amber-500/60'
         : 'bg-white/5 border-white/10 hover:border-white/20'
     }`}>
       {/* ── Content area — tapping opens feed log ── */}
@@ -121,9 +127,16 @@ function LevelCell({
           <span className="text-[9px] font-bold text-white/40 uppercase tracking-wider shrink-0">
             {level.label}
           </span>
-          {level.assignment && level.feedVariancePercent === 0 && (
-            <CheckCircle2 className="w-3 h-3 text-green-400 shrink-0" />
-          )}
+          <span className="flex items-center gap-1 shrink-0">
+            {hasIsolation && (
+              <span className="inline-flex items-center gap-0.5 text-[8px] font-bold text-purple-300 bg-purple-500/20 border border-purple-400/40 rounded-full px-1.5 py-0.5">
+                <Lock className="w-2 h-2" /> {isolationBirdCount.toLocaleString()}
+              </span>
+            )}
+            {level.assignment && level.feedVariancePercent === 0 && (
+              <CheckCircle2 className="w-3 h-3 text-green-400" />
+            )}
+          </span>
         </div>
 
         {occupied ? (
@@ -171,6 +184,11 @@ function LevelCell({
                 {occupiedCages.length}/{level.cages.length} cages
                 {' · '}
                 {minPerCage === maxPerCage ? `${minPerCage}/cage` : `${minPerCage}-${maxPerCage}/cage`}
+                {hasIsolation && (
+                  <span className="text-purple-300">
+                    {' · '}{isolationCages.length} isolated
+                  </span>
+                )}
               </p>
             )}
           </>
@@ -195,13 +213,26 @@ function LevelCell({
               {level.cages.map(c => (
                 <div
                   key={c.cageId}
-                  title={`${c.label}${c.assignment ? ` — ${c.assignment.birdCount} birds` : ' — empty'}`}
-                  className={`rounded-[3px] text-[7px] leading-none flex items-center justify-center h-5 ${
-                    c.assignment
-                      ? 'bg-amber-500/20 text-amber-200 border border-amber-500/30'
-                      : 'bg-white/5 text-white/20 border border-white/5'
+                  title={
+                    `${c.label}` +
+                    (c.assignment
+                      ? ` — ${c.assignment.birdCount} birds` +
+                        (c.assignment.isIsolation
+                          ? ` · ISOLATION${c.assignment.isolationReason ? `: ${c.assignment.isolationReason}` : ''}`
+                          : '')
+                      : ' — empty')
+                  }
+                  className={`relative rounded-[3px] text-[7px] leading-none flex items-center justify-center h-5 ${
+                    c.assignment?.isIsolation
+                      ? 'bg-purple-500/25 text-purple-200 border border-purple-400/50 ring-1 ring-purple-400/40'
+                      : c.assignment
+                        ? 'bg-amber-500/20 text-amber-200 border border-amber-500/30'
+                        : 'bg-white/5 text-white/20 border border-white/5'
                   }`}
                 >
+                  {c.assignment?.isIsolation && (
+                    <Lock className="w-2 h-2 absolute -top-0.5 -right-0.5 text-purple-300" />
+                  )}
                   {c.assignment ? c.assignment.birdCount : ''}
                 </div>
               ))}
@@ -317,6 +348,26 @@ export function BrooderCageMapGrid({
   const rows        = data?.rows ?? [];
   const totalChicks = data?.totalChicks ?? 0;
 
+  // Flat list of every isolated cage across the whole brooder, with full
+  // row/level/cage context — surfaced as its own panel so the Director
+  // (Owner) and Production Manager can see at a glance what's isolated,
+  // where, and how many birds, without digging into each level.
+  const isolatedCages = rows.flatMap(row =>
+    row.levels.flatMap(level =>
+      level.cages
+        .filter(c => c.assignment?.isIsolation)
+        .map(c => ({
+          key:        c.cageId,
+          rowLabel:   row.label,
+          levelLabel: level.label,
+          cageLabel:  c.label,
+          birdCount:  c.assignment!.birdCount,
+          reason:     c.assignment!.isolationReason,
+        })),
+    ),
+  );
+  const totalIsolatedBirds = isolatedCages.reduce((s, c) => s + c.birdCount, 0);
+
   return (
     <div
       className="rounded-2xl overflow-hidden border border-white/10"
@@ -352,8 +403,45 @@ export function BrooderCageMapGrid({
         <span className="text-[10px] text-white/30 flex items-center gap-1">
           <XCircle className="w-3 h-3 text-red-400/60" /> Log mortality
         </span>
+        <span className="text-[10px] text-white/30 flex items-center gap-1">
+          <Lock className="w-3 h-3 text-purple-400/70" /> Isolation cage
+        </span>
         <span className="text-[10px] text-white/30">Tap cell body = log feed</span>
       </div>
+
+      {/* ── Isolation summary — director/PM visibility into every isolated
+           cage: exactly which cage, in which row and level, and how many
+           birds are isolated there. ── */}
+      {isolatedCages.length > 0 && (
+        <div className="mx-4 mt-3 rounded-xl border border-purple-500/30 bg-purple-950/30 overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-purple-500/20">
+            <span className="flex items-center gap-1.5 text-xs font-bold text-purple-200">
+              <Lock className="w-3.5 h-3.5" />
+              Isolation Cages ({isolatedCages.length})
+            </span>
+            <span className="text-xs font-bold text-purple-300">
+              {totalIsolatedBirds.toLocaleString()} birds isolated
+            </span>
+          </div>
+          <div className="max-h-40 overflow-y-auto divide-y divide-purple-500/10">
+            {isolatedCages.map(c => (
+              <div key={c.key} className="flex items-center justify-between gap-2 px-3 py-1.5 text-[11px]">
+                <div className="min-w-0">
+                  <p className="font-semibold text-purple-100 truncate">
+                    {c.rowLabel} · {c.levelLabel} · {c.cageLabel}
+                  </p>
+                  {c.reason && (
+                    <p className="text-purple-300/70 truncate">{c.reason}</p>
+                  )}
+                </div>
+                <span className="shrink-0 font-bold text-purple-200">
+                  {c.birdCount.toLocaleString()} birds
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="p-4">
         {isLoading ? (

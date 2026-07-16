@@ -254,11 +254,16 @@ async function main() {
   // Mirrors what migration 20260621000000_phase9_brooder_cage_map seeds for
   // `prisma migrate deploy`. Kept here too so `prisma db seed` / local resets
   // that don't replay raw-SQL migration inserts still get the grid.
+  // Rows are labelled A-F (rowNumber 1-6 is kept as the stable sort key —
+  // only the human-facing label uses letters, to read less like a numeric
+  // priority order and more like a fixed set of physical decks).
+  const rowLetter = (n: number) => String.fromCharCode(64 + n); // 1->A ... 6->F
   for (let rowNumber = 1; rowNumber <= 6; rowNumber++) {
+    const label = `Row ${rowLetter(rowNumber)}`;
     const row = await prisma.brooderRow.upsert({
       where: { rowNumber },
-      create: { rowNumber, label: `Row ${rowNumber}`, isActive: true },
-      update: {},
+      create: { rowNumber, label, isActive: true },
+      update: { label }, // self-heals old "Row 1" style labels on reseed
     });
     for (let levelNumber = 1; levelNumber <= 4; levelNumber++) {
       const label =
@@ -284,15 +289,16 @@ async function main() {
   for (const level of allLevels) {
     const cageCount = [3, 6].includes(level.row.rowNumber) ? 42 : 44;
     for (let cageNumber = 1; cageNumber <= cageCount; cageNumber++) {
+      const label = `Cage ${String(cageNumber).padStart(2, '0')}`;
       await prisma.brooderCage.upsert({
         where: { levelId_cageNumber: { levelId: level.id, cageNumber } },
         create: {
           levelId: level.id,
           cageNumber,
-          label: `${level.row.label} · Level ${level.levelNumber} · Cage ${String(cageNumber).padStart(2, '0')}`,
+          label,
           isActive: true,
         },
-        update: {},
+        update: { label }, // self-heals old "Row X · Level Y · Cage NN" labels on reseed
       });
     }
   }
