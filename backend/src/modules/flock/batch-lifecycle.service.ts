@@ -115,6 +115,7 @@ export class BatchLifecycleService {
       // and heat logs are untouched — they remain queryable by level/date
       // for full from-brooder-to-production-house traceability.
       if (batch.stage === BatchStage.BROODING && newStage !== BatchStage.BROODING) {
+        await tx.brooderCageAssignment.deleteMany({ where: { batchId } });
         await tx.brooderLevelAssignment.deleteMany({ where: { batchId } });
       }
 

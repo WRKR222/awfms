@@ -40,6 +40,10 @@ export function BrooderWeightLogModal({ level, row, onClose }: Props) {
   const [weights, setWeights]         = useState<(number | '')[]>(Array(5).fill(''));
   const [notes, setNotes]             = useState('');
 
+  const occupiedCages = level.cages.filter(c => !!c.assignment);
+  const [cageId, setCageId] = useState(occupiedCages[0]?.cageId ?? '');
+  const selectedCage = occupiedCages.find(c => c.cageId === cageId) ?? null;
+
   const [result, setResult] = useState<{
     withinBounds:   boolean;
     violation:      string | null;
@@ -81,7 +85,7 @@ export function BrooderWeightLogModal({ level, row, onClose }: Props) {
   };
 
   // ── Submit ───────────────────────────────────────────────────────────────
-  const canSubmit = filled.length === sampleCount && sampleCount >= 1;
+  const canSubmit = filled.length === sampleCount && sampleCount >= 1 && !!cageId;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -91,7 +95,7 @@ export function BrooderWeightLogModal({ level, row, onClose }: Props) {
 
     mutation.mutate(
       {
-        levelId:      level.levelId,
+        cageId,
         sampleDate,
         sampleCount,
         totalWeightG,
@@ -111,7 +115,7 @@ export function BrooderWeightLogModal({ level, row, onClose }: Props) {
     );
   };
 
-  const birdCount = level.assignment?.birdCount ?? 0;
+  const birdCount = selectedCage?.assignment?.birdCount ?? 0;
 
   // ── Standard from level (used for live preview colouring) ───────────────
   const std = level.weightCheck
@@ -218,7 +222,7 @@ export function BrooderWeightLogModal({ level, row, onClose }: Props) {
             <div>
               <p className="font-bold text-gray-800 dark:text-gray-100">Log Bird Weight</p>
               <p className="text-xs text-gray-400">
-                {row.label} · {level.label}
+                {row.label} · {level.label}{selectedCage ? ` · ${selectedCage.label}` : ''}
                 {level.batch && ` · ${level.batch.batchCode}`}
               </p>
             </div>
@@ -232,7 +236,7 @@ export function BrooderWeightLogModal({ level, row, onClose }: Props) {
         <div className="mx-5 mt-4 flex items-center gap-2 bg-gray-50 dark:bg-dark-bg rounded-xl p-3 text-sm">
           <Info className="w-4 h-4 text-gray-400 flex-shrink-0" />
           <span className="text-gray-600 dark:text-gray-300">
-            Birds on this level:{' '}
+            Birds in this cage:{' '}
             <strong className="text-gray-800 dark:text-gray-100">{birdCount.toLocaleString()}</strong>
             {level.hylineWeek && <> · HyLine week <strong>{level.hylineWeek}</strong></>}
             {std && <> · Standard: <strong>{std.minG}–{std.maxG}g</strong></>}
@@ -240,6 +244,26 @@ export function BrooderWeightLogModal({ level, row, onClose }: Props) {
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 space-y-5">
+          {/* Cage — weighing is recorded per cage */}
+          <div>
+            <label className={lCls}>Cage</label>
+            <select
+              value={cageId}
+              onChange={e => setCageId(e.target.value)}
+              className={iCls}
+            >
+              <option value="">Select an occupied cage…</option>
+              {occupiedCages.map(c => (
+                <option key={c.cageId} value={c.cageId}>
+                  {c.label} — {c.assignment?.birdCount.toLocaleString()} birds
+                </option>
+              ))}
+            </select>
+            {occupiedCages.length === 0 && (
+              <p className="text-[10px] text-red-500 mt-1">No occupied cages on this level.</p>
+            )}
+          </div>
+
           {/* Date */}
           <div>
             <label className={lCls}>Sample date</label>

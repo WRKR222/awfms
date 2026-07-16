@@ -291,11 +291,13 @@ model User {
 
   // Brooder Cage Map (Phase 9)
   brooderLevelAssignments  BrooderLevelAssignment[] @relation("BrooderLevelAssignedBy")
+  brooderCageAssignments   BrooderCageAssignment[]  @relation("BrooderCageAssignedBy")
   brooderHeatLogs          BrooderHeatLog[]         @relation("BrooderHeatLoggedBy")
   brooderLevelFeedLogs     BrooderLevelFeedLog[]    @relation("BrooderLevelFeedLoggedBy")
   brooderMortalityLogs     BrooderLevelMortalityLog[] @relation("BrooderMortalityLoggedBy")
   brooderGeneralFeedLogs      BrooderGeneralFeedLog[]      @relation("BrooderGeneralFeedLoggedBy")
   brooderGeneralMortalityLogs BrooderGeneralMortalityLog[] @relation("BrooderGeneralMortalityLoggedBy")
+
 
   @@map("users")
 }
@@ -407,6 +409,7 @@ model Batch {
   cageAssignments       BatchCageAssignment[]
   dailyEggAggregates    DailyEggAggregate[]
   brooderLevelAssignments  BrooderLevelAssignment[]
+  brooderCageAssignments   BrooderCageAssignment[]
   brooderMortalityLogs     BrooderLevelMortalityLog[]
   brooderGeneralFeedLogs      BrooderGeneralFeedLog[]
   brooderGeneralMortalityLogs BrooderGeneralMortalityLog[]
@@ -460,6 +463,9 @@ model BirdWeightSample {
   // in general. Lets weight be compared/flagged per physical location.
   rowId          String?  @map("row_id")
   levelId        String?  @map("level_id")
+  // Exact cage the sample was taken from, when weighing via the cage map.
+  // Nullable for historical samples and for general (non-cage-map) weighing.
+  cageId         String?  @map("cage_id")
   sampleDate     DateTime @map("sample_date") @db.Date
   sampleCount    Int      @map("sample_count")
   totalWeightG   Int      @map("total_weight_g")
@@ -472,9 +478,11 @@ model BirdWeightSample {
   batch Batch        @relation(fields: [batchId], references: [id])
   row   BrooderRow?  @relation(fields: [rowId], references: [id], onDelete: SetNull)
   level BrooderLevel? @relation(fields: [levelId], references: [id], onDelete: SetNull)
+  cage  BrooderCage? @relation(fields: [cageId], references: [id], onDelete: SetNull)
 
   @@index([batchId, sampleDate])
   @@index([levelId, sampleDate])
+  @@index([cageId, sampleDate])
   @@map("bird_weight_samples")
 }
 
@@ -1424,6 +1432,7 @@ model BrooderLevel {
 
   row              BrooderRow               @relation(fields: [rowId], references: [id], onDelete: Cascade)
   assignment       BrooderLevelAssignment?
+  cages            BrooderCage[]
   brooderLogs      BrooderLog[]
   feedLogs         BrooderLevelFeedLog[]
   mortalityLogs    BrooderLevelMortalityLog[]
@@ -1432,6 +1441,54 @@ model BrooderLevel {
 
   @@unique([rowId, levelNumber])
   @@map("brooder_levels")
+}
+
+/// A single physical cage within a BrooderLevel. Row 1/2/4/5/6 have 44 cages
+/// per level; Rows 3 and 6 have 42 cages per level (physical constraint of that
+/// deck). Cages are the unit of record for population, mortality,
+/// reassignment, and weighing going forward — BrooderLevelAssignment /
+/// BrooderLevelMortalityLog remain as level-level ROLLUPS (recomputed from
+/// their cages) so existing feed-schedule and dashboard logic that reads at
+/// level granularity keeps working unchanged.
+model BrooderCage {
+  id         String   @id @default(uuid())
+  levelId    String   @map("level_id")
+  cageNumber Int      @map("cage_number") // 1-based, unique within the level
+  label      String   // e.g. "Row 1 · Level 1 · Cage 07"
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  level         BrooderLevel               @relation(fields: [levelId], references: [id], onDelete: Cascade)
+  assignment    BrooderCageAssignment?
+  mortalityLogs BrooderLevelMortalityLog[]
+  weightSamples BirdWeightSample[]
+
+  @@unique([levelId, cageNumber])
+  @@map("brooder_cages")
+}
+
+/// Which batch (and how many chicks) currently occupies a given cage.
+/// One active assignment per cage — mirrors BrooderLevelAssignment's
+/// pattern, just one tier more granular. The parent level's
+/// BrooderLevelAssignment.birdCount is kept as the sum of its cages'
+/// birdCounts (maintained by the service on every cage-level write).
+model BrooderCageAssignment {
+  id           String   @id @default(uuid())
+  cageId       String   @unique @map("cage_id")
+  batchId      String   @map("batch_id")
+  birdCount    Int      @default(0) @map("bird_count")
+  placedDate   DateTime @map("placed_date") @db.Date
+  notes        String?
+  assignedById String   @map("assigned_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  cage       BrooderCage @relation(fields: [cageId], references: [id], onDelete: Cascade)
+  batch      Batch       @relation(fields: [batchId], references: [id])
+  assignedBy User        @relation("BrooderCageAssignedBy", fields: [assignedById], references: [id])
+
+  @@index([batchId])
+  @@map("brooder_cage_assignments")
 }
 
 /// Which batch (and how many chicks) currently occupies a given level.
@@ -1545,6 +1602,10 @@ model BrooderControlStandard {
 model BrooderLevelMortalityLog {
   id             String   @id @default(uuid())
   levelId        String   @map("level_id")
+  // Which exact cage within the level the deaths/cullings occurred in.
+  // Nullable only for historical rows logged before cages existed —
+  // the service requires it for all new entries.
+  cageId         String?  @map("cage_id")
   batchId        String   @map("batch_id")
   logDate        DateTime @map("log_date") @db.Date
   mortalityCount Int      @default(0) @map("mortality_count")
@@ -1555,10 +1616,12 @@ model BrooderLevelMortalityLog {
   createdAt      DateTime @default(now()) @map("created_at")
 
   level    BrooderLevel @relation(fields: [levelId], references: [id], onDelete: Cascade)
+  cage     BrooderCage? @relation(fields: [cageId], references: [id], onDelete: SetNull)
   batch    Batch        @relation(fields: [batchId], references: [id])
   loggedBy User         @relation("BrooderMortalityLoggedBy", fields: [loggedById], references: [id])
 
   @@index([levelId, logDate])
+  @@index([cageId, logDate])
   @@index([batchId])
   @@map("brooder_level_mortality_logs")
 }

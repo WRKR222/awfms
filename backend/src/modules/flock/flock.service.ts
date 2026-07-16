@@ -195,11 +195,14 @@ export class FlockService {
       );
     }
 
-    // Brooder cage-map level placements — stored in notes AND BrooderLevelAssignment records created atomically.
-    // Format: [{ levelId: string, birdCount: number, notes?: string }]
-    if (Array.isArray(input.brooderLevelPlacements) && input.brooderLevelPlacements.length) {
+    // Brooder cage-map CAGE placements — stored in notes AND
+    // BrooderCageAssignment records created atomically. Population,
+    // mortality, reassignment, and weighing are tracked per cage; the
+    // level's BrooderLevelAssignment is an auto-maintained rollup.
+    // Format: [{ cageId: string, birdCount: number, notes?: string }]
+    if (Array.isArray(input.brooderCagePlacements) && input.brooderCagePlacements.length) {
       // Validate total matches quantityReceived
-      const placedTotal = input.brooderLevelPlacements.reduce(
+      const placedTotal = input.brooderCagePlacements.reduce(
         (sum: number, p: any) => sum + (Number(p.birdCount) || 0),
         0,
       );
@@ -207,13 +210,13 @@ export class FlockService {
       // but reject if placed total exceeds quantity received
       if (placedTotal > quantity) {
         throw new BadRequestException(
-          `Brooder level placements total (${placedTotal}) exceeds Quantity Received (${quantity}).`,
+          `Brooder cage placements total (${placedTotal}) exceeds Quantity Received (${quantity}).`,
         );
       }
       notesParts.push(
-        'Brooder level placements: ' +
-        input.brooderLevelPlacements
-          .map((p: any) => `level:${p.levelId}=${p.birdCount}`)
+        'Brooder cage placements: ' +
+        input.brooderCagePlacements
+          .map((p: any) => `cage:${p.cageId}=${p.birdCount}`)
           .join(', '),
       );
     }
@@ -281,20 +284,25 @@ export class FlockService {
           }
         }
 
-        // Create BrooderLevelAssignment records for direct brooder registration.
-        // Each entry: { levelId: string, birdCount: number, notes?: string }
-        // levelId is the UUID PK of brooder_levels (from the cage-map endpoint).
-        if (location === 'BROODER' && Array.isArray(input.brooderLevelPlacements) && input.brooderLevelPlacements.length) {
+        // Create BrooderCageAssignment records for direct brooder registration
+        // — population is now tracked per cage. Each level's
+        // BrooderLevelAssignment rollup (batchId + summed birdCount) is
+        // recomputed afterwards so existing feed-schedule/dashboard code
+        // that reads at level granularity keeps working unchanged.
+        // Each entry: { cageId: string, birdCount: number, notes?: string }
+        // cageId is the UUID PK of brooder_cages (from the cage-map endpoint).
+        if (location === 'BROODER' && Array.isArray(input.brooderCagePlacements) && input.brooderCagePlacements.length) {
           const placementDate = new Date();
-          for (const placement of input.brooderLevelPlacements) {
+          const affectedLevelIds = new Set<string>();
+          for (const placement of input.brooderCagePlacements) {
             const birdCount = Number(placement.birdCount) || 0;
             if (birdCount <= 0) continue; // skip empty cells
-            const level = await tx.brooderLevel.findUnique({ where: { id: placement.levelId } });
-            if (!level) continue; // gracefully skip unknown levelIds
-            await tx.brooderLevelAssignment.upsert({
-              where:  { levelId: placement.levelId },
+            const cage = await tx.brooderCage.findUnique({ where: { id: placement.cageId } });
+            if (!cage) continue; // gracefully skip unknown cageIds
+            await tx.brooderCageAssignment.upsert({
+              where:  { cageId: placement.cageId },
               create: {
-                levelId:      placement.levelId,
+                cageId:       placement.cageId,
                 batchId:      batch.id,
                 birdCount,
                 placedDate:   placementDate,
@@ -307,6 +315,31 @@ export class FlockService {
                 placedDate:   placementDate,
                 notes:        placement.notes ?? null,
                 assignedById: userId,
+              },
+            });
+            affectedLevelIds.add(cage.levelId);
+          }
+          // Roll each affected level up from its cages.
+          for (const levelId of affectedLevelIds) {
+            const cageAssignments = await tx.brooderCageAssignment.findMany({
+              where: { cage: { levelId } },
+            });
+            const rollupBirdCount = cageAssignments.reduce((s, a) => s + a.birdCount, 0);
+            if (rollupBirdCount === 0) {
+              await tx.brooderLevelAssignment.deleteMany({ where: { levelId } });
+              continue;
+            }
+            await tx.brooderLevelAssignment.upsert({
+              where:  { levelId },
+              create: {
+                levelId, batchId: batch.id, birdCount: rollupBirdCount,
+                placedDate: placementDate,
+                notes: 'Auto-maintained rollup of this level\'s cage assignments.',
+                assignedById: userId,
+              },
+              update: {
+                batchId: batch.id, birdCount: rollupBirdCount,
+                placedDate: placementDate, assignedById: userId,
               },
             });
           }

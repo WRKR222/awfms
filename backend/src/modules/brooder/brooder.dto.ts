@@ -1,18 +1,27 @@
 // src/modules/brooder/brooder.dto.ts
 import { z } from 'zod';
 
-// ── Level assignment (place / move a batch's chicks onto a row+level) ──────
-export const AssignLevelSchema = z.object({
-  batchId:       z.string().uuid(),
-  birdCount:     z.number().int().min(0),
-  placedDate:    z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  notes:         z.string().max(500).optional(),
-  /** UUID of the level birds are being moved FROM. When provided the service
-   *  decrements that level's birdCount by the same amount. Required on all
-   *  reassignments; optional only for the very first placement on an empty map. */
-  sourceLevelId: z.string().uuid().optional(),
+// ── Cage assignment (place / move a batch's chicks onto a row+level+cage) ──
+// Population, mortality, reassignment, and weighing are now tracked at the
+// individual-cage level. The parent BrooderLevel's aggregate assignment is
+// maintained automatically by the service as the sum of its cages.
+export const AssignCageSchema = z.object({
+  batchId:      z.string().uuid(),
+  birdCount:    z.number().int().min(0),
+  placedDate:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  notes:        z.string().max(500).optional(),
+  /** UUID of the cage birds are being moved FROM. When provided the service
+   *  decrements that cage's (and its level's) birdCount by the same amount.
+   *  Required on all reassignments; optional only for a fresh placement
+   *  into an empty cage. */
+  sourceCageId: z.string().uuid().optional(),
 });
-export type AssignLevelDto = z.infer<typeof AssignLevelSchema>;
+export type AssignCageDto = z.infer<typeof AssignCageSchema>;
+
+// Retained only for reading historical/legacy level-level assignment rows
+// created before the per-cage migration; no longer accepted for writes.
+export const AssignLevelSchema = AssignCageSchema;
+export type AssignLevelDto = AssignCageDto;
 
 // ── Heat logs ────────────────────────────────────────────────────────────
 export const CreateCharcoalHeatLogSchema = z.object({
@@ -84,11 +93,13 @@ export const CreateLevelFeedLogSchema = z.discriminatedUnion('noFeedIssued', [
 ]);
 export type CreateLevelFeedLogDto = z.infer<typeof CreateLevelFeedLogSchema>;
 
-// ── Per-level mortality log (new — req 1) ─────────────────────────────────
-// Records mortality AND/OR culling for a specific row+level.
+// ── Per-cage mortality log (mortality/reassignment/weighing now tracked
+//    per cage — see AGENTS.md / brooder cage-map notes) ────────────────────
+// Records mortality AND/OR culling for a specific row+level+cage.
 // Service will validate that mortalityCount + cullingCount > 0.
 export const CreateLevelMortalityLogSchema = z.object({
   levelId:        z.string().uuid(),
+  cageId:         z.string().uuid(),
   batchId:        z.string().uuid(),
   logDate:        z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   mortalityCount: z.number().int().min(0).default(0),
@@ -143,11 +154,12 @@ export const CreateGeneralMortalityLogSchema = z.object({
 export type CreateGeneralMortalityLogDto = z.infer<typeof CreateGeneralMortalityLogSchema>;
 
 // ── Bird weight sample (checked against HyLine control standard) ──────────
-// Preferred: pass levelId — the service derives batchId + rowId from the
-// level's active assignment, so weight can be logged from any occupied
-// row/level on the cage map. batchId alone is still accepted for legacy
-// (non-cage-map) callers such as the general flock weight-sample endpoint.
+// Preferred: pass cageId — the service derives batchId + rowId + levelId
+// from the cage's active assignment, so weight can be logged from any
+// occupied row/level/cage on the cage map. levelId (level-only, legacy) and
+// batchId alone are still accepted for backward compatibility.
 export const CreateBrooderWeightSampleSchema = z.object({
+  cageId:        z.string().uuid().optional(),
   levelId:       z.string().uuid().optional(),
   batchId:       z.string().uuid().optional(),
   sampleDate:    z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -155,8 +167,8 @@ export const CreateBrooderWeightSampleSchema = z.object({
   totalWeightG:  z.number().int().min(1),
   notes:         z.string().max(500).optional(),
 }).refine(
-  d => !!d.levelId || !!d.batchId,
-  { message: 'Either levelId (an occupied row/level) or batchId is required' },
+  d => !!d.cageId || !!d.levelId || !!d.batchId,
+  { message: 'One of cageId (an occupied cage), levelId (an occupied row/level), or batchId is required' },
 );
 export type CreateBrooderWeightSampleDto = z.infer<typeof CreateBrooderWeightSampleSchema>;
 

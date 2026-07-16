@@ -7,6 +7,19 @@ import { api } from '../lib/api/client';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export interface BrooderCageData {
+  cageId:     string;
+  cageNumber: number;
+  label:      string;
+  isActive:   boolean;
+  assignment: {
+    batchId:    string;
+    birdCount:  number;
+    placedDate: string;
+    notes:      string | null;
+  } | null;
+}
+
 export interface BrooderLevelData {
   levelId:     string;
   levelNumber: number;
@@ -18,6 +31,9 @@ export interface BrooderLevelData {
     placedDate: string;
     notes:      string | null;
   } | null;
+  // Population, mortality, reassignment, and weighing are tracked per cage —
+  // this is the level's rollup (its `assignment` above is the sum of these).
+  cages: BrooderCageData[];
   batch: {
     batchCode:        string;
     strain:           string;
@@ -123,12 +139,22 @@ export function useBrooderCageMap() {
 }
 
 /** Lightweight grid for registration/assignment modals (no feed/heat data). */
+export interface BrooderCageSummary {
+  cageId:           string;
+  cageNumber:       number;
+  label:            string;
+  isOccupied:       boolean;
+  batchId:          string | null;
+  currentBirdCount: number;
+}
+
 export interface BrooderLevelSummary {
   levelId:          string;
   levelNumber:      number;
   label:            string;
   isOccupied:       boolean;
   currentBirdCount: number;
+  cages:            BrooderCageSummary[];
 }
 
 export interface BrooderRowSummary {
@@ -238,11 +264,11 @@ export function useFeedIssuanceCalendar(weeks: number, enabled = true) {
   });
 }
 
-export function useAssignBrooderLevel() {
+export function useAssignBrooderCage() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ levelId, data }: { levelId: string; data: any }) =>
-      api.post(`/brooder/levels/${levelId}/assign`, data).then(r => r.data),
+    mutationFn: ({ cageId, data }: { cageId: string; data: any }) =>
+      api.post(`/brooder/cages/${cageId}/assign`, data).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
       qc.invalidateQueries({ queryKey: ['brooder-rows-and-levels'] }); // FIX: keep source dropdown in sync
@@ -252,11 +278,11 @@ export function useAssignBrooderLevel() {
   });
 }
 
-export function useRemoveBrooderLevelAssignment() {
+export function useRemoveBrooderCageAssignment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (levelId: string) =>
-      api.delete(`/brooder/levels/${levelId}/assign`).then(r => r.data),
+    mutationFn: (cageId: string) =>
+      api.delete(`/brooder/cages/${cageId}/assign`).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
       qc.invalidateQueries({ queryKey: ['brooder-rows-and-levels'] }); // FIX: keep source dropdown in sync
@@ -288,12 +314,13 @@ export function useStopBrooderHeatLog() {
   });
 }
 
-/** Mutation: log mortality/culling on a specific level (Req 1). */
+/** Mutation: log mortality/culling on a specific cage. */
 export function useCreateBrooderMortalityLog() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: {
       levelId:        string;
+      cageId:         string;
       batchId:        string;
       logDate:        string;
       mortalityCount: number;
@@ -310,12 +337,14 @@ export function useCreateBrooderMortalityLog() {
 }
 
 /** Mutation: log a weight sample (Req 6 + Req 7).
- *  Preferred: pass levelId to log against a specific occupied row/level —
- *  the service derives batchId from that level's active assignment. */
+ *  Preferred: pass cageId to log against a specific occupied cage —
+ *  the service derives batchId/rowId/levelId from that cage's active
+ *  assignment. levelId (level-only) remains for backward compatibility. */
 export function useCheckBrooderWeightSample() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: {
+      cageId?:      string;
       levelId?:     string;
       batchId?:     string;
       sampleDate:   string;
@@ -328,6 +357,9 @@ export function useCheckBrooderWeightSample() {
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
       if (variables.levelId) {
         qc.invalidateQueries({ queryKey: ['brooder-level-weight-history', variables.levelId] });
+      }
+      if (variables.cageId) {
+        qc.invalidateQueries({ queryKey: ['brooder-cage-weight-history', variables.cageId] });
       }
     },
   });
@@ -351,6 +383,16 @@ export function useLevelWeightHistory(levelId: string | null) {
     queryKey:  ['brooder-level-weight-history', levelId],
     queryFn:   () => api.get(`/brooder/levels/${levelId}/weight-history`).then(r => r.data),
     enabled:   !!levelId,
+    staleTime: 30_000,
+  });
+}
+
+/** Weight history scoped to a specific occupied cage. */
+export function useCageWeightHistory(cageId: string | null) {
+  return useQuery<LevelWeightSample[]>({
+    queryKey:  ['brooder-cage-weight-history', cageId],
+    queryFn:   () => api.get(`/brooder/cages/${cageId}/weight-history`).then(r => r.data),
+    enabled:   !!cageId,
     staleTime: 30_000,
   });
 }

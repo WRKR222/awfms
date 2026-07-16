@@ -1,30 +1,30 @@
 // src/components/shared/BrooderReassignModal.tsx
 //
-// Dedicated "move birds OUT" modal.
+// Dedicated "move birds OUT" modal — now cage-to-cage.
 //
-// The clicked level is always the SOURCE (shown read-only at the top).
-// The user picks the DESTINATION level from a dropdown of all other levels.
+// The user first picks the SOURCE cage (any occupied cage on the clicked
+// level), then the DESTINATION cage from the full cage map.
 // On submit the API call is:
-//   POST /brooder/levels/{destinationLevelId}/assign
-//   body: { sourceLevelId: source.levelId, batchId, birdCount, placedDate }
+//   POST /brooder/cages/{destinationCageId}/assign
+//   body: { sourceCageId: source.cageId, batchId, birdCount, placedDate }
 //
 // This is the opposite direction from BrooderLevelAssignModal, which treats
-// the clicked level as the destination and asks "where are birds coming from?"
+// the clicked cage as the destination and asks "where are birds coming from?"
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import {
   X, Bird, Layers, AlertTriangle, ArrowRight, MoveRight,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import {
-  useAssignBrooderLevel,
+  useAssignBrooderCage,
   type BrooderLevelData,
   type BrooderRowData,
 } from '../../hooks/useBrooderCageMap';
 
 interface Props {
-  /** The level the user clicked — birds move OUT of here. */
+  /** The level the user clicked — birds move OUT of one of its cages. */
   sourceLevel: BrooderLevelData;
   sourceRow:   BrooderRowData;
   /** Full cage map so user can pick a destination. */
@@ -35,65 +35,73 @@ interface Props {
 export function BrooderReassignModal({
   sourceLevel, sourceRow, allRows, onClose,
 }: Props) {
-  const assign = useAssignBrooderLevel();
+  const assign = useAssignBrooderCage();
 
   const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
   const lCls = 'block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1';
 
-  // All occupied levels except the source itself — these are valid destinations.
-  // Empty levels are also valid destinations (birds can be moved to an empty level).
+  // ── Source cage picker — any occupied cage on the clicked level ─────────
+  const sourceCageOptions = sourceLevel.cages.filter(c => !!c.assignment);
+  const [sourceCageId, setSourceCageId] = useState(sourceCageOptions[0]?.cageId ?? '');
+  const sourceCage       = sourceCageOptions.find(c => c.cageId === sourceCageId) ?? null;
+  const sourceBirdCount  = sourceCage?.assignment?.birdCount ?? 0;
+
+  // ── Destination cage options — every cage except the source, grouped by
+  // row → level so the dropdown stays navigable despite the large count. ──
   const destinationOptions = useMemo(() => {
     const opts: {
-      rowLabel: string; levelLabel: string; levelId: string;
+      rowLabel: string; levelLabel: string; cageId: string; cageLabel: string;
       existingBirdCount: number; batchId: string | null;
     }[] = [];
     for (const r of allRows) {
       for (const l of r.levels) {
-        if (l.levelId === sourceLevel.levelId) continue; // skip source itself
-        opts.push({
-          rowLabel:          r.label,
-          levelLabel:        l.label,
-          levelId:           l.levelId,
-          existingBirdCount: l.assignment?.birdCount ?? 0,
-          batchId:           l.assignment?.batchId ?? null,
-        });
+        for (const c of l.cages) {
+          if (c.cageId === sourceCageId) continue; // skip source itself
+          opts.push({
+            rowLabel:          r.label,
+            levelLabel:        l.label,
+            cageId:            c.cageId,
+            cageLabel:         c.label,
+            existingBirdCount: c.assignment?.birdCount ?? 0,
+            batchId:           c.assignment?.batchId ?? null,
+          });
+        }
       }
     }
     return opts;
-  }, [allRows, sourceLevel.levelId]);
+  }, [allRows, sourceCageId]);
 
   const {
     register, handleSubmit, watch, formState: { errors },
   } = useForm({
     defaultValues: {
-      destinationLevelId: '',
-      birdCount:          sourceLevel.assignment?.birdCount ?? '',
-      placedDate:         dayjs().format('YYYY-MM-DD'),
-      notes:              '',
+      destinationCageId: '',
+      birdCount:         sourceBirdCount || '',
+      placedDate:        dayjs().format('YYYY-MM-DD'),
+      notes:             '',
     },
   });
 
-  const watchedDestId    = watch('destinationLevelId');
+  const watchedDestId    = watch('destinationCageId');
   const watchedBirdCount = watch('birdCount');
-  const selectedDest     = destinationOptions.find(o => o.levelId === watchedDestId);
-  const sourceBirdCount  = sourceLevel.assignment?.birdCount ?? 0;
+  const selectedDest     = destinationOptions.find(o => o.cageId === watchedDestId);
 
   const exceedsSource =
     !!watchedBirdCount && Number(watchedBirdCount) > sourceBirdCount;
 
   const submit = (data: any) => {
-    if (exceedsSource || !data.destinationLevelId) return;
+    if (exceedsSource || !data.destinationCageId || !sourceCage) return;
     assign.mutate(
       {
-        // POST to the DESTINATION level
-        levelId: data.destinationLevelId,
+        // POST to the DESTINATION cage
+        cageId: data.destinationCageId,
         data: {
-          batchId:       sourceLevel.assignment!.batchId,
-          birdCount:     Number(data.birdCount),
-          placedDate:    data.placedDate,
-          notes:         data.notes || undefined,
-          // Tell the backend to decrement the SOURCE level
-          sourceLevelId: sourceLevel.levelId,
+          batchId:      sourceCage.assignment!.batchId,
+          birdCount:    Number(data.birdCount),
+          placedDate:   data.placedDate,
+          notes:        data.notes || undefined,
+          // Tell the backend to decrement the SOURCE cage
+          sourceCageId: sourceCage.cageId,
         },
       },
       { onSuccess: onClose },
@@ -115,7 +123,7 @@ export function BrooderReassignModal({
                 Move birds from {sourceRow.label} · {sourceLevel.label}
               </p>
               <p className="text-xs text-gray-400">
-                {sourceBirdCount.toLocaleString()} birds available to move
+                {sourceCageOptions.length} occupied cage{sourceCageOptions.length !== 1 ? 's' : ''} on this level
               </p>
             </div>
           </div>
@@ -126,79 +134,101 @@ export function BrooderReassignModal({
 
         <form onSubmit={handleSubmit(submit)} className="p-5 space-y-4">
 
-          {/* ── Source summary (read-only) ── */}
-          <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 flex items-center gap-3">
-            <Layers className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
-            <div className="text-xs">
-              <p className="font-bold text-amber-700 dark:text-amber-300">
-                Moving FROM: {sourceRow.label} · {sourceLevel.label}
-              </p>
-              <p className="text-amber-600 dark:text-amber-400 mt-0.5">
-                Batch {sourceLevel.batch?.batchCode} ·{' '}
-                {sourceBirdCount.toLocaleString()} birds currently here
-              </p>
-            </div>
+          {/* ── Source cage picker ── */}
+          <div>
+            <label className={lCls}>Move FROM which cage? *</label>
+            <select
+              value={sourceCageId}
+              onChange={e => setSourceCageId(e.target.value)}
+              className={iCls}
+            >
+              <option value="">— Select source cage —</option>
+              {sourceCageOptions.map(c => (
+                <option key={c.cageId} value={c.cageId}>
+                  {c.label} — {c.assignment?.birdCount.toLocaleString()} birds
+                </option>
+              ))}
+            </select>
+            {sourceCageOptions.length === 0 && (
+              <p className="text-red-500 text-xs mt-1">No occupied cages on this level.</p>
+            )}
           </div>
+
+          {/* ── Source summary (read-only) ── */}
+          {sourceCage && (
+            <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 flex items-center gap-3">
+              <Layers className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+              <div className="text-xs">
+                <p className="font-bold text-amber-700 dark:text-amber-300">
+                  Moving FROM: {sourceRow.label} · {sourceLevel.label} · {sourceCage.label}
+                </p>
+                <p className="text-amber-600 dark:text-amber-400 mt-0.5">
+                  Batch {sourceLevel.batch?.batchCode} ·{' '}
+                  {sourceBirdCount.toLocaleString()} birds currently here
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* ── Destination picker ── */}
           <div>
             <label className={lCls}>
               <ArrowRight className="w-3.5 h-3.5 inline mr-1 text-blue-500" />
-              Move TO (destination row &amp; level) *
+              Move TO (destination row · level · cage) *
             </label>
             <select
-              {...register('destinationLevelId', { required: 'Select a destination level' })}
+              {...register('destinationCageId', { required: 'Select a destination cage' })}
               className={iCls}
             >
               <option value="">— Select destination —</option>
               {destinationOptions.map(o => (
-                <option key={o.levelId} value={o.levelId}>
-                  {o.rowLabel} · {o.levelLabel}
+                <option key={o.cageId} value={o.cageId}>
+                  {o.rowLabel} · {o.levelLabel} · {o.cageLabel}
                   {o.existingBirdCount > 0
                     ? `  (has ${o.existingBirdCount.toLocaleString()} birds — will merge)`
                     : '  (empty)'}
                 </option>
               ))}
             </select>
-            {errors.destinationLevelId && (
+            {errors.destinationCageId && (
               <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
                 <AlertTriangle className="w-3 h-3" />
-                {errors.destinationLevelId.message as string}
+                {errors.destinationCageId.message as string}
               </p>
             )}
           </div>
 
           {/* ── Live transfer summary ── */}
-          {selectedDest && watchedBirdCount && Number(watchedBirdCount) > 0 && !exceedsSource && (() => {
+          {selectedDest && watchedBirdCount && Number(watchedBirdCount) > 0 && !exceedsSource && sourceCage && (() => {
             const moving   = Number(watchedBirdCount);
             const existing = selectedDest.existingBirdCount;
             const total    = existing + moving;
             const srcAfter = sourceBirdCount - moving;
             return (
               <div className="space-y-1.5">
-                <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-xl px-3 py-2 text-xs">
+                <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-xl px-3 py-2 text-xs flex-wrap">
                   <Bird className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
                   <span className="font-bold text-blue-700 dark:text-blue-300">
                     {moving.toLocaleString()} birds moving
                   </span>
                   <ArrowRight className="w-3 h-3 text-gray-400 flex-shrink-0" />
                   <span className="text-red-500 font-semibold line-through">
-                    {sourceRow.label} · {sourceLevel.label}
+                    {sourceCage.label}
                   </span>
                   <ArrowRight className="w-3 h-3 text-gray-400 flex-shrink-0" />
                   <span className="text-green-600 dark:text-green-400 font-semibold">
-                    {selectedDest.rowLabel} · {selectedDest.levelLabel}
+                    {selectedDest.rowLabel} · {selectedDest.levelLabel} · {selectedDest.cageLabel}
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5 text-xs">
                   <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">
-                    <p className="text-gray-500 mb-0.5">Source after move</p>
+                    <p className="text-gray-500 mb-0.5">Source cage after move</p>
                     <p className={`font-bold ${srcAfter === 0 ? 'text-red-600' : 'text-gray-700 dark:text-gray-200'}`}>
-                      {srcAfter === 0 ? 'Empty (level cleared)' : `${srcAfter.toLocaleString()} birds`}
+                      {srcAfter === 0 ? 'Empty (cage cleared)' : `${srcAfter.toLocaleString()} birds`}
                     </p>
                   </div>
                   <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-3 py-2">
-                    <p className="text-gray-500 mb-0.5">Destination after move</p>
+                    <p className="text-gray-500 mb-0.5">Destination cage after move</p>
                     <p className="font-bold text-green-700 dark:text-green-400">
                       {total.toLocaleString()} birds
                       {existing > 0 && (
@@ -237,7 +267,7 @@ export function BrooderReassignModal({
             {exceedsSource && (
               <p className="text-red-500 text-xs mt-1 flex items-center gap-1">
                 <AlertTriangle className="w-3 h-3" />
-                Cannot move more than {sourceBirdCount.toLocaleString()} birds from this level.
+                Cannot move more than {sourceBirdCount.toLocaleString()} birds from this cage.
               </p>
             )}
             {errors.birdCount && !exceedsSource && (
@@ -283,7 +313,7 @@ export function BrooderReassignModal({
             </button>
             <button
               type="submit"
-              disabled={assign.isPending || exceedsSource || destinationOptions.length === 0}
+              disabled={assign.isPending || exceedsSource || !sourceCage || destinationOptions.length === 0}
               className="flex-1 bg-blue-500 text-white rounded-xl py-3 font-semibold disabled:opacity-60"
             >
               {assign.isPending ? 'Moving…' : 'Move Birds'}
@@ -295,3 +325,4 @@ export function BrooderReassignModal({
     </div>
   );
 }
+

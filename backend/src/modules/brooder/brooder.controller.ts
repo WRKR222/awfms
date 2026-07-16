@@ -86,21 +86,24 @@ export class BrooderController {
     return this.svc.getAssignmentsByBatch(batchId);
   }
 
-  // ── Level assignment ─────────────────────────────────────────────────────
-  @Post('levels/:levelId/assign')
+  // ── Cage assignment ──────────────────────────────────────────────────────
+  // Population, mortality, reassignment, and weighing are now tracked per
+  // cage (see AGENTS.md brooder cage-map notes). The parent level's rollup
+  // is maintained automatically by the service.
+  @Post('cages/:cageId/assign')
   @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
-  assignLevel(
-    @Param('levelId') levelId: string,
+  assignCage(
+    @Param('cageId') cageId: string,
     @Body() body: any,
     @CurrentUser() user: any,
   ) {
-    return this.svc.assignLevel(levelId, body, user.id);
+    return this.svc.assignCage(cageId, body, user.id);
   }
 
-  @Delete('levels/:levelId/assign')
+  @Delete('cages/:cageId/assign')
   @RequirePermission(Permission.FLOCK_BATCH_MANAGE)
-  removeLevelAssignment(@Param('levelId') levelId: string) {
-    return this.svc.removeLevelAssignment(levelId);
+  removeCageAssignment(@Param('cageId') cageId: string) {
+    return this.svc.removeCageAssignment(cageId);
   }
 
   // ── Heat logs ────────────────────────────────────────────────────────────
@@ -143,6 +146,14 @@ export class BrooderController {
   @RequirePermission(Permission.FLOCK_VIEW)
   listLevelMortalityLogs(@Param('levelId') levelId: string, @Query('limit') limit?: string) {
     return this.svc.listLevelMortalityLogs(levelId, limit ? Number(limit) : 30);
+  }
+
+  /** GET /brooder/cages/:cageId/mortality-logs
+   *  Mortality/culling history for one specific cage. */
+  @Get('cages/:cageId/mortality-logs')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  listCageMortalityLogs(@Param('cageId') cageId: string, @Query('limit') limit?: string) {
+    return this.svc.listCageMortalityLogs(cageId, limit ? Number(limit) : 30);
   }
 
   /** POST /brooder/mortality-logs
@@ -225,6 +236,14 @@ export class BrooderController {
   @RequirePermission(Permission.FLOCK_VIEW)
   getLevelWeightHistory(@Param('levelId') levelId: string) {
     return this.svc.getLevelWeightHistory(levelId);
+  }
+
+  /** GET /brooder/cages/:cageId/weight-history
+   *  Weight samples logged specifically against this occupied cage. */
+  @Get('cages/:cageId/weight-history')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getCageWeightHistory(@Param('cageId') cageId: string) {
+    return this.svc.getCageWeightHistory(cageId);
   }
 
   /** GET /brooder/batches/:batchId/mortality-check

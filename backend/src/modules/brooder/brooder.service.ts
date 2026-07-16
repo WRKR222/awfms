@@ -45,6 +45,7 @@ import {
   apportionByShare,
 } from '../../common/feed/feed-standard.util';
 import {
+  AssignCageSchema,
   AssignLevelSchema,
   CreateHeatLogSchema,
   StopBulbHeatLogSchema,
@@ -220,6 +221,14 @@ export class BrooderService {
             assignment: {
               select: { batchId: true, birdCount: true },
             },
+            cages: {
+              orderBy: { cageNumber: 'asc' },
+              where:   { isActive: true },
+              select: {
+                id: true, cageNumber: true, label: true,
+                assignment: { select: { batchId: true, birdCount: true } },
+              },
+            },
           },
         },
       },
@@ -234,6 +243,14 @@ export class BrooderService {
         label:       l.label,
         isOccupied:  !!l.assignment,
         currentBirdCount: l.assignment?.birdCount ?? 0,
+        cages: l.cages.map(c => ({
+          cageId:     c.id,
+          cageNumber: c.cageNumber,
+          label:      c.label,
+          isOccupied: !!c.assignment,
+          batchId:    c.assignment?.batchId ?? null,
+          currentBirdCount: c.assignment?.birdCount ?? 0,
+        })),
       })),
     }));
   }
@@ -244,7 +261,13 @@ export class BrooderService {
       include: {
         levels: {
           orderBy: { levelNumber: 'asc' },
-          include: { assignment: true },
+          include: {
+            assignment: true,
+            cages: {
+              orderBy: { cageNumber: 'asc' },
+              include: { assignment: true },
+            },
+          },
         },
       },
     });
@@ -564,6 +587,21 @@ export class BrooderService {
             placedDate: a.placedDate,
             notes:     a.notes,
           } : null,
+          // ── Per-cage breakdown ── population, mortality, reassignment,
+          // and weighing are recorded per cage; this is the level's rollup
+          // of its cages (birdCount here is the sum shown above).
+          cages: level.cages.map(cage => ({
+            cageId:     cage.id,
+            cageNumber: cage.cageNumber,
+            label:      cage.label,
+            isActive:   cage.isActive,
+            assignment: cage.assignment ? {
+              batchId:    cage.assignment.batchId,
+              birdCount:  cage.assignment.birdCount,
+              placedDate: cage.assignment.placedDate,
+              notes:      cage.assignment.notes,
+            } : null,
+          })),
           batch: batch ? {
             batchCode:        batch.batchCode,
             strain:           batch.strain,
@@ -623,154 +661,199 @@ export class BrooderService {
     return { rows: mappedRows, totalChicks, generatedAt: new Date() };
   }
 
-  // ── Level assignment ──────────────────────────────────────────────────────
+  // ── Cage assignment ────────────────────────────────────────────────────────
+  //
+  // Population, mortality/culling, reassignment, and weighing are recorded
+  // per CAGE. Each level's BrooderLevelAssignment row is kept as an
+  // automatically-maintained ROLLUP (sum of that level's cage assignments)
+  // purely so the existing feed-schedule engine and dashboards — which read
+  // at level granularity — keep working unchanged. A level's cages must all
+  // belong to the same batch at any one time (the feed engine assumes one
+  // batch per level); assigning a second batch into a level already holding
+  // another batch's cages is rejected.
 
-  async assignLevel(levelId: string, input: unknown, userId: string) {
-    const dto = parseOrThrow(AssignLevelSchema, input);
-    const level = await this.prisma.brooderLevel.findUnique({ where: { id: levelId } });
-    if (!level) throw new NotFoundException('Brooder level not found');
+  /** Recompute a level's aggregate BrooderLevelAssignment from its cages.
+   *  Call this inside the same transaction as any cage-assignment write. */
+  private async recomputeLevelRollup(tx: any, levelId: string, userId: string) {
+    const cageAssignments = await tx.brooderCageAssignment.findMany({
+      where: { cage: { levelId } },
+    });
+    if (cageAssignments.length === 0) {
+      await tx.brooderLevelAssignment.deleteMany({ where: { levelId } });
+      return;
+    }
+    const birdCount   = cageAssignments.reduce((s: number, a: any) => s + a.birdCount, 0);
+    const batchId      = cageAssignments[0].batchId;
+    const placedDate   = cageAssignments
+      .map((a: any) => a.placedDate as Date)
+      .reduce((min: Date, d: Date) => (d < min ? d : min));
+    await tx.brooderLevelAssignment.upsert({
+      where:  { levelId },
+      create: {
+        levelId, batchId, birdCount, placedDate,
+        notes: 'Auto-maintained rollup of this level\'s cage assignments.',
+        assignedById: userId,
+      },
+      update: { batchId, birdCount, placedDate, assignedById: userId },
+    });
+  }
+
+  async assignCage(cageId: string, input: unknown, userId: string) {
+    const dto = parseOrThrow(AssignCageSchema, input);
+    const cage = await this.prisma.brooderCage.findUnique({
+      where: { id: cageId },
+      include: { level: true },
+    });
+    if (!cage) throw new NotFoundException('Brooder cage not found');
     const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
-    const existingAssignmentsForBatch = await this.prisma.brooderLevelAssignment.findMany({
+    const existingAssignmentsForBatch = await this.prisma.brooderCageAssignment.findMany({
       where: { batchId: dto.batchId },
     });
     const isAlreadyPlaced  = batch.location === 'BROODER';
     const hasAnyAssignment = existingAssignmentsForBatch.length > 0;
     if (!isAlreadyPlaced && hasAnyAssignment) {
       throw new BadRequestException(
-        'Only batches currently in the Brooder can be assigned to a level.',
+        'Only batches currently in the Brooder can be assigned to a cage.',
       );
     }
 
-    // FIX: when a sourceLevelId is provided the birds are being MOVED (not added),
-    // so the source level must be excluded from siblingsTotal — otherwise the check
-    // double-counts those birds and incorrectly throws a quantityReceived overflow.
-    // Example: moving 2990 from R3L2 → R3L3(2984).  Without the fix:
-    //   siblingsTotal = 2990 (R3L2 still counted) + 2990 (dto) = 5980 > quantityReceived → throws.
-    // With the fix:
-    //   siblingsTotal = 0 (R3L2 excluded) + 2990 (dto) = 2990 ≤ quantityReceived → passes.
+    // Same overflow-guard fix as the old level-based assignment: exclude the
+    // source cage (birds are being MOVED, not added) from the sibling total.
     const siblingsTotal = existingAssignmentsForBatch
-      .filter(a => a.levelId !== levelId && a.levelId !== dto.sourceLevelId)
+      .filter(a => a.cageId !== cageId && a.cageId !== dto.sourceCageId)
       .reduce((s, a) => s + a.birdCount, 0);
     const newTotal = siblingsTotal + dto.birdCount;
     if (newTotal > batch.quantityReceived) {
       throw new BadRequestException(
-        `Cannot assign ${dto.birdCount} birds to this level: total would be ${newTotal} ` +
+        `Cannot assign ${dto.birdCount} birds to this cage: total would be ${newTotal} ` +
         `but batch ${batch.batchCode} only received ${batch.quantityReceived} birds. ` +
         `You can place at most ${batch.quantityReceived - siblingsTotal} birds here.`,
       );
     }
 
+    // A level's cages must all belong to one batch (feed engine assumption).
+    const otherBatchInLevel = await this.prisma.brooderCageAssignment.findFirst({
+      where: {
+        batchId: { not: dto.batchId },
+        cage:    { levelId: cage.levelId, id: { not: cageId } },
+      },
+    });
+    if (otherBatchInLevel) {
+      throw new BadRequestException(
+        `${cage.level.label} already has cages assigned to a different batch. ` +
+        `All cages on one level must hold the same batch.`,
+      );
+    }
+
     return this.prisma.$transaction(async (tx) => {
-      // ── Decrement the source level (bird reassignment) ──────────────────
-      if (dto.sourceLevelId) {
-        const sourceAssignment = await tx.brooderLevelAssignment.findUnique({
-          where: { levelId: dto.sourceLevelId },
+      // ── Decrement the source cage (bird reassignment) ────────────────────
+      let sourceLevelId: string | null = null;
+      if (dto.sourceCageId) {
+        const sourceAssignment = await tx.brooderCageAssignment.findUnique({
+          where: { cageId: dto.sourceCageId },
+          include: { cage: true },
         });
         if (!sourceAssignment) {
           throw new BadRequestException(
-            'The specified source level has no active assignment. Cannot move birds from it.',
+            'The specified source cage has no active assignment. Cannot move birds from it.',
           );
         }
+        sourceLevelId = sourceAssignment.cage.levelId;
         const newSourceCount = sourceAssignment.birdCount - dto.birdCount;
         if (newSourceCount < 0) {
           throw new BadRequestException(
-            `Cannot move ${dto.birdCount} birds from the source level — it only has ${sourceAssignment.birdCount}.`,
+            `Cannot move ${dto.birdCount} birds from the source cage — it only has ${sourceAssignment.birdCount}.`,
           );
         }
         if (newSourceCount === 0) {
-          // Source level is now empty — remove the assignment entirely
-          await tx.brooderLevelAssignment.delete({ where: { levelId: dto.sourceLevelId } });
+          await tx.brooderCageAssignment.delete({ where: { cageId: dto.sourceCageId } });
         } else {
-          await tx.brooderLevelAssignment.update({
-            where: { levelId: dto.sourceLevelId },
+          await tx.brooderCageAssignment.update({
+            where: { cageId: dto.sourceCageId },
             data:  { birdCount: newSourceCount },
           });
         }
+        await this.recomputeLevelRollup(tx, sourceLevelId!, userId);
 
-        // ── Carry over partial-day feed when birds move mid-day ────────────
-        // If feed was already dispensed to the source level TODAY before this
-        // reassignment, that feed was eaten by the population as it stood at
-        // feeding time (oldSourceBirdCount = sourceAssignment.birdCount).
-        // Moving dto.birdCount of those birds out must move their proportional
-        // share of today's already-eaten feed to the destination level too —
-        // otherwise:
-        //   • the source level's remaining ration looks artificially used up,
-        //     penalising the birds that stayed behind, and
-        //   • the destination level looks un-fed, letting the incoming birds
-        //     be issued a full fresh day's ration on top of what they already
-        //     ate before the move.
-        // Carryover entries are dated "today" so they also flow correctly into
-        // this week's dispensed total for both levels.
-        const oldSourceBirdCount = sourceAssignment.birdCount;
-        const todayDate     = new Date(dayjs().format('YYYY-MM-DD'));
-        const tomorrowDate  = dayjs(todayDate).add(1, 'day').toDate();
-        const todaysSourceLogs = await tx.brooderLevelFeedLog.findMany({
-          where: {
-            levelId:   dto.sourceLevelId,
-            entryDate: { gte: todayDate, lt: tomorrowDate },
-          },
-        });
-        if (todaysSourceLogs.length > 0 && oldSourceBirdCount > 0) {
-          const dispensedByFeedType = new Map<string, number>();
-          for (const log of todaysSourceLogs) {
-            dispensedByFeedType.set(
-              log.feedType,
-              (dispensedByFeedType.get(log.feedType) ?? 0) + log.quantityDispensedKg,
-            );
-          }
-          for (const [feedType, totalKg] of dispensedByFeedType) {
-            const movedShareKg = Math.round(
-              (totalKg * dto.birdCount / oldSourceBirdCount) * 1000,
-            ) / 1000;
-            if (!movedShareKg) continue;
-            await tx.brooderLevelFeedLog.create({
-              data: {
-                levelId:             dto.sourceLevelId,
-                feedType,
-                entryDate:           todayDate,
-                quantityDispensedKg: -movedShareKg,
-                requiredKgForWeek:   null,
-                notes: `Reassignment carryover: ${dto.birdCount} of ${oldSourceBirdCount} birds moved out — ` +
-                       `their share of today's already-dispensed ${feedType} transferred to the destination level.`,
-                loggedById: userId,
-              },
-            });
-            await tx.brooderLevelFeedLog.create({
-              data: {
-                levelId,
-                feedType,
-                entryDate:           todayDate,
-                quantityDispensedKg: movedShareKg,
-                requiredKgForWeek:   null,
-                notes: `Reassignment carryover: ${dto.birdCount} birds received from another level, already ` +
-                       `having eaten ${movedShareKg.toFixed(3)}kg of ${feedType} today before the move.`,
-                loggedById: userId,
-              },
-            });
+        // ── Carry over partial-day feed when birds move mid-day, but only
+        // when the move crosses levels — feed is still logged per LEVEL, so
+        // a same-level cage-to-cage move doesn't touch it at all. ─────────
+        if (sourceLevelId !== cage.levelId) {
+          // oldSourceBirdCount must reflect the LEVEL's population before this
+          // move (feed was dispensed against the whole level, not one cage).
+          const sourceLevelBefore = await tx.brooderLevelAssignment.findUnique({
+            where: { levelId: sourceLevelId },
+          });
+          // If the rollup was just deleted (level now empty), fall back to
+          // what it held immediately before this transaction started.
+          const oldSourceBirdCount =
+            (sourceLevelBefore?.birdCount ?? 0) + dto.birdCount;
+          const todayDate    = new Date(dayjs().format('YYYY-MM-DD'));
+          const tomorrowDate = dayjs(todayDate).add(1, 'day').toDate();
+          const todaysSourceLogs = await tx.brooderLevelFeedLog.findMany({
+            where: {
+              levelId:   sourceLevelId,
+              entryDate: { gte: todayDate, lt: tomorrowDate },
+            },
+          });
+          if (todaysSourceLogs.length > 0 && oldSourceBirdCount > 0) {
+            const dispensedByFeedType = new Map<string, number>();
+            for (const log of todaysSourceLogs) {
+              dispensedByFeedType.set(
+                log.feedType,
+                (dispensedByFeedType.get(log.feedType) ?? 0) + log.quantityDispensedKg,
+              );
+            }
+            for (const [feedType, totalKg] of dispensedByFeedType) {
+              const movedShareKg = Math.round(
+                (totalKg * dto.birdCount / oldSourceBirdCount) * 1000,
+              ) / 1000;
+              if (!movedShareKg) continue;
+              await tx.brooderLevelFeedLog.create({
+                data: {
+                  levelId:             sourceLevelId,
+                  feedType,
+                  entryDate:           todayDate,
+                  quantityDispensedKg: -movedShareKg,
+                  requiredKgForWeek:   null,
+                  notes: `Reassignment carryover: ${dto.birdCount} of ${oldSourceBirdCount} birds moved out — ` +
+                         `their share of today's already-dispensed ${feedType} transferred to the destination level.`,
+                  loggedById: userId,
+                },
+              });
+              await tx.brooderLevelFeedLog.create({
+                data: {
+                  levelId:             cage.levelId,
+                  feedType,
+                  entryDate:           todayDate,
+                  quantityDispensedKg: movedShareKg,
+                  requiredKgForWeek:   null,
+                  notes: `Reassignment carryover: ${dto.birdCount} birds received from another level, already ` +
+                         `having eaten ${movedShareKg.toFixed(3)}kg of ${feedType} today before the move.`,
+                  loggedById: userId,
+                },
+              });
+            }
           }
         }
       }
 
-      // ── Place / update the target level ────────────────────────────────
-      // If the target level already has birds, ADD the incoming count to the
-      // existing count (moving birds into an occupied level merges them).
-      // If the target is empty, this is a fresh placement.
-      const existingTargetAssignment = await tx.brooderLevelAssignment.findUnique({
-        where: { levelId },
+      // ── Place / update the target cage ───────────────────────────────────
+      // If the target cage already has birds, ADD the incoming count to the
+      // existing count (moving birds into an occupied cage merges them).
+      const existingTargetAssignment = await tx.brooderCageAssignment.findUnique({
+        where: { cageId },
       });
       const finalBirdCount = existingTargetAssignment
         ? existingTargetAssignment.birdCount + dto.birdCount
         : dto.birdCount;
 
-      // FIX: both create and update branches must use finalBirdCount so that
-      // incoming birds are always ADDED to whatever already exists on the target
-      // level — whether the upsert ends up inserting or updating.
-      const result = await tx.brooderLevelAssignment.upsert({
-        where:  { levelId },
+      const result = await tx.brooderCageAssignment.upsert({
+        where:  { cageId },
         create: {
-          levelId, batchId: dto.batchId, birdCount: finalBirdCount,
+          cageId, batchId: dto.batchId, birdCount: finalBirdCount,
           placedDate: new Date(dto.placedDate), notes: dto.notes ?? null, assignedById: userId,
         },
         update: {
@@ -778,6 +861,7 @@ export class BrooderService {
           placedDate: new Date(dto.placedDate), notes: dto.notes ?? null, assignedById: userId,
         },
       });
+      await this.recomputeLevelRollup(tx, cage.levelId, userId);
       await tx.batch.update({
         where: { id: dto.batchId },
         data:  { location: 'BROODER' },
@@ -785,25 +869,44 @@ export class BrooderService {
       this.refresh();
       return result;
     }).catch((e: any) => {
-      if (e?.code === 'P2002') throw new ConflictException('Active assignment already exists for this level');
+      if (e?.code === 'P2002') throw new ConflictException('Active assignment already exists for this cage');
       throw e;
     });
   }
 
-  async removeLevelAssignment(levelId: string) {
-    const result = await this.prisma.brooderLevelAssignment.deleteMany({ where: { levelId } });
+  /** @deprecated kept only so any stale client still calling the old
+   *  level-based endpoint gets a clear error instead of a 404. */
+  async assignLevel(_levelId: string, _input: unknown, _userId: string): Promise<never> {
+    throw new BadRequestException(
+      'Level-level assignment has been replaced by per-cage assignment. Use POST /brooder/cages/:cageId/assign.',
+    );
+  }
+
+  async removeCageAssignment(cageId: string) {
+    const cage = await this.prisma.brooderCage.findUnique({ where: { id: cageId } });
+    if (!cage) throw new NotFoundException('Brooder cage not found');
+    const result = await this.prisma.$transaction(async (tx) => {
+      const deleted = await tx.brooderCageAssignment.deleteMany({ where: { cageId } });
+      await this.recomputeLevelRollup(tx, cage.levelId, 'system');
+      return deleted;
+    });
     this.refresh();
     return result;
   }
 
   async getAssignmentsByBatch(batchId: string) {
-    return this.prisma.brooderLevelAssignment.findMany({
+    return this.prisma.brooderCageAssignment.findMany({
       where: { batchId },
       include: {
-        level: {
+        cage: {
           select: {
-            levelNumber: true, label: true, isActive: true,
-            row: { select: { id: true, rowNumber: true, label: true } },
+            cageNumber: true, label: true, isActive: true,
+            level: {
+              select: {
+                levelNumber: true, label: true, isActive: true,
+                row: { select: { id: true, rowNumber: true, label: true } },
+              },
+            },
           },
         },
       },
@@ -1120,37 +1223,40 @@ export class BrooderService {
   async createLevelMortalityLog(input: unknown, userId: string) {
     const dto = parseOrThrow(CreateLevelMortalityLogSchema, input);
 
-    const level = await this.prisma.brooderLevel.findUnique({
-      where:   { id: dto.levelId },
-      include: { assignment: true, row: true },
+    const cage = await this.prisma.brooderCage.findUnique({
+      where:   { id: dto.cageId },
+      include: { assignment: true, level: { include: { row: true } } },
     });
-    if (!level) throw new NotFoundException('Brooder level not found');
-    if (!level.assignment) {
-      throw new BadRequestException('No batch is currently assigned to this level');
+    if (!cage) throw new NotFoundException('Brooder cage not found');
+    if (cage.levelId !== dto.levelId) {
+      throw new BadRequestException('Cage does not belong to the specified level');
     }
-    if (level.assignment.batchId !== dto.batchId) {
-      throw new BadRequestException('Batch ID does not match the batch assigned to this level');
+    if (!cage.assignment) {
+      throw new BadRequestException('No batch is currently assigned to this cage');
+    }
+    if (cage.assignment.batchId !== dto.batchId) {
+      throw new BadRequestException('Batch ID does not match the batch assigned to this cage');
     }
 
     // Guard against double counting against the general population sheet.
     await this.assertNoGeneralMortalityLog(dto.batchId, new Date(dto.logDate));
 
     const totalLost = dto.mortalityCount + dto.cullingCount;
-    if (totalLost > level.assignment.birdCount) {
+    if (totalLost > cage.assignment.birdCount) {
       throw new BadRequestException(
-        `Cannot record ${totalLost} deaths/cullings — this level only has ${level.assignment.birdCount} birds.`,
+        `Cannot record ${totalLost} deaths/cullings — this cage only has ${cage.assignment.birdCount} birds.`,
       );
     }
 
     const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
-    // ── Req 1: Record with Row+Level precision; Req 2: update counts ─────
-    const [log] = await this.prisma.$transaction([
-      // 1. Mortality log
-      (this.prisma as any).brooderLevelMortalityLog.create({
+    // ── Record with Row+Level+Cage precision; decrement counts at every tier ──
+    const log = await this.prisma.$transaction(async (tx) => {
+      const created = await (tx as any).brooderLevelMortalityLog.create({
         data: {
           levelId:        dto.levelId,
+          cageId:         dto.cageId,
           batchId:        dto.batchId,
           logDate:        new Date(dto.logDate),
           mortalityCount: dto.mortalityCount,
@@ -1159,18 +1265,25 @@ export class BrooderService {
           notes:          dto.notes ?? null,
           loggedById:     userId,
         },
-      }),
-      // 2. Decrement level bird count (Req 2 — feed recalculates from this)
-      this.prisma.brooderLevelAssignment.update({
-        where: { levelId: dto.levelId },
-        data:  { birdCount: { decrement: totalLost } },
-      }),
-      // 3. Decrement batch-level bird count
-      this.prisma.batch.update({
+      });
+      // Decrement the cage's bird count (or remove it if it hits zero) —
+      // the level rollup (feed schedule input) is recomputed from this.
+      const newCageCount = cage.assignment!.birdCount - totalLost;
+      if (newCageCount === 0) {
+        await tx.brooderCageAssignment.delete({ where: { cageId: dto.cageId } });
+      } else {
+        await tx.brooderCageAssignment.update({
+          where: { cageId: dto.cageId },
+          data:  { birdCount: newCageCount },
+        });
+      }
+      await this.recomputeLevelRollup(tx, dto.levelId, userId);
+      await tx.batch.update({
         where: { id: dto.batchId },
         data:  { currentBirdCount: { decrement: totalLost } },
-      }),
-    ]);
+      });
+      return created;
+    });
 
     // ── Req 7: Check cumulative mortality against HyLine standard ─────────
     // Mortalities on arrival (DOA birds) are excluded from the farm's
@@ -1186,23 +1299,23 @@ export class BrooderService {
     const mortalityCheck = checkMortalityViolation(farmDeaths, effectiveBirdsReceived, ageWeeks);
 
     if (mortalityCheck.violated) {
-      const rowLabel = level.row
-        ? `Row ${level.row.rowNumber}`
+      const rowLabel = cage.level.row
+        ? `Row ${cage.level.row.rowNumber}`
         : 'Unknown Row';
       const title   = `⚠ Brooder Mortality Alert — ${batch.batchCode}`;
-      const message = `${mortalityCheck.message} (${rowLabel}, ${level.label}). Actual: ${mortalityCheck.actualPct}%, Standard: ≤${mortalityCheck.standardPct}%.`;
+      const message = `${mortalityCheck.message} (${rowLabel}, ${cage.level.label}, ${cage.label}). Actual: ${mortalityCheck.actualPct}%, Standard: ≤${mortalityCheck.standardPct}%.`;
       await this.alertRoles('BROODER_MORTALITY_HIGH', title, message, dto.batchId);
       this.logger.warn(`[BrooderControl] ${title}: ${message}`);
     }
 
     // ── Farm Events: emit HealthEvent so mortality appears in manager's
-    //    Farm Events History with full row/level context. ─────────────────
+    //    Farm Events History with full row/level/cage context. ────────────
     try {
-      const rowLabel   = level.row   ? level.row.label   : 'Unknown Row';
-      const levelLabel = level.label ?? 'Unknown Level';
+      const rowLabel   = cage.level.row ? cage.level.row.label : 'Unknown Row';
+      const levelLabel = cage.level.label ?? 'Unknown Level';
       const causeNote  = dto.cause ? ` (${dto.cause})` : '';
       const eventNotes =
-        `Brooder mortality — ${rowLabel}, ${levelLabel}.` +
+        `Brooder mortality — ${rowLabel}, ${levelLabel}, ${cage.label}.` +
         (dto.mortalityCount > 0 ? ` Deaths: ${dto.mortalityCount}.` : '') +
         (dto.cullingCount   > 0 ? ` Culled: ${dto.cullingCount}.`   : '') +
         causeNote +
@@ -1223,7 +1336,7 @@ export class BrooderService {
     this.refresh();
     return {
       ...log,
-      updatedBirdCount: level.assignment.birdCount - totalLost,
+      updatedBirdCount: cage.assignment.birdCount - totalLost,
       mortalityViolation: mortalityCheck.violated ? mortalityCheck : null,
     };
   }
@@ -1231,6 +1344,16 @@ export class BrooderService {
   async listLevelMortalityLogs(levelId: string, limit = 30) {
     return (this.prisma as any).brooderLevelMortalityLog.findMany({
       where:   { levelId },
+      orderBy: { logDate: 'desc' },
+      take:    limit,
+      include: { loggedBy: { select: { id: true, fullName: true } } },
+    });
+  }
+
+  /** Mortality/culling history for one specific cage. */
+  async listCageMortalityLogs(cageId: string, limit = 30) {
+    return (this.prisma as any).brooderLevelMortalityLog.findMany({
+      where:   { cageId },
       orderBy: { logDate: 'desc' },
       take:    limit,
       include: { loggedBy: { select: { id: true, fullName: true } } },
@@ -1248,10 +1371,12 @@ export class BrooderService {
             row: { select: { rowNumber: true, label: true } },
           },
         },
+        cage: { select: { cageNumber: true, label: true } },
         loggedBy: { select: { id: true, fullName: true } },
       },
     });
   }
+
 
   // ── General (batch-wide) population feed log ─────────────────────────────
   //
@@ -1587,10 +1712,31 @@ export class BrooderService {
     let batchId:    string | null = dto.batchId ?? null;
     let rowId:      string | null = null;
     let levelId:    string | null = null;
+    let cageId:     string | null = null;
     let rowLabel:   string | null = null;
     let levelLabel: string | null = null;
+    let cageLabel:  string | null = null;
 
-    if (dto.levelId) {
+    if (dto.cageId) {
+      const cage = await this.prisma.brooderCage.findUnique({
+        where:   { id: dto.cageId },
+        include: { assignment: true, level: { include: { row: true } } },
+      });
+      if (!cage) throw new NotFoundException('Brooder cage not found');
+      if (!cage.assignment) {
+        throw new BadRequestException(
+          `${cage.level.row.label} · ${cage.level.label} · ${cage.label} has no birds assigned — ` +
+          `weight can only be logged on an occupied cage.`,
+        );
+      }
+      batchId    = cage.assignment.batchId;
+      rowId      = cage.level.rowId;
+      levelId    = cage.levelId;
+      cageId     = cage.id;
+      rowLabel   = cage.level.row.label;
+      levelLabel = cage.level.label;
+      cageLabel  = cage.label;
+    } else if (dto.levelId) {
       const level = await this.prisma.brooderLevel.findUnique({
         where:   { id: dto.levelId },
         include: { assignment: true, row: true },
@@ -1609,7 +1755,7 @@ export class BrooderService {
       levelLabel = level.label;
     }
 
-    if (!batchId) throw new BadRequestException('Either levelId or batchId is required');
+    if (!batchId) throw new BadRequestException('One of cageId, levelId, or batchId is required');
 
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
@@ -1623,7 +1769,7 @@ export class BrooderService {
     const saved = await this.prisma.birdWeightSample.create({
       data: {
         batchId,
-        rowId, levelId,
+        rowId, levelId, cageId,
         sampleDate:    new Date(dto.sampleDate),
         sampleCount:   dto.sampleCount,
         totalWeightG:  dto.totalWeightG,
@@ -1636,7 +1782,9 @@ export class BrooderService {
 
     // ── Req 7: Alert on violation ─────────────────────────────────────────
     if (weightCheck.violated) {
-      const location = levelLabel ? ` (${rowLabel} · ${levelLabel})` : '';
+      const location = cageLabel
+        ? ` (${rowLabel} · ${levelLabel} · ${cageLabel})`
+        : levelLabel ? ` (${rowLabel} · ${levelLabel})` : '';
       const title   = `⚠ Brooder Weight Alert — ${batch.batchCode}${location}`;
       const message = `${weightCheck.message} Sample: ${dto.sampleCount} birds avg ${averageG.toFixed(0)}g (week ${ageWeeks}).`;
       await this.alertRoles('BROODER_WEIGHT_ANOMALY', title, message, batchId);
@@ -1645,7 +1793,7 @@ export class BrooderService {
 
     return {
       sample: saved,
-      rowId, levelId, rowLabel, levelLabel,
+      rowId, levelId, cageId, rowLabel, levelLabel, cageLabel,
       ageWeeks,
       averageWeightG: Math.round(averageG * 10) / 10,
       standard: { week: std.week, minG: std.weightMinG, maxG: std.weightMaxG, phase: std.phase },
@@ -1658,6 +1806,25 @@ export class BrooderService {
   async getLevelWeightHistory(levelId: string) {
     const samples = await this.prisma.birdWeightSample.findMany({
       where:   { levelId },
+      orderBy: { sampleDate: 'asc' },
+    });
+
+    return samples.map(s => {
+      const std = hylineStandard(s.ageWeeks);
+      const avg = Number(s.averageWeightG);
+      return {
+        ...s,
+        averageWeightG: avg,
+        standard:  { week: std.week, minG: std.weightMinG, maxG: std.weightMaxG, phase: std.phase },
+        withinBounds: avg >= std.weightMinG && avg <= std.weightMaxG,
+      };
+    });
+  }
+
+  /** Weight history for one specific occupied cage. */
+  async getCageWeightHistory(cageId: string) {
+    const samples = await this.prisma.birdWeightSample.findMany({
+      where:   { cageId },
       orderBy: { sampleDate: 'asc' },
     });
 

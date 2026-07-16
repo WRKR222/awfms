@@ -274,6 +274,30 @@ async function main() {
   }
   console.log('✓ Brooder cage map seeded (6 rows × 4 levels = 24 cells)');
 
+  // ── Brooder cages — individual cages within each row+level ──────────────
+  // Mirrors what migration 20260714000000_brooder_cage_level_map seeds for
+  // `prisma migrate deploy`. Rows 3 and 6 have 42 cages/level; every other row has
+  // 44 cages/level (physical constraint of that deck).
+  const allLevels = await prisma.brooderLevel.findMany({
+    include: { row: { select: { rowNumber: true, label: true } } },
+  });
+  for (const level of allLevels) {
+    const cageCount = [3, 6].includes(level.row.rowNumber) ? 42 : 44;
+    for (let cageNumber = 1; cageNumber <= cageCount; cageNumber++) {
+      await prisma.brooderCage.upsert({
+        where: { levelId_cageNumber: { levelId: level.id, cageNumber } },
+        create: {
+          levelId: level.id,
+          cageNumber,
+          label: `${level.row.label} · Level ${level.levelNumber} · Cage ${String(cageNumber).padStart(2, '0')}`,
+          isActive: true,
+        },
+        update: {},
+      });
+    }
+  }
+  console.log('✓ Brooder cages seeded (Rows 3 & 6: 42/level, all other rows: 44/level)');
+
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log('\n🎉 AWFMS seed complete!');
   console.log('\nTest login credentials (all users):');

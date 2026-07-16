@@ -37,8 +37,12 @@ export function BrooderMortalityLogModal({ level, row, onClose }: Props) {
   const today = dayjs().format('YYYY-MM-DD');
   const [violationMsg, setViolationMsg] = useState<string | null>(null);
 
-  const batchId    = level.assignment?.batchId ?? '';
-  const birdCount  = level.assignment?.birdCount ?? 0;
+  const occupiedCages = level.cages.filter(c => !!c.assignment);
+  const [cageId, setCageId] = useState(occupiedCages[0]?.cageId ?? '');
+  const selectedCage = occupiedCages.find(c => c.cageId === cageId) ?? null;
+
+  const batchId    = selectedCage?.assignment?.batchId ?? '';
+  const birdCount  = selectedCage?.assignment?.birdCount ?? 0;
 
   const { register, handleSubmit, watch, formState: { errors } } = useForm({
     defaultValues: {
@@ -61,6 +65,7 @@ export function BrooderMortalityLogModal({ level, row, onClose }: Props) {
     mutationFn: (data: any) =>
       api.post('/brooder/mortality-logs', {
         levelId:        level.levelId,
+        cageId,
         batchId,
         logDate:        data.logDate,
         mortalityCount: Number(data.mortalityCount) || 0,
@@ -120,7 +125,7 @@ export function BrooderMortalityLogModal({ level, row, onClose }: Props) {
             <div>
               <p className="font-bold text-gray-800 dark:text-gray-100">Log Mortality / Culling</p>
               <p className="text-xs text-gray-400">
-                {row.label} · {level.label}
+                {row.label} · {level.label}{selectedCage ? ` · ${selectedCage.label}` : ''}
                 {level.batch && ` · ${level.batch.batchCode}`}
               </p>
             </div>
@@ -135,7 +140,7 @@ export function BrooderMortalityLogModal({ level, row, onClose }: Props) {
           <Info className="w-4 h-4 text-gray-400 flex-shrink-0" />
           <div className="space-y-0.5">
             <span className="text-gray-600 dark:text-gray-300">
-              Live birds currently on this level:{' '}
+              Live birds currently in this cage:{' '}
               <strong className="text-gray-800 dark:text-gray-100">{birdCount.toLocaleString()}</strong>
             </span>
             <p className="text-[10px] text-gray-400">
@@ -147,6 +152,26 @@ export function BrooderMortalityLogModal({ level, row, onClose }: Props) {
         </div>
 
         <form onSubmit={handleSubmit(d => submit.mutate(d))} className="p-5 space-y-4">
+          {/* Cage — population/mortality is recorded per cage */}
+          <div>
+            <label className={lCls}>Cage</label>
+            <select
+              value={cageId}
+              onChange={e => setCageId(e.target.value)}
+              className={iCls}
+            >
+              <option value="">Select an occupied cage…</option>
+              {occupiedCages.map(c => (
+                <option key={c.cageId} value={c.cageId}>
+                  {c.label} — {c.assignment?.birdCount.toLocaleString()} birds
+                </option>
+              ))}
+            </select>
+            {occupiedCages.length === 0 && (
+              <p className="text-[10px] text-red-500 mt-1">No occupied cages on this level.</p>
+            )}
+          </div>
+
           {/* Date */}
           <div>
             <label className={lCls}>Date of event</label>
@@ -238,7 +263,7 @@ export function BrooderMortalityLogModal({ level, row, onClose }: Props) {
             </button>
             <button
               type="submit"
-              disabled={submit.isPending || totalLost === 0 || totalLost > birdCount}
+              disabled={submit.isPending || !cageId || totalLost === 0 || totalLost > birdCount}
               className="flex-1 bg-red-600 text-white rounded-xl py-3 font-semibold disabled:opacity-60"
             >
               {submit.isPending ? 'Saving…' : 'Record Event'}

@@ -324,14 +324,24 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
   const [rowPlacements, setRowPlacements] = useState<RowPlacementMap>(emptyRowPlacements);
   const [placementError, setPlacementError] = useState<string | null>(null);
 
-  // Brooder cage-map placements: levelId → bird count string
-  type BrooderLevelMap = Record<string, string>;
-  const [brooderLevelMap, setBrooderLevelMap] = useState<BrooderLevelMap>({});
+  // Brooder cage-map placements: cageId → bird count string.
+  // Population is now tracked per cage — a level is just a group of cages.
+  type BrooderCageMap = Record<string, string>;
+  const [brooderCageMap, setBrooderCageMap] = useState<BrooderCageMap>({});
+  // Which level is currently expanded to show its individual cages.
+  const [expandedLevelId, setExpandedLevelId] = useState<string | null>(null);
 
   // Fetch the brooder grid when location = BROODER
   const { data: brooderRows = [] } = useQuery<{
     rowId: string; rowNumber: number; label: string;
-    levels: { levelId: string; levelNumber: number; label: string; isOccupied: boolean; currentBirdCount: number }[];
+    levels: {
+      levelId: string; levelNumber: number; label: string;
+      isOccupied: boolean; currentBirdCount: number;
+      cages: {
+        cageId: string; cageNumber: number; label: string;
+        isOccupied: boolean; batchId: string | null; currentBirdCount: number;
+      }[];
+    }[];
   }[]>({
     queryKey: ['brooder-rows-and-levels'],
     queryFn:  () => api.get('/brooder/rows-and-levels').then(r => r.data),
@@ -339,7 +349,7 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
     staleTime: 30_000,
   });
 
-  const brooderPlacedTotal = Object.values(brooderLevelMap)
+  const brooderPlacedTotal = Object.values(brooderCageMap)
     .reduce((sum, v) => sum + (Number(v) || 0), 0);
 
   const placedTotal = Object.values(rowPlacements)
@@ -370,9 +380,9 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
           .map(([rowCode, count]) => ({ rowCode, birdCount: Number(count) || 0 }));
       }
       if (data.location === 'BROODER') {
-        payload.brooderLevelPlacements = Object.entries(brooderLevelMap)
+        payload.brooderCagePlacements = Object.entries(brooderCageMap)
           .filter(([, count]) => Number(count) > 0)
-          .map(([levelId, count]) => ({ levelId, birdCount: Number(count) }));
+          .map(([cageId, count]) => ({ cageId, birdCount: Number(count) }));
       }
       return api.post('/flock/batches', payload).then(r => r.data);
     },
@@ -587,8 +597,9 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
                 </p>
               </div>
               <p className="text-[10px] text-amber-600 dark:text-amber-400">
-                Optional — assign birds to specific rows and levels now.
-                You can also assign them later from the Brooder Cage Map.
+                Optional — assign birds to specific row, level &amp; cage now.
+                Tap a level to expand its individual cages. You can also assign
+                them later from the Brooder Cage Map.
               </p>
               {brooderRows.length === 0 ? (
                 <p className="text-xs text-gray-400 italic">Loading cage map…</p>
@@ -599,33 +610,63 @@ function NewBatchModal({ onClose, hasActiveProductionBatch }: { onClose: () => v
                       <p className="text-[11px] uppercase tracking-wide font-bold text-amber-600 dark:text-amber-400 mb-1.5 flex items-center gap-1.5">
                         <Layers className="w-3 h-3" /> {row.label}
                       </p>
-                      <div className="grid grid-cols-2 gap-2">
-                        {row.levels.map(level => (
-                          <div key={level.levelId}>
-                            <label className={`${lCls} flex items-center gap-1.5`}>
-                              {level.label}
-                              {level.isOccupied && (
-                                <span className="text-[9px] bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 px-1.5 py-0.5 rounded-full font-semibold">
-                                  Occupied ({level.currentBirdCount})
+                      <div className="space-y-1.5">
+                        {row.levels.map(level => {
+                          const levelPlaced = level.cages.reduce(
+                            (s, c) => s + (Number(brooderCageMap[c.cageId]) || 0), 0,
+                          );
+                          const isExpanded = expandedLevelId === level.levelId;
+                          return (
+                            <div key={level.levelId} className="border border-gray-200 dark:border-dark-border rounded-lg overflow-hidden">
+                              <button
+                                type="button"
+                                onClick={() => setExpandedLevelId(isExpanded ? null : level.levelId)}
+                                className="w-full flex items-center justify-between px-2.5 py-2 bg-gray-50 dark:bg-dark-bg text-left"
+                              >
+                                <span className={`${lCls} flex items-center gap-1.5 mb-0`}>
+                                  {level.label}
+                                  {level.isOccupied && (
+                                    <span className="text-[9px] bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 px-1.5 py-0.5 rounded-full font-semibold">
+                                      Occupied ({level.currentBirdCount})
+                                    </span>
+                                  )}
+                                  <span className="text-[9px] text-gray-400 font-normal">
+                                    {level.cages.length} cages
+                                  </span>
                                 </span>
+                                <span className="text-xs font-semibold text-gray-500">
+                                  {levelPlaced > 0 ? `${levelPlaced} placed` : (isExpanded ? 'Collapse' : 'Expand')}
+                                </span>
+                              </button>
+                              {isExpanded && (
+                                <div className="grid grid-cols-4 sm:grid-cols-6 gap-1.5 p-2.5">
+                                  {level.cages.map(cage => (
+                                    <div key={cage.cageId}>
+                                      <label className="block text-[9px] text-gray-400 mb-0.5 truncate" title={cage.label}>
+                                        Cage {cage.cageNumber}
+                                        {cage.isOccupied && ' •'}
+                                      </label>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        inputMode="numeric"
+                                        value={brooderCageMap[cage.cageId] ?? ''}
+                                        onChange={e =>
+                                          setBrooderCageMap(prev => ({
+                                            ...prev,
+                                            [cage.cageId]: e.target.value,
+                                          }))
+                                        }
+                                        className={`${iCls} px-1.5 py-1 text-xs text-center ${cage.isOccupied ? 'border-amber-300 dark:border-amber-700' : ''}`}
+                                        placeholder="0"
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
                               )}
-                            </label>
-                            <input
-                              type="number"
-                              min={0}
-                              inputMode="numeric"
-                              value={brooderLevelMap[level.levelId] ?? ''}
-                              onChange={e =>
-                                setBrooderLevelMap(prev => ({
-                                  ...prev,
-                                  [level.levelId]: e.target.value,
-                                }))
-                              }
-                              className={`${iCls} ${level.isOccupied ? 'border-amber-300 dark:border-amber-700' : ''}`}
-                              placeholder="0"
-                            />
-                          </div>
-                        ))}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   ))}
