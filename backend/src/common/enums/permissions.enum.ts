@@ -80,6 +80,10 @@ export enum Permission {
   STOCK_REQUEST_VIEW           = 'stock_request:view',
   STOCK_REQUEST_FULFILL        = 'stock_request:fulfill',    // STORE
 
+  // PM weekly item requisition — folded into the Issuance Plan
+  PM_REQUISITION_CREATE        = 'pm_requisition:create',    // MANAGER only
+  PM_REQUISITION_VIEW          = 'pm_requisition:view',      // MANAGER, STORE, OWNER
+
   HR_VIEW                      = 'hr:view',
   HR_MANAGE                    = 'hr:manage',
 

@@ -10,6 +10,7 @@ import {
   ChevronDown, ChevronUp, AlertTriangle, Zap, Pencil,
 } from 'lucide-react';
 import { useIssuableStoreItems, FEED_CATEGORIES, MEDICATION_CATEGORIES } from '../../hooks/useIssuableStoreItems';
+import { PMRequisitionPanel } from '../../components/shared/PMRequisitionPanel';
 
 const DAY_KEYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] as const;
 type DayKey = typeof DAY_KEYS[number];
@@ -894,6 +895,9 @@ export function IssuancePlanTab() {
 
   return (
     <div className="space-y-4">
+      {/* PM's weekly item list — read-only, so Store sees it before/while drafting */}
+      {['STORE', 'OWNER'].includes(userRole) && <PMRequisitionPanel />}
+
       {/* Actions row */}
       <div className="flex items-center justify-end gap-2 flex-wrap">
         {pendingCount > 0 && (

@@ -181,7 +181,144 @@ export class IssuancePlanService {
       }
     }
 
+    // ...and any PM item requisition already submitted for this week but not
+    // yet folded into a plan — applies whether Store is creating a WEEKLY or
+    // an EMERGENCY plan, since injectRequisitionItemsIntoPlan resolves the
+    // correct home for the requisition's lines independently of which plan
+    // Store happens to be creating right now (PM's Thursday deadline is
+    // ahead of Store's own Saturday one, so this is the expected order for
+    // the common case, but a requisition can also be waiting on an
+    // already-submitted weekly plan to get an emergency draft created).
+    const outstandingRequisition = await this.prisma.pMItemRequisition.findFirst({
+      where: { weekStartDate: monday, status: 'SUBMITTED' as any },
+    });
+    if (outstandingRequisition) {
+      await this.injectRequisitionItemsIntoPlan(monday, outstandingRequisition.id);
+    }
+
     return this.getPlan(plan.id);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // PM ITEM REQUISITION → ISSUANCE PLAN INJECTION
+  //
+  // Each requisition line is folded into exactly one plan for its target
+  // week, decided at injection time:
+  //   • that week's WEEKLY plan is still a DRAFT (or doesn't exist yet)
+  //       → attach to the WEEKLY draft (creating an empty one if needed).
+  //   • that week's WEEKLY plan has already been submitted (phase != DRAFT)
+  //       → too late to add lines to it; attach to that week's EMERGENCY
+  //         draft instead (creating one if needed).
+  //
+  // A PMItemRequisitionItem.issuancePlanItemId is the authoritative record
+  // of "has this line already been attached" — once set, injection never
+  // touches that line again (a submitted requisition's lines are immutable).
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async injectRequisitionItemsIntoPlan(
+    monday: Date,
+    requisitionId: string,
+  ): Promise<
+    | { status: 'NOT_FOUND' }
+    | { status: 'ALREADY_ATTACHED' }
+    | { status: 'ATTACHED'; planId: string; planRef: string; planType: string; itemCount: number }
+  > {
+    const requisition = await this.prisma.pMItemRequisition.findUnique({
+      where: { id: requisitionId },
+      include: { items: { include: { storeItem: true } } },
+    });
+    if (!requisition) return { status: 'NOT_FOUND' };
+
+    const pendingLines = requisition.items.filter((line) => !line.issuancePlanItemId);
+    if (pendingLines.length === 0) return { status: 'ALREADY_ATTACHED' };
+
+    const targetPlan = await this.resolveTargetPlanForWeek(monday, requisition.createdById, requisition.requisitionRef);
+
+    for (const line of pendingLines) {
+      const qty = Number(line.quantityNeeded);
+      const unitPrice = Number(line.storeItem.unitCostKes);
+      const notes = `PM requisition ${requisition.requisitionRef}${line.notes ? ` — ${line.notes}` : ''}`;
+
+      const planItem = await this.prisma.issuancePlanItem.create({
+        data: {
+          planId: targetPlan.id,
+          storeItemId: line.storeItemId,
+          quantityPlanned: qty,
+          unitPriceKes: unitPrice,
+          source: 'PM_REQUISITION',
+          status: 'PENDING_DIRECTOR',
+          notes,
+        },
+      });
+
+      await this.prisma.pMItemRequisitionItem.update({
+        where: { id: line.id },
+        data: { issuancePlanItemId: planItem.id },
+      });
+    }
+
+    return {
+      status: 'ATTACHED',
+      planId: targetPlan.id,
+      planRef: targetPlan.planRef,
+      planType: targetPlan.type,
+      itemCount: pendingLines.length,
+    };
+  }
+
+  /** Decides — and if necessary creates — the plan a PM requisition's lines for `monday` should land in. */
+  private async resolveTargetPlanForWeek(monday: Date, createdById: string, requisitionRef: string) {
+    const weeklyPlan = await this.prisma.issuancePlan.findFirst({
+      where: { type: 'WEEKLY', weekStartDate: monday },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!weeklyPlan) {
+      return this.createAutoDraftPlan('WEEKLY', monday, createdById, `Draft auto-created from PM requisition ${requisitionRef}.`);
+    }
+    if (weeklyPlan.phase === 'DRAFT') {
+      return weeklyPlan;
+    }
+
+    // The week's weekly plan has already moved past DRAFT — too late to add
+    // lines to it. Route to (or start) an EMERGENCY draft for the same week.
+    const emergencyPlan = await this.prisma.issuancePlan.findFirst({
+      where: { type: 'EMERGENCY', phase: 'DRAFT', weekStartDate: monday },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (emergencyPlan) return emergencyPlan;
+
+    return this.createAutoDraftPlan(
+      'EMERGENCY',
+      monday,
+      createdById,
+      `Draft auto-created from PM requisition ${requisitionRef} — the weekly issuance plan for this week ` +
+        `(${weeklyPlan.planRef}) was already submitted, so this was raised as an emergency plan instead.`,
+      `PM requisition ${requisitionRef} — items needed after the week's weekly issuance plan (${weeklyPlan.planRef}) had already been submitted.`,
+    );
+  }
+
+  private async createAutoDraftPlan(
+    type: 'WEEKLY' | 'EMERGENCY',
+    monday: Date,
+    createdById: string,
+    notes: string,
+    emergencyReason?: string,
+  ) {
+    const count = await this.prisma.issuancePlan.count();
+    const prefix = type === 'EMERGENCY' ? 'EIP' : 'IP';
+    return this.prisma.issuancePlan.create({
+      data: {
+        planRef: `${prefix}-${dayjs().format('YYYY')}-${String(count + 1).padStart(4, '0')}`,
+        type: type as any,
+        weekStartDate: monday,
+        weekEndDate: sundayOf(monday),
+        phase: 'DRAFT',
+        notes,
+        emergencyReason: type === 'EMERGENCY' ? (emergencyReason ?? null) : null,
+        createdById,
+      },
+    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

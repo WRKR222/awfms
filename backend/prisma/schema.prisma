@@ -155,11 +155,26 @@ enum NotificationType {
   BROODER_WEIGHT_ANOMALY    // bird weight sample outside HyLine min/max band
   BROODER_MORTALITY_HIGH    // cumulative mortality % exceeds HyLine week ceiling
   REORDER_ALERT             // store item at/below reorder level after a stock-out
+  // PM weekly item requisition (PM → Store, folded into the Issuance Plan)
+  PM_REQUISITION_SUBMITTED       // PM submitted their weekly item list to Store
+  PM_REQUISITION_EARLY_REMINDER  // Tuesday heads-up — 2 days before the Thursday deadline
+  PM_REQUISITION_DUE_REMINDER    // Thursday — due today
 }
 
 enum IssuancePlanType {
   WEEKLY
   EMERGENCY
+}
+
+/// Lifecycle of a PM weekly item requisition — the list of items the
+/// Production Manager needs for the coming week, sent to Store to be
+/// folded into that week's IssuancePlan. Deliberately just two states:
+/// PM keeps editing a DRAFT until they submit it; there is no separate
+/// approval step here — approval happens later, per-item, on the
+/// IssuancePlan itself once Store has folded the requisition in.
+enum PMRequisitionStatus {
+  DRAFT
+  SUBMITTED
 }
 
 /// Plan-level workflow phase — tracks whether the plan as a whole has been
@@ -288,6 +303,7 @@ model User {
   issuancePlanItemsDirectorApproved   IssuancePlanItem[] @relation("IssuancePlanItemDirectorApproved")
   issuancePlanItemsRejected           IssuancePlanItem[] @relation("IssuancePlanItemRejectedBy")
   feedConsumptionPlans          FeedConsumptionPlan[] @relation("FeedConsumptionPlanSetBy")
+  pmItemRequisitionsCreated     PMItemRequisition[]   @relation("PMRequisitionCreatedBy")
 
   // Brooder Cage Map (Phase 9)
   brooderLevelAssignments  BrooderLevelAssignment[] @relation("BrooderLevelAssignedBy")
@@ -1713,6 +1729,7 @@ model StoreItem {
   stockOuts       StoreStockOut[]
   simpleStockRequestItems SimpleStockRequestItem[]
   issuancePlanItems       IssuancePlanItem[]
+  pmRequisitionItems      PMItemRequisitionItem[]
   brooderFeedLogs         BrooderLevelFeedLog[]     @relation("BrooderFeedLogStoreItem")
   brooderTreatmentLogs    BrooderTreatmentLog[]     @relation("BrooderTreatmentLogStoreItem")
   brooderGeneralFeedLogs  BrooderGeneralFeedLog[]   @relation("BrooderGeneralFeedLogStoreItem")
@@ -1841,6 +1858,10 @@ model IssuancePlanItem {
   plan      IssuancePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
   storeItem StoreItem    @relation(fields: [storeItemId], references: [id])
   stockOuts StoreStockOut[]
+  /// Set when this line originated from a PM requisition line — lets us tell,
+  /// authoritatively, whether a given requisition line has already been
+  /// folded into a plan (rather than string-matching on `notes`).
+  pmRequisitionItem PMItemRequisitionItem?
 
   accountantApprovedBy User? @relation("IssuancePlanItemAccountantApproved", fields: [accountantApprovedById], references: [id])
   directorApprovedBy   User? @relation("IssuancePlanItemDirectorApproved", fields: [directorApprovedById], references: [id])
@@ -1867,6 +1888,64 @@ model FeedConsumptionPlan {
   @@unique([weekStartDate, stage, feedType])
   @@index([weekStartDate])
   @@map("feed_consumption_plans")
+}
+
+/// PM's weekly list of general store items needed for the coming week
+/// (medication, equipment, supplements, packaging, etc — anything besides
+/// the feed lines already covered by FeedConsumptionPlan). PM drafts and
+/// submits this; on submit, each line is folded into that week's WEEKLY
+/// IssuancePlan draft (source = PM_REQUISITION) for Store to review
+/// alongside its own lines before the Saturday submission to the Director.
+///
+/// Deadline: PM should submit by Thursday — two clear days before Store's
+/// own Saturday issuance-plan deadline — so Store has time to reconcile
+/// quantities against shelf stock. See PMRequisitionCron for the Tuesday
+/// early nudge and Thursday due-today reminder.
+model PMItemRequisition {
+  id             String               @id @default(uuid())
+  requisitionRef String               @unique @map("requisition_ref")
+  weekStartDate  DateTime             @map("week_start_date") @db.Date
+  weekEndDate    DateTime             @map("week_end_date") @db.Date
+  status         PMRequisitionStatus  @default(DRAFT)
+  notes          String?
+  submittedAt    DateTime?            @map("submitted_at")
+
+  createdById String   @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  createdBy User                    @relation("PMRequisitionCreatedBy", fields: [createdById], references: [id])
+  items     PMItemRequisitionItem[]
+
+  @@index([status])
+  @@index([weekStartDate])
+  @@map("pm_item_requisitions")
+}
+
+/// A single line on a PMItemRequisition — a store item + quantity the PM
+/// needs for the coming week. No approval chain lives here; once the
+/// requisition is submitted, each line becomes (or updates) an
+/// IssuancePlanItem, which carries its own Director approval.
+model PMItemRequisitionItem {
+  id              String  @id @default(uuid())
+  requisitionId   String  @map("requisition_id")
+  storeItemId     String  @map("store_item_id")
+  quantityNeeded  Decimal @map("quantity_needed") @db.Decimal(10, 3)
+  notes           String?
+
+  /// Set once this line has been folded into an IssuancePlan (WEEKLY or,
+  /// if that week's weekly plan was already submitted, an auto-created
+  /// EMERGENCY draft instead — see IssuancePlanService.resolveTargetPlanForWeek).
+  /// A null value here is the authoritative "still needs a home" signal.
+  issuancePlanItemId String?           @unique @map("issuance_plan_item_id")
+  issuancePlanItem   IssuancePlanItem? @relation(fields: [issuancePlanItemId], references: [id])
+
+  requisition PMItemRequisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  storeItem   StoreItem         @relation(fields: [storeItemId], references: [id])
+
+  @@index([requisitionId])
+  @@index([storeItemId])
+  @@map("pm_item_requisition_items")
 }
 
 /// Purchase request raised by Store, reviewed by Accountant

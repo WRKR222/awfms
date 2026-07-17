@@ -70,6 +70,7 @@ import { AnalyticsDashboard } from './pages/analytics/AnalyticsDashboard';
 
 import { VisitorManagementPage } from './pages/manager/VisitorManagementPage';
 import { ManagerCullingPage } from './pages/manager/ManagerCullingPage';
+import { RequisitionsPage } from './pages/manager/RequisitionsPage';
 import { HealthBiosecurity }   from './pages/attendant/HealthBiosecurity';
 
 // Security roles
@@ -206,6 +207,7 @@ function AppInner() {
           <Route path="analytics"         element={<AnalyticsDashboard role="MANAGER" />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="culling"           element={<ManagerCullingPage />} />
+          <Route path="requisitions"      element={<RequisitionsPage />} />
           <Route path="health"            element={<HealthBiosecurity />} />
           <Route path="settings"          element={<SettingsPage />} />
         </Route>
