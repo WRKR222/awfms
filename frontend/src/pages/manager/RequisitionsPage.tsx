@@ -9,7 +9,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
 import {
-  ClipboardList, Plus, Send, Trash2, AlertTriangle, CheckCircle,
+  Plus, Send, Trash2, AlertTriangle, CheckCircle,
   Clock, Package, History,
 } from 'lucide-react';
 
@@ -202,17 +202,12 @@ export function RequisitionsPage() {
     setItems(prev => (prev.length > 1 ? prev.filter(i => i.key !== key) : prev));
 
   return (
-    <div className="space-y-4 pb-24">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 bg-brand-green/10 dark:bg-brand-green/20 rounded-xl flex items-center justify-center">
-          <ClipboardList className="w-5 h-5 text-brand-green" />
-        </div>
-        <div>
-          <h1 className="font-bold text-lg text-gray-800 dark:text-gray-100">Weekly Item Requisition</h1>
-          <p className="text-xs text-gray-400">
-            Week of {weekStart.format('D MMM')} – {weekStart.add(6, 'day').format('D MMM YYYY')}
-          </p>
-        </div>
+    <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-5">
+      <div>
+        <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Weekly Item Requisition</h1>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+          Week of {weekStart.format('D MMM')} – {weekStart.add(6, 'day').format('D MMM YYYY')}
+        </p>
       </div>
 
       <div className="flex bg-gray-100 dark:bg-dark-bg rounded-xl p-1 gap-1">
