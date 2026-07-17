@@ -2350,6 +2350,171 @@ export class BrooderService {
     return { weeks: weekList };
   }
 
+  // ── Historical week schedule recompute ────────────────────────────────
+  //
+  // getCageMap/getFeedRequirementSummary only ever price the batch's
+  // CURRENT brooder week (brooderWeekStart(..) defaults to "now"). Once a
+  // week rolls over there is nowhere left that recomputes it — so a
+  // mortality/culling entry backdated into an already-completed week (e.g.
+  // logged today against a date from last week) never updates that week's
+  // required-feed figure anywhere in the app, even though the live bird
+  // count itself already reflects it.
+  //
+  // This lets a caller ask for ANY past (or the current) brooder week for a
+  // level and get it priced fresh, day-by-day, exactly the way the live
+  // week is priced — including mortality backdated into it after the fact.
+  //
+  // Population reconstruction: `BrooderLevelAssignment.birdCount` is always
+  // "right now", decremented immediately regardless of a mortality log's
+  // own date. For the CURRENT week that's exactly what
+  // brooderAdjustedWeeklyFeedKgWithMortality wants. For a PAST week it is
+  // NOT — it also has every later week's losses baked in. So to reconstruct
+  // "population as it stood at the end of the target week" we add back
+  // every mortality/culling event logged AFTER that week's cutoff, up to
+  // now, on top of the live count.
+  //
+  // General-population (no row/level breakdown) mortality events are
+  // apportioned across the batch's levels pro-rata by each level's CURRENT
+  // live bird count — the same best-effort signal already used for this
+  // purpose in getCageMap; historical per-level weights at the time each
+  // general entry was logged aren't stored, so this is the closest
+  // available approximation, consistent with the rest of the app.
+  async getBrooderWeekSchedule(levelId: string, forDate: string) {
+    const level = await this.prisma.brooderLevel.findUnique({
+      where:   { id: levelId },
+      include: { assignment: true, row: true },
+    });
+    if (!level) throw new NotFoundException('Brooder level not found');
+    if (!level.assignment) {
+      throw new BadRequestException('No batch is currently assigned to this level');
+    }
+
+    const batch = await this.prisma.batch.findUnique({
+      where: { id: level.assignment.batchId },
+    });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const requestedDate = new Date(forDate);
+    if (isNaN(requestedDate.getTime())) {
+      throw new BadRequestException('Invalid date');
+    }
+
+    const weekStart = brooderWeekStart(batch.dateReceived, requestedDate);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
+
+    const today = farmTodayUtcMidnight();
+    if (weekStart.getTime() > today.getTime()) {
+      throw new BadRequestException('Cannot compute schedule for a future week');
+    }
+    // Current week is priced up to today; a fully-elapsed week is priced to its own end.
+    const cutoff = weekEnd.getTime() > today.getTime() ? today : weekEnd;
+
+    const ageWeeks = batchAgeWeeks(batch.dateReceived, weekStart);
+
+    // ── Pro-rata weights for apportioning general (batch-wide) mortality
+    // and feed entries to this level — current live bird counts, same
+    // signal getCageMap uses. ──────────────────────────────────────────
+    const batchLevels = await this.prisma.brooderLevel.findMany({
+      where:   { isActive: true, assignment: { batchId: batch.id } },
+      include: { assignment: true },
+    });
+    const levelWeights: Record<string, number> = {};
+    let batchBirdTotal = 0;
+    for (const l of batchLevels) {
+      if (l.assignment) {
+        levelWeights[l.id] = l.assignment.birdCount;
+        batchBirdTotal += l.assignment.birdCount;
+      }
+    }
+    const birdShare = batchBirdTotal > 0 ? level.assignment.birdCount / batchBirdTotal : 0;
+
+    const [
+      levelEventsInWeek, generalEventsInWeek,
+      laterLevelEvents, laterGeneralEvents,
+    ] = await Promise.all([
+      (this.prisma as any).brooderLevelMortalityLog.findMany({
+        where: { levelId, logDate: { gte: weekStart, lte: cutoff } },
+      }),
+      (this.prisma as any).brooderGeneralMortalityLog.findMany({
+        where: { batchId: batch.id, logDate: { gte: weekStart, lte: cutoff } },
+      }),
+      (this.prisma as any).brooderLevelMortalityLog.findMany({
+        where: { levelId, logDate: { gt: cutoff } },
+      }),
+      (this.prisma as any).brooderGeneralMortalityLog.findMany({
+        where: { batchId: batch.id, logDate: { gt: cutoff } },
+      }),
+    ]);
+
+    const weekEvents: MortalityDayEvent[] = [];
+    for (const m of levelEventsInWeek) {
+      const count = (m.mortalityCount ?? 0) + (m.cullingCount ?? 0);
+      if (count > 0) weekEvents.push({ date: m.logDate, count, occurredAt: m.createdAt });
+    }
+    for (const m of generalEventsInWeek) {
+      const count = (m.mortalityCount ?? 0) + (m.cullingCount ?? 0);
+      if (count <= 0) continue;
+      const share = apportionByShare(count, levelWeights)[levelId] ?? 0;
+      if (share > 0) weekEvents.push({ date: m.logDate, count: share, occurredAt: m.createdAt });
+    }
+
+    // Losses recorded after this week's cutoff, up to now — added back to
+    // the live count to reconstruct the population as of the week's end.
+    let lossesAfterWeek = laterLevelEvents.reduce(
+      (s: number, m: any) => s + (m.mortalityCount ?? 0) + (m.cullingCount ?? 0), 0,
+    );
+    for (const m of laterGeneralEvents) {
+      const count = (m.mortalityCount ?? 0) + (m.cullingCount ?? 0);
+      if (count <= 0) continue;
+      lossesAfterWeek += apportionByShare(count, levelWeights)[levelId] ?? 0;
+    }
+
+    const populationAtWeekEnd = level.assignment.birdCount + lossesAfterWeek;
+
+    const requiredKgForWeek = brooderAdjustedWeeklyFeedKgWithMortality(
+      populationAtWeekEnd, ageWeeks, weekStart, cutoff, weekEvents,
+    );
+
+    const [levelFeedLogs, generalFeedLogs] = await Promise.all([
+      this.prisma.brooderLevelFeedLog.findMany({
+        where:  { levelId, entryDate: { gte: weekStart, lte: cutoff } },
+        select: { entryDate: true, quantityDispensedKg: true },
+      }),
+      this.prisma.brooderGeneralFeedLog.findMany({
+        where:  { batchId: batch.id, entryDate: { gte: weekStart, lte: cutoff } },
+        select: { entryDate: true, quantityDispensedKg: true },
+      }),
+    ]);
+    const dispensedKgLevel = levelFeedLogs.reduce((s, f) => s + f.quantityDispensedKg, 0);
+    // General entries are logged batch-wide (no row/level breakdown); shown
+    // here as this level's pro-rata share, purely for comparison against
+    // requiredKgForWeek — the actual stock movement is still batch-level.
+    const dispensedKgGeneralShare =
+      generalFeedLogs.reduce((s, f) => s + f.quantityDispensedKg, 0) * birdShare;
+    const dispensedKg = dispensedKgLevel + dispensedKgGeneralShare;
+
+    return {
+      levelId,
+      levelLabel:    level.label,
+      rowLabel:      level.row?.label ?? null,
+      weekStart:     dayjs(weekStart).format('YYYY-MM-DD'),
+      weekEnd:       dayjs(weekEnd).format('YYYY-MM-DD'),
+      pricedThrough: dayjs(cutoff).format('YYYY-MM-DD'),
+      isCurrentWeek: cutoff.getTime() === today.getTime() && weekEnd.getTime() >= today.getTime(),
+      ageWeeks,
+      populationAtWeekEnd,
+      mortalityEventsThisWeek: weekEvents
+        .map(e => ({ date: dayjs(e.date).format('YYYY-MM-DD'), count: e.count }))
+        .sort((a, b) => a.date.localeCompare(b.date)),
+      requiredKgForWeek,
+      dispensedKgLevel:   Math.round(dispensedKgLevel * 100) / 100,
+      dispensedKgGeneralShare: Math.round(dispensedKgGeneralShare * 100) / 100,
+      dispensedKgTotal:   Math.round(dispensedKg * 100) / 100,
+      varianceKg:         Math.round((dispensedKg - requiredKgForWeek) * 100) / 100,
+    };
+  }
+
   // ── Missed-feed flagging (yesterday's ration not fully given) ────────────
   //
   // Surfaced on Lead Attendant and PM home pages so a shortfall is caught

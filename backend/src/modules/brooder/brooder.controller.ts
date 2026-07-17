@@ -86,6 +86,23 @@ export class BrooderController {
     return this.svc.getAssignmentsByBatch(batchId);
   }
 
+  /** GET /brooder/levels/:levelId/week-schedule?date=YYYY-MM-DD
+   *  Recomputes the required-feed schedule for whichever brooder week
+   *  `date` falls into (past or current), day-by-day, using every
+   *  mortality/culling event on record for that window — including any
+   *  entered or backdated AFTER that week already ended. Unlike the
+   *  cage-map "Schedule" figure (which only ever reflects the CURRENT
+   *  week), this lets you re-check a past week after a late/backdated
+   *  mortality entry. */
+  @Get('levels/:levelId/week-schedule')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getBrooderWeekSchedule(
+    @Param('levelId') levelId: string,
+    @Query('date') date: string,
+  ) {
+    return this.svc.getBrooderWeekSchedule(levelId, date);
+  }
+
   // ── Cage assignment ──────────────────────────────────────────────────────
   // Population, mortality, reassignment, and weighing are now tracked per
   // cage (see AGENTS.md brooder cage-map notes). The parent level's rollup
