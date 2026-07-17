@@ -250,7 +250,11 @@ export function ItemsTab() {
               </select>
             </Field>
             <Field label="Reorder Level">
-              <input type="number" step="any" min="0" {...register('reorderLevel')} className="input" />
+              <input type="number" step="any" {...register('reorderLevel')} className="input" />
+              <p className="text-xs text-gray-400 mt-1">
+                Negative values are allowed for items bought once or rarely — they'll never
+                trigger a low-stock alert.
+              </p>
             </Field>
             <Field label="Unit Cost (KES)">
               <input type="number" step="any" min="0" {...register('unitCostKes')} className="input" />

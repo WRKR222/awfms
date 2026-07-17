@@ -38,7 +38,12 @@ export class CreateStoreItemDto {
   @IsOptional() @IsString()
   description?: string;
 
-  @IsOptional() @Type(() => Number) @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0)
+  // No @Min() here — a negative reorder level is intentional for items
+  // bought once or rarely (e.g. a one-off tool purchase). It means
+  // "never flag this as low stock" since currentStock (never negative)
+  // will always be greater than a negative threshold. See the low-stock
+  // check in this file and on the store dashboard.
+  @IsOptional() @Type(() => Number) @IsNumber({ allowNaN: false, allowInfinity: false })
   reorderLevel?: number;
 
   @IsOptional() @Type(() => Number) @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0)
@@ -61,7 +66,8 @@ export class UpdateStoreItemDto {
   @IsOptional() @IsString()
   description?: string;
 
-  @IsOptional() @Type(() => Number) @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0)
+  // See CreateStoreItemDto above — negative values are intentional.
+  @IsOptional() @Type(() => Number) @IsNumber({ allowNaN: false, allowInfinity: false })
   reorderLevel?: number;
 
   @IsOptional() @Type(() => Number) @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0)
