@@ -1627,9 +1627,12 @@ model BrooderControlStandard {
 ///      count, which only moves via BrooderGeneralMortalityLog or
 ///      health.service.ts. This is deliberate: a cage-map mortality entry
 ///      must never silently affect the general record.
-///   4. Checks cumulative mortality % (computed from this table's own
-///      totals for the batch) against BrooderControlStandard and fires
-///      BROODER_MORTALITY_HIGH notification if exceeded (Req 7).
+/// The cage map is fully independent of BrooderGeneralMortalityLog in both
+/// directions — no mutual exclusion by (batch, date), and a general-sheet
+/// entry never touches this table or any cage/level birdCount. This table
+/// also does NOT run the Req 7 mortality-vs-HyLine-schedule check; that
+/// check (and its BROODER_MORTALITY_HIGH alert) only runs against
+/// BrooderGeneralMortalityLog.
 model BrooderLevelMortalityLog {
   id             String   @id @default(uuid())
   levelId        String   @map("level_id")
@@ -1690,8 +1693,12 @@ model BrooderGeneralFeedLog {
 }
 
 /// Batch-wide ("general population") mortality/culling log — the same
-/// escape hatch as BrooderGeneralFeedLog above, for mortality. Mutually
-/// exclusive with BrooderLevelMortalityLog on a (batch, date) basis.
+/// escape hatch as BrooderGeneralFeedLog above, for mortality. Decrements
+/// only Batch.currentBirdCount — fully independent of the cage map (never
+/// touches BrooderLevelAssignment/BrooderCageAssignment.birdCount, and is
+/// not blocked by, nor blocks, a BrooderLevelMortalityLog entry on the same
+/// date). This is the only table whose writes run the Req 7
+/// mortality-vs-HyLine-schedule check (BROODER_MORTALITY_HIGH alert).
 model BrooderGeneralMortalityLog {
   id             String   @id @default(uuid())
   batchId        String   @map("batch_id")

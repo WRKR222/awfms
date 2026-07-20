@@ -190,10 +190,14 @@ export class BrooderController {
   /** POST /brooder/mortality-logs
    *  Req 1: Accepts row + level + count.
    *  Req 2: Decrements cage/level.birdCount (batch.currentBirdCount is left
-   *         untouched — the cage map's population is tracked independently
-   *         of the general record) → feed auto-adjusts on next getCageMap /
-   *         getFeedRequirementSummary call.
-   *  Req 7: Fires BROODER_MORTALITY_HIGH notification if cumulative % > standard. */
+   *         untouched — the cage map's population is tracked fully
+   *         independently of the general record, in both directions) →
+   *         feed auto-adjusts on next getCageMap / getFeedRequirementSummary
+   *         call.
+   *  Does NOT run the Req 7 mortality-vs-HyLine-schedule check — that only
+   *  runs against the general population sheet, see POST
+   *  /brooder/general-mortality-logs below. A cage-map entry never fires
+   *  BROODER_MORTALITY_HIGH on its own. */
   @Post('mortality-logs')
   @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
   createLevelMortalityLog(@Body() body: any, @CurrentUser() user: any) {
@@ -231,6 +235,11 @@ export class BrooderController {
     return this.svc.listGeneralMortalityLogs(batchId, limit ? Number(limit) : 30);
   }
 
+  /** POST /brooder/general-mortality-logs
+   *  Decrements batch.currentBirdCount only — never touches any cage/level
+   *  birdCount. The cage map is fully independent of this sheet. This is
+   *  also the only place the Req 7 mortality-vs-HyLine-schedule check runs
+   *  (fires BROODER_MORTALITY_HIGH if cumulative % > standard). */
   @Post('general-mortality-logs')
   @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
   createGeneralMortalityLog(@Body() body: any, @CurrentUser() user: any) {
