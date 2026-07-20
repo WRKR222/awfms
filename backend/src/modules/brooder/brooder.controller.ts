@@ -189,8 +189,10 @@ export class BrooderController {
 
   /** POST /brooder/mortality-logs
    *  Req 1: Accepts row + level + count.
-   *  Req 2: Decrements level.birdCount and batch.currentBirdCount → feed
-   *         auto-adjusts on next getCageMap / getFeedRequirementSummary call.
+   *  Req 2: Decrements cage/level.birdCount (batch.currentBirdCount is left
+   *         untouched — the cage map's population is tracked independently
+   *         of the general record) → feed auto-adjusts on next getCageMap /
+   *         getFeedRequirementSummary call.
    *  Req 7: Fires BROODER_MORTALITY_HIGH notification if cumulative % > standard. */
   @Post('mortality-logs')
   @RequirePermission(Permission.FLOCK_ENTRY_CREATE)

@@ -4,8 +4,11 @@
 //
 // Control requirements implemented:
 //   Req 1 — Mortality/culling recorded by Row, Level, count. On save:
-//            BrooderLevelAssignment.birdCount decremented,
-//            Batch.currentBirdCount decremented.
+//            BrooderCageAssignment/BrooderLevelAssignment.birdCount decremented.
+//            Batch.currentBirdCount is intentionally left untouched — the cage
+//            map tracks its own population independently of the farm's
+//            general/official chick count, which only moves via the general
+//            population sheet (createGeneralMortalityLog) or health.service.ts.
 //   Req 2 — After every mortality event the feed allocation for the
 //            following day is recalculated from the new population count
 //            (no explicit daily record needed — the cage-map feed-summary
@@ -1391,10 +1394,12 @@ export class BrooderService {
         });
       }
       await this.recomputeLevelRollup(tx, dto.levelId, userId);
-      await tx.batch.update({
-        where: { id: dto.batchId },
-        data:  { currentBirdCount: { decrement: totalLost } },
-      });
+      // Batch.currentBirdCount is deliberately NOT touched here. The cage map
+      // maintains its own population (cage/level birdCount, decremented
+      // above) independently of the farm's general/official chick count —
+      // only the general population sheet (createGeneralMortalityLog) or
+      // health.service.ts moves currentBirdCount. This keeps a cage-map
+      // mortality entry from silently affecting the general record.
       return created;
     });
 
@@ -1403,12 +1408,18 @@ export class BrooderService {
     // responsibility.  The effective starting population is:
     //   quantityReceived − mortalityOnArrival
     // and farm deaths are counted only from that adjusted baseline.
+    // Since cage-map mortality no longer decrements Batch.currentBirdCount,
+    // farm deaths for this check are derived independently — the sum of all
+    // cage-map mortality/culling logged for this batch to date (not from
+    // currentBirdCount, which now reflects the general record only).
     const ageWeeks = batchAgeWeeks(batch.dateOfHatch, new Date(dto.logDate));
     const effectiveBirdsReceived = batch.quantityReceived - (batch.mortalityOnArrival ?? 0);
-    // currentBirdCount has already been decremented by totalLost in the
-    // transaction above, so we must add totalLost back to get the pre-event
-    // count, then derive farm deaths from the arrival-adjusted baseline.
-    const farmDeaths = effectiveBirdsReceived - (batch.currentBirdCount - totalLost);
+    const levelMortalityAgg = await (this.prisma as any).brooderLevelMortalityLog.aggregate({
+      where: { batchId: dto.batchId },
+      _sum:  { mortalityCount: true, cullingCount: true },
+    });
+    const farmDeaths =
+      (levelMortalityAgg._sum.mortalityCount ?? 0) + (levelMortalityAgg._sum.cullingCount ?? 0);
     const mortalityCheck = checkMortalityViolation(farmDeaths, effectiveBirdsReceived, ageWeeks);
 
     if (mortalityCheck.violated) {
