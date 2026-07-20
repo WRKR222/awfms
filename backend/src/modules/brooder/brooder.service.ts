@@ -1388,7 +1388,6 @@ export class BrooderService {
     return {
       ...log,
       updatedBirdCount: cage.assignment.birdCount - totalLost,
-      mortalityViolation: mortalityCheck.violated ? mortalityCheck : null,
     };
   }
 

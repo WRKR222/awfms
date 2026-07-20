@@ -4,8 +4,10 @@
 // Req 1: captures row, level, and count.
 // Req 2: after save the service auto-decrements bird counts, so the next
 //        feed calculation in getCageMap will reflect the updated population.
-// Req 7: if the cumulative % exceeds the HyLine ceiling, the server fires a
-//        notification and the response includes a violationMessage shown here.
+// The cage map is fully independent of the general population sheet and does
+// NOT run the Req 7 HyLine mortality-threshold check — that check (and its
+// notification) only fires from the general population sheet
+// (BrooderGeneralRecordModal).
 
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -35,7 +37,6 @@ interface Props {
 export function BrooderMortalityLogModal({ level, row, onClose }: Props) {
   const qc    = useQueryClient();
   const today = dayjs().format('YYYY-MM-DD');
-  const [violationMsg, setViolationMsg] = useState<string | null>(null);
 
   const occupiedCages = level.cages.filter(c => !!c.assignment);
   const [cageId, setCageId] = useState(occupiedCages[0]?.cageId ?? '');
@@ -73,46 +74,15 @@ export function BrooderMortalityLogModal({ level, row, onClose }: Props) {
         cause:          data.cause || undefined,
         notes:          data.notes || undefined,
       }).then(r => r.data),
-    onSuccess: (res) => {
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
       qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
       qc.invalidateQueries({ queryKey: ['batches'] });
-      if (res?.mortalityViolation?.violated) {
-        setViolationMsg(res.mortalityViolation.message);
-      } else {
-        onClose();
-      }
+      onClose();
     },
   });
 
   // If violation message is showing, display a warning then allow close
-  if (violationMsg) {
-    return (
-      <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
-        <div className="bg-white dark:bg-dark-card w-full md:max-w-md rounded-t-3xl md:rounded-2xl shadow-2xl p-6 space-y-4">
-          <div className="flex items-start gap-3">
-            <div className="w-10 h-10 bg-red-100 dark:bg-red-900/30 rounded-xl flex items-center justify-center flex-shrink-0">
-              <AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400" />
-            </div>
-            <div>
-              <p className="font-bold text-red-700 dark:text-red-400">Mortality Threshold Exceeded</p>
-              <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">{violationMsg}</p>
-              <p className="text-xs text-gray-400 mt-2">
-                This has been flagged on the Director's and Production Manager's dashboards.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="w-full bg-red-600 text-white rounded-xl py-3 font-semibold"
-          >
-            Understood — Close
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4">
       <div className="bg-white dark:bg-dark-card w-full md:max-w-lg rounded-t-3xl md:rounded-2xl shadow-2xl overflow-y-auto max-h-[95vh]">
