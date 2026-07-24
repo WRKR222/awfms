@@ -31,6 +31,7 @@ import {
   Archive, Info, Baby, Calculator,
 } from 'lucide-react';
 import { useBrooderFeedSummary, type FeedRequirementRow, type FeedRequirementLevel } from '../../hooks/useBrooderCageMap';
+import { BrooderGeneralFeedSchedule } from './BrooderGeneralFeedSchedule';
 
 // ── Schedule vs actual pill ───────────────────────────────────────────────────
 function VariancePill({ pct, viaGeneral }: { pct: number | null; viaGeneral?: boolean }) {
@@ -175,11 +176,52 @@ interface Props {
 }
 
 export function BrooderFeedRequirement({ showResidual = true }: Props) {
+  // "By row" uses the cage map's row/level bird counts — accurate only if
+  // they're kept up to date as birds are moved/culled. "General" is the
+  // fallback: the same schedule computed farm-wide from each batch's own
+  // official population, independent of any row/level assignment, for when
+  // the cage map counts can't be relied on.
+  const [view, setView] = useState<'row' | 'general'>('row');
   const { data, isLoading } = useBrooderFeedSummary();
+
+  const viewToggle = (
+    <div className="flex gap-1.5 mb-2">
+      <button
+        onClick={() => setView('row')}
+        className={`px-2.5 py-1 rounded-full text-[10px] font-semibold transition-colors ${
+          view === 'row'
+            ? 'bg-brand-green text-white'
+            : 'bg-gray-100 dark:bg-dark-bg text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-dark-border'
+        }`}
+      >
+        By row
+      </button>
+      <button
+        onClick={() => setView('general')}
+        className={`px-2.5 py-1 rounded-full text-[10px] font-semibold transition-colors ${
+          view === 'general'
+            ? 'bg-brand-green text-white'
+            : 'bg-gray-100 dark:bg-dark-bg text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-dark-border'
+        }`}
+      >
+        General (whole brooder)
+      </button>
+    </div>
+  );
+
+  if (view === 'general') {
+    return (
+      <div className="space-y-2">
+        {viewToggle}
+        <BrooderGeneralFeedSchedule />
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (
       <div className="space-y-2">
+        {viewToggle}
         {[1, 2].map(i => (
           <div key={i} className="h-12 rounded-xl bg-gray-100 dark:bg-dark-bg animate-pulse" />
         ))}
@@ -191,8 +233,12 @@ export function BrooderFeedRequirement({ showResidual = true }: Props) {
 
   if (rows.length === 0) {
     return (
-      <div className="text-xs text-gray-400 text-center py-4 italic">
-        No chicks placed on the cage map yet.
+      <div className="space-y-2">
+        {viewToggle}
+        <div className="text-xs text-gray-400 text-center py-4 italic">
+          No chicks placed on the cage map yet — switch to "General" for a schedule that
+          doesn't depend on row/level placement.
+        </div>
       </div>
     );
   }
@@ -211,6 +257,8 @@ export function BrooderFeedRequirement({ showResidual = true }: Props) {
 
   return (
     <div className="space-y-2">
+      {viewToggle}
+
       {/* ── Summary header ─────────────────────────────────────────────── */}
       <div className="space-y-1 mb-2">
         {/* Weekly schedule vs issued */}

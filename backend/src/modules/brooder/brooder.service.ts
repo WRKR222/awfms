@@ -45,6 +45,7 @@ import {
   brooderRequiredFeedKg,
   brooderAdjustedWeeklyFeedKgWithMortality,
   brooderWeeklyFeedKgByDay,
+  generalBatchFeedKgByDay,
   MortalityDayEvent,
   brooderWeekStart,
   batchAgeWeeks,
@@ -2193,6 +2194,112 @@ export class BrooderService {
       totalKg,
       skippedDays,
     };
+  }
+
+  // ── General (whole-brooder) feed SCHEDULE by day ──────────────────────────
+  //
+  // getDailyFeedBreakdown above shows what was actually DISPENSED each day.
+  // This is the SCHEDULE counterpart — what SHOULD be given each day —
+  // computed farm-wide from each batch's own general/official population
+  // (Batch.currentBirdCount + BrooderGeneralMortalityLog), entirely
+  // independent of the cage map's row/level assignments.
+  //
+  // This is the fallback for when the cage map's row/level bird counts
+  // can't be relied on (birds moved or culled without the assignment being
+  // updated) — the attendant still gets a day-by-day feed plan for every
+  // batch, and a farm-wide total per day, without needing an accurate
+  // row/level breakdown at all.
+  //
+  // Window: the current farm-local calendar week (Sun–Sat), projected in
+  // full (today's ration for days still ahead uses today's population, same
+  // convention as the per-row weekly schedule — no future mortality can be
+  // known yet).
+  async getGeneralFeedScheduleByDay() {
+    const weekStart = dayjs(farmTodayUtcMidnight()).startOf('week');
+    const weekEnd   = weekStart.add(6, 'day');
+
+    const batches = await this.prisma.batch.findMany({
+      where: { isActive: true, stage: 'BROODING' as any },
+      select: {
+        id: true, batchCode: true, currentBirdCount: true, dateReceived: true,
+      },
+    });
+
+    if (batches.length === 0) {
+      return { weekStart: weekStart.format('YYYY-MM-DD'), days: [], totalKg: 0 };
+    }
+
+    const batchIds = batches.map(b => b.id);
+    const mortalityLogs = await this.prisma.brooderGeneralMortalityLog.findMany({
+      where: { batchId: { in: batchIds }, logDate: { gte: weekStart.toDate(), lte: weekEnd.toDate() } },
+    });
+    const mortalityEventsByBatch: Record<string, MortalityDayEvent[]> = {};
+    for (const m of mortalityLogs) {
+      const count = (m.mortalityCount ?? 0) + (m.cullingCount ?? 0);
+      if (count <= 0) continue;
+      (mortalityEventsByBatch[m.batchId] ??= []).push({
+        date: m.logDate, count, occurredAt: m.createdAt,
+      });
+    }
+
+    // Per-batch day-by-day breakdown, keyed by calendar date so it can be
+    // aggregated into a farm-wide total per day below.
+    const byBatch = batches.map(b => ({
+      batchId:   b.id,
+      batchCode: b.batchCode,
+      days: generalBatchFeedKgByDay(
+        b.currentBirdCount, b.dateReceived, weekStart.toDate(), weekEnd.toDate(),
+        mortalityEventsByBatch[b.id] ?? [],
+      ),
+    }));
+
+    const numDays = weekEnd.diff(weekStart, 'day') + 1;
+    const days: Array<{
+      date:     string;
+      dayLabel: string;
+      totalKg:  number;
+      batches: Array<{
+        batchId:            string;
+        batchCode:          string;
+        birdCount:          number;
+        ageWeeks:           number;
+        gramsPerBirdPerDay: number;
+        hadMortality:       boolean;
+        kg:                 number;
+      }>;
+    }> = [];
+
+    for (let i = 0; i < numDays; i++) {
+      const d   = weekStart.add(i, 'day');
+      const key = d.format('YYYY-MM-DD');
+
+      const dayBatches = byBatch
+        .map(b => {
+          const entry = b.days[i];
+          if (!entry) return null;
+          return {
+            batchId:            b.batchId,
+            batchCode:          b.batchCode,
+            birdCount:          entry.startBirdCount,
+            ageWeeks:           entry.ageWeeks,
+            gramsPerBirdPerDay: entry.gramsPerBirdPerDay,
+            hadMortality:       entry.hadMortality,
+            kg:                 entry.kg,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null && x.birdCount > 0);
+
+      days.push({
+        date:     key,
+        dayLabel: d.format('ddd D MMM'),
+        totalKg:  Math.round(dayBatches.reduce((s, b) => s + b.kg, 0) * 100) / 100,
+        batches:  dayBatches,
+      });
+    }
+
+    const totalKg = Math.round(days.reduce((s, d) => s + d.totalKg, 0) * 100) / 100;
+
+    return { weekStart: weekStart.format('YYYY-MM-DD'), days, totalKg };
   }
 
   // ── Feed issuance calendar (PM analysis — current + past weeks) ───────────

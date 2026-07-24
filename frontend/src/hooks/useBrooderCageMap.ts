@@ -255,6 +255,44 @@ export function useDailyFeedBreakdown() {
   });
 }
 
+// ── General (whole-brooder) feed SCHEDULE by day ─────────────────────────────
+// The SCHEDULE counterpart to useDailyFeedBreakdown's actual-dispensed view —
+// what SHOULD be given each day, computed farm-wide from each batch's own
+// general/official population, independent of the cage map's row/level
+// assignments. Use this when row/level bird counts can't be relied on.
+
+export interface GeneralFeedScheduleBatch {
+  batchId:            string;
+  batchCode:          string;
+  birdCount:          number;
+  ageWeeks:           number;
+  gramsPerBirdPerDay: number;
+  hadMortality:       boolean;
+  kg:                 number;
+}
+
+export interface GeneralFeedScheduleDay {
+  date:     string;
+  dayLabel: string;
+  totalKg:  number;
+  batches:  GeneralFeedScheduleBatch[];
+}
+
+export interface GeneralFeedScheduleResponse {
+  weekStart: string;
+  days:      GeneralFeedScheduleDay[];
+  totalKg:   number;
+}
+
+export function useGeneralFeedScheduleByDay() {
+  return useQuery<GeneralFeedScheduleResponse>({
+    queryKey:      ['brooder-general-feed-schedule'],
+    queryFn:       () => api.get('/brooder/general-feed-schedule').then(r => r.data),
+    staleTime:     60_000,
+    refetchInterval: 5 * 60_000,
+  });
+}
+
 // ── Feed issuance calendar (current + past weeks, for PM history review) ────
 // Separate, on-demand hook (not auto-refetched like the home-page widget
 // above) — only fetched once the PM opens the feed history panel, so it

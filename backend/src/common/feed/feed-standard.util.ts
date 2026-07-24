@@ -354,6 +354,58 @@ export interface MortalityDayEvent {
  *                                   Events outside that window are ignored.
  */
 /**
+ * Prices a single day's feed for a population, prorating around any
+ * same-day mortality/culling event(s) by time-of-day. Shared by every
+ * day-by-day feed reconstruction in this file so the proration rule (same
+ * default: a death with no known clock time is priced as end-of-day, i.e.
+ * no proration) never drifts between them.
+ */
+function priceDaySegment(
+  startPop: number,
+  kgPerBirdPerDay: number,
+  day: Date,
+  dayEvents: MortalityDayEvent[],
+): { kg: number; endPop: number } {
+  const sorted = dayEvents.slice().sort((a, b) => {
+    const at = a.occurredAt ? a.occurredAt.getTime() : Infinity;
+    const bt = b.occurredAt ? b.occurredAt.getTime() : Infinity;
+    return at - bt;
+  });
+
+  let runningPop = startPop;
+  let segmentStartFraction = 0; // 0 = start of day, 1 = end of day
+  let kg = 0;
+
+  for (const e of sorted) {
+    let fraction = 1; // default: death priced as end-of-day (no proration)
+    if (e.occurredAt) {
+      const sameDay =
+        e.occurredAt.getUTCFullYear() === day.getUTCFullYear() &&
+        e.occurredAt.getUTCMonth() === day.getUTCMonth() &&
+        e.occurredAt.getUTCDate() === day.getUTCDate();
+      if (sameDay) {
+        const secondsIntoDay =
+          e.occurredAt.getUTCHours() * 3600 +
+          e.occurredAt.getUTCMinutes() * 60 +
+          e.occurredAt.getUTCSeconds();
+        fraction = secondsIntoDay / 86400;
+      }
+    }
+    fraction = Math.max(segmentStartFraction, Math.min(1, fraction));
+
+    kg += runningPop * kgPerBirdPerDay * (fraction - segmentStartFraction);
+    runningPop -= e.count;
+    segmentStartFraction = fraction;
+  }
+
+  // Remainder of the day (or the whole day, if no events) at whatever the
+  // population is after all of that day's losses have been applied.
+  kg += runningPop * kgPerBirdPerDay * (1 - segmentStartFraction);
+
+  return { kg, endPop: runningPop };
+}
+
+/**
  * One day's slice of a batch/level's weekly feed schedule — the day-by-day
  * breakdown that `brooderAdjustedWeeklyFeedKgWithMortality`'s total is built
  * from. Exposed via `brooderWeeklyFeedKgByDay` so the UI can show *how* the
@@ -383,6 +435,13 @@ export interface BrooderFeedDayBreakdown {
  * Kept unrounded internally so the weekly total (which sums these raw
  * per-day slices before rounding once) never drifts from rounding each day
  * individually first.
+ *
+ * ageWeeks (and therefore g/bird/day) is held FIXED across the whole window
+ * here, because callers always pass a window that is exactly one of a
+ * batch/level's own 7-day brooder weeks (see brooderWeekStart()) — the
+ * standard doesn't change mid-window by construction. Contrast with
+ * `generalBatchFeedKgByDay` below, which recomputes ageWeeks per calendar
+ * day for windows that aren't guaranteed to align that way.
  */
 function reconstructBrooderFeedWeek(
   currentBirdCount: number,
@@ -430,53 +489,19 @@ function reconstructBrooderFeedWeek(
     if (day.getTime() > cutoff.getTime()) break;
 
     const startBirdCount = population;
-
-    const dayEvents = (eventsByDay.get(day.getTime()) ?? []).slice().sort((a, b) => {
-      const at = a.occurredAt ? a.occurredAt.getTime() : Infinity;
-      const bt = b.occurredAt ? b.occurredAt.getTime() : Infinity;
-      return at - bt;
-    });
-
-    let runningPop = population;
-    let segmentStartFraction = 0; // 0 = start of day, 1 = end of day
-    let dayKg = 0;
-
-    for (const e of dayEvents) {
-      let fraction = 1; // default: death priced as end-of-day (no proration)
-      if (e.occurredAt) {
-        const sameDay =
-          e.occurredAt.getUTCFullYear() === day.getUTCFullYear() &&
-          e.occurredAt.getUTCMonth() === day.getUTCMonth() &&
-          e.occurredAt.getUTCDate() === day.getUTCDate();
-        if (sameDay) {
-          const secondsIntoDay =
-            e.occurredAt.getUTCHours() * 3600 +
-            e.occurredAt.getUTCMinutes() * 60 +
-            e.occurredAt.getUTCSeconds();
-          fraction = secondsIntoDay / 86400;
-        }
-      }
-      fraction = Math.max(segmentStartFraction, Math.min(1, fraction));
-
-      dayKg += runningPop * kgPerBirdPerDay * (fraction - segmentStartFraction);
-      runningPop -= e.count;
-      segmentStartFraction = fraction;
-    }
-
-    // Remainder of the day (or the whole day, if no events) at whatever the
-    // population is after all of that day's losses have been applied.
-    dayKg += runningPop * kgPerBirdPerDay * (1 - segmentStartFraction);
+    const dayEvents = eventsByDay.get(day.getTime()) ?? [];
+    const { kg, endPop } = priceDaySegment(population, kgPerBirdPerDay, day, dayEvents);
 
     days.push({
       date:               new Date(day),
       startBirdCount,
-      endBirdCount:       runningPop,
+      endBirdCount:       endPop,
       gramsPerBirdPerDay: gramsPerBird,
-      kg:                 dayKg,
+      kg,
       hadMortality:       dayEvents.length > 0,
     });
 
-    population = runningPop; // carries forward into the next day
+    population = endPop; // carries forward into the next day
   }
 
   return days;
@@ -514,6 +539,112 @@ export function brooderWeeklyFeedKgByDay(
   return reconstructBrooderFeedWeek(
     currentBirdCount, ageWeeks, weekStart, upToDate, mortalityEventsThisWeek,
   ).map(d => ({ ...d, kg: Math.round(d.kg * 100) / 100 }));
+}
+
+/**
+ * One day's slice of a WHOLE BATCH's general feed schedule — see
+ * `generalBatchFeedKgByDay` below. Same shape as `BrooderFeedDayBreakdown`
+ * plus `ageWeeks`, since (unlike the per-row/level version) age can step up
+ * partway through the window this function prices.
+ */
+export interface GeneralFeedDayBreakdown {
+  date:               Date;
+  ageWeeks:           number;
+  gramsPerBirdPerDay: number;
+  startBirdCount:     number;
+  endBirdCount:        number;
+  kg:                 number;
+  hadMortality:       boolean;
+}
+
+/**
+ * Per-calendar-day feed schedule for a WHOLE BATCH, using the farm's
+ * general/official population (`Batch.currentBirdCount` +
+ * `BrooderGeneralMortalityLog`) rather than any brooder row/level
+ * assignment. This is the fallback the attendant needs when the cage map's
+ * row/level bird counts can't be trusted (e.g. not kept up to date as birds
+ * are moved or culled) — it gives a day-by-day feed plan for the batch as a
+ * whole, independent of the row/level breakdown entirely.
+ *
+ * Two differences from `brooderWeeklyFeedKgByDay`, both a consequence of not
+ * being anchored to one of the batch's own 7-day brooder weeks:
+ *   1. `windowStart`/`upToDate` here are typically a plain calendar range
+ *      (e.g. "this calendar week"), which may straddle one of the batch's
+ *      own week boundaries — so ageWeeks (and therefore g/bird/day) is
+ *      recomputed for EVERY day from `dateReceived`, instead of held fixed
+ *      across the whole window.
+ *   2. Mortality events are the batch-wide `BrooderGeneralMortalityLog`
+ *      entries, not any row/level's own mortality log.
+ *
+ * @param currentBirdCount - Batch.currentBirdCount right now (after ALL
+ *                            mortality to date, general sheet only)
+ * @param dateReceived      - the batch's arrival date (Day 1 for feed control)
+ * @param windowStart       - first calendar day to price
+ * @param upToDate          - last calendar day to price (inclusive)
+ * @param mortalityEvents   - every BrooderGeneralMortalityLog event for this
+ *                            batch with `date` in [windowStart, upToDate]
+ */
+export function generalBatchFeedKgByDay(
+  currentBirdCount: number,
+  dateReceived: Date,
+  windowStart: Date,
+  upToDate: Date,
+  mortalityEvents: MortalityDayEvent[],
+): GeneralFeedDayBreakdown[] {
+  const wStart = new Date(windowStart);
+  wStart.setUTCHours(0, 0, 0, 0);
+  const cutoff = new Date(upToDate);
+  cutoff.setUTCHours(0, 0, 0, 0);
+
+  const dayKey = (d: Date) => {
+    const x = new Date(d);
+    x.setUTCHours(0, 0, 0, 0);
+    return x.getTime();
+  };
+  const events = mortalityEvents.filter(
+    e => dayKey(e.date) >= wStart.getTime() && dayKey(e.date) <= cutoff.getTime(),
+  );
+
+  const totalLosses = events.reduce((s, e) => s + e.count, 0);
+  let population = currentBirdCount + totalLosses;
+
+  const eventsByDay = new Map<number, MortalityDayEvent[]>();
+  for (const e of events) {
+    const key = dayKey(e.date);
+    if (!eventsByDay.has(key)) eventsByDay.set(key, []);
+    eventsByDay.get(key)!.push(e);
+  }
+
+  const days: GeneralFeedDayBreakdown[] = [];
+  const numDays = Math.floor((cutoff.getTime() - wStart.getTime()) / 86_400_000) + 1;
+
+  for (let i = 0; i < numDays; i++) {
+    const day = new Date(wStart);
+    day.setUTCDate(day.getUTCDate() + i);
+    if (day.getTime() > cutoff.getTime()) break;
+
+    const ageWeeks = batchAgeWeeks(dateReceived, day);
+    const gramsPerBird = hylineGramsPerBirdPerDay(ageWeeks);
+    const kgPerBirdPerDay = gramsPerBird / 1000;
+
+    const startBirdCount = population;
+    const dayEvents = eventsByDay.get(day.getTime()) ?? [];
+    const { kg, endPop } = priceDaySegment(population, kgPerBirdPerDay, day, dayEvents);
+
+    days.push({
+      date:               new Date(day),
+      ageWeeks,
+      gramsPerBirdPerDay: gramsPerBird,
+      startBirdCount,
+      endBirdCount:       endPop,
+      kg:                 Math.round(kg * 100) / 100,
+      hadMortality:       dayEvents.length > 0,
+    });
+
+    population = endPop;
+  }
+
+  return days;
 }
 
 /**

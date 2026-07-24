@@ -58,6 +58,20 @@ export class BrooderController {
     return this.svc.getDailyFeedBreakdown();
   }
 
+  /** GET /brooder/general-feed-schedule
+   *  Day-by-day feed SCHEDULE (what should be given) for the current
+   *  calendar week, computed farm-wide from each batch's general/official
+   *  population — entirely independent of the cage map's row/level
+   *  assignments. Use this when row/level bird counts on the cage map can't
+   *  be relied on (not kept up to date); it gives the attendant a per-day
+   *  total for the whole brooder, plus the per-batch figures it was
+   *  calculated from, without needing an accurate row/level breakdown. */
+  @Get('general-feed-schedule')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getGeneralFeedScheduleByDay() {
+    return this.svc.getGeneralFeedScheduleByDay();
+  }
+
   /** GET /brooder/feed-issuance-calendar?weeks=4
    *  Same per-day breakdown as daily-feed-breakdown, but for the current
    *  week PLUS a configurable number of past weeks (default 4, capped at
