@@ -211,19 +211,6 @@ enum StoreItemCategory {
   OTHER
 }
 
-enum StoreItemUnit {
-  KG
-  G
-  L
-  ML
-  PIECE
-  BOX
-  BAG
-  BOTTLE
-  SACHET
-  TRAY
-}
-
 enum EmployeeStatus {
   ACTIVE
   ON_LEAVE
@@ -1727,7 +1714,7 @@ model StoreItem {
   name        String
   sku         String             @unique
   category    StoreItemCategory
-  unit        StoreItemUnit
+  unit        String
   description String?
   reorderLevel Decimal           @default(0) @map("reorder_level") @db.Decimal(10, 3)
   currentStock Decimal           @default(0) @map("current_stock") @db.Decimal(10, 3)

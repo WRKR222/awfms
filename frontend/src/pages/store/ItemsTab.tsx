@@ -44,11 +44,17 @@ const UNITS = [
   { value: 'TRAY',   label: 'Trays' },
 ];
 
+// Sentinel option that reveals a free-text input for any unit not in the
+// preset list above (e.g. "Roll", "Dozen", "Pair").
+const CUSTOM_UNIT = '__CUSTOM__';
+const PRESET_UNIT_VALUES = new Set(UNITS.map(u => u.value));
+
 type FormData = {
   name: string;
   sku: string;
   category: string;
   unit: string;
+  customUnit?: string;
   description?: string;
   reorderLevel?: number;
   unitCostKes?: number;
@@ -64,7 +70,8 @@ export function ItemsTab() {
   const [deleteConfirm, setDeleteConfirm] = useState<StoreItem | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<FormData>();
+  const { register, handleSubmit, reset, watch, formState: { errors } } = useForm<FormData>();
+  const selectedUnit = watch('unit');
 
   const invalidateItems = () => {
     qc.invalidateQueries({ queryKey: ['store-items'] });
@@ -118,14 +125,18 @@ export function ItemsTab() {
     return isNaN(n) ? 0 : n;
   };
 
+  const resolveUnit = (data: FormData) =>
+    data.unit === CUSTOM_UNIT ? (data.customUnit ?? '').trim() : data.unit;
+
   const onSubmit = (data: FormData) => {
+    const unit = resolveUnit(data);
     if (editing) {
       updateMut.mutate({
         id: editing.id,
         payload: {
           name:         data.name.trim(),
           category:     data.category,
-          unit:         data.unit,
+          unit,
           description:  data.description?.trim() ?? '',
           reorderLevel: safeNum(data.reorderLevel),
           unitCostKes:  safeNum(data.unitCostKes),
@@ -134,6 +145,7 @@ export function ItemsTab() {
     } else {
       createMut.mutate({
         ...data,
+        unit,
         reorderLevel: safeNum(data.reorderLevel),
         unitCostKes:  safeNum(data.unitCostKes),
       });
@@ -144,11 +156,13 @@ export function ItemsTab() {
     setEditing(item);
     createMut.reset();
     updateMut.reset();
+    const isCustomUnit = !PRESET_UNIT_VALUES.has(item.unit);
     reset({
       name:         item.name,
       sku:          item.sku,
       category:     item.category,
-      unit:         item.unit,
+      unit:         isCustomUnit ? CUSTOM_UNIT : item.unit,
+      customUnit:   isCustomUnit ? item.unit : '',
       description:  item.description ?? '',
       reorderLevel: item.reorderLevel,
       unitCostKes:  Number(item.unitCostKes),
@@ -191,7 +205,7 @@ export function ItemsTab() {
             setEditing(null);
             createMut.reset();
             updateMut.reset();
-            reset({ name: '', sku: '', category: '', unit: '', description: '', reorderLevel: 0, unitCostKes: 0 });
+            reset({ name: '', sku: '', category: '', unit: '', customUnit: '', description: '', reorderLevel: 0, unitCostKes: 0 });
             setShowForm(true);
           }}
           className="flex items-center gap-2 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold"
@@ -243,11 +257,26 @@ export function ItemsTab() {
                 )}
               </select>
             </Field>
-            <Field label="Unit *">
-              <select {...register('unit', { required: true })} className="input">
+            <Field label="Unit *" error={errors.unit?.message}>
+              <select {...register('unit', { required: 'Required' })} className="input">
                 <option value="">Select…</option>
                 {UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                <option value={CUSTOM_UNIT}>Other (custom)…</option>
               </select>
+              {selectedUnit === CUSTOM_UNIT && (
+                <input
+                  {...register('customUnit', {
+                    required: selectedUnit === CUSTOM_UNIT ? 'Enter a custom unit' : false,
+                    maxLength: { value: 30, message: 'Must be 30 characters or fewer' },
+                  })}
+                  placeholder="e.g. Roll, Dozen, Pair"
+                  className="input mt-2"
+                  autoFocus
+                />
+              )}
+              {errors.customUnit && (
+                <p className="text-[11px] text-red-600 mt-1">{errors.customUnit.message}</p>
+              )}
             </Field>
             <Field label="Reorder Level">
               <input type="number" step="any" {...register('reorderLevel')} className="input" />

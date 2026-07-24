@@ -8,13 +8,13 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { NotificationType, UserRole, StoreItemCategory, StoreItemUnit } from '@prisma/client';
+import { NotificationType, UserRole, StoreItemCategory } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { IssuancePlanService } from './issuance-plan.service';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
 import {
-  IsString, IsOptional, IsNumber, IsBoolean, Min, IsNotEmpty, IsEnum,
+  IsString, IsOptional, IsNumber, IsBoolean, Min, IsNotEmpty, IsEnum, MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -32,7 +32,7 @@ export class CreateStoreItemDto {
   @IsString() @IsNotEmpty()
   category: string;
 
-  @IsString() @IsNotEmpty()
+  @IsString() @IsNotEmpty() @MaxLength(30, { message: 'Unit must be 30 characters or fewer' })
   unit: string;
 
   @IsOptional() @IsString()
@@ -60,7 +60,7 @@ export class UpdateStoreItemDto {
   @IsOptional() @IsEnum(StoreItemCategory, { message: 'Invalid category value' })
   category?: string;
 
-  @IsOptional() @IsEnum(StoreItemUnit, { message: 'Invalid unit value' })
+  @IsOptional() @IsString() @IsNotEmpty({ message: 'Unit is required' }) @MaxLength(30, { message: 'Unit must be 30 characters or fewer' })
   unit?: string;
 
   @IsOptional() @IsString()
@@ -161,7 +161,7 @@ export class StoreInventoryService {
         name:         dto.name,
         sku:          dto.sku,
         category:     dto.category as any,
-        unit:         dto.unit as any,
+        unit:         dto.unit.trim(),
         description:  dto.description ?? null,
         reorderLevel: dto.reorderLevel ?? 0,
         unitCostKes:  dto.unitCostKes ?? 0,
@@ -178,7 +178,7 @@ export class StoreInventoryService {
       data: {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
         ...(dto.category !== undefined ? { category: dto.category as any } : {}),
-        ...(dto.unit !== undefined ? { unit: dto.unit as any } : {}),
+        ...(dto.unit !== undefined ? { unit: dto.unit.trim() } : {}),
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.reorderLevel !== undefined ? { reorderLevel: Number(dto.reorderLevel) } : {}),
         ...(dto.unitCostKes !== undefined ? { unitCostKes: Number(dto.unitCostKes) } : {}),
