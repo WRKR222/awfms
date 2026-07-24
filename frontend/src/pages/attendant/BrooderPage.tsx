@@ -573,7 +573,7 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
                 <div>
                   <label className={lCls}>Quantity used{picked ? ` (${picked.unit.toLowerCase()})` : ''}</label>
                   <input value={v.quantityUsed} onChange={e => updateVaccine(i, 'quantityUsed', e.target.value)}
-                    type="number" step="0.01" min="0" className={iCls}
+                    type="number" step="any" min="0" className={iCls}
                     placeholder={picked ? `Residual: ${picked.residual.toFixed(2)} ${picked.unit.toLowerCase()}` : 'Select a vaccine first'} />
                 </div>
               </div>
@@ -626,7 +626,7 @@ function DailyEntryModal({ batch, onClose }: { batch: BrooderBatch; onClose: () 
                 <div>
                   <label className={lCls}>Quantity used{picked ? ` (${picked.unit.toLowerCase()})` : ''}</label>
                   <input value={s.quantityUsed} onChange={e => updateSupplement(i, 'quantityUsed', e.target.value)}
-                    type="number" step="0.01" min="0" className={iCls}
+                    type="number" step="any" min="0" className={iCls}
                     placeholder={picked ? `Residual: ${picked.residual.toFixed(2)} ${picked.unit.toLowerCase()}` : 'Select a supplement first'} />
                 </div>
               </div>
@@ -836,7 +836,7 @@ function TreatmentModal({ batch, onClose }: { batch: BrooderBatch; onClose: () =
                       <>
                         <label className={lCls}>Quantity used{picked ? ` (${picked.unit.toLowerCase()})` : ''}</label>
                         <input value={t.quantityUsed} onChange={e => updateTreatment(i, 'quantityUsed', e.target.value)}
-                          type="number" step="0.01" min="0" className={iCls}
+                          type="number" step="any" min="0" className={iCls}
                           placeholder={picked ? `Residual: ${picked.residual.toFixed(2)} ${picked.unit.toLowerCase()}` : 'Select a drug first'} />
                       </>
                     );
