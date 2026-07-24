@@ -416,14 +416,87 @@ export class BrooderService {
       }
     }
 
-    // General-population mortality is intentionally NOT folded into this
-    // per-level reconstruction. The cage map is fully independent of the
-    // general population sheet — its feed-schedule math is derived solely
-    // from BrooderLevelMortalityLog (this batch's own row/level entries),
-    // never from BrooderGeneralMortalityLog. A batch whose deaths are
-    // recorded only on the general sheet simply won't show mortality-driven
-    // schedule adjustments on the cage map; that's expected under full
-    // independence, not a gap to patch.
+    // ── General-population mortality, folded into the same per-level
+    // reconstruction used for the feed schedule ────────────────────────────
+    //
+    // A Lead Attendant who can't attribute mortality to a specific row/level
+    // logs it against the whole batch instead (BrooderGeneralMortalityLog —
+    // see createGeneralMortalityLog). Until now this per-level schedule
+    // reconstruction only ever read BrooderLevelMortalityLog, so a batch
+    // whose deaths are recorded only on the general sheet kept every level's
+    // birdCount priced as if no bird had died — overstating the per-row
+    // daily feed schedule. Fixed by reading BrooderGeneralMortalityLog too
+    // and apportioning each day's count pro-rata across the batch's levels
+    // (by live bird count, same weighting used for general feed above), so
+    // the schedule reflects reality either way.
+    //
+    // To avoid double-counting a level that DOES track its own mortality,
+    // a level only receives its apportioned share of a given day's general
+    // mortality if that level has no BrooderLevelMortalityLog entry of its
+    // own for that same day — its own entry already prices that day's loss.
+    const generalMortalityLogs = batchIds.length
+      ? await (this.prisma as any).brooderGeneralMortalityLog.findMany({
+          where: { batchId: { in: batchIds }, logDate: { gte: earliestWeekStart } },
+        })
+      : [];
+
+    // (batchId, dateStr) -> total general mortality/culling count that day
+    const generalMortalityByBatchAndDate: Record<string, { count: number; occurredAt: Date }> = {};
+    for (const m of generalMortalityLogs) {
+      const count = (m.mortalityCount ?? 0) + (m.cullingCount ?? 0);
+      if (count <= 0) continue;
+      const key = `${m.batchId}__${dayjs(m.logDate).format('YYYY-MM-DD')}`;
+      const existing = generalMortalityByBatchAndDate[key];
+      generalMortalityByBatchAndDate[key] = {
+        count: (existing?.count ?? 0) + count,
+        occurredAt: m.createdAt,
+      };
+    }
+
+    // (levelId, dateStr) set of days a level already has its OWN row/level
+    // mortality entry — used to suppress general apportionment on that day.
+    const levelOwnMortalityDays = new Set<string>();
+    for (const m of mortalityLogs) {
+      levelOwnMortalityDays.add(`${m.levelId}__${dayjs(m.logDate).format('YYYY-MM-DD')}`);
+    }
+
+    // batchId -> levelId -> current birdCount (weighting for apportionment,
+    // same live-population weighting used for the general feed share above).
+    const batchLevelWeights: Record<string, Record<string, number>> = {};
+    for (const row of rows) {
+      for (const level of row.levels) {
+        const a = level.assignment;
+        if (!a) continue;
+        (batchLevelWeights[a.batchId] ??= {})[level.id] = a.birdCount;
+      }
+    }
+
+    const usedGeneralMortalityByBatch: Record<string, boolean> = {};
+    for (const [key, entry] of Object.entries(generalMortalityByBatchAndDate)) {
+      const [batchId, dateStr] = key.split('__');
+      const weights = batchLevelWeights[batchId];
+      if (!weights) continue;
+
+      // Exclude levels that already priced this exact day themselves.
+      const eligibleWeights: Record<string, number> = {};
+      for (const [levelId, weight] of Object.entries(weights)) {
+        if (!levelOwnMortalityDays.has(`${levelId}__${dateStr}`)) {
+          eligibleWeights[levelId] = weight;
+        }
+      }
+      if (Object.keys(eligibleWeights).length === 0) continue;
+
+      usedGeneralMortalityByBatch[batchId] = true;
+      const apportioned = apportionByShare(entry.count, eligibleWeights);
+      for (const [levelId, share] of Object.entries(apportioned)) {
+        if (share <= 0) continue;
+        (mortalityEventsByLevel[levelId] ??= []).push({
+          date:       dayjs(dateStr, 'YYYY-MM-DD').toDate(),
+          count:      share,
+          occurredAt: entry.occurredAt,
+        });
+      }
+    }
 
     // Today's feed dispensed per level (for over-issue guard display)
     const todayFeedByLevel: Record<string, number> = {};
@@ -537,6 +610,27 @@ export class BrooderService {
           : rowLevelDispensedThisWeek > 0 ? 'ROW_LEVEL'
           : null;
 
+        // Whether this level's requiredKgThisWeek/scheduleByDay above had
+        // any general-record mortality apportioned into it this window
+        // (see the BrooderGeneralMortalityLog fold-in earlier in this
+        // method). Shown in the UI so it's clear the population used for
+        // the schedule includes an apportioned estimate, not only this
+        // level's own logged deaths.
+        const usedGeneralMortalityThisWeek =
+          a ? !!usedGeneralMortalityByBatch[a.batchId] : false;
+        const rowLevelHasOwnMortalityThisWeek = a
+          ? (mortalityLogs as any[]).some(
+              (m: any) => m.levelId === level.id
+                && weekStartByLevel[level.id]
+                && m.logDate.getTime() >= weekStartByLevel[level.id].getTime(),
+            )
+          : false;
+        const mortalitySource: 'ROW_LEVEL' | 'GENERAL' | 'MIXED' | null =
+          rowLevelHasOwnMortalityThisWeek && usedGeneralMortalityThisWeek ? 'MIXED'
+          : usedGeneralMortalityThisWeek ? 'GENERAL'
+          : rowLevelHasOwnMortalityThisWeek ? 'ROW_LEVEL'
+          : null;
+
         // ── Weight check (this week, this exact row/level) ─────────────────
         const latestWeight = latestWeightByLevel[level.id] ?? null;
         let weightCheck: {
@@ -605,6 +699,7 @@ export class BrooderService {
           dispensedKgThisWeek: Math.round(dispensedThisWeek * 100) / 100,
           dispensedKgToday:    Math.round(dispensedToday    * 100) / 100,
           feedSource,
+          mortalitySource,
           // Schedule % is only meaningful when we know feed actually reached
           // THIS row/level. A general-population entry is batch-wide — this
           // level's share above is only an estimate, apportioned pro-rata by
@@ -2060,6 +2155,7 @@ export class BrooderService {
             weekEnd,
             feedVariancePercent: l.feedVariancePercent,
             feedSource:          l.feedSource,
+            mortalitySource:     l.mortalitySource,
             exactMatch:          l.feedVariancePercent === 0,
             // daily (NEW)
             dispensedKgToday:    l.dispensedKgToday,
@@ -2113,6 +2209,41 @@ export class BrooderService {
       totalDailyRationKg:           Math.round(totalDailyRationKg    * 100) / 100,
       totalDispensedKgToday:        Math.round(totalDispensedKgToday * 100) / 100,
       rows,
+    };
+  }
+
+  // ── Batch-level feed summary (for the General Record sheet) ──────────────
+  //
+  // The General Record sheet logs feed against a batch as a whole (no row/
+  // level breakdown), so the per-row "Schedule" figures on the cage map
+  // aren't directly visible to whoever is filling it in. This aggregates
+  // every level currently holding this batch's birds into one required /
+  // dispensed / remaining figure for the week, so the General Feed form can
+  // show "how much is left to give this batch this week" next to the feed
+  // type dropdown — the same underlying numbers as the cage map, just
+  // rolled up to batch level instead of shown per row/level.
+  async getBatchFeedSummary(batchId: string) {
+    const map = await this.getCageMap();
+    const levels = map.rows
+      .flatMap(r => r.levels)
+      .filter(l => l.assignment?.batchId === batchId);
+
+    const requiredKgThisWeek  = levels.reduce((s, l) => s + (l.requiredKgThisWeek ?? 0), 0);
+    const dispensedKgThisWeek = levels.reduce((s, l) => s + (l.dispensedKgThisWeek ?? 0), 0);
+    const dailyRationKg       = levels.reduce((s, l) => s + (l.dailyRationKg ?? 0), 0);
+    const dispensedKgToday    = levels.reduce((s, l) => s + (l.dispensedKgToday ?? 0), 0);
+    const birdCount           = levels.reduce((s, l) => s + (l.assignment?.birdCount ?? 0), 0);
+
+    return {
+      batchId,
+      birdCount,
+      hasLevelAssignment:     levels.length > 0,
+      requiredKgThisWeek:     Math.round(requiredKgThisWeek  * 100) / 100,
+      dispensedKgThisWeek:    Math.round(dispensedKgThisWeek * 100) / 100,
+      remainingKgThisWeek:    Math.max(0, Math.round((requiredKgThisWeek - dispensedKgThisWeek) * 100) / 100),
+      dailyRationKg:          Math.round(dailyRationKg    * 100) / 100,
+      dispensedKgToday:       Math.round(dispensedKgToday * 100) / 100,
+      remainingKgToday:       Math.max(0, Math.round((dailyRationKg - dispensedKgToday) * 100) / 100),
     };
   }
 
@@ -2462,12 +2593,8 @@ export class BrooderService {
 
     const ageWeeks = batchAgeWeeks(batch.dateReceived, weekStart);
 
-    // ── Pro-rata weight for apportioning general (batch-wide) FEED entries
+    // ── Pro-rata weight for apportioning general (batch-wide) entries
     // to this level — current live bird counts, same signal getCageMap uses.
-    // General MORTALITY is intentionally not apportioned here: the cage map
-    // is fully independent of the general population sheet, so this level's
-    // mortality-driven feed math comes solely from its own
-    // BrooderLevelMortalityLog entries below. ─────────────────────────────
     const batchLevels = await this.prisma.brooderLevel.findMany({
       where:   { isActive: true, assignment: { batchId: batch.id } },
       include: { assignment: true },
@@ -2478,12 +2605,30 @@ export class BrooderService {
     }
     const birdShare = batchBirdTotal > 0 ? level.assignment.birdCount / batchBirdTotal : 0;
 
-    const [levelEventsInWeek, laterLevelEvents] = await Promise.all([
+    const batchLevelIds = batchLevels.map(l => l.id);
+    const [levelEventsInWeek, laterLevelEvents, allLevelMortalityLogs, generalMortalityLogs] = await Promise.all([
       (this.prisma as any).brooderLevelMortalityLog.findMany({
         where: { levelId, logDate: { gte: weekStart, lte: cutoff } },
       }),
       (this.prisma as any).brooderLevelMortalityLog.findMany({
         where: { levelId, logDate: { gt: cutoff } },
+      }),
+      // Every batch level's own mortality-log days, across the whole window
+      // from this week's start onward — used below to avoid double-counting
+      // a level that logs its own mortality on a day general mortality was
+      // ALSO logged for the batch.
+      batchLevelIds.length
+        ? (this.prisma as any).brooderLevelMortalityLog.findMany({
+            where: { levelId: { in: batchLevelIds }, logDate: { gte: weekStart } },
+          })
+        : Promise.resolve([]),
+      // General-population mortality (BrooderGeneralMortalityLog) — folded
+      // in below, apportioned pro-rata across the batch's levels, so a
+      // batch tracked only via the general sheet still gets an accurate
+      // per-level historical schedule instead of pricing every day as if
+      // no bird had died (see the same fold-in in getCageMap above).
+      (this.prisma as any).brooderGeneralMortalityLog.findMany({
+        where: { batchId: batch.id, logDate: { gte: weekStart } },
       }),
     ]);
 
@@ -2495,9 +2640,48 @@ export class BrooderService {
 
     // Losses recorded after this week's cutoff, up to now — added back to
     // the live count to reconstruct the population as of the week's end.
-    const lossesAfterWeek = laterLevelEvents.reduce(
+    let lossesAfterWeek = laterLevelEvents.reduce(
       (s: number, m: any) => s + (m.mortalityCount ?? 0) + (m.cullingCount ?? 0), 0,
     );
+
+    // ── Fold in general-population mortality, apportioned pro-rata by live
+    // bird count, day by day. A level only receives its share of a given
+    // day's general count if it has no own BrooderLevelMortalityLog entry
+    // for that same day (its own entry already prices that day's loss).
+    const levelOwnMortalityDays = new Set<string>();
+    for (const m of allLevelMortalityLogs) {
+      levelOwnMortalityDays.add(`${m.levelId}__${dayjs(m.logDate).format('YYYY-MM-DD')}`);
+    }
+    const levelWeights: Record<string, number> = {};
+    for (const l of batchLevels) {
+      if (l.assignment) levelWeights[l.id] = l.assignment.birdCount;
+    }
+    const generalByDate: Record<string, { count: number; occurredAt: Date }> = {};
+    for (const m of generalMortalityLogs) {
+      const count = (m.mortalityCount ?? 0) + (m.cullingCount ?? 0);
+      if (count <= 0) continue;
+      const key = dayjs(m.logDate).format('YYYY-MM-DD');
+      const existing = generalByDate[key];
+      generalByDate[key] = { count: (existing?.count ?? 0) + count, occurredAt: m.createdAt };
+    }
+    let usedGeneralMortality = false;
+    for (const [dateStr, entry] of Object.entries(generalByDate)) {
+      const eligibleWeights: Record<string, number> = {};
+      for (const [lid, w] of Object.entries(levelWeights)) {
+        if (!levelOwnMortalityDays.has(`${lid}__${dateStr}`)) eligibleWeights[lid] = w;
+      }
+      if (Object.keys(eligibleWeights).length === 0) continue;
+      const apportioned = apportionByShare(entry.count, eligibleWeights);
+      const myShare = apportioned[levelId] ?? 0;
+      if (myShare <= 0) continue;
+      usedGeneralMortality = true;
+      const d = dayjs(dateStr, 'YYYY-MM-DD').toDate();
+      if (d.getTime() >= weekStart.getTime() && d.getTime() <= cutoff.getTime()) {
+        weekEvents.push({ date: d, count: myShare, occurredAt: entry.occurredAt });
+      } else if (d.getTime() > cutoff.getTime()) {
+        lossesAfterWeek += myShare;
+      }
+    }
 
     const populationAtWeekEnd = level.assignment.birdCount + lossesAfterWeek;
 
@@ -2536,6 +2720,7 @@ export class BrooderService {
       mortalityEventsThisWeek: weekEvents
         .map(e => ({ date: dayjs(e.date).format('YYYY-MM-DD'), count: e.count }))
         .sort((a, b) => a.date.localeCompare(b.date)),
+      usedGeneralMortality,
       requiredKgForWeek,
       dispensedKgLevel:   Math.round(dispensedKgLevel * 100) / 100,
       dispensedKgGeneralShare: Math.round(dispensedKgGeneralShare * 100) / 100,

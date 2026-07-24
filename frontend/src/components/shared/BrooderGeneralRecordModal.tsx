@@ -157,6 +157,16 @@ function GeneralFeedForm({ batch, today, onClose, qc }: {
   // the real problem is an unrecognised item name.
   const unmatchedIssuedItems = (issuableItemsRaw ?? []).filter(i => deriveFeedType(i) === null);
 
+  // Batch-wide required / dispensed / remaining feed for the current week
+  // (and today) — same underlying schedule the cage map uses, rolled up
+  // across every level currently holding this batch, so an attendant using
+  // the general sheet (no row/level breakdown) can still see where the
+  // batch stands before logging today's amount.
+  const { data: feedSummary, isLoading: feedSummaryLoading } = useQuery({
+    queryKey: ['brooder-batch-feed-summary', batch.id],
+    queryFn:  () => api.get(`/brooder/batches/${batch.id}/feed-summary`).then(r => r.data),
+  });
+
   const { register, handleSubmit, watch, formState: { errors } } = useForm({
     defaultValues: {
       entryDate:           today,
@@ -183,6 +193,7 @@ function GeneralFeedForm({ batch, today, onClose, qc }: {
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
       qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
       qc.invalidateQueries({ queryKey: ['brooder-general-feed-logs', batch.id] });
+      qc.invalidateQueries({ queryKey: ['brooder-batch-feed-summary', batch.id] });
       onClose();
     },
   });
@@ -234,6 +245,47 @@ function GeneralFeedForm({ batch, today, onClose, qc }: {
             Store issued {unmatchedIssuedItems.map(i => `"${i.name}"`).join(', ')} this week, but the
             item name doesn't say "Chick", "Grower", "Layer", or "Kienyeji", so it can't be matched to a
             feed type here. Ask Store to rename the item to include one of those words (e.g. "Chick Mash").
+          </p>
+        )}
+      </div>
+
+      {/* Remaining / dispensed feed for the batch this week — same schedule
+          the cage map uses, rolled up across this batch's levels, so the
+          attendant can see where the batch stands before logging today's
+          amount, even though this sheet doesn't break feed down by row/level. */}
+      <div className="rounded-xl border border-gray-200 dark:border-dark-border bg-gray-50 dark:bg-dark-bg p-3">
+        {feedSummaryLoading ? (
+          <p className="text-xs text-gray-400">Loading this batch's feed status…</p>
+        ) : feedSummary && feedSummary.hasLevelAssignment ? (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className={lCls}>Dispensed this week</p>
+              <p className="text-sm font-bold text-gray-800 dark:text-gray-100">
+                {feedSummary.dispensedKgThisWeek.toFixed(2)} kg
+              </p>
+            </div>
+            <div>
+              <p className={lCls}>Remaining this week</p>
+              <p className="text-sm font-bold text-amber-600 dark:text-amber-400">
+                {feedSummary.remainingKgThisWeek.toFixed(2)} kg
+              </p>
+            </div>
+            <div>
+              <p className={lCls}>Dispensed today</p>
+              <p className="text-sm font-bold text-gray-800 dark:text-gray-100">
+                {feedSummary.dispensedKgToday.toFixed(2)} kg
+              </p>
+            </div>
+            <div>
+              <p className={lCls}>Remaining today</p>
+              <p className="text-sm font-bold text-amber-600 dark:text-amber-400">
+                {feedSummary.remainingKgToday.toFixed(2)} kg
+              </p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-gray-400">
+            This batch isn't placed on the cage map yet, so there's no feed schedule to compare against.
           </p>
         )}
       </div>
