@@ -827,6 +827,14 @@ export class IssuancePlanService {
     DAY_KEYS.forEach((k) => (dailyBreakdown[k] = dailyKg));
     const weeklyKg = dailyKg * 7;
 
+    // Human-readable breakdown of exactly how `dailyKg` (and therefore each
+    // day's figure on the schedule) was derived, so anyone viewing the
+    // Issuance Plan can see the calculation, not just the resulting number.
+    const stageLabel = stage === 'BROODING' ? 'Brooder' : 'Production House';
+    const calcNote =
+      `Auto-calculated: ${totalBirds.toLocaleString()} ${stageLabel} birds × ${gramsPerBirdPerDay}g/bird/day ` +
+      `÷ 1000 = ${dailyKg.toFixed(2)} kg/day  ·  ${dailyKg.toFixed(2)} kg/day × 7 days = ${weeklyKg.toFixed(2)} kg/week`;
+
     const sku = FEED_SKU[feedType];
     const feedLabel = FEED_LABELS[feedType] ?? feedType;
     const storeItem =
@@ -852,6 +860,7 @@ export class IssuancePlanService {
           quantityPlanned: weeklyKg,
           unitPriceKes: Number(storeItem.unitCostKes),
           dailyBreakdown,
+          notes: calcNote,
         },
       });
     } else {
@@ -864,7 +873,7 @@ export class IssuancePlanService {
           dailyBreakdown,
           source: 'PM_FEED_PLAN',
           status: 'PENDING_DIRECTOR',
-          notes: `Auto: ${stage} birds (${totalBirds}) × ${gramsPerBirdPerDay}g/bird/day`,
+          notes: calcNote,
         },
       });
     }
