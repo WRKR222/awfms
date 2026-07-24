@@ -28,7 +28,7 @@
 import { useState } from 'react';
 import {
   Wheat, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp,
-  Archive, Info, Baby,
+  Archive, Info, Baby, Calculator,
 } from 'lucide-react';
 import { useBrooderFeedSummary, type FeedRequirementRow, type FeedRequirementLevel } from '../../hooks/useBrooderCageMap';
 
@@ -116,20 +116,33 @@ function RowLine({ row }: { row: FeedRequirementRow }) {
             const lvlVariance  = l.feedVariancePercent;
             const isEarlyLevel = l.birdCount > 0 && l.hylineWeek === 1;
             return (
-              <div key={l.levelId} className="flex items-center justify-between text-[11px]">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{l.label}</span>
-                  <span className="font-mono text-gray-700 dark:text-gray-200 truncate">{l.batchCode}</span>
-                  <span className="text-gray-400 flex-shrink-0">{l.birdCount.toLocaleString()}b</span>
-                  {isEarlyLevel && <EarlyPhaseBadge />}
+              <div key={l.levelId} className="space-y-0.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{l.label}</span>
+                    <span className="font-mono text-gray-700 dark:text-gray-200 truncate">{l.batchCode}</span>
+                    <span className="text-gray-400 flex-shrink-0">{l.birdCount.toLocaleString()}b</span>
+                    {isEarlyLevel && <EarlyPhaseBadge />}
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="font-mono text-gray-500 dark:text-gray-400" title="Issued / Schedule">
+                      {l.dispensedKgThisWeek}
+                      <span className="text-gray-300 dark:text-gray-600">/{l.requiredKgThisWeek ?? '—'}kg</span>
+                    </span>
+                    <VariancePill pct={lvlVariance ?? null} viaGeneral={l.feedSource === 'GENERAL' || l.feedSource === 'MIXED'} />
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className="font-mono text-gray-500 dark:text-gray-400" title="Issued / Schedule">
-                    {l.dispensedKgThisWeek}
-                    <span className="text-gray-300 dark:text-gray-600">/{l.requiredKgThisWeek ?? '—'}kg</span>
-                  </span>
-                  <VariancePill pct={lvlVariance ?? null} viaGeneral={l.feedSource === 'GENERAL' || l.feedSource === 'MIXED'} />
-                </div>
+                {l.gramsPerBirdPerDay !== null && l.dailyRationKg !== null && l.birdCount > 0 && (
+                  <div className="flex items-start gap-1 pl-1">
+                    <Calculator className="w-2.5 h-2.5 text-blue-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-[10px] leading-snug text-blue-500 dark:text-blue-400">
+                      {l.gramsPerBirdPerDay}g/bird/day × {l.birdCount.toLocaleString()} birds ÷ 1000 = {l.dailyRationKg.toFixed(2)} kg/day
+                      {l.requiredKgThisWeek !== null && (
+                        <> · × 7 days ≈ {l.requiredKgThisWeek.toFixed(2)} kg/week</>
+                      )}
+                    </p>
+                  </div>
+                )}
               </div>
             );
           })}

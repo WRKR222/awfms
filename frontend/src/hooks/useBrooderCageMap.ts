@@ -48,6 +48,7 @@ export interface BrooderLevelData {
   } | null;
   // Feed control fields (new — from HyLine standard lookup)
   hylineWeek:          number | null;   // HyLine week for this batch's age
+  gramsPerBirdPerDay:  number | null;   // standard g/bird/day used to derive dailyRationKg
   dailyRationKg:       number | null;   // g/bird/day × birdCount / 1000
   requiredKgThisWeek:  number | null;
   dispensedKgThisWeek: number;
@@ -101,6 +102,7 @@ export interface FeedRequirementLevel {
   batchCode:           string | null;
   birdCount:           number;
   hylineWeek:          number | null;
+  gramsPerBirdPerDay:  number | null;
   dailyRationKg:       number | null;
   requiredKgThisWeek:  number | null;
   dispensedKgThisWeek: number;

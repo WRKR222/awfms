@@ -456,6 +456,7 @@ export class BrooderService {
         let dailyRationKg: number | null = null;
         let ageWeeks: number | null = null;
         let hylineWeek: number | null = null;
+        let gramsPerBirdPerDay: number | null = null;
 
         if (batch && a) {
           // Feed schedule age/week is anchored to dateReceived, not
@@ -463,6 +464,7 @@ export class BrooderService {
           ageWeeks = batchAgeWeeks(batch.dateReceived);
           const std = hylineStandard(ageWeeks);
           hylineWeek = std.week;
+          gramsPerBirdPerDay = std.feedingGramsPerBird;
           // Use adjusted weekly feed (early/transition days contribute 0 or 50%),
           // windowed to this batch's OWN arrival-relative brooder week so it
           // matches dispensedKgThisWeek's window above.
@@ -571,6 +573,7 @@ export class BrooderService {
             dateReceived:     dayjs(batch.dateReceived).format('YYYY-MM-DD'),
           } : null,
           hylineWeek,
+          gramsPerBirdPerDay,
           dailyRationKg,
           requiredKgThisWeek,
           dispensedKgThisWeek: Math.round(dispensedThisWeek * 100) / 100,
@@ -2017,6 +2020,7 @@ export class BrooderService {
             batchCode:           l.batch?.batchCode ?? null,
             birdCount:           l.assignment?.birdCount ?? 0,
             hylineWeek:          l.hylineWeek,
+            gramsPerBirdPerDay:  l.gramsPerBirdPerDay,
             // weekly
             dailyRationKg:       l.dailyRationKg,
             requiredKgThisWeek:  l.requiredKgThisWeek,
