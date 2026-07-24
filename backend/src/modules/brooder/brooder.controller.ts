@@ -47,17 +47,6 @@ export class BrooderController {
     return this.svc.getFeedRequirementSummary();
   }
 
-  /** GET /brooder/batches/:batchId/feed-summary
-   *  Batch-level required/dispensed/remaining feed for the current brooder
-   *  week (and today), rolled up across every level currently holding this
-   *  batch's birds. Used by the General Record feed form, which logs feed
-   *  batch-wide rather than per row/level. */
-  @Get('batches/:batchId/feed-summary')
-  @RequirePermission(Permission.FLOCK_VIEW)
-  getBatchFeedSummary(@Param('batchId') batchId: string) {
-    return this.svc.getBatchFeedSummary(batchId);
-  }
-
   /** GET /brooder/daily-feed-breakdown
    *  Per-calendar-day feed totals for the current week (Sun–Sat), so the
    *  PM can spot any day that was skipped entirely. Not the same window as

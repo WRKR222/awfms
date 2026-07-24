@@ -157,16 +157,6 @@ function GeneralFeedForm({ batch, today, onClose, qc }: {
   // the real problem is an unrecognised item name.
   const unmatchedIssuedItems = (issuableItemsRaw ?? []).filter(i => deriveFeedType(i) === null);
 
-  // Batch-wide required / dispensed / remaining feed for the current week
-  // (and today) — same underlying schedule the cage map uses, rolled up
-  // across every level currently holding this batch, so an attendant using
-  // the general sheet (no row/level breakdown) can still see where the
-  // batch stands before logging today's amount.
-  const { data: feedSummary, isLoading: feedSummaryLoading } = useQuery({
-    queryKey: ['brooder-batch-feed-summary', batch.id],
-    queryFn:  () => api.get(`/brooder/batches/${batch.id}/feed-summary`).then(r => r.data),
-  });
-
   const { register, handleSubmit, watch, formState: { errors } } = useForm({
     defaultValues: {
       entryDate:           today,
@@ -175,6 +165,13 @@ function GeneralFeedForm({ batch, today, onClose, qc }: {
       notes:               '',
     },
   });
+
+  // The store item currently selected in the Feed type dropdown — its
+  // issuedThisWeek / dispensedThisWeek / residual figures already come
+  // computed server-side from useIssuableStoreItems, so no separate fetch
+  // is needed here.
+  const selectedStoreItemId = watch('storeItemId');
+  const selectedFeedItem = feedItems.find(i => i.id === selectedStoreItemId) ?? null;
 
   const submit = useMutation({
     mutationFn: (data: any) => {
@@ -193,7 +190,7 @@ function GeneralFeedForm({ batch, today, onClose, qc }: {
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
       qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
       qc.invalidateQueries({ queryKey: ['brooder-general-feed-logs', batch.id] });
-      qc.invalidateQueries({ queryKey: ['brooder-batch-feed-summary', batch.id] });
+      qc.invalidateQueries({ queryKey: ['store-issuable-items'] });
       onClose();
     },
   });
@@ -249,44 +246,33 @@ function GeneralFeedForm({ batch, today, onClose, qc }: {
         )}
       </div>
 
-      {/* Remaining / dispensed feed for the batch this week — same schedule
-          the cage map uses, rolled up across this batch's levels, so the
-          attendant can see where the batch stands before logging today's
-          amount, even though this sheet doesn't break feed down by row/level. */}
+      {/* Remaining feed for whichever item is selected above — issued by
+          Store this week vs. already dispensed (row/level + general),
+          residual computed server-side by useIssuableStoreItems. */}
       <div className="rounded-xl border border-gray-200 dark:border-dark-border bg-gray-50 dark:bg-dark-bg p-3">
-        {feedSummaryLoading ? (
-          <p className="text-xs text-gray-400">Loading this batch's feed status…</p>
-        ) : feedSummary && feedSummary.hasLevelAssignment ? (
-          <div className="grid grid-cols-2 gap-3">
+        {!selectedFeedItem ? (
+          <p className="text-xs text-gray-400">Select a feed type above to see how much Store has issued and how much is left.</p>
+        ) : (
+          <div className="grid grid-cols-3 gap-3">
             <div>
-              <p className={lCls}>Dispensed this week</p>
+              <p className={lCls}>Issued by Store</p>
               <p className="text-sm font-bold text-gray-800 dark:text-gray-100">
-                {feedSummary.dispensedKgThisWeek.toFixed(2)} kg
+                {selectedFeedItem.issuedThisWeek.toFixed(2)} {selectedFeedItem.unit}
               </p>
             </div>
             <div>
-              <p className={lCls}>Remaining this week</p>
-              <p className="text-sm font-bold text-amber-600 dark:text-amber-400">
-                {feedSummary.remainingKgThisWeek.toFixed(2)} kg
-              </p>
-            </div>
-            <div>
-              <p className={lCls}>Dispensed today</p>
+              <p className={lCls}>Dispensed</p>
               <p className="text-sm font-bold text-gray-800 dark:text-gray-100">
-                {feedSummary.dispensedKgToday.toFixed(2)} kg
+                {selectedFeedItem.dispensedThisWeek.toFixed(2)} {selectedFeedItem.unit}
               </p>
             </div>
             <div>
-              <p className={lCls}>Remaining today</p>
+              <p className={lCls}>Remaining</p>
               <p className="text-sm font-bold text-amber-600 dark:text-amber-400">
-                {feedSummary.remainingKgToday.toFixed(2)} kg
+                {selectedFeedItem.residual.toFixed(2)} {selectedFeedItem.unit}
               </p>
             </div>
           </div>
-        ) : (
-          <p className="text-xs text-gray-400">
-            This batch isn't placed on the cage map yet, so there's no feed schedule to compare against.
-          </p>
         )}
       </div>
 

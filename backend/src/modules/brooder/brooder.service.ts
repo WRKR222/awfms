@@ -2212,41 +2212,6 @@ export class BrooderService {
     };
   }
 
-  // ── Batch-level feed summary (for the General Record sheet) ──────────────
-  //
-  // The General Record sheet logs feed against a batch as a whole (no row/
-  // level breakdown), so the per-row "Schedule" figures on the cage map
-  // aren't directly visible to whoever is filling it in. This aggregates
-  // every level currently holding this batch's birds into one required /
-  // dispensed / remaining figure for the week, so the General Feed form can
-  // show "how much is left to give this batch this week" next to the feed
-  // type dropdown — the same underlying numbers as the cage map, just
-  // rolled up to batch level instead of shown per row/level.
-  async getBatchFeedSummary(batchId: string) {
-    const map = await this.getCageMap();
-    const levels = map.rows
-      .flatMap(r => r.levels)
-      .filter(l => l.assignment?.batchId === batchId);
-
-    const requiredKgThisWeek  = levels.reduce((s, l) => s + (l.requiredKgThisWeek ?? 0), 0);
-    const dispensedKgThisWeek = levels.reduce((s, l) => s + (l.dispensedKgThisWeek ?? 0), 0);
-    const dailyRationKg       = levels.reduce((s, l) => s + (l.dailyRationKg ?? 0), 0);
-    const dispensedKgToday    = levels.reduce((s, l) => s + (l.dispensedKgToday ?? 0), 0);
-    const birdCount           = levels.reduce((s, l) => s + (l.assignment?.birdCount ?? 0), 0);
-
-    return {
-      batchId,
-      birdCount,
-      hasLevelAssignment:     levels.length > 0,
-      requiredKgThisWeek:     Math.round(requiredKgThisWeek  * 100) / 100,
-      dispensedKgThisWeek:    Math.round(dispensedKgThisWeek * 100) / 100,
-      remainingKgThisWeek:    Math.max(0, Math.round((requiredKgThisWeek - dispensedKgThisWeek) * 100) / 100),
-      dailyRationKg:          Math.round(dailyRationKg    * 100) / 100,
-      dispensedKgToday:       Math.round(dispensedKgToday * 100) / 100,
-      remainingKgToday:       Math.max(0, Math.round((dailyRationKg - dispensedKgToday) * 100) / 100),
-    };
-  }
-
   // ── Daily feed breakdown (PM analysis — spot skipped days) ────────────────
   //
   // Returns how much feed was actually dispensed farm-wide on each day of
