@@ -132,15 +132,27 @@ function RowLine({ row }: { row: FeedRequirementRow }) {
                     <VariancePill pct={lvlVariance ?? null} viaGeneral={l.feedSource === 'GENERAL' || l.feedSource === 'MIXED'} />
                   </div>
                 </div>
-                {l.gramsPerBirdPerDay !== null && l.dailyRationKg !== null && l.birdCount > 0 && (
+                {l.scheduleByDay && l.scheduleByDay.length > 0 && l.birdCount > 0 && (
                   <div className="flex items-start gap-1 pl-1">
                     <Calculator className="w-2.5 h-2.5 text-blue-400 flex-shrink-0 mt-0.5" />
-                    <p className="text-[10px] leading-snug text-blue-500 dark:text-blue-400">
-                      {l.gramsPerBirdPerDay}g/bird/day × {l.birdCount.toLocaleString()} birds ÷ 1000 = {l.dailyRationKg.toFixed(2)} kg/day
-                      {l.requiredKgThisWeek !== null && (
-                        <> · × 7 days ≈ {l.requiredKgThisWeek.toFixed(2)} kg/week</>
-                      )}
-                    </p>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[10px] leading-snug text-blue-500 dark:text-blue-400 mb-0.5">
+                        {l.gramsPerBirdPerDay}g/bird/day · {l.requiredKgThisWeek?.toFixed(2) ?? '—'} kg scheduled this week, by day:
+                      </p>
+                      <div className="space-y-0.5">
+                        {l.scheduleByDay.map(d => (
+                          <p key={d.date} className="text-[10px] leading-snug text-blue-500 dark:text-blue-400">
+                            <span className="font-semibold">{d.dayLabel}</span>{' — '}
+                            {d.hadMortality && d.endBirdCount !== d.startBirdCount ? (
+                              <>{d.startBirdCount.toLocaleString()}→{d.endBirdCount.toLocaleString()} birds (mortality that day)</>
+                            ) : (
+                              <>{d.startBirdCount.toLocaleString()} birds</>
+                            )}
+                            {' × '}{l.gramsPerBirdPerDay}g ÷ 1000 ≈ {d.kg.toFixed(2)} kg
+                          </p>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

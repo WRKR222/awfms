@@ -44,6 +44,7 @@ import {
   hylineStandard,
   brooderRequiredFeedKg,
   brooderAdjustedWeeklyFeedKgWithMortality,
+  brooderWeeklyFeedKgByDay,
   MortalityDayEvent,
   brooderWeekStart,
   batchAgeWeeks,
@@ -457,6 +458,14 @@ export class BrooderService {
         let ageWeeks: number | null = null;
         let hylineWeek: number | null = null;
         let gramsPerBirdPerDay: number | null = null;
+        let scheduleByDay: Array<{
+          date:           string;
+          dayLabel:       string;
+          startBirdCount: number;
+          endBirdCount:   number;
+          hadMortality:   boolean;
+          kg:             number;
+        }> | null = null;
 
         if (batch && a) {
           // Feed schedule age/week is anchored to dateReceived, not
@@ -484,6 +493,21 @@ export class BrooderService {
             a.birdCount, ageWeeks, levelWeekStart, levelWeekEnd,
             mortalityEventsByLevel[level.id] ?? [],
           );
+          // Same window/mortality events as requiredKgThisWeek above, broken
+          // out per day so the UI can show how the weekly total was arrived
+          // at — one line per day of this batch's brooder week — instead of
+          // only the final sum.
+          scheduleByDay = brooderWeeklyFeedKgByDay(
+            a.birdCount, ageWeeks, levelWeekStart, levelWeekEnd,
+            mortalityEventsByLevel[level.id] ?? [],
+          ).map(d => ({
+            date:           dayjs(d.date).format('YYYY-MM-DD'),
+            dayLabel:       dayjs(d.date).format('ddd D MMM'),
+            startBirdCount: d.startBirdCount,
+            endBirdCount:   d.endBirdCount,
+            hadMortality:   d.hadMortality,
+            kg:             d.kg,
+          }));
           // Daily ration is always the standard HyLine figure — enforcement
           // is relaxed in early/transition phases but the figure is still
           // shown as an advisory reference on the UI.
@@ -576,6 +600,7 @@ export class BrooderService {
           gramsPerBirdPerDay,
           dailyRationKg,
           requiredKgThisWeek,
+          scheduleByDay,
           dispensedKgThisWeek: Math.round(dispensedThisWeek * 100) / 100,
           dispensedKgToday:    Math.round(dispensedToday    * 100) / 100,
           feedSource,
@@ -2024,6 +2049,11 @@ export class BrooderService {
             // weekly
             dailyRationKg:       l.dailyRationKg,
             requiredKgThisWeek:  l.requiredKgThisWeek,
+            // Per-day breakdown of requiredKgThisWeek — one entry per day of
+            // this level's own batch-relative week (see weekStart/weekEnd
+            // above), showing the bird count and grams/bird/day that day's
+            // kg figure was calculated from.
+            scheduleByDay:       l.scheduleByDay,
             dispensedKgThisWeek: l.dispensedKgThisWeek,
             weekStart,
             weekEnd,

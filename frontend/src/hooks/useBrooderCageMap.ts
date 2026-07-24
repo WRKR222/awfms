@@ -95,6 +95,17 @@ export interface BrooderCageMapResponse {
   generatedAt: string;
 }
 
+/** One day of a level's weekly feed schedule — how requiredKgThisWeek breaks
+ *  down day by day, and the bird count each day's kg was calculated from. */
+export interface FeedScheduleDay {
+  date:           string;
+  dayLabel:        string;
+  startBirdCount: number;
+  endBirdCount:   number;
+  hadMortality:   boolean;
+  kg:             number;
+}
+
 export interface FeedRequirementLevel {
   levelId:             string;
   levelNumber:         number;
@@ -105,6 +116,7 @@ export interface FeedRequirementLevel {
   gramsPerBirdPerDay:  number | null;
   dailyRationKg:       number | null;
   requiredKgThisWeek:  number | null;
+  scheduleByDay:       FeedScheduleDay[] | null;
   dispensedKgThisWeek: number;
   dispensedKgToday:    number;
   feedVariancePercent: number | null;

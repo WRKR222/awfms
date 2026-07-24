@@ -353,14 +353,46 @@ export interface MortalityDayEvent {
  *                                   level with `date` in [weekStart, upToDate].
  *                                   Events outside that window are ignored.
  */
-export function brooderAdjustedWeeklyFeedKgWithMortality(
+/**
+ * One day's slice of a batch/level's weekly feed schedule — the day-by-day
+ * breakdown that `brooderAdjustedWeeklyFeedKgWithMortality`'s total is built
+ * from. Exposed via `brooderWeeklyFeedKgByDay` so the UI can show *how* the
+ * weekly total was arrived at, day by day, instead of only the final sum.
+ */
+export interface BrooderFeedDayBreakdown {
+  date:                Date;
+  /** Population at the start of this day (before any same-day losses). */
+  startBirdCount:      number;
+  /** Population at the end of this day (after any same-day losses), which
+   *  carries forward as the next day's startBirdCount. */
+  endBirdCount:         number;
+  gramsPerBirdPerDay:  number;
+  /** This day's share of the weekly total, kg — prorated around any
+   *  same-day mortality event(s) exactly as the weekly total is. */
+  kg:                  number;
+  /** Whether a mortality/culling event landed on this day (the kg figure
+   *  above is time-of-day prorated around it, not a flat start/end split). */
+  hadMortality:        boolean;
+}
+
+/**
+ * Shared day-by-day reconstruction used by both `brooderWeeklyFeedKgByDay`
+ * (per-day breakdown for display) and `brooderAdjustedWeeklyFeedKgWithMortality`
+ * (weekly total) — see that function's doc comment above for why this walks
+ * the week day-by-day instead of pricing every day at today's population.
+ * Kept unrounded internally so the weekly total (which sums these raw
+ * per-day slices before rounding once) never drifts from rounding each day
+ * individually first.
+ */
+function reconstructBrooderFeedWeek(
   currentBirdCount: number,
   ageWeeks: number,
   weekStart: Date,
   upToDate: Date,
   mortalityEventsThisWeek: MortalityDayEvent[],
-): number {
-  const kgPerBirdPerDay = hylineGramsPerBirdPerDay(ageWeeks) / 1000;
+): BrooderFeedDayBreakdown[] {
+  const gramsPerBird = hylineGramsPerBirdPerDay(ageWeeks);
+  const kgPerBirdPerDay = gramsPerBird / 1000;
 
   const wStart = new Date(weekStart);
   wStart.setUTCHours(0, 0, 0, 0);
@@ -390,12 +422,14 @@ export function brooderAdjustedWeeklyFeedKgWithMortality(
     eventsByDay.get(key)!.push(e);
   }
 
-  let totalKg = 0;
+  const days: BrooderFeedDayBreakdown[] = [];
 
   for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
     const day = new Date(wStart);
     day.setUTCDate(day.getUTCDate() + dayOffset);
     if (day.getTime() > cutoff.getTime()) break;
+
+    const startBirdCount = population;
 
     const dayEvents = (eventsByDay.get(day.getTime()) ?? []).slice().sort((a, b) => {
       const at = a.occurredAt ? a.occurredAt.getTime() : Infinity;
@@ -405,6 +439,7 @@ export function brooderAdjustedWeeklyFeedKgWithMortality(
 
     let runningPop = population;
     let segmentStartFraction = 0; // 0 = start of day, 1 = end of day
+    let dayKg = 0;
 
     for (const e of dayEvents) {
       let fraction = 1; // default: death priced as end-of-day (no proration)
@@ -423,19 +458,62 @@ export function brooderAdjustedWeeklyFeedKgWithMortality(
       }
       fraction = Math.max(segmentStartFraction, Math.min(1, fraction));
 
-      totalKg += runningPop * kgPerBirdPerDay * (fraction - segmentStartFraction);
+      dayKg += runningPop * kgPerBirdPerDay * (fraction - segmentStartFraction);
       runningPop -= e.count;
       segmentStartFraction = fraction;
     }
 
     // Remainder of the day (or the whole day, if no events) at whatever the
     // population is after all of that day's losses have been applied.
-    totalKg += runningPop * kgPerBirdPerDay * (1 - segmentStartFraction);
+    dayKg += runningPop * kgPerBirdPerDay * (1 - segmentStartFraction);
+
+    days.push({
+      date:               new Date(day),
+      startBirdCount,
+      endBirdCount:       runningPop,
+      gramsPerBirdPerDay: gramsPerBird,
+      kg:                 dayKg,
+      hadMortality:       dayEvents.length > 0,
+    });
 
     population = runningPop; // carries forward into the next day
   }
 
+  return days;
+}
+
+export function brooderAdjustedWeeklyFeedKgWithMortality(
+  currentBirdCount: number,
+  ageWeeks: number,
+  weekStart: Date,
+  upToDate: Date,
+  mortalityEventsThisWeek: MortalityDayEvent[],
+): number {
+  const days = reconstructBrooderFeedWeek(
+    currentBirdCount, ageWeeks, weekStart, upToDate, mortalityEventsThisWeek,
+  );
+  const totalKg = days.reduce((s, d) => s + d.kg, 0);
   return Math.round(totalKg * 100) / 100;
+}
+
+/**
+ * Per-day breakdown of a batch/level's feed schedule for its brooder week —
+ * "the total scheduled for the week, broken down: how much for each day, and
+ * how that day's amount was calculated." Each day's `kg` is rounded for
+ * display; the week's total (from `brooderAdjustedWeeklyFeedKgWithMortality`)
+ * is computed from the unrounded per-day slices, so it may differ from the
+ * sum of these rounded figures by a hundredth of a kg.
+ */
+export function brooderWeeklyFeedKgByDay(
+  currentBirdCount: number,
+  ageWeeks: number,
+  weekStart: Date,
+  upToDate: Date,
+  mortalityEventsThisWeek: MortalityDayEvent[],
+): BrooderFeedDayBreakdown[] {
+  return reconstructBrooderFeedWeek(
+    currentBirdCount, ageWeeks, weekStart, upToDate, mortalityEventsThisWeek,
+  ).map(d => ({ ...d, kg: Math.round(d.kg * 100) / 100 }));
 }
 
 /**
