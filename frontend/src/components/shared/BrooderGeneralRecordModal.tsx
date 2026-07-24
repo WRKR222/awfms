@@ -189,8 +189,12 @@ function GeneralFeedForm({ batch, today, onClose, qc }: {
       qc.invalidateQueries({ queryKey: ['batches'] });
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
       qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
-      qc.invalidateQueries({ queryKey: ['brooder-general-feed-logs', batch.id] });
       qc.invalidateQueries({ queryKey: ['store-issuable-items'] });
+      // This is what the attendant page's "General Record" history section
+      // (BrooderPage.tsx) actually reads from — without this, a logged
+      // entry (backdated or not) wouldn't show up there until the 30s
+      // staleTime happened to lapse on its own.
+      qc.invalidateQueries({ queryKey: ['brooder-population-record-sheet', batch.id] });
       onClose();
     },
   });
@@ -354,7 +358,7 @@ function GeneralMortalityForm({ batch, today, onClose, qc }: {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['batches'] });
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
-      qc.invalidateQueries({ queryKey: ['brooder-general-mortality-logs', batch.id] });
+      qc.invalidateQueries({ queryKey: ['brooder-population-record-sheet', batch.id] });
       if (res?.mortalityViolation?.violated) {
         setViolationMsg(res.mortalityViolation.message);
       } else {
