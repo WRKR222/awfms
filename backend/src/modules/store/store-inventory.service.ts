@@ -501,6 +501,21 @@ export class StoreInventoryService {
       dispensedMap.set(g.storeItemId, (dispensedMap.get(g.storeItemId) ?? 0) + Number(g._sum.quantityDispensedKg ?? 0));
     }
 
+    // Dispensed — feed (BrooderGeneralFeedLog), all-time. Whole-batch feed
+    // entries logged via the "General Population Record" sheet land here,
+    // not in BrooderLevelFeedLog, and were previously omitted from this
+    // sum entirely — causing Dispensed/Remaining to never reflect feed
+    // logged through that path.
+    const generalFeedGroups = await this.prisma.brooderGeneralFeedLog.groupBy({
+      by: ['storeItemId'],
+      where: { storeItemId: { in: itemIds } },
+      _sum: { quantityDispensedKg: true },
+    });
+    for (const g of generalFeedGroups) {
+      if (!g.storeItemId) continue;
+      dispensedMap.set(g.storeItemId, (dispensedMap.get(g.storeItemId) ?? 0) + Number(g._sum.quantityDispensedKg ?? 0));
+    }
+
     // Dispensed — treatments (BrooderTreatmentLog.quantityUsed), all-time.
     const treatmentGroups = await (this.prisma as any).brooderTreatmentLog.groupBy({
       by: ['storeItemId'],
