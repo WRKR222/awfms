@@ -20,8 +20,8 @@
 //            endpoint always derives from live birdCount).
 //   Req 3 — createLevelFeedLog blocks issuance that would exceed the daily
 //            HyLine ration; a BadRequestException is thrown before the DB write.
-//   Req 4 — getFeedRequirementSummary carries the current week's residual
-//            balance from the last approved IssuancePlan into the next plan.
+//   Req 4 — getFeedRequirementSummary reports the current week's schedule
+//            vs. issued kg and the net amount Store still needs to issue.
 //   Req 5 — Feed control uses HyLine g/bird/day per week (not a fixed 90g).
 //   Req 6 — checkWeightSample and getCumulativeMortalityCheck use HyLine bands.
 //   Req 7 — Feed and weight checks emit BROODER_* notification types to
@@ -2036,53 +2036,10 @@ export class BrooderService {
     };
   }
 
-  // ── Feed requirement summary (Req 4 — residual carry-forward) ────────────
+  // ── Feed requirement summary ──────────────────────────────────────────────
 
   async getFeedRequirementSummary() {
     const map = await this.getCageMap();
-
-    // Req 4: Find last week's approved issuance plan to pull residual balance.
-    const lastWeekStart = dayjs().subtract(1, 'week').startOf('week').toDate();
-    const lastWeekEnd   = dayjs().subtract(1, 'week').endOf('week').toDate();
-
-    let residualCarryForwardKg = 0;
-    try {
-      const lastPlan = await this.prisma.issuancePlan.findFirst({
-        where: {
-          weekStartDate: { gte: lastWeekStart, lte: lastWeekEnd },
-          phase: 'DECIDED' as any,
-        },
-        include: {
-          items: {
-            where: { status: 'APPROVED' as any },
-            select: { quantityPlanned: true, quantityIssued: true },
-          },
-        },
-      });
-
-      if (lastPlan) {
-        for (const item of lastPlan.items) {
-          const planned = Number(item.quantityPlanned);
-          const issued  = Number(item.quantityIssued);
-          if (planned > issued) residualCarryForwardKg += planned - issued;
-        }
-        residualCarryForwardKg = Math.round(residualCarryForwardKg * 100) / 100;
-      }
-    } catch (_) {
-      // Graceful fallback — issuance plan data not critical to display
-    }
-
-    // Early-phase residual removed along with the EARLY/TRANSITION/STANDARD
-    // phase system — it only ever applied to Week-1 batches, and the concern
-    // it was meant to catch (feed placed but not eaten) is now handled by the
-    // BROODER_EARLY_PHASE_NOT_EATING alert (checkEarlyPhaseNotEating) rather
-    // than by discounting the schedule/residual figures. `earlyPhaseResidual`
-    // is kept at 0 below purely so the API response shape (and the frontend
-    // fields that read it) don't need to change.
-    const earlyPhaseResidual = 0;
-
-    // Combine standard carry-forward + early-phase residual (always 0 now)
-    const totalResidualKg = Math.round((residualCarryForwardKg + earlyPhaseResidual) * 100) / 100;
 
     const rows = map.rows.map(row => {
       const levels            = row.levels.filter(l => l.assignment);
@@ -2173,14 +2130,10 @@ export class BrooderService {
     const totalDailyRationKg      = rows.reduce((s, r) => s + r.dailyRationKg, 0);
     const totalDispensedKgToday   = rows.reduce((s, r) => s + r.dispensedKgToday, 0);
     // Net amount Store still needs to issue this week: the full-week
-    // schedule requirement, minus feed already issued this week, minus any
-    // carry-forward/early-phase residual credit. Previously this omitted
-    // totalDispensedKg entirely, so Net-to-Issue was showing the same figure
-    // as Schedule even after feed had already gone out — this restores
-    // "Schedule − Issued − Residual" as the actual outstanding need.
+    // schedule requirement minus feed already issued this week.
     const netToIssueKg = Math.max(
       0,
-      Math.round((totalRequiredKg - totalDispensedKg - totalResidualKg) * 100) / 100,
+      Math.round((totalRequiredKg - totalDispensedKg) * 100) / 100,
     );
 
     return {
@@ -2201,9 +2154,6 @@ export class BrooderService {
       // weekly
       totalRequiredKgThisWeek:      Math.round(totalRequiredKg  * 100) / 100,
       totalDispensedKgThisWeek:     Math.round(totalDispensedKg * 100) / 100,
-      residualCarryForwardKg:       totalResidualKg,
-      earlyPhaseResidualKg:         earlyPhaseResidual,
-      standardResidualKg:           residualCarryForwardKg,
       netToIssueKg,
       // daily (NEW)
       totalDailyRationKg:           Math.round(totalDailyRationKg    * 100) / 100,
@@ -2221,8 +2171,8 @@ export class BrooderService {
   // that date at all.
   //
   // This is deliberately a plain per-calendar-date total, independent of the
-  // per-batch hatch-anchored "brooder week" used elsewhere for schedule /
-  // residual math — the PM wants "what happened each day this week", not a
+  // per-batch hatch-anchored "brooder week" used elsewhere for schedule
+  // math — the PM wants "what happened each day this week", not a
   // per-batch-relative window that resets on a different day for every batch.
   //
   // Only days from the earliest active assignment's placedDate onward are

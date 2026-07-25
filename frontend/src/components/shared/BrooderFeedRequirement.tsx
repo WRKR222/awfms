@@ -8,8 +8,7 @@
 //     • Schedule reference for the week (what the standard says the birds
 //       should eat, daily and weekly).
 //     • Amount actually issued this week per row/level.
-//     • Variance from schedule — informs the store issuance plan and
-//       residual carry-forward calculation.
+//     • Variance from schedule — informs the store issuance plan.
 //     • "No feed issued" entries show a carry-forward icon so the attendant
 //       and manager can see that the day was deliberately skipped.
 //
@@ -167,15 +166,7 @@ function RowLine({ row }: { row: FeedRequirementRow }) {
 
 // ── Main widget ───────────────────────────────────────────────────────────────
 
-interface Props {
-  // Store keeps the residual carry-forward / net-to-issue figures visible
-  // (they need them to plan issuance and avoid over-issuing). Attendants
-  // don't need — and were finding it confusing to see — a "residual feed"
-  // number here, so BrooderPage passes showResidual={false}.
-  showResidual?: boolean;
-}
-
-export function BrooderFeedRequirement({ showResidual = true }: Props) {
+export function BrooderFeedRequirement() {
   // "By row" uses the cage map's row/level bird counts — accurate only if
   // they're kept up to date as birds are moved/culled. "General" is the
   // fallback: the same schedule computed farm-wide from each batch's own
@@ -245,11 +236,7 @@ export function BrooderFeedRequirement({ showResidual = true }: Props) {
 
   const totalRequired  = data?.totalRequiredKgThisWeek  ?? 0;
   const totalDispensed = data?.totalDispensedKgThisWeek ?? 0;
-  const residual       = data?.residualCarryForwardKg   ?? 0;
   const netToIssue     = data?.netToIssueKg             ?? 0;
-
-  // earlyPhaseResidualKg: portion of residual from early-phase over-stocking
-  const earlyResidual  = (data as any)?.earlyPhaseResidualKg ?? 0;
 
   const weekVariance   = totalRequired > 0
     ? Math.round(((totalDispensed - totalRequired) / totalRequired) * 1000) / 10
@@ -270,18 +257,12 @@ export function BrooderFeedRequirement({ showResidual = true }: Props) {
           {weekVariance !== null && <VariancePill pct={weekVariance} />}
         </div>
 
-        {/* Residual carry-forward & net to issue */}
-        {showResidual && residual > 0 && (
+        {/* Net amount still needed this week */}
+        {netToIssue > 0 && (
           <div className="flex items-center gap-1.5 text-[10px] text-green-700 dark:text-green-400 font-medium">
             <Archive className="w-3 h-3" />
             <span>
-              Carry-forward residual: <strong>{residual}kg</strong>
-              {earlyResidual > 0 && (
-                <span className="text-blue-600 dark:text-blue-400 ml-1">
-                  (incl. {earlyResidual}kg early-phase)
-                </span>
-              )}
-              {' '}· Net store issuance needed: <strong>{netToIssue}kg</strong>
+              Net store issuance needed: <strong>{netToIssue}kg</strong>
             </span>
           </div>
         )}

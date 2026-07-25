@@ -100,9 +100,6 @@ interface FeedSummary {
   totalChicks:              number;
   totalRequiredKgThisWeek:  number;
   totalDispensedKgThisWeek: number;
-  residualCarryForwardKg:   number;
-  earlyPhaseResidualKg:     number;  // portion of residual from early-phase over-stocking
-  standardResidualKg:       number;  // portion from last approved issuance plan
   netToIssueKg:             number;
   rows:                     FeedSummaryRow[];
 }
@@ -242,8 +239,6 @@ export function BrooderControlStandardPanel() {
 
   const { data: batches = [] } = useBrooderBatches();
 
-  const hasResidual = (feedSummary?.residualCarryForwardKg ?? 0) > 0;
-
   const feedViolations = feedSummary?.rows.flatMap(r =>
     r.levels.filter(l => (l.feedVariancePercent ?? 0) > 10),
   ) ?? [];
@@ -331,21 +326,6 @@ export function BrooderControlStandardPanel() {
                     <p className="text-[9px] text-gray-400 uppercase">Net to Issue</p>
                   </div>
                 </div>
-
-                {hasResidual && (
-                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-2.5 text-xs text-blue-700 dark:text-blue-400 flex items-center gap-2">
-                    <Info className="w-3.5 h-3.5 flex-shrink-0" />
-                    <span>
-                      <strong>{feedSummary.residualCarryForwardKg.toFixed(2)} kg</strong> residual
-                      carried forward — deducted from this week's store issuance.
-                      {(feedSummary.earlyPhaseResidualKg ?? 0) > 0 && (
-                        <span className="ml-1 text-blue-500 dark:text-blue-300">
-                          ({feedSummary.earlyPhaseResidualKg.toFixed(2)} kg from early-phase starter feed)
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                )}
 
                 {feedViolations.length > 0 && (
                   <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-xl p-2.5 text-xs text-orange-700 dark:text-orange-400 space-y-1">

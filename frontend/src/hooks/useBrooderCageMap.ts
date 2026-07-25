@@ -140,8 +140,7 @@ export interface FeedRequirementSummary {
   totalChicks:              number;
   totalRequiredKgThisWeek:  number;
   totalDispensedKgThisWeek: number;
-  residualCarryForwardKg:   number;  // NEW — from last approved issuance plan
-  netToIssueKg:             number;  // NEW — required - residual
+  netToIssueKg:             number;  // required - dispensed, floored at 0
   rows:                     FeedRequirementRow[];
 }
 

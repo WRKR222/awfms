@@ -179,7 +179,7 @@ export class BrooderController {
 
   /** POST /brooder/feed-logs
    *  Req 3: Blocked if proposed qty + today's issued > daily HyLine ration.
-   *  Req 4: Residual carry-forward visible in GET feed-requirement-summary. */
+   *  Req 4: Schedule-vs-issued net-to-issue visible in GET feed-requirement-summary. */
   @Post('feed-logs')
   @RequirePermission(Permission.FEED_INTAKE_LOG)
   createLevelFeedLog(@Body() body: any, @CurrentUser() user: any) {

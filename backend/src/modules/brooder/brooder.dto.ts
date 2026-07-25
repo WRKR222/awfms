@@ -82,8 +82,7 @@ export type StopBulbHeatLogDto = z.infer<typeof StopBulbHeatLogSchema>;
 //   1. Normal issuance: feedType + quantityDispensedKg provided.
 //      The schedule (HyLine ration) is shown as a reference only — no
 //      hard cap is enforced.  The attendant may issue any amount; the
-//      system tracks variance for the store issuance plan and residual
-//      carry-forward calculation.
+//      system tracks variance for the store issuance plan.
 //
 //   2. No-feed-issued entry: noFeedIssued = true + noFeedIssuedReason.
 //      Records that the attendant checked and deliberately issued nothing

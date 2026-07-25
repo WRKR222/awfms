@@ -1843,10 +1843,6 @@ model IssuancePlanItem {
   /// the cap the stock-out gate enforces once an item is APPROVED — dailyBreakdown
   /// is rescaled proportionally to it at approval time for WEEKLY items.
   quantityApproved Decimal? @map("quantity_approved") @db.Decimal(10, 3)
-  /// Residual balance carried forward from the previous week's approved plan.
-  /// Stores deduct this from the current week's issuance so only the net
-  /// required quantity is issued (Req 4 — brooder feed carry-forward).
-  residualCarryForwardKg Decimal? @map("residual_carry_forward_kg") @db.Decimal(10, 3)
   /// MANUAL | PM_FEED_PLAN — auto-generated feed lines carry PM_FEED_PLAN
   source          String  @default("MANUAL") @map("source")
   notes           String?

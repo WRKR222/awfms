@@ -1278,7 +1278,7 @@ export function BrooderPage() {
 
       {/* ── SECTION 2: Feed requirement (daily/weekly toggle) ── */}
       <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4">
-        <BrooderFeedRequirement showResidual={false} />
+        <BrooderFeedRequirement />
       </div>
 
       {/* ── SECTION 3: Cage Map with mortality buttons prominent ── */}
