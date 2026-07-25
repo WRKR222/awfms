@@ -156,8 +156,13 @@ function ItemRow({
           {item.quantityApproved != null ? Number(item.quantityApproved).toFixed(2) : '—'}
         </span></span>
         <span>Issued: <span className="font-semibold text-gray-700 dark:text-gray-300">{Number(item.quantityIssued).toFixed(2)}</span></span>
-        <span>Value: <span className="font-semibold text-brand-green">
+      </div>
+      <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 flex-wrap gap-y-1">
+        <span>Approved value: <span className="font-semibold text-brand-green">
           {fmtKES(Number(item.quantityApproved ?? item.quantityPlanned) * Number(item.unitPriceKes))}
+        </span></span>
+        <span>Issued value: <span className="font-semibold text-amber-600 dark:text-amber-400">
+          {fmtKES(Number(item.quantityIssued) * Number(item.unitPriceKes))}
         </span></span>
       </div>
       {item.quantityApproved != null && Number(item.quantityApproved) !== Number(item.quantityPlanned) && (
@@ -320,9 +325,15 @@ function PlanCard({
   const canPdf = approvedCount > 0 && ['STORE', 'ACCOUNTANT', 'OWNER'].includes(userRole);
 
   const totalKes = items.reduce((s: number, i: any) => s + Number(i.quantityPlanned) * Number(i.unitPriceKes), 0);
-  const approvedKes = items
-    .filter((i: any) => i.status === 'APPROVED')
-    .reduce((s: number, i: any) => s + Number(i.quantityPlanned) * Number(i.unitPriceKes), 0);
+  const approvedItemsList = items.filter((i: any) => i.status === 'APPROVED');
+  const approvedKes = approvedItemsList.reduce(
+    (s: number, i: any) => s + Number(i.quantityApproved ?? i.quantityPlanned) * Number(i.unitPriceKes),
+    0,
+  );
+  const issuedKes = approvedItemsList.reduce(
+    (s: number, i: any) => s + Number(i.quantityIssued ?? 0) * Number(i.unitPriceKes),
+    0,
+  );
 
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border overflow-hidden">
@@ -390,9 +401,14 @@ function PlanCard({
           )}
 
           {items.length > 0 && (
-            <div className="flex items-center justify-between text-xs font-bold pt-1 border-t border-gray-100 dark:border-dark-border">
-              <span className="text-gray-500">Total requested: {fmtKES(totalKes)}</span>
-              <span className="text-brand-green">Approved value: {fmtKES(approvedKes)}</span>
+            <div className="flex flex-col gap-1 text-xs font-bold pt-1 border-t border-gray-100 dark:border-dark-border">
+              <div className="flex items-center justify-between flex-wrap gap-y-1">
+                <span className="text-gray-500">Total requested: {fmtKES(totalKes)}</span>
+                <span className="text-brand-green">Total approved value: {fmtKES(approvedKes)}</span>
+              </div>
+              <div className="flex items-center justify-end">
+                <span className="text-amber-600 dark:text-amber-400">Total issued value: {fmtKES(issuedKes)}</span>
+              </div>
             </div>
           )}
 

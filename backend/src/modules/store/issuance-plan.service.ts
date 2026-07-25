@@ -1069,27 +1069,33 @@ export class IssuancePlanService {
     const brand = '#2d7a4f';
     const light = '#f5f5f5';
     const pageBottom = doc.page.height - doc.page.margins.bottom;
-    const colWidths = isEmergency
-      ? [200, 70, 90, 90, 125]
-      : [150, 50, 50, 50, 50, 50, 50, 55, 70];
+    // Table width is derived from the actual page/margins rather than hardcoded,
+    // so columns always sum to the printable area and never run past the edge.
+    const tableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    // Fractions of tableWidth — always sum to 1, so widths scale to fit whatever
+    // the printable area turns out to be instead of a fixed pixel total.
+    const colFractions = isEmergency
+      ? [0.24, 0.09, 0.09, 0.1, 0.15, 0.15, 0.18]
+      : [0.24, 0.072, 0.072, 0.072, 0.072, 0.072, 0.072, 0.072, 0.222];
+    const colWidths = colFractions.map((f) => f * tableWidth);
     const headers = isEmergency
-      ? ['Item', 'Qty', 'Unit Price (KES)', 'Line Total (KES)', 'Approved By']
+      ? ['Item', 'Qty App.', 'Qty Issued', 'Unit Price', 'Approved Value', 'Issued Value', 'Approved By']
       : ['Item', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN', 'Approved By'];
-    const tableWidth = colWidths.reduce((a, b) => a + b, 0);
 
     // Draws the table header row at the current doc.y and returns the y just below it.
+    const headerRowHeight = isEmergency ? 20 : 16;
     const drawTableHeader = () => {
       const top = doc.y;
-      doc.rect(50, top, tableWidth, 16).fill(brand);
+      doc.rect(50, top, tableWidth, headerRowHeight).fill(brand);
       let hx = 50;
       headers.forEach((h, i) => {
         doc
           .fillColor('#fff')
-          .fontSize(7.5)
-          .text(h, hx + 3, top + 4, { width: colWidths[i] - 4, align: i === 0 ? 'left' : 'center' });
+          .fontSize(isEmergency ? 6.5 : 7.5)
+          .text(h, hx + 3, top + (isEmergency ? 6 : 4), { width: colWidths[i] - 4, align: i === 0 ? 'left' : 'center' });
         hx += colWidths[i];
       });
-      return top + 17;
+      return top + headerRowHeight + 1;
     };
 
     // Ensures there's room for one more row; if not, starts a new page and redraws the header.
@@ -1146,20 +1152,33 @@ export class IssuancePlanService {
         .text(`${item.storeItem.name} (${item.storeItem.unit})`, cx + 3, rowY + 3, { width: colWidths[0] - 4 });
       cx += colWidths[0];
 
+      // Approved qty is the Director-approved cap (falls back to what was requested
+      // for older items with no approvedQty recorded); issued qty is what's actually
+      // gone out against this line so far — the two can legitimately differ.
+      const qtyApproved = Number(item.quantityApproved ?? item.quantityPlanned ?? 0);
+      const qtyIssued = Number(item.quantityIssued ?? 0);
+      const unitPrice = Number(item.unitPriceKes ?? 0);
+      const approvedValue = qtyApproved * unitPrice;
+      const issuedValue = qtyIssued * unitPrice;
+
       if (isEmergency) {
-        const qty = Number(item.quantityPlanned ?? 0);
-        const unitPrice = Number(item.unitPriceKes ?? 0);
-        doc.text(qty.toFixed(2), cx + 3, rowY + 3, { width: colWidths[1] - 4, align: 'center' });
+        doc.fontSize(6.5);
+        doc.text(qtyApproved.toFixed(2), cx + 3, rowY + 3, { width: colWidths[1] - 4, align: 'center' });
         cx += colWidths[1];
-        doc.text(unitPrice.toFixed(2), cx + 3, rowY + 3, { width: colWidths[2] - 4, align: 'center' });
+        doc.text(qtyIssued.toFixed(2), cx + 3, rowY + 3, { width: colWidths[2] - 4, align: 'center' });
         cx += colWidths[2];
-        doc.text((qty * unitPrice).toFixed(2), cx + 3, rowY + 3, { width: colWidths[3] - 4, align: 'center' });
+        doc.text(unitPrice.toFixed(2), cx + 3, rowY + 3, { width: colWidths[3] - 4, align: 'center' });
         cx += colWidths[3];
-        doc.text(item.directorApprovedBy?.fullName ?? '—', cx + 3, rowY + 3, { width: colWidths[4] - 4, align: 'center' });
+        doc.text(approvedValue.toFixed(2), cx + 3, rowY + 3, { width: colWidths[4] - 4, align: 'center' });
+        cx += colWidths[4];
+        doc.text(issuedValue.toFixed(2), cx + 3, rowY + 3, { width: colWidths[5] - 4, align: 'center' });
+        cx += colWidths[5];
+        doc.fontSize(7);
+        doc.text(item.directorApprovedBy?.fullName ?? '—', cx + 3, rowY + 3, { width: colWidths[6] - 4, align: 'center' });
       } else {
         const breakdown = item.dailyBreakdown as Record<string, number> | null;
         DAY_KEYS.forEach((k, i) => {
-          const val = breakdown ? (breakdown[k] ?? 0).toFixed(2) : '—';
+          const val = breakdown ? (breakdown[k] ?? 0).toFixed(1) : '—';
           doc.text(val, cx + 3, rowY + 3, { width: colWidths[i + 1] - 4, align: 'center' });
           cx += colWidths[i + 1];
         });
@@ -1173,6 +1192,23 @@ export class IssuancePlanService {
           .fillColor('#666')
           .fontSize(6.5)
           .text(`Note: ${item.notes}`, 53, rowY + 1, { width: tableWidth - 6 });
+        rowY += rowHeight;
+      }
+
+      // Weekly rows only show the daily allocation in the table itself (7 day
+      // columns already fill the row); approved/issued value goes on a compact
+      // sub-row underneath so it never has to share column space with the days.
+      if (!isEmergency) {
+        rowY = ensureRowSpace(rowY, rowHeight);
+        doc
+          .fillColor('#666')
+          .fontSize(6.5)
+          .text(
+            `Approved: ${qtyApproved.toFixed(2)} ${item.storeItem.unit} · KES ${approvedValue.toLocaleString('en-KE', { minimumFractionDigits: 2 })}   |   Issued: ${qtyIssued.toFixed(2)} ${item.storeItem.unit} · KES ${issuedValue.toLocaleString('en-KE', { minimumFractionDigits: 2 })}`,
+            53,
+            rowY + 1,
+            { width: tableWidth - 6 },
+          );
         rowY += rowHeight;
       }
     });
@@ -1196,15 +1232,23 @@ export class IssuancePlanService {
       }
     }
 
-    const totalKes = approvedItems.reduce(
-      (s: number, i: any) => s + Number(i.quantityPlanned) * Number(i.unitPriceKes),
+    // Approved value uses the Director-approved quantity (falling back to what was
+    // requested only for older items with no approvedQty recorded) — this matches
+    // the per-item cap the stock-out gate actually enforces, not the raw request.
+    const totalApprovedKes = approvedItems.reduce(
+      (s: number, i: any) => s + Number(i.quantityApproved ?? i.quantityPlanned) * Number(i.unitPriceKes),
+      0,
+    );
+    const totalIssuedKes = approvedItems.reduce(
+      (s: number, i: any) => s + Number(i.quantityIssued ?? 0) * Number(i.unitPriceKes),
       0,
     );
     doc.moveDown(1);
     doc
       .fontSize(10)
       .fillColor(brand)
-      .text(`Total Approved Value: KES ${totalKes.toLocaleString('en-KE', { minimumFractionDigits: 2 })}`, { align: 'right' });
+      .text(`Total Approved Value: KES ${totalApprovedKes.toLocaleString('en-KE', { minimumFractionDigits: 2 })}`, { align: 'right' })
+      .text(`Total Issued Value: KES ${totalIssuedKes.toLocaleString('en-KE', { minimumFractionDigits: 2 })}`, { align: 'right' });
 
     doc
       .moveDown(2)
