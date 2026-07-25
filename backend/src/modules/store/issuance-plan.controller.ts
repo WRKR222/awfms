@@ -16,6 +16,7 @@ import {
   CreateIssuancePlanDto,
   UpdateIssuancePlanDto,
   RejectIssuancePlanItemDto,
+  ApproveIssuancePlanItemDto,
   SetFeedConsumptionPlanDto,
 } from './issuance-plan.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -87,12 +88,13 @@ export class IssuancePlanController {
   approveItem(
     @Param('id') id: string,
     @Param('itemId') itemId: string,
+    @Body() dto: ApproveIssuancePlanItemDto,
     @CurrentUser() user: any,
   ) {
     if (user.role !== 'OWNER') {
       throw new ForbiddenException('Only the Director can approve issuance plan items');
     }
-    return this.svc.approveItem(id, itemId, user.id, user.role);
+    return this.svc.approveItem(id, itemId, user.id, user.role, dto?.quantityApproved);
   }
 
   @Patch(':id/items/:itemId/reject')

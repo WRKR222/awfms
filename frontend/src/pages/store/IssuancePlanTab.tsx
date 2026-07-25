@@ -93,10 +93,13 @@ function ItemRow({
   const qc = useQueryClient();
   const [showReject, setShowReject] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  const [approvedQty, setApprovedQty] = useState(String(Number(item.quantityPlanned)));
 
   const approveMutation = useMutation({
     mutationFn: () =>
-      api.patch(`/store/issuance-plans/${plan.id}/items/${item.id}/approve`).then(r => r.data),
+      api.patch(`/store/issuance-plans/${plan.id}/items/${item.id}/approve`, {
+        quantityApproved: approvedQty ? Number(approvedQty) : undefined,
+      }).then(r => r.data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['issuance-plans'] }); onRefresh(); },
   });
 
@@ -147,11 +150,21 @@ function ItemRow({
         </div>
       )}
 
-      <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-        <span>Total: <span className="font-semibold text-gray-700 dark:text-gray-300">{Number(item.quantityPlanned).toFixed(2)} {item.storeItem?.unit ?? ''}</span></span>
+      <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 flex-wrap gap-y-1">
+        <span>Requested: <span className="font-semibold text-gray-700 dark:text-gray-300">{Number(item.quantityPlanned).toFixed(2)} {item.storeItem?.unit ?? ''}</span></span>
+        <span>Approved: <span className="font-semibold text-gray-700 dark:text-gray-300">
+          {item.quantityApproved != null ? Number(item.quantityApproved).toFixed(2) : '—'}
+        </span></span>
         <span>Issued: <span className="font-semibold text-gray-700 dark:text-gray-300">{Number(item.quantityIssued).toFixed(2)}</span></span>
-        <span>Value: <span className="font-semibold text-brand-green">{fmtKES(Number(item.quantityPlanned) * Number(item.unitPriceKes))}</span></span>
+        <span>Value: <span className="font-semibold text-brand-green">
+          {fmtKES(Number(item.quantityApproved ?? item.quantityPlanned) * Number(item.unitPriceKes))}
+        </span></span>
       </div>
+      {item.quantityApproved != null && Number(item.quantityApproved) !== Number(item.quantityPlanned) && (
+        <p className="text-[11px] text-amber-600 dark:text-amber-400">
+          Approved quantity differs from what was requested.
+        </p>
+      )}
 
       {item.status === 'REJECTED' && item.rejectionReason && (
         <p className="text-xs text-red-500">
@@ -169,12 +182,31 @@ function ItemRow({
         </p>
       )}
 
+      {canApprove && !showReject && (
+        <div className="flex items-end gap-2">
+          <div className="flex-1 max-w-[140px]">
+            <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">
+              Approved qty {item.storeItem?.unit ? `(${item.storeItem.unit.toLowerCase()})` : ''}
+            </label>
+            <input
+              type="number" step="0.001" min="0" max={Number(item.quantityPlanned)}
+              value={approvedQty}
+              onChange={e => setApprovedQty(e.target.value)}
+              className="w-full border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1 text-xs bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-brand-green"
+            />
+          </div>
+          <p className="text-[10px] text-gray-400 pb-1.5">
+            of {Number(item.quantityPlanned).toFixed(2)} requested
+          </p>
+        </div>
+      )}
+
       {(canApprove || canReject) && !showReject && (
         <div className="flex gap-2 pt-1">
           {canApprove && (
             <button
               onClick={() => approveMutation.mutate()}
-              disabled={approveMutation.isPending}
+              disabled={approveMutation.isPending || !approvedQty || Number(approvedQty) <= 0 || Number(approvedQty) > Number(item.quantityPlanned)}
               className="flex items-center gap-1 bg-green-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-green-700 transition-colors disabled:opacity-50"
             >
               <CheckCircle className="w-3 h-3" /> {approveMutation.isPending ? 'Approving…' : 'Approve'}

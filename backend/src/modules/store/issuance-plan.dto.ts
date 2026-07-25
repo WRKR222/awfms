@@ -86,6 +86,19 @@ export class RejectIssuancePlanItemDto {
   rejectionReason: string;
 }
 
+/**
+ * Body for approving a single line item (PATCH .../items/:itemId/approve).
+ * quantityApproved is optional — if omitted, the service defaults it to the
+ * full quantityPlanned (i.e. "approved as requested"). Provide it whenever
+ * the Director is approving a different amount than was requested, which is
+ * common for feed where store availability doesn't always match the ask.
+ */
+export class ApproveIssuancePlanItemDto {
+  @IsOptional()
+  @Transform(toNum) @IsNumber() @Min(0.001)
+  quantityApproved?: number;
+}
+
 export class SetFeedConsumptionPlanDto {
   /** ISO date string for Monday of the target week */
   @IsDateString()

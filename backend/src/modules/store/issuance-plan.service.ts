@@ -523,7 +523,13 @@ export class IssuancePlanService {
    * Director moves it PENDING_DIRECTOR → APPROVED.
    * Sibling items on the same plan are completely unaffected.
    */
-  async approveItem(planId: string, itemId: string, userId: string, userRole: string) {
+  async approveItem(
+    planId: string,
+    itemId: string,
+    userId: string,
+    userRole: string,
+    quantityApproved?: number,
+  ) {
     if (userRole !== 'OWNER') {
       throw new ForbiddenException('Only the Director can approve issuance plan items');
     }
@@ -538,22 +544,56 @@ export class IssuancePlanService {
       throw new BadRequestException('This item is not awaiting Director approval');
     }
 
+    const qtyPlanned = Number(item.quantityPlanned);
+    // Default: approved as requested. Director can override with a lower (or
+    // equal) figure — e.g. feed requested at 1200kg but only 1000kg approved.
+    const approvedQty = quantityApproved != null ? Number(quantityApproved) : qtyPlanned;
+
+    if (!isFinite(approvedQty) || approvedQty <= 0) {
+      throw new BadRequestException('Approved quantity must be greater than 0');
+    }
+    if (approvedQty > qtyPlanned) {
+      throw new BadRequestException(
+        `Approved quantity (${approvedQty.toFixed(3)}) cannot exceed the requested quantity (${qtyPlanned.toFixed(3)}).`,
+      );
+    }
+
+    // For WEEKLY items, the stock-out gate checks each day against
+    // dailyBreakdown, not against quantityPlanned directly — so if the
+    // approved total is less than what was requested, rescale each day's
+    // allowance proportionally to keep the gate consistent with the approval.
+    let newBreakdown: Record<string, number> | undefined;
+    const breakdown = item.dailyBreakdown as Record<string, number> | null;
+    if (breakdown && approvedQty !== qtyPlanned && qtyPlanned > 0) {
+      const factor = approvedQty / qtyPlanned;
+      newBreakdown = {};
+      for (const [day, kg] of Object.entries(breakdown)) {
+        newBreakdown[day] = Math.round(Number(kg ?? 0) * factor * 1000) / 1000;
+      }
+    }
+
     await this.prisma.issuancePlanItem.update({
       where: { id: itemId },
       data: {
         status: 'APPROVED',
         directorApprovedById: userId,
         directorApprovedAt: new Date(),
+        quantityApproved: approvedQty,
+        ...(newBreakdown ? { dailyBreakdown: newBreakdown } : {}),
       },
     });
     await this.syncPhase(planId);
+
+    const qtyNote = approvedQty !== qtyPlanned
+      ? ` Approved for ${approvedQty.toFixed(2)} ${item.storeItem.unit ?? ''} (requested ${qtyPlanned.toFixed(2)}).`
+      : '';
 
     // Notify Store that this item is now authorised for stock issuance
     await this.notifications.notifyRole(
       UserRole.STORE,
       NotificationType.ISSUANCE_PLAN_APPROVED as any,
       'Issuance Plan Item Approved — Stock Can Now Be Issued',
-      `"${item.storeItem.name}" on plan ${item.plan.planRef} has been approved by the Director. You may now issue stock against this line.`,
+      `"${item.storeItem.name}" on plan ${item.plan.planRef} has been approved by the Director.${qtyNote} You may now issue stock against this line.`,
       { entityId: planId, entityType: 'IssuancePlan' },
     );
 
@@ -563,7 +603,7 @@ export class IssuancePlanService {
       UserRole.ACCOUNTANT,
       NotificationType.ISSUANCE_PLAN_APPROVED as any,
       `Director Approved Issuance — ${item.plan.planRef}`,
-      `Director approved "${item.storeItem.name}" on plan ${item.plan.planRef}. Stock issuance for this item is now active.`,
+      `Director approved "${item.storeItem.name}" on plan ${item.plan.planRef}.${qtyNote} Stock issuance for this item is now active.`,
       { entityId: planId, entityType: 'IssuancePlan' },
     );
 
@@ -737,7 +777,8 @@ export class IssuancePlanService {
     });
 
     for (const eItem of emergencyItems) {
-      const remaining = Number(eItem.quantityPlanned) - Number(eItem.quantityIssued);
+      const cap = eItem.quantityApproved != null ? Number(eItem.quantityApproved) : Number(eItem.quantityPlanned);
+      const remaining = cap - Number(eItem.quantityIssued);
       if (remaining >= quantityOut) {
         return { planId: eItem.planId, planItemId: eItem.id };
       }
