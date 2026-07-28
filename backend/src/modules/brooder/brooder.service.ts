@@ -68,6 +68,7 @@ import {
   CreateBrooderWeightSampleSchema,
   CreateGeneralFeedLogSchema,
   CreateGeneralMortalityLogSchema,
+  CreateStockCountSchema,
 } from './brooder.dto';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
@@ -105,7 +106,7 @@ export class BrooderService {
 
   // ── Notify MANAGER + OWNER ────────────────────────────────────────────────
   private async alertRoles(
-    type: 'BROODER_FEED_OVERISSUE' | 'BROODER_WEIGHT_ANOMALY' | 'BROODER_MORTALITY_HIGH',
+    type: 'BROODER_FEED_OVERISSUE' | 'BROODER_WEIGHT_ANOMALY' | 'BROODER_MORTALITY_HIGH' | 'BROODER_STOCK_MISMATCH',
     title: string,
     message: string,
     entityId?: string,
@@ -1771,6 +1772,105 @@ export class BrooderService {
       where:   { batchId },
       orderBy: { logDate: 'desc' },
       take:    limit,
+      include: { loggedBy: { select: { id: true, fullName: true } } },
+    });
+  }
+
+  // ── Stock count (opening / closing stock reconciliation) ─────────────────
+  //
+  // The farm's paper daily record sheet always carries an Opening Stock and
+  // Closing Stock for the whole batch. Opening stock is normally just the
+  // previous day's closing stock carried forward — but the farm sometimes
+  // performs a physical bird count that finds fewer birds than expected.
+  // That's captured here as a `variance` against the `expectedOpeningStock`
+  // (the most recent prior stock count's closingStock), and flagged to
+  // Manager/Owner so the shrinkage gets investigated, without blocking the
+  // attendant's save.
+
+  /** What the attendant's Opening Stock field should default to: the most
+   *  recent stock count's closingStock for this batch, or the batch's
+   *  current live bird count if no stock count has ever been logged. */
+  async getExpectedOpeningStock(batchId: string) {
+    const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const latest = await this.prisma.brooderStockCount.findFirst({
+      where:   { batchId },
+      orderBy: { logDate: 'desc' },
+    });
+
+    return latest
+      ? { expectedOpeningStock: latest.closingStock, asOfDate: dayjs(latest.logDate).format('YYYY-MM-DD'), source: 'STOCK_COUNT' as const }
+      : { expectedOpeningStock: batch.currentBirdCount, asOfDate: null, source: 'BATCH_CURRENT_COUNT' as const };
+  }
+
+  async createStockCount(input: unknown, userId: string) {
+    const dto = parseOrThrow(CreateStockCountSchema, input);
+    const logDate = new Date(dto.logDate);
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    // Expected opening stock = the closingStock of the most recent stock
+    // count strictly before this logDate (so re-saving the same day's entry
+    // doesn't compare against itself), or null if this is the batch's first
+    // ever stock count.
+    const previous = await this.prisma.brooderStockCount.findFirst({
+      where:   { batchId: dto.batchId, logDate: { lt: logDate } },
+      orderBy: { logDate: 'desc' },
+    });
+    const expectedOpeningStock = previous ? previous.closingStock : null;
+    const variance = expectedOpeningStock !== null ? dto.openingStock - expectedOpeningStock : 0;
+
+    const record = await this.prisma.brooderStockCount.upsert({
+      where:  { batchId_logDate: { batchId: dto.batchId, logDate } },
+      create: {
+        batchId:              dto.batchId,
+        logDate,
+        openingStock:         dto.openingStock,
+        expectedOpeningStock,
+        variance,
+        varianceReason:       dto.varianceReason ?? null,
+        mortalityCount:       dto.mortalityCount,
+        cullingCount:         dto.cullingCount,
+        closingStock:         dto.closingStock,
+        notes:                dto.notes ?? null,
+        loggedById:           userId,
+      },
+      update: {
+        openingStock:         dto.openingStock,
+        expectedOpeningStock,
+        variance,
+        varianceReason:       dto.varianceReason ?? null,
+        mortalityCount:       dto.mortalityCount,
+        cullingCount:         dto.cullingCount,
+        closingStock:         dto.closingStock,
+        notes:                dto.notes ?? null,
+        loggedById:           userId,
+      },
+    });
+
+    if (variance !== 0) {
+      const direction = variance < 0 ? 'fewer' : 'more';
+      const title   = `⚠ Brooder Stock Count Mismatch — ${batch.batchCode}`;
+      const message =
+        `Opening stock on ${dayjs(logDate).format('D MMM YYYY')} was counted at ` +
+        `${dto.openingStock.toLocaleString()}, ${Math.abs(variance).toLocaleString()} ${direction} than ` +
+        `the expected ${expectedOpeningStock!.toLocaleString()} (previous day's closing stock).` +
+        (dto.varianceReason ? ` Reason given: ${dto.varianceReason}.` : ' No reason given yet.');
+      await this.alertRoles('BROODER_STOCK_MISMATCH', title, message, dto.batchId);
+      this.logger.warn(`[BrooderControl] ${title}: ${message}`);
+    }
+
+    this.refresh();
+    return record;
+  }
+
+  async listStockCounts(batchId: string, days = 30) {
+    const since = dayjs().subtract(days, 'day').startOf('day').toDate();
+    return this.prisma.brooderStockCount.findMany({
+      where:   { batchId, logDate: { gte: since } },
+      orderBy: { logDate: 'desc' },
       include: { loggedBy: { select: { id: true, fullName: true } } },
     });
   }

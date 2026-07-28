@@ -154,6 +154,7 @@ enum NotificationType {
   BROODER_FEED_OVERISSUE    // feed issued > calculated HyLine daily ration for a level
   BROODER_WEIGHT_ANOMALY    // bird weight sample outside HyLine min/max band
   BROODER_MORTALITY_HIGH    // cumulative mortality % exceeds HyLine week ceiling
+  BROODER_STOCK_MISMATCH    // physical bird count (opening stock) doesn't match previous day's closing stock
   REORDER_ALERT             // store item at/below reorder level after a stock-out
   // PM weekly item requisition (PM → Store, folded into the Issuance Plan)
   PM_REQUISITION_SUBMITTED       // PM submitted their weekly item list to Store
@@ -300,6 +301,7 @@ model User {
   brooderMortalityLogs     BrooderLevelMortalityLog[] @relation("BrooderMortalityLoggedBy")
   brooderGeneralFeedLogs      BrooderGeneralFeedLog[]      @relation("BrooderGeneralFeedLoggedBy")
   brooderGeneralMortalityLogs BrooderGeneralMortalityLog[] @relation("BrooderGeneralMortalityLoggedBy")
+  brooderStockCounts          BrooderStockCount[]          @relation("BrooderStockCountLoggedBy")
 
 
   @@map("users")
@@ -416,8 +418,7 @@ model Batch {
   brooderMortalityLogs     BrooderLevelMortalityLog[]
   brooderGeneralFeedLogs      BrooderGeneralFeedLog[]
   brooderGeneralMortalityLogs BrooderGeneralMortalityLog[]
-
-  @@index([houseId])
+  brooderStockCounts          BrooderStockCount[]
   @@index([stage])
   @@index([isActive])
   @@map("batches")
@@ -1702,6 +1703,41 @@ model BrooderGeneralMortalityLog {
 
   @@index([batchId, logDate])
   @@map("brooder_general_mortality_logs")
+}
+
+/// Whole-batch opening/closing stock reconciliation — one entry per
+/// (batch, logDate), mirroring the O.stock / C.stock columns on the farm's
+/// paper daily record sheet. `openingStock` is normally just the previous
+/// day's `closingStock` carried forward, but the farm sometimes performs a
+/// physical bird count that turns up fewer birds than expected — this is
+/// captured by comparing `openingStock` against `expectedOpeningStock`
+/// (a snapshot of the previous day's closingStock, taken at write time so
+/// the audit trail doesn't shift if earlier days are edited later).
+/// `variance` = openingStock - expectedOpeningStock (negative = shortfall).
+/// A non-zero variance fires BROODER_STOCK_MISMATCH to Manager + Owner —
+/// it's flagged for visibility, never blocked.
+model BrooderStockCount {
+  id                    String   @id @default(uuid())
+  batchId               String   @map("batch_id")
+  logDate               DateTime @map("log_date") @db.Date
+  openingStock          Int      @map("opening_stock")
+  expectedOpeningStock  Int?     @map("expected_opening_stock")
+  variance              Int      @default(0) @map("variance")
+  varianceReason        String?  @map("variance_reason")
+  mortalityCount        Int      @default(0) @map("mortality_count")
+  cullingCount          Int      @default(0) @map("culling_count")
+  closingStock          Int      @map("closing_stock")
+  notes                 String?
+  loggedById            String   @map("logged_by_id")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  batch    Batch @relation(fields: [batchId], references: [id])
+  loggedBy User  @relation("BrooderStockCountLoggedBy", fields: [loggedById], references: [id])
+
+  @@unique([batchId, logDate])
+  @@index([batchId, logDate])
+  @@map("brooder_stock_counts")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

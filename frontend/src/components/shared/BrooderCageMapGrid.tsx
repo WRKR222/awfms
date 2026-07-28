@@ -1,15 +1,22 @@
 // src/components/shared/BrooderCageMapGrid.tsx
 // Brooder Cage Map — fixed 6 rows/decks × 4 levels (bottom→top) grid.
 //
-// FIXES:
-//  • LevelCell — action buttons moved OUT of absolute positioning into a
-//    dedicated bottom bar so they never overlap batch name / content.
-//  • Mobile: icons stay in their own row, always visible, never clipping
-//    onto an adjacent level tab.
+// The cage map is now VIEW + ASSIGN only, plus one action:
+//   • Tap an EMPTY cell            → assign a batch to it.
+//   • Tap an OCCUPIED cell, or its
+//     "Daily Log" action button    → opens the unified Daily Log form
+//     (session / daily entry / treatment / feed / mortality — one submit),
+//     pre-scoped to that row & level.
+//
+// Removed from the cage map (per farm-ops simplification): the old
+// "Reassign birds" button, "Log Weight", "Log Mortality", and "Log heat"
+// row-level action. Reassign's old slot is now the Daily Log action;
+// mortality can still be logged per-row/level/cage — just via the Daily
+// Log form's Mortality section instead of a dedicated cage-map button.
 
 import { useState } from 'react';
 import {
-  Flame, Zap, Bird, AlertTriangle, CheckCircle2, Clock, Layers, XCircle, ArrowLeftRight, Scale, Grid3x3, Lock,
+  Flame, Bird, AlertTriangle, CheckCircle2, Clock, Layers, Grid3x3, Lock, ClipboardList,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import {
@@ -26,63 +33,25 @@ function varianceColor(pct: number | null) {
   return 'text-orange-400';
 }
 
-function HeatBadge({ heat }: { heat: BrooderRowData['heatToday'] }) {
-  if (!heat) {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-gray-800 text-gray-500">
-        <AlertTriangle className="w-2.5 h-2.5" /> No heat logged today
-      </span>
-    );
-  }
-  if (heat.sourceType === 'CHARCOAL') {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-orange-900/40 text-orange-300 font-semibold">
-        <Flame className="w-2.5 h-2.5" /> {heat.charcoalKg ?? 0}kg charcoal
-      </span>
-    );
-  }
-  const minutes = heat.bulbMinutesOn ?? 0;
-  const hrs  = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  return (
-    <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-semibold ${
-      heat.isRunning
-        ? 'bg-amber-900/40 text-amber-300 animate-pulse'
-        : 'bg-gray-800 text-gray-400'
-    }`}>
-      <Zap className="w-2.5 h-2.5" />
-      {heat.isRunning ? 'Bulb ON · ' : 'Bulb · '}
-      {hrs > 0 ? `${hrs}h ` : ''}{mins}m{heat.isRunning ? ' so far' : ' total'}
-      {heat.bulbCount ? ` (${heat.bulbCount}x)` : ''}
-    </span>
-  );
-}
-
 // ── Level cell ────────────────────────────────────────────────────────────────
 // Layout:
 //   ┌──────────────────────────────┐
-//   │ LEVEL LABEL        ✓ (feed) │  ← label row (no absolute icons!)
+//   │ LEVEL LABEL                  │  ← label row
 //   │ BatchCode                    │
 //   │ 🐦 1,200 birds  wk3         │
 //   │ Today: 1.2/1.5kg            │
 //   │ Week: 8.4/10kg              │
 //   │ ⚖ 320g (300-340g)           │
 //   ├──────────────────────────────┤
-//   │  ↔ Reassign  ⚖ Weight  ✕ Mort│  ← action bar — always below content
+//   │           📋 Daily Log       │  ← action bar — always below content
 //   └──────────────────────────────┘
 
 function LevelCell({
   level,
-  onSelect,
-  onLogMortality,
-  onReassign,
-  onLogWeight,
+  onOpenLog,
 }: {
-  level:          BrooderLevelData;
-  onSelect:       (level: BrooderLevelData) => void;
-  onLogMortality: (level: BrooderLevelData) => void;
-  onReassign:     (level: BrooderLevelData) => void;
-  onLogWeight:    (level: BrooderLevelData) => void;
+  level:     BrooderLevelData;
+  onOpenLog: (level: BrooderLevelData) => void;
 }) {
   const occupied = !!level.assignment;
   const [showCages, setShowCages] = useState(false);
@@ -117,12 +86,12 @@ function LevelCell({
             : 'bg-amber-950/30 border-amber-700/40 hover:border-amber-500/60'
         : 'bg-white/5 border-white/10 hover:border-white/20'
     }`}>
-      {/* ── Content area — tapping opens feed log ── */}
+      {/* ── Content area — tapping opens the Daily Log form (occupied) or
+           the assign flow (empty), handled by the parent's onSelect ── */}
       <button
-        onClick={() => onSelect(level)}
+        onClick={() => onOpenLog(level)}
         className="w-full text-left p-2.5 flex-1"
       >
-        {/* Label row — no absolute-positioned buttons, so no overlap */}
         <div className="flex items-center justify-between gap-1 min-w-0">
           <span className="text-[9px] font-bold text-white/40 uppercase tracking-wider shrink-0">
             {level.label}
@@ -141,7 +110,6 @@ function LevelCell({
 
         {occupied ? (
           <>
-            {/* Batch code — full width, no icons competing for space */}
             <p className="text-[11px] font-bold text-white mt-1 font-mono truncate w-full">
               {level.batch?.batchCode}
             </p>
@@ -173,7 +141,7 @@ function LevelCell({
               <p className={`text-[9px] mt-0.5 flex items-center gap-1 font-semibold ${
                 weightFlagged ? 'text-red-400' : 'text-green-400'
               }`}>
-                {weightFlagged ? <AlertTriangle className="w-2.5 h-2.5" /> : <Scale className="w-2.5 h-2.5" />}
+                {weightFlagged ? <AlertTriangle className="w-2.5 h-2.5" /> : null}
                 {level.weightCheck.averageWeightG.toFixed(0)}g
                 <span className="text-white/30">({level.weightCheck.minG}-{level.weightCheck.maxG}g)</span>
               </p>
@@ -193,13 +161,11 @@ function LevelCell({
             )}
           </>
         ) : (
-          <p className="text-[10px] text-white/25 mt-2">Empty</p>
+          <p className="text-[10px] text-white/25 mt-2">Empty — tap to assign</p>
         )}
       </button>
 
-      {/* ── Per-cage breakdown — collapsed by default (44 cages/level is a
-           lot of chrome); tap to see exactly how the level's birds are
-           split across its individual cages. ── */}
+      {/* ── Per-cage breakdown — collapsed by default ── */}
       {occupiedCages.length > 0 && (
         <div className="border-t border-white/5">
           <button
@@ -241,31 +207,16 @@ function LevelCell({
         </div>
       )}
 
-      {/* ── Action bar — lives BELOW content, never overlaps ── */}
+      {/* ── Action bar — Daily Log (session/daily entry/treatment/feed/mortality) ── */}
       {occupied && (
         <div className="flex items-center justify-end gap-0.5 px-2 pb-1.5 pt-1 border-t border-white/5">
           <button
-            onClick={e => { e.stopPropagation(); onReassign(level); }}
-            className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-blue-900/50 transition-colors group"
-            title="Reassign birds from another level"
+            onClick={e => { e.stopPropagation(); onOpenLog(level); }}
+            className="flex items-center gap-1 px-2 py-1 rounded hover:bg-amber-900/40 transition-colors group"
+            title="Open Daily Log — session, daily entry, treatment, feed & mortality"
           >
-            <ArrowLeftRight className="w-3 h-3 text-white/30 group-hover:text-blue-400 transition-colors" />
-          </button>
-          <button
-            onClick={e => { e.stopPropagation(); onLogWeight(level); }}
-            className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-indigo-900/50 transition-colors group"
-            title="Log bird weight sample"
-          >
-            <Scale className={`w-3 h-3 transition-colors ${
-              weightFlagged ? 'text-red-400' : 'text-white/30 group-hover:text-indigo-400'
-            }`} />
-          </button>
-          <button
-            onClick={e => { e.stopPropagation(); onLogMortality(level); }}
-            className="flex items-center gap-0.5 px-1.5 py-0.5 rounded hover:bg-red-900/40 transition-colors group"
-            title="Log mortality / culling"
-          >
-            <XCircle className="w-3 h-3 text-white/30 group-hover:text-red-400 transition-colors" />
+            <ClipboardList className="w-3 h-3 text-white/40 group-hover:text-amber-400 transition-colors" />
+            <span className="text-[9px] font-semibold text-white/40 group-hover:text-amber-300 transition-colors">Daily Log</span>
           </button>
         </div>
       )}
@@ -277,18 +228,10 @@ function LevelCell({
 
 function RowBlock({
   row,
-  onSelectLevel,
-  onLogHeat,
-  onLogMortality,
-  onReassign,
-  onLogWeight,
+  onOpenLog,
 }: {
-  row:            BrooderRowData;
-  onSelectLevel:  (level: BrooderLevelData, row: BrooderRowData) => void;
-  onLogHeat:      (row: BrooderRowData) => void;
-  onLogMortality: (level: BrooderLevelData, row: BrooderRowData) => void;
-  onReassign:     (level: BrooderLevelData, row: BrooderRowData) => void;
-  onLogWeight:    (level: BrooderLevelData, row: BrooderRowData) => void;
+  row:       BrooderRowData;
+  onOpenLog: (level: BrooderLevelData, row: BrooderRowData) => void;
 }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
@@ -300,15 +243,7 @@ function RowBlock({
             {row.birdTotal > 0 ? `${row.birdTotal.toLocaleString()} birds` : 'empty'}
           </span>
         </div>
-        <button
-          onClick={() => onLogHeat(row)}
-          className="text-[10px] text-amber-400/70 hover:text-amber-300 transition-colors px-2 py-0.5 rounded border border-amber-700/30 hover:border-amber-500/50"
-        >
-          Log heat
-        </button>
       </div>
-
-      <HeatBadge heat={row.heatToday} />
 
       {/* 2-column grid for the 4 levels — cells are self-contained with no absolute overlap */}
       <div className="grid grid-cols-2 gap-1.5 mt-2">
@@ -316,10 +251,7 @@ function RowBlock({
           <LevelCell
             key={level.levelId}
             level={level}
-            onSelect={l => onSelectLevel(l, row)}
-            onLogMortality={l => onLogMortality(l, row)}
-            onReassign={l => onReassign(l, row)}
-            onLogWeight={l => onLogWeight(l, row)}
+            onOpenLog={l => onOpenLog(l, row)}
           />
         ))}
       </div>
@@ -331,19 +263,15 @@ function RowBlock({
 
 export function BrooderCageMapGrid({
   onSelectLevel,
-  onLogHeat,
-  onLogMortality,
-  onReassign,
-  onLogWeight,
+  onOpenLog,
 }: {
-  onSelectLevel?:  (level: BrooderLevelData, row: BrooderRowData) => void;
-  onLogHeat?:      (row: BrooderRowData) => void;
-  onLogMortality?: (level: BrooderLevelData, row: BrooderRowData) => void;
-  onReassign?:     (level: BrooderLevelData, row: BrooderRowData) => void;
-  onLogWeight?:    (level: BrooderLevelData, row: BrooderRowData) => void;
+  /** Called when an EMPTY cell is tapped — parent opens the assign modal. */
+  onSelectLevel?: (level: BrooderLevelData, row: BrooderRowData) => void;
+  /** Called when an OCCUPIED cell (or its Daily Log button) is tapped —
+   *  parent opens the unified Daily Log form, scoped to this row/level. */
+  onOpenLog?:     (level: BrooderLevelData, row: BrooderRowData) => void;
 }) {
   const { data, isLoading } = useBrooderCageMap();
-  const [, setSelected]     = useState<BrooderLevelData | null>(null);
 
   const rows        = data?.rows ?? [];
   const totalChicks = data?.totalChicks ?? 0;
@@ -367,6 +295,14 @@ export function BrooderCageMapGrid({
     ),
   );
   const totalIsolatedBirds = isolatedCages.reduce((s, c) => s + c.birdCount, 0);
+
+  const handleOpenLevel = (level: BrooderLevelData, row: BrooderRowData) => {
+    if (level.assignment) {
+      onOpenLog?.(level, row);
+    } else {
+      onSelectLevel?.(level, row);
+    }
+  };
 
   return (
     <div
@@ -395,18 +331,11 @@ export function BrooderCageMapGrid({
           <CheckCircle2 className="w-3 h-3 text-green-400" /> Feed on target
         </span>
         <span className="text-[10px] text-white/30 flex items-center gap-1">
-          <ArrowLeftRight className="w-3 h-3 text-blue-400/60" /> Reassign birds
-        </span>
-        <span className="text-[10px] text-white/30 flex items-center gap-1">
-          <Scale className="w-3 h-3 text-indigo-400/60" /> Log weight
-        </span>
-        <span className="text-[10px] text-white/30 flex items-center gap-1">
-          <XCircle className="w-3 h-3 text-red-400/60" /> Log mortality
+          <ClipboardList className="w-3 h-3 text-amber-400/70" /> Tap a cage — Daily Log (session · entry · treatment · feed · mortality)
         </span>
         <span className="text-[10px] text-white/30 flex items-center gap-1">
           <Lock className="w-3 h-3 text-purple-400/70" /> Isolation cage
         </span>
-        <span className="text-[10px] text-white/30">Tap cell body = log feed</span>
       </div>
 
       {/* ── Isolation summary — director/PM visibility into every isolated
@@ -461,14 +390,7 @@ export function BrooderCageMapGrid({
               <RowBlock
                 key={row.rowId}
                 row={row}
-                onSelectLevel={(level, r) => {
-                  setSelected(level);
-                  onSelectLevel?.(level, r);
-                }}
-                onLogHeat={r => onLogHeat?.(r)}
-                onLogMortality={(level, r) => onLogMortality?.(level, r)}
-                onReassign={(level, r) => onReassign?.(level, r)}
-                onLogWeight={(level, r) => onLogWeight?.(level, r)}
+                onOpenLog={handleOpenLevel}
               />
             ))}
           </div>

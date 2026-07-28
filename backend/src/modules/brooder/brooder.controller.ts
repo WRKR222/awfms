@@ -260,6 +260,35 @@ export class BrooderController {
     return this.svc.createGeneralMortalityLog(body, user.id);
   }
 
+  // ── Stock count (opening / closing stock reconciliation) ────────────────
+  /** GET /brooder/batches/:batchId/expected-opening-stock
+   *  What today's Opening Stock field should default to — the most recent
+   *  stock count's closing stock, or the batch's current live count if
+   *  none has ever been logged. Used to prefill the Daily Log form. */
+  @Get('batches/:batchId/expected-opening-stock')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getExpectedOpeningStock(@Param('batchId') batchId: string) {
+    return this.svc.getExpectedOpeningStock(batchId);
+  }
+
+  /** POST /brooder/stock-counts
+   *  Upserts the whole-batch opening/closing stock for (batchId, logDate).
+   *  Flags (but never blocks) a mismatch between the entered opening stock
+   *  and the previous day's closing stock — e.g. after a physical bird
+   *  count finds fewer birds than expected. */
+  @Post('stock-counts')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  createStockCount(@Body() body: any, @CurrentUser() user: any) {
+    return this.svc.createStockCount(body, user.id);
+  }
+
+  /** GET /brooder/batches/:batchId/stock-counts?days=30 */
+  @Get('batches/:batchId/stock-counts')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  listStockCounts(@Param('batchId') batchId: string, @Query('days') days?: string) {
+    return this.svc.listStockCounts(batchId, days ? Number(days) : 30);
+  }
+
   /** GET /brooder/batches/:batchId/population-record-sheet?days=30
    *  Per-day rollup of feed + mortality for a batch, merging general and
    *  row/level entries, so the attendant can see which days already have
