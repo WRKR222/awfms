@@ -29,6 +29,15 @@
 //            check runs ONLY against the general population sheet
 //            (createGeneralMortalityLog) — cage-map mortality entries never
 //            trigger BROODER_MORTALITY_HIGH, by design (see Req 1 note above).
+//   Req 8 — createStockCount is the one exception to the Req 1 independence
+//            rule: a saved Stock Count's closingStock is the attendant's
+//            physical, verified end-of-day count, so it always overwrites
+//            Batch.currentBirdCount (see createStockCount for details).
+//   Req 9 — Cage-assignment overflow guards (assignCage, assignLevelEqually,
+//            bulkReassignCages) cap the total birds placed on the cage map
+//            against Batch.currentBirdCount (the live count), not the
+//            batch's original quantityReceived — so the cage map can never
+//            claim more birds than are actually still alive today.
 
 import {
   BadRequestException, ConflictException, Injectable,
@@ -810,11 +819,11 @@ export class BrooderService {
       .filter(a => a.cageId !== cageId && a.cageId !== dto.sourceCageId)
       .reduce((s, a) => s + a.birdCount, 0);
     const newTotal = siblingsTotal + dto.birdCount;
-    if (newTotal > batch.quantityReceived) {
+    if (newTotal > batch.currentBirdCount) {
       throw new BadRequestException(
         `Cannot assign ${dto.birdCount} birds to this cage: total would be ${newTotal} ` +
-        `but batch ${batch.batchCode} only received ${batch.quantityReceived} birds. ` +
-        `You can place at most ${batch.quantityReceived - siblingsTotal} birds here.`,
+        `but batch ${batch.batchCode} only has ${batch.currentBirdCount} live birds. ` +
+        `You can place at most ${batch.currentBirdCount - siblingsTotal} birds here.`,
       );
     }
 
@@ -1030,11 +1039,11 @@ export class BrooderService {
       .filter(a => !thisLevelCageIds.has(a.cageId))
       .reduce((s, a) => s + a.birdCount, 0);
     const newTotal = siblingsTotal + dto.birdCount;
-    if (newTotal > batch.quantityReceived) {
+    if (newTotal > batch.currentBirdCount) {
       throw new BadRequestException(
         `Cannot assign ${dto.birdCount} birds to ${level.label}: total would be ${newTotal} ` +
-        `but batch ${batch.batchCode} only received ${batch.quantityReceived} birds. ` +
-        `You can place at most ${batch.quantityReceived - siblingsTotal} birds here.`,
+        `but batch ${batch.batchCode} only has ${batch.currentBirdCount} live birds. ` +
+        `You can place at most ${batch.currentBirdCount - siblingsTotal} birds here.`,
       );
     }
 
@@ -1149,10 +1158,10 @@ export class BrooderService {
     }
 
     const totalBirds = placements.reduce((s, p) => s + p.birdCount, 0);
-    if (totalBirds > batch.quantityReceived) {
+    if (totalBirds > batch.currentBirdCount) {
       throw new BadRequestException(
         `This layout assigns ${totalBirds.toLocaleString()} birds total, but batch ${batch.batchCode} ` +
-        `only received ${batch.quantityReceived.toLocaleString()}.`,
+        `only has ${batch.currentBirdCount.toLocaleString()} live birds.`,
       );
     }
 
@@ -1958,33 +1967,48 @@ export class BrooderService {
     const expectedOpeningStock = previous ? previous.closingStock : null;
     const variance = expectedOpeningStock !== null ? dto.openingStock - expectedOpeningStock : 0;
 
-    const record = await this.prisma.brooderStockCount.upsert({
-      where:  { batchId_logDate: { batchId: dto.batchId, logDate } },
-      create: {
-        batchId:              dto.batchId,
-        logDate,
-        openingStock:         dto.openingStock,
-        expectedOpeningStock,
-        variance,
-        varianceReason:       dto.varianceReason ?? null,
-        mortalityCount:       dto.mortalityCount,
-        cullingCount:         dto.cullingCount,
-        closingStock:         dto.closingStock,
-        notes:                dto.notes ?? null,
-        loggedById:           userId,
-      },
-      update: {
-        openingStock:         dto.openingStock,
-        expectedOpeningStock,
-        variance,
-        varianceReason:       dto.varianceReason ?? null,
-        mortalityCount:       dto.mortalityCount,
-        cullingCount:         dto.cullingCount,
-        closingStock:         dto.closingStock,
-        notes:                dto.notes ?? null,
-        loggedById:           userId,
-      },
-    });
+    // Closing stock is the attendant's physical, verified end-of-day count —
+    // so it's treated as the source of truth for the batch's official/general
+    // bird count and always overwrites Batch.currentBirdCount, even if it
+    // disagrees with whatever mortality logs had already calculated for the
+    // day (e.g. an unrecorded death, or a recount that finds a different
+    // number). This intentionally breaks from the old "cage map vs. general
+    // sheet are fully independent" rule for this one field — a saved Stock
+    // Count is the farm's official reconciliation and should drive the
+    // number shown everywhere else in the app (dashboards, feed calcs, etc).
+    const [record] = await this.prisma.$transaction([
+      this.prisma.brooderStockCount.upsert({
+        where:  { batchId_logDate: { batchId: dto.batchId, logDate } },
+        create: {
+          batchId:              dto.batchId,
+          logDate,
+          openingStock:         dto.openingStock,
+          expectedOpeningStock,
+          variance,
+          varianceReason:       dto.varianceReason ?? null,
+          mortalityCount:       dto.mortalityCount,
+          cullingCount:         dto.cullingCount,
+          closingStock:         dto.closingStock,
+          notes:                dto.notes ?? null,
+          loggedById:           userId,
+        },
+        update: {
+          openingStock:         dto.openingStock,
+          expectedOpeningStock,
+          variance,
+          varianceReason:       dto.varianceReason ?? null,
+          mortalityCount:       dto.mortalityCount,
+          cullingCount:         dto.cullingCount,
+          closingStock:         dto.closingStock,
+          notes:                dto.notes ?? null,
+          loggedById:           userId,
+        },
+      }),
+      this.prisma.batch.update({
+        where: { id: dto.batchId },
+        data:  { currentBirdCount: dto.closingStock },
+      }),
+    ]);
 
     if (variance !== 0) {
       const direction = variance < 0 ? 'fewer' : 'more';

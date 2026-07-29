@@ -1267,9 +1267,9 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                           Includes {reassignIsolationBirds.toLocaleString()} birds marked as isolation.
                         </span>
                       )}
-                      {reassignTotalBirds > batch.quantityReceived && (
+                      {reassignTotalBirds > batch.currentBirdCount && (
                         <span className="block text-red-600 dark:text-red-400 font-normal mt-1">
-                          Exceeds the {batch.quantityReceived.toLocaleString()} birds this batch received.
+                          Exceeds the {batch.currentBirdCount.toLocaleString()} live birds this batch currently has.
                         </span>
                       )}
                     </div>
