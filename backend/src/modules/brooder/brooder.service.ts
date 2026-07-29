@@ -1091,6 +1091,11 @@ export class BrooderService {
    * move, rather than transferring birds one row/level/cage at a time.
    * Cages targeted by the blocks that currently hold a DIFFERENT batch are
    * rejected (never silently taken over).
+   *
+   * Any block can be flagged `isIsolation` (with an `isolationReason`) so
+   * birds being pulled aside as part of the same reassignment — sick,
+   * injured, under observation — land in their destination cages already
+   * marked as isolation, same as a manual per-cage isolation placement.
    */
   async bulkReassignCages(batchId: string, input: unknown, userId: string) {
     const dto = parseOrThrow(BulkReassignCagesSchema, input);
@@ -1098,7 +1103,10 @@ export class BrooderService {
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
-    type Placement = { levelId: string; cageId: string; cageNumber: number; birdCount: number; label: string };
+    type Placement = {
+      levelId: string; cageId: string; cageNumber: number; birdCount: number; label: string;
+      isIsolation: boolean; isolationReason: string | null;
+    };
     const placements: Placement[] = [];
     const seenCageIds = new Set<string>();
 
@@ -1134,6 +1142,7 @@ export class BrooderService {
           placements.push({
             levelId: level.id, cageId: cage.id, cageNumber: cage.cageNumber,
             birdCount: block.birdsPerCage, label: cage.label,
+            isIsolation: block.isIsolation, isolationReason: block.isolationReason ?? null,
           });
         }
       }
@@ -1180,6 +1189,7 @@ export class BrooderService {
           data: {
             cageId: p.cageId, batchId, birdCount: p.birdCount,
             placedDate, notes: dto.notes ?? null, assignedById: userId,
+            isIsolation: p.isIsolation, isolationReason: p.isIsolation ? p.isolationReason : null,
           },
         });
       }
@@ -1192,6 +1202,7 @@ export class BrooderService {
       return {
         batchId,
         cagesAssigned: placements.filter(p => p.birdCount > 0).length,
+        isolationCages: placements.filter(p => p.birdCount > 0 && p.isIsolation).length,
         totalBirds,
         levelsTouched: touchedLevelIds.size,
       };

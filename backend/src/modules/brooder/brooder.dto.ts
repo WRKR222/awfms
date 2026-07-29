@@ -57,13 +57,27 @@ export type AssignLevelEquallyDto = z.infer<typeof AssignLevelEquallySchema>;
 // birds, replicated across every level listed in `levelIds`. The service
 // applies every block as ONE new layout for the batch, replacing whatever
 // cages it held before this call.
+//
+// A block can also be marked `isIsolation` — e.g. the "cage 43" block in
+// the example above might be birds pulled aside as sick/injured/under
+// observation — every cage the block places lands with `isIsolation: true`
+// and the given `isolationReason`, same meaning as AssignCageSchema's
+// per-cage isolation flag, just settable per PATTERN instead of per cage.
 const ReassignBlockSchema = z.object({
   rowId:           z.string().uuid(),
   levelIds:        z.array(z.string().uuid()).min(1),
   cageCount:       z.number().int().min(1),
   birdsPerCage:    z.number().int().min(0),
   startCageNumber: z.number().int().min(1).default(1),
-});
+  isIsolation:     z.boolean().optional().default(false),
+  isolationReason: z.string().trim().max(300).optional(),
+}).refine(
+  d => !d.isIsolation || (!!d.isolationReason && d.isolationReason.length >= 3),
+  {
+    message: 'A reason (at least 3 characters) is required to mark a reassignment block as isolation',
+    path: ['isolationReason'],
+  },
+);
 export const BulkReassignCagesSchema = z.object({
   blocks:     z.array(ReassignBlockSchema).min(1),
   placedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),

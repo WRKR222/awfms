@@ -320,18 +320,21 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
     startCageNumber: string;
     cageCount: string;
     birdsPerCage: string;
+    isIsolation: boolean;
+    isolationReason: string;
   }
   const emptyReassignBlock = (): ReassignBlock => ({
     id: Math.random().toString(36).slice(2), rowId: '', levelIds: [], startCageNumber: '1', cageCount: '', birdsPerCage: '',
+    isIsolation: false, isolationReason: '',
   });
   const [reassignBlocks, setReassignBlocks] = useState<ReassignBlock[]>([]);
   const [reassignNotes,  setReassignNotes]  = useState('');
   function addReassignBlock()    { setReassignBlocks(b => [...b, emptyReassignBlock()]); }
   function removeReassignBlock(id: string) { setReassignBlocks(b => b.filter(x => x.id !== id)); }
-  function updateReassignBlock(id: string, field: keyof ReassignBlock, val: string) {
+  function updateReassignBlock(id: string, field: keyof ReassignBlock, val: string | boolean) {
     setReassignBlocks(b => b.map(x => {
       if (x.id !== id) return x;
-      const next = { ...x, [field]: val };
+      const next = { ...x, [field]: val } as ReassignBlock;
       if (field === 'rowId') next.levelIds = []; // levels depend on row
       return next;
     }));
@@ -344,6 +347,9 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
   const reassignTotalBirds = reassignBlocks.reduce(
     (sum, b) => sum + b.levelIds.length * (Number(b.cageCount) || 0) * (Number(b.birdsPerCage) || 0), 0,
   );
+  const reassignIsolationBirds = reassignBlocks
+    .filter(b => b.isIsolation)
+    .reduce((sum, b) => sum + b.levelIds.length * (Number(b.cageCount) || 0) * (Number(b.birdsPerCage) || 0), 0);
 
   // ── Stock count — opening/closing stock reconciliation ─────────────────
   // Opening stock normally just carries forward as the previous day's
@@ -544,6 +550,8 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
               cageCount:       Number(b.cageCount),
               birdsPerCage:    Number(b.birdsPerCage),
               startCageNumber: b.startCageNumber ? Number(b.startCageNumber) : undefined,
+              isIsolation:     b.isIsolation,
+              isolationReason: b.isIsolation ? b.isolationReason.trim() : undefined,
             })),
             placedDate: logDate,
             notes:      reassignNotes || undefined,
@@ -638,6 +646,11 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
       );
       if (incomplete) {
         setSubmitError('Complete every cage reassignment block (row, at least one level, cage count, and birds per cage) or remove incomplete ones.');
+        return;
+      }
+      const missingIsolationReason = reassignBlocks.some(b => b.isIsolation && b.isolationReason.trim().length < 3);
+      if (missingIsolationReason) {
+        setSubmitError('Give a reason (at least 3 characters) for each block marked as an isolation cage.');
         return;
       }
     }
@@ -1151,7 +1164,8 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                   <span className="text-gray-600 dark:text-gray-300">
                     Describe the new layout as patterns instead of moving birds cage-by-cage — e.g. "42 cages × 20 birds"
                     across a few levels, plus "1 more cage × 20 birds" on another. This <strong>replaces the batch's entire
-                    cage layout</strong> with what you define below.
+                    cage layout</strong> with what you define below. Tick <strong>isolation</strong> on a block if the
+                    birds it places are being set apart (sick, injured, under observation).
                   </span>
                 </div>
 
@@ -1216,6 +1230,25 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                           {' '}({b.cageCount || 0} cages × {b.birdsPerCage || 0} birds, from cage {b.startCageNumber || 1})
                         </p>
                       )}
+
+                      <label className={`flex items-center gap-2 cursor-pointer p-2.5 rounded-xl ${
+                        b.isIsolation ? 'bg-red-50 dark:bg-red-900/20' : 'bg-gray-50 dark:bg-dark-card'
+                      }`}>
+                        <input type="checkbox" checked={b.isIsolation}
+                          onChange={e => updateReassignBlock(b.id, 'isIsolation', e.target.checked)}
+                          className="w-4 h-4 accent-red-500" />
+                        <AlertTriangle className={`w-4 h-4 ${b.isIsolation ? 'text-red-500' : 'text-gray-400'}`} />
+                        <span className={`text-sm font-semibold ${b.isIsolation ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'}`}>
+                          Mark this block as isolation cage{b.levelIds.length * (Number(b.cageCount) || 0) !== 1 ? 's' : ''}
+                        </span>
+                      </label>
+                      {b.isIsolation && (
+                        <div>
+                          <label className={lCls}>Isolation reason</label>
+                          <textarea value={b.isolationReason} onChange={e => updateReassignBlock(b.id, 'isolationReason', e.target.value)}
+                            rows={2} className={`${iCls} resize-none`} placeholder="e.g. sick birds separated for observation..." />
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1229,6 +1262,11 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                   <>
                     <div className="rounded-xl bg-emerald-50 dark:bg-emerald-900/20 p-3 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
                       Total: {reassignTotalBirds.toLocaleString()} birds across {reassignBlocks.length} block{reassignBlocks.length !== 1 ? 's' : ''}
+                      {reassignIsolationBirds > 0 && (
+                        <span className="block text-red-600 dark:text-red-400 font-normal mt-1">
+                          Includes {reassignIsolationBirds.toLocaleString()} birds marked as isolation.
+                        </span>
+                      )}
                       {reassignTotalBirds > batch.quantityReceived && (
                         <span className="block text-red-600 dark:text-red-400 font-normal mt-1">
                           Exceeds the {batch.quantityReceived.toLocaleString()} birds this batch received.
