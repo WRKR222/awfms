@@ -48,6 +48,29 @@ export const AssignLevelEquallySchema = z.object({
 });
 export type AssignLevelEquallyDto = z.infer<typeof AssignLevelEquallySchema>;
 
+// ── Bulk cage reassignment (pattern-based, replaces per-cage dragging) ───
+// Lets a Lead Attendant describe a batch's WHOLE new cage layout as a
+// handful of patterns instead of moving birds cage-by-cage — e.g.
+// "Row C: 42 cages x 20 birds on Levels 4/3/2, plus cage 43 x 20 birds on
+// Level 4" is just two blocks. Each block fills `cageCount` consecutive
+// cages (starting at `startCageNumber`, default 1) with `birdsPerCage`
+// birds, replicated across every level listed in `levelIds`. The service
+// applies every block as ONE new layout for the batch, replacing whatever
+// cages it held before this call.
+const ReassignBlockSchema = z.object({
+  rowId:           z.string().uuid(),
+  levelIds:        z.array(z.string().uuid()).min(1),
+  cageCount:       z.number().int().min(1),
+  birdsPerCage:    z.number().int().min(0),
+  startCageNumber: z.number().int().min(1).default(1),
+});
+export const BulkReassignCagesSchema = z.object({
+  blocks:     z.array(ReassignBlockSchema).min(1),
+  placedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  notes:      z.string().max(500).optional(),
+});
+export type BulkReassignCagesDto = z.infer<typeof BulkReassignCagesSchema>;
+
 // ── Heat logs ────────────────────────────────────────────────────────────
 export const CreateCharcoalHeatLogSchema = z.object({
   rowId:       z.string().uuid(),

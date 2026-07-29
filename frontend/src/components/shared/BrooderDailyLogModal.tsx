@@ -4,8 +4,11 @@
 // modals (Session Log, Daily Entry, Treatment, General Record feed tab,
 // General/per-cage Mortality) into ONE form that is submitted once.
 //
-//   • Session (environmental) readings  — temp / humidity / light, per
-//     Morning / Midday / Evening session.
+//   • Session (environmental) readings  — temp / humidity / light. Morning,
+//     Midday, and Evening are all entered and submitted TOGETHER in one
+//     sitting (rather than requiring the attendant to return to the app at
+//     three different times of day) — each is still its own independent
+//     write, so filling in only Morning + Evening (say) is fine.
 //   • Daily Entry                       — water, vaccines, supplements
 //     (logged once per day).
 //   • Treatment                         — optional; only submitted if at
@@ -15,15 +18,30 @@
 //   • Mortality                         — optional; the attendant chooses
 //     whether to log it against the whole batch ("General") or against a
 //     specific Row → Level → Cage, depending on how the farm tracks it.
+//   • Cage Reassignment                 — optional; describe the batch's
+//     new cage layout as a handful of patterns (e.g. "42 cages × 20 birds
+//     across 3 levels") instead of moving birds cage-by-cage. See the
+//     "Cage Reassignment" section below for the format.
+//   • Stock Count                       — opening/closing stock for the
+//     whole batch.
 //
-// On submit, one request per non-empty section fires (all against
-// endpoints that already existed):
-//   POST /flock/brooder-logs            (x2 — session reading + daily entry)
-//   POST /flock/brooder-treatment-logs  (only if a treatment was filled in)
-//   POST /brooder/general-feed-logs     (only if a feed quantity was entered)
+// Every section above submits INDEPENDENTLY of the others — one section
+// erroring (e.g. a duplicate daily-entry on a backdated date) never blocks
+// the rest from saving. This matters most for Stock Count and Mortality,
+// which should always go through even when a backdated Session or Daily
+// Entry submission fails or is rejected as a duplicate.
+//
+// On submit, one request per non-empty/included section fires (all
+// against endpoints that already existed, plus the new bulk-reassign one):
+//   POST /flock/brooder-logs                   (x1 per included session, x1 for daily entry)
+//   POST /flock/brooder-treatment-logs          (only if a treatment was filled in)
+//   POST /brooder/general-feed-logs             (only if a feed quantity was entered)
 //   POST /brooder/general-mortality-logs  OR  POST /brooder/mortality-logs
 //     (only if mortality/culling counts were entered; endpoint depends on
 //     the chosen scope)
+//   POST /brooder/batches/:batchId/reassign-bulk  (only if a reassignment
+//     block was added)
+//   POST /brooder/stock-counts                  (only if an opening stock was entered)
 //
 // This replaces:
 //   • BrooderPage's inline SessionLogModal / DailyEntryModal / TreatmentModal
@@ -31,14 +49,17 @@
 //   • BrooderMortalityLogModal (per-cage mortality, now folded in as the
 //     "Row / Level / Cage" mortality scope)
 //   • The cage map's old "Reassign" action — tapping a level's action
-//     button now opens THIS form (pre-scoped to that row/level) instead.
+//     button now opens THIS form (pre-scoped to that row/level) instead,
+//     and the Cage Reassignment section replaces tedious per-cage moves
+//     with pattern-based bulk placement.
 
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import {
-  X, Calendar, Clock, AlertTriangle, Plus, Droplets, Thermometer, Gauge, Sun,
+  X, Calendar, AlertTriangle, Plus, Droplets, Thermometer, Gauge, Sun,
   Syringe, FlaskConical, Stethoscope, Pill, Wheat, HeartCrack, Info, ChevronDown, ChevronUp, Scale,
+  Grid3x3,
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
@@ -190,17 +211,35 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
 
   // ── Section open/closed state ───────────────────────────────────────────
   const [openSection, setOpenSection] = useState({
-    session: true, daily: true, treatment: !!presetScope, feed: true, mortality: !!presetScope, stock: true,
+    session: true, daily: true, treatment: !!presetScope, feed: true, mortality: !!presetScope,
+    reassign: false, stock: true,
   });
   const toggle = (k: keyof typeof openSection) => setOpenSection(s => ({ ...s, [k]: !s[k] }));
 
-  // ── Session (environmental) ─────────────────────────────────────────────
-  const [logSession,        setLogSession]        = useState<'MORNING' | 'MIDDAY' | 'EVENING'>('MORNING');
-  const [temperature,       setTemperature]       = useState('');
-  const [humidityPercent,   setHumidityPercent]   = useState('');
-  const [lightIntensityLux, setLightIntensityLux] = useState('');
-  const [lightingOk,        setLightingOk]        = useState(true);
-  const [sessionNotes,      setSessionNotes]      = useState('');
+  // ── Session (environmental) — Morning / Midday / Evening, all entered
+  // and submitted together in one sitting. Each session is independent:
+  // ticking "include" turns its fields on; unticked sessions are simply
+  // skipped on submit (no request fires for them), and a failure on one
+  // session never affects the others.
+  type SessionKey = typeof SESSION_OPTIONS[number]['value'];
+  interface SessionEntry {
+    include: boolean;
+    temperature: string;
+    humidityPercent: string;
+    lightIntensityLux: string;
+    lightingOk: boolean;
+    notes: string;
+  }
+  const emptySessionEntry = (): SessionEntry => ({
+    include: false, temperature: '', humidityPercent: '', lightIntensityLux: '', lightingOk: true, notes: '',
+  });
+  const [sessions, setSessions] = useState<Record<SessionKey, SessionEntry>>({
+    MORNING: emptySessionEntry(), MIDDAY: emptySessionEntry(), EVENING: emptySessionEntry(),
+  });
+  function updateSession<K extends keyof SessionEntry>(key: SessionKey, field: K, val: SessionEntry[K]) {
+    setSessions(s => ({ ...s, [key]: { ...s[key], [field]: val } }));
+  }
+  const includedSessionKeys = (Object.keys(sessions) as SessionKey[]).filter(k => sessions[k].include);
 
   // ── Daily entry ──────────────────────────────────────────────────────────
   const [waterConsumptionL, setWaterConsumptionL] = useState('');
@@ -268,6 +307,44 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
         .map(c => ({ cageId: c.cageId, label: c.label, birdCount: c.currentBirdCount }));
   const selectedMortCage = mortCagesForLevel.find(c => c.cageId === mortCageId) ?? null;
 
+  // ── Cage Reassignment (optional) — describe the batch's new cage layout
+  // as a handful of patterns instead of moving birds cage-by-cage. Each
+  // block fills a number of consecutive cages (from a start cage number)
+  // with a fixed number of birds, replicated across every level chosen for
+  // that block — e.g. "Row C: 42 cages × 20 birds across Levels 4/3/2" is
+  // one block; "cage 43 × 20 birds on Level 4" is a second block.
+  interface ReassignBlock {
+    id: string;
+    rowId: string;
+    levelIds: string[];
+    startCageNumber: string;
+    cageCount: string;
+    birdsPerCage: string;
+  }
+  const emptyReassignBlock = (): ReassignBlock => ({
+    id: Math.random().toString(36).slice(2), rowId: '', levelIds: [], startCageNumber: '1', cageCount: '', birdsPerCage: '',
+  });
+  const [reassignBlocks, setReassignBlocks] = useState<ReassignBlock[]>([]);
+  const [reassignNotes,  setReassignNotes]  = useState('');
+  function addReassignBlock()    { setReassignBlocks(b => [...b, emptyReassignBlock()]); }
+  function removeReassignBlock(id: string) { setReassignBlocks(b => b.filter(x => x.id !== id)); }
+  function updateReassignBlock(id: string, field: keyof ReassignBlock, val: string) {
+    setReassignBlocks(b => b.map(x => {
+      if (x.id !== id) return x;
+      const next = { ...x, [field]: val };
+      if (field === 'rowId') next.levelIds = []; // levels depend on row
+      return next;
+    }));
+  }
+  function toggleReassignLevel(id: string, levelId: string) {
+    setReassignBlocks(b => b.map(x => x.id !== id ? x : {
+      ...x, levelIds: x.levelIds.includes(levelId) ? x.levelIds.filter(l => l !== levelId) : [...x.levelIds, levelId],
+    }));
+  }
+  const reassignTotalBirds = reassignBlocks.reduce(
+    (sum, b) => sum + b.levelIds.length * (Number(b.cageCount) || 0) * (Number(b.birdsPerCage) || 0), 0,
+  );
+
   // ── Stock count — opening/closing stock reconciliation ─────────────────
   // Opening stock normally just carries forward as the previous day's
   // closing stock (fetched below). The farm sometimes does a physical bird
@@ -314,121 +391,197 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
 
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  function errMsg(err: any): string {
+    const m = err?.response?.data?.message ?? err?.message ?? 'Failed to save.';
+    return Array.isArray(m) ? m.join(', ') : String(m);
+  }
+
   const submit = useMutation({
     mutationFn: async () => {
-      // 1) Session (environmental) reading — always logged.
-      await api.post('/flock/brooder-logs', {
-        batchId:           batch.id,
-        logDate,
-        logSession,
-        temperature:       temperature       ? Number(temperature)       : undefined,
-        humidityPercent:   humidityPercent   ? Number(humidityPercent)   : undefined,
-        lightIntensityLux: lightIntensityLux ? Number(lightIntensityLux) : undefined,
-        lightingOk,
-        notes:             sessionNotes || undefined,
-      });
+      // Every section below is wrapped in its own try/catch and collects
+      // into `errors` rather than throwing — so one section's failure
+      // (e.g. a duplicate Session or Daily Entry on a backdated date)
+      // never prevents Mortality, Stock Count, or Cage Reassignment from
+      // being submitted. All attempted sections run regardless of what
+      // came before.
+      const errors: string[] = [];
 
-      // 2) Daily entry — water / vaccines / supplements — always logged (once/day).
+      // 1) Session (environmental) readings — one independent request per
+      // INCLUDED session (Morning / Midday / Evening), all fired in this
+      // one submission rather than requiring three separate visits.
+      for (const key of includedSessionKeys) {
+        const s = sessions[key];
+        try {
+          await api.post('/flock/brooder-logs', {
+            batchId:           batch.id,
+            logDate,
+            logSession:        key,
+            temperature:       s.temperature       ? Number(s.temperature)       : undefined,
+            humidityPercent:   s.humidityPercent   ? Number(s.humidityPercent)   : undefined,
+            lightIntensityLux: s.lightIntensityLux ? Number(s.lightIntensityLux) : undefined,
+            lightingOk:        s.lightingOk,
+            notes:             s.notes || undefined,
+          });
+        } catch (err: any) {
+          const label = SESSION_OPTIONS.find(o => o.value === key)?.label ?? key;
+          errors.push(`${label} session: ${errMsg(err)}`);
+        }
+      }
+
+      // 2) Daily entry — water / vaccines / supplements, once per day.
+      // Only fired when there's actually something to save — an empty
+      // call has nothing to record and would just collide with any
+      // existing once-daily entry on a backdated date for no reason.
       const cleanVaccines    = vaccines.filter(v => v.storeItemId && v.name.trim());
       const cleanSupplements = supplements.filter(s => s.storeItemId && s.name.trim());
-      await api.post('/flock/brooder-logs', {
-        batchId:           batch.id,
-        logDate,
-        logSession:        undefined,
-        waterConsumptionL: waterConsumptionL ? Number(waterConsumptionL) : undefined,
-        vaccines:          cleanVaccines.map(v => ({
-          name: v.name.trim(), dose: v.dose.trim(), route: v.route,
-          storeItemId: v.storeItemId, quantityUsed: v.quantityUsed ? Number(v.quantityUsed) : undefined,
-        })),
-        supplements:       cleanSupplements.map(s => ({
-          name: s.name.trim(), dose: s.dose.trim(),
-          storeItemId: s.storeItemId, quantityUsed: s.quantityUsed ? Number(s.quantityUsed) : undefined,
-        })),
-        notes:             dailyNotes || undefined,
-      });
+      const hasDailyEntry = waterConsumptionL !== '' || cleanVaccines.length > 0 || cleanSupplements.length > 0 || dailyNotes.trim() !== '';
+      if (hasDailyEntry) {
+        try {
+          await api.post('/flock/brooder-logs', {
+            batchId:           batch.id,
+            logDate,
+            logSession:        undefined,
+            waterConsumptionL: waterConsumptionL ? Number(waterConsumptionL) : undefined,
+            vaccines:          cleanVaccines.map(v => ({
+              name: v.name.trim(), dose: v.dose.trim(), route: v.route,
+              storeItemId: v.storeItemId, quantityUsed: v.quantityUsed ? Number(v.quantityUsed) : undefined,
+            })),
+            supplements:       cleanSupplements.map(s => ({
+              name: s.name.trim(), dose: s.dose.trim(),
+              storeItemId: s.storeItemId, quantityUsed: s.quantityUsed ? Number(s.quantityUsed) : undefined,
+            })),
+            notes:             dailyNotes || undefined,
+          });
+        } catch (err: any) {
+          errors.push(`Daily entry: ${errMsg(err)}`);
+        }
+      }
 
       // 3) Treatment — optional, only if at least one drug was picked.
+      // Each treatment entry is independent of the others.
       const cleanTreatments = treatments.filter(t => t.storeItemId && t.drugName.trim());
       for (const t of cleanTreatments) {
-        await api.post('/flock/brooder-treatment-logs', {
-          batchId:      batch.id,
-          treatmentDate: logDate,
-          drugName:     t.drugName.trim(),
-          storeItemId:  t.storeItemId,
-          dose:         t.dose.trim(),
-          doseUnit:     t.doseUnit,
-          quantityUsed: t.quantityUsed ? Number(t.quantityUsed) : undefined,
-          route:        t.route,
-          durationDays: t.durationDays ? Number(t.durationDays) : undefined,
-          rowId:        t.rowId   || undefined,
-          levelId:      t.levelId || undefined,
-          notes:        t.notes   || undefined,
-        });
+        try {
+          await api.post('/flock/brooder-treatment-logs', {
+            batchId:      batch.id,
+            treatmentDate: logDate,
+            drugName:     t.drugName.trim(),
+            storeItemId:  t.storeItemId,
+            dose:         t.dose.trim(),
+            doseUnit:     t.doseUnit,
+            quantityUsed: t.quantityUsed ? Number(t.quantityUsed) : undefined,
+            route:        t.route,
+            durationDays: t.durationDays ? Number(t.durationDays) : undefined,
+            rowId:        t.rowId   || undefined,
+            levelId:      t.levelId || undefined,
+            notes:        t.notes   || undefined,
+          });
+        } catch (err: any) {
+          errors.push(`Treatment (${t.drugName.trim()}): ${errMsg(err)}`);
+        }
       }
 
       // 4) Feed — optional, always for the whole unit.
       if (feedStoreItemId && Number(feedQuantityKg) > 0) {
-        const item = feedItems.find(i => i.id === feedStoreItemId);
-        await api.post('/brooder/general-feed-logs', {
-          batchId:             batch.id,
-          entryDate:           logDate,
-          feedType:            item ? deriveFeedType(item) ?? undefined : undefined,
-          storeItemId:         feedStoreItemId,
-          quantityDispensedKg: Number(feedQuantityKg),
-          notes:               feedNotes || undefined,
-        });
-      }
-
-      // 5) Mortality — optional, General (whole batch) or Row/Level/Cage.
-      let mortalityResult: any = null;
-      if (totalLost > 0) {
-        if (mortalityScope === 'GENERAL') {
-          const res = await api.post('/brooder/general-mortality-logs', {
-            batchId:        batch.id,
-            logDate,
-            mortalityCount: Number(mortalityCount) || 0,
-            cullingCount:   Number(cullingCount)   || 0,
-            cause:          cause || undefined,
-            notes:          mortalityNotes || undefined,
+        try {
+          const item = feedItems.find(i => i.id === feedStoreItemId);
+          await api.post('/brooder/general-feed-logs', {
+            batchId:             batch.id,
+            entryDate:           logDate,
+            feedType:            item ? deriveFeedType(item) ?? undefined : undefined,
+            storeItemId:         feedStoreItemId,
+            quantityDispensedKg: Number(feedQuantityKg),
+            notes:               feedNotes || undefined,
           });
-          mortalityResult = res.data;
-        } else {
-          const res = await api.post('/brooder/mortality-logs', {
-            levelId:        mortLevelId,
-            cageId:         mortCageId,
-            batchId:        selectedMortCage ? batch.id : batch.id,
-            logDate,
-            mortalityCount: Number(mortalityCount) || 0,
-            cullingCount:   Number(cullingCount)   || 0,
-            cause:          cause || undefined,
-            notes:          mortalityNotes || undefined,
-          });
-          mortalityResult = res.data;
+        } catch (err: any) {
+          errors.push(`Feed: ${errMsg(err)}`);
         }
       }
 
-      // 6) Stock count — opening/closing stock for the whole batch. Always
-      // submitted once the attendant has an opening stock value, since it's
-      // a core daily record like session/daily entry — flags a variance
-      // server-side if it doesn't match the previous day's closing stock.
-      let stockResult: any = null;
-      if (openingStock !== '') {
-        const res = await api.post('/brooder/stock-counts', {
-          batchId:        batch.id,
-          logDate,
-          openingStock:   openingStockNum,
-          mortalityCount: Number(mortalityCount) || 0,
-          cullingCount:   Number(cullingCount)   || 0,
-          closingStock:   Number(closingStock)   || 0,
-          varianceReason: varianceReason || undefined,
-          notes:          stockNotes || undefined,
-        });
-        stockResult = res.data;
+      // 5) Mortality — optional, General (whole batch) or Row/Level/Cage.
+      // Independent of every section above and below — a Session or Daily
+      // Entry failure never stops today's mortality from being recorded.
+      let mortalityResult: any = null;
+      if (totalLost > 0) {
+        try {
+          if (mortalityScope === 'GENERAL') {
+            const res = await api.post('/brooder/general-mortality-logs', {
+              batchId:        batch.id,
+              logDate,
+              mortalityCount: Number(mortalityCount) || 0,
+              cullingCount:   Number(cullingCount)   || 0,
+              cause:          cause || undefined,
+              notes:          mortalityNotes || undefined,
+            });
+            mortalityResult = res.data;
+          } else {
+            const res = await api.post('/brooder/mortality-logs', {
+              levelId:        mortLevelId,
+              cageId:         mortCageId,
+              batchId:        batch.id,
+              logDate,
+              mortalityCount: Number(mortalityCount) || 0,
+              cullingCount:   Number(cullingCount)   || 0,
+              cause:          cause || undefined,
+              notes:          mortalityNotes || undefined,
+            });
+            mortalityResult = res.data;
+          }
+        } catch (err: any) {
+          errors.push(`Mortality: ${errMsg(err)}`);
+        }
       }
 
-      return { mortalityResult, stockResult };
+      // 6) Cage Reassignment — optional, pattern-based bulk placement.
+      // Independent of every other section.
+      let reassignResult: any = null;
+      if (reassignBlocks.length > 0) {
+        try {
+          const res = await api.post(`/brooder/batches/${batch.id}/reassign-bulk`, {
+            blocks: reassignBlocks.map(b => ({
+              rowId:           b.rowId,
+              levelIds:        b.levelIds,
+              cageCount:       Number(b.cageCount),
+              birdsPerCage:    Number(b.birdsPerCage),
+              startCageNumber: b.startCageNumber ? Number(b.startCageNumber) : undefined,
+            })),
+            placedDate: logDate,
+            notes:      reassignNotes || undefined,
+          });
+          reassignResult = res.data;
+        } catch (err: any) {
+          errors.push(`Cage reassignment: ${errMsg(err)}`);
+        }
+      }
+
+      // 7) Stock count — opening/closing stock for the whole batch. Always
+      // submitted once the attendant has an opening stock value, since
+      // it's a core daily record — flags a variance server-side if it
+      // doesn't match the previous day's closing stock. Runs independently
+      // of every section above, so a backdated Session/Daily Entry/
+      // Treatment failure never blocks it.
+      let stockResult: any = null;
+      if (openingStock !== '') {
+        try {
+          const res = await api.post('/brooder/stock-counts', {
+            batchId:        batch.id,
+            logDate,
+            openingStock:   openingStockNum,
+            mortalityCount: Number(mortalityCount) || 0,
+            cullingCount:   Number(cullingCount)   || 0,
+            closingStock:   Number(closingStock)   || 0,
+            varianceReason: varianceReason || undefined,
+            notes:          stockNotes || undefined,
+          });
+          stockResult = res.data;
+        } catch (err: any) {
+          errors.push(`Stock count: ${errMsg(err)}`);
+        }
+      }
+
+      return { errors, mortalityResult, stockResult, reassignResult };
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ['brooder-logs',     batch.id] });
       qc.invalidateQueries({ queryKey: ['brooder-last-log', batch.id] });
       qc.invalidateQueries({ queryKey: ['brooder-treatments', batch.id] });
@@ -440,10 +593,19 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
       qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
       qc.invalidateQueries({ queryKey: ['store-issuable-items'] });
       qc.invalidateQueries({ queryKey: ['batches'] });
-      onClose();
+
+      if (result.errors.length > 0) {
+        // Partial success — whatever DID go through is already saved and
+        // the queries above are invalidated to reflect it. Keep the form
+        // open so the attendant can see what failed and retry just those
+        // fields, instead of pretending everything worked.
+        setSubmitError(`Saved, but some sections failed:\n• ${result.errors.join('\n• ')}`);
+      } else {
+        onClose();
+      }
     },
     onError: (err: any) => {
-      setSubmitError(err?.response?.data?.message ?? err?.message ?? 'Failed to save. Please try again.');
+      setSubmitError(errMsg(err));
     },
   });
 
@@ -467,6 +629,16 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
       }
       if (mortalityScope === 'GENERAL' && totalLost > batch.currentBirdCount) {
         setSubmitError(`Total lost (${totalLost}) exceeds live birds in the batch (${batch.currentBirdCount}).`); return;
+      }
+    }
+
+    if (reassignBlocks.length > 0) {
+      const incomplete = reassignBlocks.some(b =>
+        !b.rowId || b.levelIds.length === 0 || !(Number(b.cageCount) > 0) || b.birdsPerCage === '' || Number(b.birdsPerCage) < 0,
+      );
+      if (incomplete) {
+        setSubmitError('Complete every cage reassignment block (row, at least one level, cage count, and birds per cage) or remove incomplete ones.');
+        return;
       }
     }
 
@@ -498,7 +670,7 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
               <p className="text-xs text-gray-400">
                 {batch.batchCode}
                 {presetScope ? ` · ${presetScope.rowLabel} · ${presetScope.levelLabel}` : ' · whole batch'}
-                {' '}· session, daily entry, treatment, feed &amp; mortality — one submission
+                {' '}· session (AM/mid/PM), daily entry, treatment, feed, mortality &amp; reassignment — one submission
               </p>
             </div>
           </div>
@@ -520,51 +692,68 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
             )}
           </div>
 
-          {/* ── Session (environmental) ── */}
+          {/* ── Session (environmental) — Morning / Midday / Evening together ── */}
           <div className="rounded-xl border border-orange-100 dark:border-orange-900/30 bg-orange-50/40 dark:bg-orange-900/10 p-3 space-y-3">
-            <SectionHeader icon={Thermometer} title="Session Environmental Reading" accent="text-orange-500"
+            <SectionHeader icon={Thermometer} title="Session Environmental Readings"
+              subtitle="tick each session you're recording — all submit together" accent="text-orange-500"
               open={openSection.session} onToggle={() => toggle('session')} />
             {openSection.session && (
-              <>
-                <div>
-                  <label className={lCls}><Clock className="w-3 h-3 inline mr-1" />Session</label>
-                  <div className="grid grid-cols-3 gap-1">
-                    {SESSION_OPTIONS.map(s => (
-                      <label key={s.value} className={`flex flex-col items-center gap-0.5 p-2 rounded-xl border cursor-pointer text-center transition-colors ${
-                        logSession === s.value
-                          ? 'border-orange-500 bg-orange-50 dark:bg-orange-900/20'
-                          : 'border-gray-200 dark:border-dark-border hover:bg-gray-50 dark:hover:bg-dark-bg'
-                      }`}>
-                        <input type="radio" name="logSession" value={s.value} checked={logSession === s.value}
-                          onChange={() => setLogSession(s.value)} className="sr-only" />
-                        <span className="text-lg">{s.icon}</span>
-                        <span className={`text-[10px] font-bold ${logSession === s.value ? 'text-orange-600' : 'text-gray-500'}`}>{s.label}</span>
+              <div className="space-y-3">
+                {SESSION_OPTIONS.map(opt => {
+                  const s = sessions[opt.value];
+                  return (
+                    <div key={opt.value} className={`rounded-xl border p-3 space-y-3 transition-colors ${
+                      s.include
+                        ? 'border-orange-300 dark:border-orange-700 bg-white dark:bg-dark-bg'
+                        : 'border-gray-200 dark:border-dark-border bg-gray-50/60 dark:bg-dark-card'
+                    }`}>
+                      <label className="flex items-center justify-between cursor-pointer">
+                        <span className="flex items-center gap-2">
+                          <span className="text-lg">{opt.icon}</span>
+                          <span className="text-sm font-bold text-gray-700 dark:text-gray-200">{opt.label}</span>
+                        </span>
+                        <input type="checkbox" checked={s.include}
+                          onChange={e => updateSession(opt.value, 'include', e.target.checked)}
+                          className="w-4 h-4 accent-orange-500" />
                       </label>
-                    ))}
-                  </div>
-                </div>
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className={lCls}><Thermometer className="w-3 h-3 inline mr-1 text-orange-400" />Temp (°C)</label>
-                    <input value={temperature} onChange={e => setTemperature(e.target.value)} type="number" step="0.1" className={iCls} placeholder="e.g. 32" />
-                  </div>
-                  <div>
-                    <label className={lCls}><Gauge className="w-3 h-3 inline mr-1 text-blue-400" />Humidity (%)</label>
-                    <input value={humidityPercent} onChange={e => setHumidityPercent(e.target.value)} type="number" step="1" min="0" max="100" className={iCls} placeholder="e.g. 60" />
-                  </div>
-                  <div>
-                    <label className={lCls}><Sun className="w-3 h-3 inline mr-1 text-amber-400" />Light (lux)</label>
-                    <input value={lightIntensityLux} onChange={e => setLightIntensityLux(e.target.value)} type="number" min="0" className={iCls} placeholder="e.g. 20" />
-                  </div>
-                </div>
-                <label className="flex items-center gap-2 cursor-pointer p-2.5 rounded-xl bg-amber-50 dark:bg-amber-900/20">
-                  <input type="checkbox" checked={lightingOk} onChange={e => setLightingOk(e.target.checked)} className="w-4 h-4 accent-amber-500" />
-                  <Sun className="w-4 h-4 text-amber-500" />
-                  <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Lighting adequate</span>
-                </label>
-                <textarea value={sessionNotes} onChange={e => setSessionNotes(e.target.value)} rows={2}
-                  className={`${iCls} resize-none`} placeholder="Session notes (optional)..." />
-              </>
+
+                      {s.include && (
+                        <>
+                          <div className="grid grid-cols-3 gap-3">
+                            <div>
+                              <label className={lCls}><Thermometer className="w-3 h-3 inline mr-1 text-orange-400" />Temp (°C)</label>
+                              <input value={s.temperature} onChange={e => updateSession(opt.value, 'temperature', e.target.value)}
+                                type="number" step="0.1" className={iCls} placeholder="e.g. 32" />
+                            </div>
+                            <div>
+                              <label className={lCls}><Gauge className="w-3 h-3 inline mr-1 text-blue-400" />Humidity (%)</label>
+                              <input value={s.humidityPercent} onChange={e => updateSession(opt.value, 'humidityPercent', e.target.value)}
+                                type="number" step="1" min="0" max="100" className={iCls} placeholder="e.g. 60" />
+                            </div>
+                            <div>
+                              <label className={lCls}><Sun className="w-3 h-3 inline mr-1 text-amber-400" />Light (lux)</label>
+                              <input value={s.lightIntensityLux} onChange={e => updateSession(opt.value, 'lightIntensityLux', e.target.value)}
+                                type="number" min="0" className={iCls} placeholder="e.g. 20" />
+                            </div>
+                          </div>
+                          <label className="flex items-center gap-2 cursor-pointer p-2.5 rounded-xl bg-amber-50 dark:bg-amber-900/20">
+                            <input type="checkbox" checked={s.lightingOk}
+                              onChange={e => updateSession(opt.value, 'lightingOk', e.target.checked)}
+                              className="w-4 h-4 accent-amber-500" />
+                            <Sun className="w-4 h-4 text-amber-500" />
+                            <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">Lighting adequate</span>
+                          </label>
+                          <textarea value={s.notes} onChange={e => updateSession(opt.value, 'notes', e.target.value)} rows={2}
+                            className={`${iCls} resize-none`} placeholder={`${opt.label} session notes (optional)...`} />
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+                {includedSessionKeys.length === 0 && (
+                  <p className="text-[11px] text-gray-400 italic">No sessions ticked — none will be recorded.</p>
+                )}
+              </div>
             )}
           </div>
 
@@ -951,6 +1140,109 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
             )}
           </div>
 
+          {/* ── Cage Reassignment (optional) ── */}
+          <div className="rounded-xl border border-emerald-100 dark:border-emerald-900/30 bg-emerald-50/40 dark:bg-emerald-900/10 p-3 space-y-3">
+            <SectionHeader icon={Grid3x3} title="Cage Reassignment" subtitle="pattern-based — replaces per-cage moves" accent="text-emerald-500"
+              open={openSection.reassign} onToggle={() => toggle('reassign')} />
+            {openSection.reassign && (
+              <>
+                <div className="flex items-start gap-2 bg-white dark:bg-dark-bg rounded-xl p-3 text-sm">
+                  <Info className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
+                  <span className="text-gray-600 dark:text-gray-300">
+                    Describe the new layout as patterns instead of moving birds cage-by-cage — e.g. "42 cages × 20 birds"
+                    across a few levels, plus "1 more cage × 20 birds" on another. This <strong>replaces the batch's entire
+                    cage layout</strong> with what you define below.
+                  </span>
+                </div>
+
+                {reassignBlocks.map((b, i) => {
+                  const levelsForRow = rowsAndLevels.find(r => r.rowId === b.rowId)?.levels ?? [];
+                  const blockBirds = b.levelIds.length * (Number(b.cageCount) || 0) * (Number(b.birdsPerCage) || 0);
+                  return (
+                    <div key={b.id} className="rounded-xl border border-emerald-100 dark:border-emerald-800 bg-white dark:bg-dark-bg p-3 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">Block {i + 1}</span>
+                        <button type="button" onClick={() => removeReassignBlock(b.id)} className="text-gray-400 hover:text-red-500">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div>
+                        <label className={lCls}>Row</label>
+                        <select value={b.rowId} onChange={e => updateReassignBlock(b.id, 'rowId', e.target.value)} className={iCls}>
+                          <option value="">Select row…</option>
+                          {rowsAndLevels.map(r => <option key={r.rowId} value={r.rowId}>{r.label}</option>)}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className={lCls}>Levels — pattern applies to each one you pick</label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {!b.rowId && <span className="text-[11px] text-gray-400 italic">Select a row first</span>}
+                          {levelsForRow.map(l => (
+                            <button key={l.levelId} type="button" onClick={() => toggleReassignLevel(b.id, l.levelId)}
+                              className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+                                b.levelIds.includes(l.levelId)
+                                  ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400'
+                                  : 'border-gray-200 dark:border-dark-border text-gray-500 dark:text-gray-400'
+                              }`}>
+                              {l.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className={lCls}>Start cage #</label>
+                          <input value={b.startCageNumber} onChange={e => updateReassignBlock(b.id, 'startCageNumber', e.target.value)}
+                            type="number" min="1" className={iCls} />
+                        </div>
+                        <div>
+                          <label className={lCls}># of cages</label>
+                          <input value={b.cageCount} onChange={e => updateReassignBlock(b.id, 'cageCount', e.target.value)}
+                            type="number" min="1" className={iCls} placeholder="e.g. 42" />
+                        </div>
+                        <div>
+                          <label className={lCls}>Birds / cage</label>
+                          <input value={b.birdsPerCage} onChange={e => updateReassignBlock(b.id, 'birdsPerCage', e.target.value)}
+                            type="number" min="0" className={iCls} placeholder="e.g. 20" />
+                        </div>
+                      </div>
+
+                      {blockBirds > 0 && (
+                        <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                          = {blockBirds.toLocaleString()} birds across {b.levelIds.length} level{b.levelIds.length !== 1 ? 's' : ''}
+                          {' '}({b.cageCount || 0} cages × {b.birdsPerCage || 0} birds, from cage {b.startCageNumber || 1})
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+
+                <button type="button" onClick={addReassignBlock}
+                  className="w-full border border-dashed border-emerald-300 dark:border-emerald-700 text-emerald-600 dark:text-emerald-400 rounded-xl py-2.5 text-sm font-semibold flex items-center justify-center gap-1.5 hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors">
+                  <Plus className="w-3.5 h-3.5" /> Add block
+                </button>
+
+                {reassignBlocks.length > 0 && (
+                  <>
+                    <div className="rounded-xl bg-emerald-50 dark:bg-emerald-900/20 p-3 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                      Total: {reassignTotalBirds.toLocaleString()} birds across {reassignBlocks.length} block{reassignBlocks.length !== 1 ? 's' : ''}
+                      {reassignTotalBirds > batch.quantityReceived && (
+                        <span className="block text-red-600 dark:text-red-400 font-normal mt-1">
+                          Exceeds the {batch.quantityReceived.toLocaleString()} birds this batch received.
+                        </span>
+                      )}
+                    </div>
+                    <textarea value={reassignNotes} onChange={e => setReassignNotes(e.target.value)} rows={2}
+                      className={`${iCls} resize-none`} placeholder="Reassignment notes (optional)..." />
+                  </>
+                )}
+              </>
+            )}
+          </div>
+
           {/* ── Stock Count — opening/closing stock reconciliation ── */}
           <div className="rounded-xl border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/40 dark:bg-indigo-900/10 p-3 space-y-3">
             <SectionHeader icon={Scale} title="Stock Count" subtitle="whole unit — opening &amp; closing" accent="text-indigo-500"
@@ -1023,7 +1315,7 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
           </div>
 
           {(submit.isError || submitError) && (
-            <p className="text-red-500 text-sm bg-red-50 dark:bg-red-900/20 rounded-xl p-3">
+            <p className="text-red-500 text-sm bg-red-50 dark:bg-red-900/20 rounded-xl p-3 whitespace-pre-line">
               {submitError ?? 'Failed to save. Please try again.'}
             </p>
           )}

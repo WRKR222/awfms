@@ -137,6 +137,21 @@ export class BrooderController {
     return this.svc.removeCageAssignment(cageId);
   }
 
+  /** POST /brooder/batches/:batchId/reassign-bulk
+   *  Describes a batch's whole new cage layout as a handful of patterns
+   *  (e.g. "42 cages x 20 birds across 3 levels, plus 1 more cage x 20
+   *  birds on a 4th level") instead of moving birds cage-by-cage. See
+   *  BrooderService.bulkReassignCages for the block format. */
+  @Post('batches/:batchId/reassign-bulk')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  bulkReassignCages(
+    @Param('batchId') batchId: string,
+    @Body() body: any,
+    @CurrentUser() user: any,
+  ) {
+    return this.svc.bulkReassignCages(batchId, body, user.id);
+  }
+
   /** POST /brooder/levels/:levelId/assign-equally
    *  Places `birdCount` (the LEVEL total) for one batch, split evenly
    *  across every cage on that level, instead of assigning cages one at a

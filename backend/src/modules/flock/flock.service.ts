@@ -843,43 +843,48 @@ export class FlockService {
     const isSessionLog = !!(input.logSession); // MORNING | MIDDAY | EVENING
 
     // ── SESSION LOG (temperature / humidity / light — up to 3× per day) ──────
+    //
+    // Morning / Midday / Evening are independent of one another and of the
+    // once-daily entry below — the farm now records all three sessions in
+    // one sitting rather than returning to the app at different times of
+    // day, so re-submitting the SAME session (e.g. correcting a typo, or
+    // simply re-saving the whole form) updates the existing row instead of
+    // being rejected as a duplicate. Each session is still saved as its own
+    // independent write, so one session failing never blocks the other two,
+    // or the once-daily entry, from being recorded.
     if (isSessionLog) {
-      // Reject duplicate (batch, date, session)
       const existing = await this.prisma.brooderLog.findFirst({
         where: { batchId: batch.id, logDate, logSession: input.logSession as any },
       });
-      if (existing) {
-        throw new BadRequestException(
-          `A ${input.logSession} session log has already been recorded for this batch on ${input.logDate}. ` +
-          `Edit the existing record instead.`,
-        );
-      }
 
-      return this.prisma.brooderLog.create({
-        data: {
-          batchId:           batch.id,
-          logDate,
-          logSession:        input.logSession as any,
-          temperature:       input.temperature        != null ? Number(input.temperature)        : null,
-          humidityPercent:   input.humidityPercent    != null ? Number(input.humidityPercent)    : null,
-          lightIntensityLux: input.lightIntensityLux  != null ? Number(input.lightIntensityLux)  : null,
-          lightingOk:        input.lightingOk ?? true,
-          waterConsumptionL: null,
-          vaccineGiven:      null,
-          vaccineGivenDose:  null,
-          vaccinesJson:      Prisma.JsonNull,
-          supplement:        null,
-          supplementDose:    null,
-          supplementsJson:   Prisma.JsonNull,
-          feedType:          null,
-          feedConsumedKg:    null,
-          mortalityCount:    0,
-          notes:             input.notes ?? null,
-          loggedById:        userId,
-          rowId:             input.rowId   ?? null,
-          levelId:           input.levelId ?? null,
-        },
-      });
+      const data = {
+        batchId:           batch.id,
+        logDate,
+        logSession:        input.logSession as any,
+        temperature:       input.temperature        != null ? Number(input.temperature)        : null,
+        humidityPercent:   input.humidityPercent    != null ? Number(input.humidityPercent)    : null,
+        lightIntensityLux: input.lightIntensityLux  != null ? Number(input.lightIntensityLux)  : null,
+        lightingOk:        input.lightingOk ?? true,
+        waterConsumptionL: null,
+        vaccineGiven:      null,
+        vaccineGivenDose:  null,
+        vaccinesJson:      Prisma.JsonNull,
+        supplement:        null,
+        supplementDose:    null,
+        supplementsJson:   Prisma.JsonNull,
+        feedType:          null,
+        feedConsumedKg:    null,
+        mortalityCount:    0,
+        notes:             input.notes ?? null,
+        loggedById:        userId,
+        rowId:             input.rowId   ?? null,
+        levelId:           input.levelId ?? null,
+      };
+
+      if (existing) {
+        return this.prisma.brooderLog.update({ where: { id: existing.id }, data });
+      }
+      return this.prisma.brooderLog.create({ data });
     }
 
     // ── ONCE-DAILY LOG (water / vaccines / supplements — max 1× per day) ─────

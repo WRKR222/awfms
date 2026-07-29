@@ -61,6 +61,7 @@ import {
   AssignCageSchema,
   AssignLevelSchema,
   AssignLevelEquallySchema,
+  BulkReassignCagesSchema,
   CreateHeatLogSchema,
   StopBulbHeatLogSchema,
   CreateLevelFeedLogSchema,
@@ -1072,6 +1073,130 @@ export class BrooderService {
         extraCages:    remainder,
       };
     });
+    this.refresh();
+    return result;
+  }
+
+  /**
+   * Reassign a batch's WHOLE cage layout in one call from a handful of
+   * patterns, instead of moving birds cage-by-cage. Example: "Row C: 42
+   * cages x 20 birds on Levels 4/3/2, plus cage 43 x 20 birds on Level 4"
+   * is two blocks — { rowId: C, levelIds: [L4,L3,L2], cageCount: 42,
+   * birdsPerCage: 20 } and { rowId: C, levelIds: [L4], cageCount: 1,
+   * startCageNumber: 43, birdsPerCage: 20 }.
+   *
+   * This call defines the batch's ENTIRE new layout: every cage the batch
+   * currently holds is cleared first, then the blocks are applied — the
+   * attendant describes the destination and the system works out the
+   * move, rather than transferring birds one row/level/cage at a time.
+   * Cages targeted by the blocks that currently hold a DIFFERENT batch are
+   * rejected (never silently taken over).
+   */
+  async bulkReassignCages(batchId: string, input: unknown, userId: string) {
+    const dto = parseOrThrow(BulkReassignCagesSchema, input);
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    type Placement = { levelId: string; cageId: string; cageNumber: number; birdCount: number; label: string };
+    const placements: Placement[] = [];
+    const seenCageIds = new Set<string>();
+
+    for (const block of dto.blocks) {
+      const row = await this.prisma.brooderRow.findUnique({
+        where: { id: block.rowId },
+        include: { levels: { include: { cages: { orderBy: { cageNumber: 'asc' } } } } },
+      });
+      if (!row) throw new BadRequestException(`Row not found: ${block.rowId}`);
+
+      for (const levelId of block.levelIds) {
+        const level = row.levels.find(l => l.id === levelId);
+        if (!level) {
+          throw new BadRequestException(`Level ${levelId} does not belong to ${row.label}`);
+        }
+        const start = block.startCageNumber;
+        const targetCages = level.cages.filter(
+          c => c.cageNumber >= start && c.cageNumber < start + block.cageCount,
+        );
+        if (targetCages.length < block.cageCount) {
+          throw new BadRequestException(
+            `${row.label} · ${level.label} only has ${targetCages.length} cage(s) available from ` +
+            `cage ${start} — requested ${block.cageCount}.`,
+          );
+        }
+        for (const cage of targetCages) {
+          if (seenCageIds.has(cage.id)) {
+            throw new BadRequestException(
+              `${cage.label} is targeted by more than one block — check for overlapping ranges.`,
+            );
+          }
+          seenCageIds.add(cage.id);
+          placements.push({
+            levelId: level.id, cageId: cage.id, cageNumber: cage.cageNumber,
+            birdCount: block.birdsPerCage, label: cage.label,
+          });
+        }
+      }
+    }
+
+    const totalBirds = placements.reduce((s, p) => s + p.birdCount, 0);
+    if (totalBirds > batch.quantityReceived) {
+      throw new BadRequestException(
+        `This layout assigns ${totalBirds.toLocaleString()} birds total, but batch ${batch.batchCode} ` +
+        `only received ${batch.quantityReceived.toLocaleString()}.`,
+      );
+    }
+
+    // None of the target cages may already hold a DIFFERENT batch.
+    const targetCageIds = placements.map(p => p.cageId);
+    const conflicting = await this.prisma.brooderCageAssignment.findFirst({
+      where: { cageId: { in: targetCageIds }, batchId: { not: batchId } },
+      include: { cage: true },
+    });
+    if (conflicting) {
+      throw new BadRequestException(
+        `${conflicting.cage.label} already holds a different batch. Clear it first, ` +
+        `or use per-cage reassignment.`,
+      );
+    }
+
+    const placedDate = new Date(dto.placedDate);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      // This call defines the batch's entire new layout — clear everywhere
+      // it currently sits before laying down the new pattern.
+      const oldAssignments = await tx.brooderCageAssignment.findMany({
+        where: { batchId },
+        include: { cage: true },
+      });
+      const touchedLevelIds = new Set<string>(placements.map(p => p.levelId));
+      for (const a of oldAssignments) touchedLevelIds.add(a.cage.levelId);
+
+      await tx.brooderCageAssignment.deleteMany({ where: { batchId } });
+
+      for (const p of placements) {
+        if (p.birdCount === 0) continue;
+        await tx.brooderCageAssignment.create({
+          data: {
+            cageId: p.cageId, batchId, birdCount: p.birdCount,
+            placedDate, notes: dto.notes ?? null, assignedById: userId,
+          },
+        });
+      }
+
+      for (const levelId of touchedLevelIds) {
+        await this.recomputeLevelRollup(tx, levelId, userId);
+      }
+      await tx.batch.update({ where: { id: batchId }, data: { location: 'BROODER' } });
+
+      return {
+        batchId,
+        cagesAssigned: placements.filter(p => p.birdCount > 0).length,
+        totalBirds,
+        levelsTouched: touchedLevelIds.size,
+      };
+    });
+
     this.refresh();
     return result;
   }
