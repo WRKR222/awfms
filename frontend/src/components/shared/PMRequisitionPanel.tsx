@@ -57,8 +57,15 @@ function RequisitionCard({ requisition, weekStart, label }: { requisition: any; 
           <div className="space-y-1.5">
             {requisition.items.map((it: any) => (
               <div key={it.id} className="flex items-center justify-between text-xs">
-                <span className="text-gray-600 dark:text-gray-300">{it.storeItem?.name}</span>
-                <span className="text-gray-400">{Number(it.quantityNeeded).toFixed(2)} {it.storeItem?.unit}</span>
+                <span className="text-gray-600 dark:text-gray-300 flex items-center gap-1.5">
+                  {it.storeItem?.name ?? it.customItemName}
+                  {!it.storeItemId && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                      Not in store
+                    </span>
+                  )}
+                </span>
+                <span className="text-gray-400">{Number(it.quantityNeeded).toFixed(2)} {it.storeItem?.unit ?? it.customItemUnit ?? ''}</span>
               </div>
             ))}
           </div>

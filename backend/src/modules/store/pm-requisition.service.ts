@@ -41,6 +41,7 @@ function allowedWeekStarts(): { thisWeek: Date; nextWeek: Date } {
 
 const INCLUDE = {
   createdBy: { select: { id: true, fullName: true, role: true } },
+  // storeItem is null for custom (non-catalog) lines — see customItemName/customItemUnit on the item itself.
   items: { include: { storeItem: { select: { id: true, name: true, sku: true, unit: true, category: true, unitCostKes: true } } } },
 } as const;
 
@@ -62,10 +63,27 @@ export class PMRequisitionService {
     dto: {
       weekStartDate: string;
       notes?: string;
-      items: { id?: string; storeItemId: string; quantityNeeded: number; notes?: string }[];
+      items: {
+        id?: string;
+        storeItemId?: string;
+        customItemName?: string;
+        customItemUnit?: string;
+        quantityNeeded: number;
+        notes?: string;
+      }[];
     },
     userId: string,
   ) {
+    for (const item of dto.items) {
+      const hasStoreItem = !!item.storeItemId;
+      const hasCustomItem = !!item.customItemName?.trim();
+      if (hasStoreItem === hasCustomItem) {
+        throw new BadRequestException(
+          'Each item must be either a store catalog item or a custom item name — not both, not neither.',
+        );
+      }
+    }
+
     const monday = dayjs.utc(dto.weekStartDate).startOf('day').toDate();
     if (dayjs.utc(monday).isoWeekday() !== 1) {
       throw new BadRequestException('weekStartDate must be a Monday');
@@ -117,7 +135,9 @@ export class PMRequisitionService {
       await this.prisma.pMItemRequisitionItem.createMany({
         data: dto.items.map((item) => ({
           requisitionId: requisition!.id,
-          storeItemId: item.storeItemId,
+          storeItemId: item.storeItemId ?? null,
+          customItemName: item.storeItemId ? null : item.customItemName!.trim(),
+          customItemUnit: item.storeItemId ? null : (item.customItemUnit?.trim() || null),
           quantityNeeded: item.quantityNeeded,
           notes: item.notes,
         })),
@@ -160,12 +180,20 @@ export class PMRequisitionService {
           : `Added to draft issuance plan ${injection.planRef} — review before Saturday's submission.`
         : '';
 
+    // Custom (non-catalog) lines never get an IssuancePlanItem — Store has
+    // to look at the requisition directly and decide how to source them.
+    const customCount = requisition.items.filter((i: { storeItemId: string | null }) => !i.storeItemId).length;
+    const customNote =
+      customCount > 0
+        ? ` ${customCount} item${customCount > 1 ? 's' : ''} on the list ${customCount > 1 ? 'are' : 'is'} not in the Store catalog — review the requisition directly to source ${customCount > 1 ? 'them' : 'it'}.`
+        : '';
+
     await this.notifications.notifyRole(
       UserRole.STORE,
       NotificationType.PM_REQUISITION_SUBMITTED as any,
       'PM Weekly Item List Received',
       `The Production Manager submitted ${requisition.items.length} item${requisition.items.length > 1 ? 's' : ''} needed for the week of ` +
-        `${dayjs(requisition.weekStartDate).format('D MMM')} – ${dayjs(requisition.weekEndDate).format('D MMM YYYY')} (${requisition.requisitionRef}). ${routedNote}`,
+        `${dayjs(requisition.weekStartDate).format('D MMM')} – ${dayjs(requisition.weekEndDate).format('D MMM YYYY')} (${requisition.requisitionRef}). ${routedNote}${customNote}`,
       { entityId: id, entityType: 'PMItemRequisition' },
     );
 

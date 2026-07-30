@@ -229,20 +229,26 @@ export class IssuancePlanService {
     });
     if (!requisition) return { status: 'NOT_FOUND' };
 
-    const pendingLines = requisition.items.filter((line) => !line.issuancePlanItemId);
+    // Custom (non-catalog) lines have no storeItemId, so they can never
+    // become an IssuancePlanItem (that model requires a real StoreItem FK).
+    // They stay unattached forever — Store sources them outside this flow —
+    // so only catalog lines are eligible for injection here.
+    const pendingLines = requisition.items.filter((line) => !line.issuancePlanItemId && !!line.storeItemId);
     if (pendingLines.length === 0) return { status: 'ALREADY_ATTACHED' };
 
     const targetPlan = await this.resolveTargetPlanForWeek(monday, requisition.createdById, requisition.requisitionRef);
 
     for (const line of pendingLines) {
+      // Guaranteed non-null by the pendingLines filter above (custom lines are excluded).
+      const storeItemId = line.storeItemId!;
       const qty = Number(line.quantityNeeded);
-      const unitPrice = Number(line.storeItem.unitCostKes);
+      const unitPrice = Number(line.storeItem!.unitCostKes);
       const notes = `PM requisition ${requisition.requisitionRef}${line.notes ? ` — ${line.notes}` : ''}`;
 
       const planItem = await this.prisma.issuancePlanItem.create({
         data: {
           planId: targetPlan.id,
-          storeItemId: line.storeItemId,
+          storeItemId,
           quantityPlanned: qty,
           unitPriceKes: unitPrice,
           source: 'PM_REQUISITION',

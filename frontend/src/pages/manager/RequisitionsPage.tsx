@@ -10,7 +10,7 @@ import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
 import {
   Plus, Send, Trash2, AlertTriangle, CheckCircle,
-  Clock, Package, History,
+  Clock, Package, History, PackagePlus, ListPlus,
 } from 'lucide-react';
 
 const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
@@ -34,13 +34,24 @@ type WeekOption = 'CURRENT' | 'NEXT';
 
 type DraftItem = {
   key: string;
+  isCustom: boolean;
   storeItemId: string;
+  customItemName: string;
+  customItemUnit: string;
   quantityNeeded: string;
   notes: string;
 };
 
 function emptyItem(): DraftItem {
-  return { key: Math.random().toString(36).slice(2), storeItemId: '', quantityNeeded: '', notes: '' };
+  return {
+    key: Math.random().toString(36).slice(2),
+    isCustom: false,
+    storeItemId: '',
+    customItemName: '',
+    customItemUnit: '',
+    quantityNeeded: '',
+    notes: '',
+  };
 }
 
 // ── Deadline banner ─────────────────────────────────────────────────────────
@@ -147,7 +158,10 @@ export function RequisitionsPage() {
           current.items.length > 0
             ? current.items.map((it: any) => ({
                 key: it.id,
-                storeItemId: it.storeItemId,
+                isCustom: !it.storeItemId,
+                storeItemId: it.storeItemId ?? '',
+                customItemName: it.customItemName ?? '',
+                customItemUnit: it.customItemUnit ?? '',
                 quantityNeeded: String(it.quantityNeeded),
                 notes: it.notes ?? '',
               }))
@@ -165,18 +179,29 @@ export function RequisitionsPage() {
 
   const itemsById = useMemo(() => new Map(storeItems.map((i: any) => [i.id, i])), [storeItems]);
 
-  const validItems = items.filter(i => i.storeItemId && Number(i.quantityNeeded) > 0);
+  const validItems = items.filter(i =>
+    Number(i.quantityNeeded) > 0 && (i.isCustom ? i.customItemName.trim().length > 0 : !!i.storeItemId),
+  );
 
   const saveDraft = useMutation({
     mutationFn: () =>
       api.post('/store/pm-requisitions/draft', {
         weekStartDate: weekStartStr,
         notes: notes || undefined,
-        items: validItems.map(i => ({
-          storeItemId: i.storeItemId,
-          quantityNeeded: Number(i.quantityNeeded),
-          notes: i.notes || undefined,
-        })),
+        items: validItems.map(i =>
+          i.isCustom
+            ? {
+                customItemName: i.customItemName.trim(),
+                customItemUnit: i.customItemUnit.trim() || undefined,
+                quantityNeeded: Number(i.quantityNeeded),
+                notes: i.notes || undefined,
+              }
+            : {
+                storeItemId: i.storeItemId,
+                quantityNeeded: Number(i.quantityNeeded),
+                notes: i.notes || undefined,
+              },
+        ),
       }).then(r => r.data),
     onSuccess: (data) => {
       setLoadedFromId(data.id);
@@ -245,8 +270,71 @@ export function RequisitionsPage() {
               const storeItem = itemsById.get(item.storeItemId);
               return (
                 <div key={item.key} className="border border-gray-100 dark:border-dark-border rounded-xl p-3 space-y-2">
-                  <div className="flex items-start gap-2">
-                    <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex bg-gray-100 dark:bg-dark-bg rounded-lg p-0.5 gap-0.5 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => updateItem(item.key, { isCustom: false, customItemName: '', customItemUnit: '' })}
+                        className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md font-semibold transition-colors ${
+                          !item.isCustom ? 'bg-white dark:bg-dark-card text-brand-green shadow-sm' : 'text-gray-500 dark:text-gray-400'
+                        }`}
+                      >
+                        <Package className="w-3 h-3" /> From store
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateItem(item.key, { isCustom: true, storeItemId: '' })}
+                        className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md font-semibold transition-colors ${
+                          item.isCustom ? 'bg-white dark:bg-dark-card text-brand-green shadow-sm' : 'text-gray-500 dark:text-gray-400'
+                        }`}
+                      >
+                        <PackagePlus className="w-3 h-3" /> Not in store
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => removeItem(item.key)}
+                      className="p-2 rounded-xl hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500 flex-shrink-0"
+                      title="Remove item"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {item.isCustom ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="col-span-2">
+                        <label className={lCls}>Item Name</label>
+                        <input
+                          type="text"
+                          value={item.customItemName}
+                          onChange={e => updateItem(item.key, { customItemName: e.target.value })}
+                          className={iCls}
+                          placeholder="e.g. Cordless drill"
+                        />
+                      </div>
+                      <div>
+                        <label className={lCls}>Quantity Needed</label>
+                        <input
+                          type="number" step="0.01" min="0" inputMode="decimal"
+                          value={item.quantityNeeded}
+                          onChange={e => updateItem(item.key, { quantityNeeded: e.target.value })}
+                          className={iCls}
+                          placeholder="0"
+                        />
+                      </div>
+                      <div>
+                        <label className={lCls}>Unit (optional)</label>
+                        <input
+                          type="text"
+                          value={item.customItemUnit}
+                          onChange={e => updateItem(item.key, { customItemUnit: e.target.value })}
+                          className={iCls}
+                          placeholder="e.g. pcs, bags"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
                       <label className={lCls}>Item</label>
                       <select
                         value={item.storeItemId}
@@ -261,26 +349,34 @@ export function RequisitionsPage() {
                         ))}
                       </select>
                     </div>
-                    <button
-                      onClick={() => removeItem(item.key)}
-                      className="mt-6 p-2 rounded-xl hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500 flex-shrink-0"
-                      title="Remove item"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
+                  )}
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className={lCls}>Quantity Needed {storeItem ? `(${storeItem.unit})` : ''}</label>
-                      <input
-                        type="number" step="0.01" min="0" inputMode="decimal"
-                        value={item.quantityNeeded}
-                        onChange={e => updateItem(item.key, { quantityNeeded: e.target.value })}
-                        className={iCls}
-                        placeholder="0"
-                      />
+                  {!item.isCustom && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className={lCls}>Quantity Needed {storeItem ? `(${storeItem.unit})` : ''}</label>
+                        <input
+                          type="number" step="0.01" min="0" inputMode="decimal"
+                          value={item.quantityNeeded}
+                          onChange={e => updateItem(item.key, { quantityNeeded: e.target.value })}
+                          className={iCls}
+                          placeholder="0"
+                        />
+                      </div>
+                      <div>
+                        <label className={lCls}>Note (optional)</label>
+                        <input
+                          type="text"
+                          value={item.notes}
+                          onChange={e => updateItem(item.key, { notes: e.target.value })}
+                          className={iCls}
+                          placeholder="e.g. for the brooder"
+                        />
+                      </div>
                     </div>
+                  )}
+
+                  {item.isCustom && (
                     <div>
                       <label className={lCls}>Note (optional)</label>
                       <input
@@ -288,14 +384,20 @@ export function RequisitionsPage() {
                         value={item.notes}
                         onChange={e => updateItem(item.key, { notes: e.target.value })}
                         className={iCls}
-                        placeholder="e.g. for the brooder"
+                        placeholder="e.g. why you need it, where to source it"
                       />
                     </div>
-                  </div>
+                  )}
 
-                  {storeItem && (
+                  {storeItem && !item.isCustom && (
                     <p className="text-[11px] text-gray-400 flex items-center gap-1">
                       <Package className="w-3 h-3" /> Currently {Number(storeItem.currentStock).toFixed(2)} {storeItem.unit} on the shelf
+                    </p>
+                  )}
+
+                  {item.isCustom && (
+                    <p className="text-[11px] text-amber-500 flex items-center gap-1">
+                      <ListPlus className="w-3 h-3" /> Not in the Store catalog — Store will review this manually rather than folding it into the issuance plan automatically.
                     </p>
                   )}
                 </div>
@@ -350,8 +452,17 @@ export function RequisitionsPage() {
           <div className="space-y-2">
             {current.items.map((it: any) => (
               <div key={it.id} className="flex items-center justify-between text-sm border-b border-gray-50 dark:border-dark-border/50 pb-2 last:border-0 last:pb-0">
-                <span className="text-gray-700 dark:text-gray-200">{it.storeItem?.name}</span>
-                <span className="text-gray-500 dark:text-gray-400">{Number(it.quantityNeeded).toFixed(2)} {it.storeItem?.unit}</span>
+                <span className="text-gray-700 dark:text-gray-200 flex items-center gap-1.5">
+                  {it.storeItem?.name ?? it.customItemName}
+                  {!it.storeItemId && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                      Not in store
+                    </span>
+                  )}
+                </span>
+                <span className="text-gray-500 dark:text-gray-400">
+                  {Number(it.quantityNeeded).toFixed(2)} {it.storeItem?.unit ?? it.customItemUnit ?? ''}
+                </span>
               </div>
             ))}
           </div>

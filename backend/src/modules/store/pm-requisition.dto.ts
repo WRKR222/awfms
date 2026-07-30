@@ -1,7 +1,7 @@
 // src/modules/store/pm-requisition.dto.ts
 import {
   IsString, IsOptional, IsArray, ValidateNested,
-  IsNumber, Min, IsDateString,
+  IsNumber, Min, IsDateString, MaxLength,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
@@ -16,14 +16,32 @@ export class PMRequisitionItemDto {
   @IsString()
   id?: string;
 
+  /** Set for a catalog item. Mutually exclusive with customItemName — the
+   *  service rejects a line that has both or neither. */
+  @IsOptional()
   @IsString()
-  storeItemId: string;
+  storeItemId?: string;
+
+  /** Set instead of storeItemId when the item isn't in the Store catalog.
+   *  Store reviews these manually — they never auto-fold into an Issuance
+   *  Plan line the way catalog items do. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  customItemName?: string;
+
+  /** Optional free-text unit for a custom item (e.g. "bags", "rolls"). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  customItemUnit?: string;
 
   @Transform(toNum) @IsNumber() @Min(0.01)
   quantityNeeded: number;
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   notes?: string;
 }
 

@@ -1967,7 +1967,17 @@ model PMItemRequisition {
 model PMItemRequisitionItem {
   id              String  @id @default(uuid())
   requisitionId   String  @map("requisition_id")
-  storeItemId     String  @map("store_item_id")
+  /// Nullable — set when this line is fulfilled against the Store catalog.
+  /// Mutually exclusive with customItemName (exactly one of the two is set;
+  /// enforced in PMRequisitionService, not at the DB level).
+  storeItemId     String? @map("store_item_id")
+  /// Set instead of storeItemId when the PM needs something Store doesn't
+  /// stock yet — a free-text item name Store must review manually (add to
+  /// the catalog, source externally, etc). Never auto-folded into an
+  /// IssuancePlanItem, since that model requires a real StoreItem FK.
+  customItemName  String? @map("custom_item_name")
+  /// Optional free-text unit for a custom item (e.g. "bags", "rolls").
+  customItemUnit  String? @map("custom_item_unit")
   quantityNeeded  Decimal @map("quantity_needed") @db.Decimal(10, 3)
   notes           String?
 
@@ -1975,11 +1985,13 @@ model PMItemRequisitionItem {
   /// if that week's weekly plan was already submitted, an auto-created
   /// EMERGENCY draft instead — see IssuancePlanService.resolveTargetPlanForWeek).
   /// A null value here is the authoritative "still needs a home" signal.
+  /// Custom (non-catalog) lines stay null forever — Store handles them
+  /// outside the Issuance Plan flow.
   issuancePlanItemId String?           @unique @map("issuance_plan_item_id")
   issuancePlanItem   IssuancePlanItem? @relation(fields: [issuancePlanItemId], references: [id])
 
   requisition PMItemRequisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
-  storeItem   StoreItem         @relation(fields: [storeItemId], references: [id])
+  storeItem   StoreItem?        @relation(fields: [storeItemId], references: [id])
 
   @@index([requisitionId])
   @@index([storeItemId])
