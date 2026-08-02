@@ -29,11 +29,7 @@
 //            check runs ONLY against the general population sheet
 //            (createGeneralMortalityLog) — cage-map mortality entries never
 //            trigger BROODER_MORTALITY_HIGH, by design (see Req 1 note above).
-//   Req 8 — createStockCount is the one exception to the Req 1 independence
-//            rule: a saved Stock Count's closingStock is the attendant's
-//            physical, verified end-of-day count, so it always overwrites
-//            Batch.currentBirdCount (see createStockCount for details).
-//   Req 9 — Cage-assignment overflow guards (assignCage, assignLevelEqually,
+//   Req 8 — Cage-assignment overflow guards (assignCage, assignLevelEqually,
 //            bulkReassignCages) cap the total birds placed on the cage map
 //            against Batch.currentBirdCount (the live count), not the
 //            batch's original quantityReceived — so the cage map can never
@@ -78,7 +74,6 @@ import {
   CreateBrooderWeightSampleSchema,
   CreateGeneralFeedLogSchema,
   CreateGeneralMortalityLogSchema,
-  CreateStockCountSchema,
 } from './brooder.dto';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
@@ -116,7 +111,7 @@ export class BrooderService {
 
   // ── Notify MANAGER + OWNER ────────────────────────────────────────────────
   private async alertRoles(
-    type: 'BROODER_FEED_OVERISSUE' | 'BROODER_WEIGHT_ANOMALY' | 'BROODER_MORTALITY_HIGH' | 'BROODER_STOCK_MISMATCH',
+    type: 'BROODER_FEED_OVERISSUE' | 'BROODER_WEIGHT_ANOMALY' | 'BROODER_MORTALITY_HIGH',
     title: string,
     message: string,
     entityId?: string,
@@ -2139,109 +2134,6 @@ export class BrooderService {
   // (the most recent prior stock count's closingStock), and flagged to
   // Manager/Owner so the shrinkage gets investigated, without blocking the
   // attendant's save.
-
-  /** What the attendant's Opening Stock field should default to: the most
-   *  recent stock count's closingStock for this batch, or the batch's
-   *  current live bird count if no stock count has ever been logged. */
-  async getExpectedOpeningStock(batchId: string) {
-    const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
-    if (!batch) throw new NotFoundException('Batch not found');
-
-    const latest = await this.prisma.brooderStockCount.findFirst({
-      where:   { batchId },
-      orderBy: { logDate: 'desc' },
-    });
-
-    return latest
-      ? { expectedOpeningStock: latest.closingStock, asOfDate: dayjs(latest.logDate).format('YYYY-MM-DD'), source: 'STOCK_COUNT' as const }
-      : { expectedOpeningStock: batch.currentBirdCount, asOfDate: null, source: 'BATCH_CURRENT_COUNT' as const };
-  }
-
-  async createStockCount(input: unknown, userId: string) {
-    const dto = parseOrThrow(CreateStockCountSchema, input);
-    const logDate = new Date(dto.logDate);
-
-    const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
-    if (!batch) throw new NotFoundException('Batch not found');
-
-    // Expected opening stock = the closingStock of the most recent stock
-    // count strictly before this logDate (so re-saving the same day's entry
-    // doesn't compare against itself), or null if this is the batch's first
-    // ever stock count.
-    const previous = await this.prisma.brooderStockCount.findFirst({
-      where:   { batchId: dto.batchId, logDate: { lt: logDate } },
-      orderBy: { logDate: 'desc' },
-    });
-    const expectedOpeningStock = previous ? previous.closingStock : null;
-    const variance = expectedOpeningStock !== null ? dto.openingStock - expectedOpeningStock : 0;
-
-    // Closing stock is the attendant's physical, verified end-of-day count —
-    // so it's treated as the source of truth for the batch's official/general
-    // bird count and always overwrites Batch.currentBirdCount, even if it
-    // disagrees with whatever mortality logs had already calculated for the
-    // day (e.g. an unrecorded death, or a recount that finds a different
-    // number). This intentionally breaks from the old "cage map vs. general
-    // sheet are fully independent" rule for this one field — a saved Stock
-    // Count is the farm's official reconciliation and should drive the
-    // number shown everywhere else in the app (dashboards, feed calcs, etc).
-    const [record] = await this.prisma.$transaction([
-      this.prisma.brooderStockCount.upsert({
-        where:  { batchId_logDate: { batchId: dto.batchId, logDate } },
-        create: {
-          batchId:              dto.batchId,
-          logDate,
-          openingStock:         dto.openingStock,
-          expectedOpeningStock,
-          variance,
-          varianceReason:       dto.varianceReason ?? null,
-          mortalityCount:       dto.mortalityCount,
-          cullingCount:         dto.cullingCount,
-          closingStock:         dto.closingStock,
-          notes:                dto.notes ?? null,
-          loggedById:           userId,
-        },
-        update: {
-          openingStock:         dto.openingStock,
-          expectedOpeningStock,
-          variance,
-          varianceReason:       dto.varianceReason ?? null,
-          mortalityCount:       dto.mortalityCount,
-          cullingCount:         dto.cullingCount,
-          closingStock:         dto.closingStock,
-          notes:                dto.notes ?? null,
-          loggedById:           userId,
-        },
-      }),
-      this.prisma.batch.update({
-        where: { id: dto.batchId },
-        data:  { currentBirdCount: dto.closingStock },
-      }),
-    ]);
-
-    if (variance !== 0) {
-      const direction = variance < 0 ? 'fewer' : 'more';
-      const title   = `⚠ Brooder Stock Count Mismatch — ${batch.batchCode}`;
-      const message =
-        `Opening stock on ${dayjs(logDate).format('D MMM YYYY')} was counted at ` +
-        `${dto.openingStock.toLocaleString()}, ${Math.abs(variance).toLocaleString()} ${direction} than ` +
-        `the expected ${expectedOpeningStock!.toLocaleString()} (previous day's closing stock).` +
-        (dto.varianceReason ? ` Reason given: ${dto.varianceReason}.` : ' No reason given yet.');
-      await this.alertRoles('BROODER_STOCK_MISMATCH', title, message, dto.batchId);
-      this.logger.warn(`[BrooderControl] ${title}: ${message}`);
-    }
-
-    this.refresh();
-    return record;
-  }
-
-  async listStockCounts(batchId: string, days = 30) {
-    const since = dayjs().subtract(days, 'day').startOf('day').toDate();
-    return this.prisma.brooderStockCount.findMany({
-      where:   { batchId, logDate: { gte: since } },
-      orderBy: { logDate: 'desc' },
-      include: { loggedBy: { select: { id: true, fullName: true } } },
-    });
-  }
 
   // ── Combined population record sheet ─────────────────────────────────────
   //

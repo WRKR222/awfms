@@ -23,7 +23,7 @@ import {
   Thermometer, Droplets, Sun, AlertTriangle,
   ChevronDown, ChevronUp, Flame, Clock, HeartCrack,
   Syringe, Pill, FlaskConical, CheckCircle2,
-  Gauge, ClipboardList, Scale,
+  Gauge, ClipboardList,
 } from 'lucide-react';
 import { BrooderCageMapGrid }        from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement }    from '../../components/shared/BrooderFeedRequirement';
@@ -96,22 +96,6 @@ interface PopulationRecordDay {
   feedKg:         number;
   mortalityCount: number;
   cullingCount:   number;
-}
-
-// Opening/closing stock reconciliation for a day, from
-// GET /brooder/batches/:id/stock-counts.
-interface StockCountDay {
-  id:                   string;
-  logDate:              string;
-  openingStock:         number;
-  expectedOpeningStock: number | null;
-  variance:             number;
-  varianceReason?:      string | null;
-  closingStock:         number;
-  mortalityCount:       number;
-  cullingCount:         number;
-  notes?:               string | null;
-  loggedBy?:            { fullName: string };
 }
 
 interface TreatmentLog {
@@ -237,40 +221,6 @@ function PopulationRecordSummary({ record }: { record: PopulationRecordDay }) {
   );
 }
 
-function StockCountSummary({ record }: { record: StockCountDay }) {
-  const mismatched = record.variance !== 0;
-  return (
-    <div className="flex gap-2 items-start">
-      <div className="flex flex-col items-center pt-0.5">
-        <Gauge className={`w-3.5 h-3.5 ${mismatched ? 'text-red-500' : 'text-indigo-500'}`} />
-        <div className="w-px flex-1 bg-gray-200 dark:bg-gray-700 mt-1 min-h-[8px]" />
-      </div>
-      <div className="pb-3 flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[11px] font-bold uppercase tracking-wide text-indigo-500">Stock Count</span>
-          {mismatched && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 flex items-center gap-1">
-              <AlertTriangle className="w-2.5 h-2.5" />
-              {record.variance < 0 ? `${Math.abs(record.variance)} fewer than expected` : `${record.variance} more than expected`}
-            </span>
-          )}
-        </div>
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-600 dark:text-gray-300">
-          <span>Opening: <strong>{record.openingStock.toLocaleString()}</strong></span>
-          <span>Closing: <strong>{record.closingStock.toLocaleString()}</strong></span>
-          {record.expectedOpeningStock != null && mismatched && (
-            <span className="text-gray-400">Expected: {record.expectedOpeningStock.toLocaleString()}</span>
-          )}
-        </div>
-        {mismatched && record.varianceReason && (
-          <p className="mt-1 text-[10px] text-red-500 dark:text-red-400 italic">Reason: {record.varianceReason}</p>
-        )}
-        {record.notes && <p className="mt-1 text-[10px] text-gray-400 italic">{record.notes}</p>}
-      </div>
-    </div>
-  );
-}
-
 // ── Batch panel — inline below the cage map ───────────────────────────────────
 
 function BatchPanel({ batch }: { batch: BrooderBatch }) {
@@ -312,14 +262,6 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
     staleTime: 30_000,
   });
 
-  // Opening/closing stock reconciliation per day — flags days where a
-  // physical bird count didn't match the previous day's closing stock.
-  const { data: stockCounts = [] } = useQuery<StockCountDay[]>({
-    queryKey: ['brooder-stock-counts', batch.id],
-    queryFn:  () => api.get(`/brooder/batches/${batch.id}/stock-counts?days=30`).then(r => r.data).catch(() => []),
-    staleTime: 30_000,
-  });
-
   // Last log for header summary
   const { data: lastArr = [] } = useQuery<BrooderLog[]>({
     queryKey: ['brooder-last-log', batch.id],
@@ -352,27 +294,13 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
     return map;
   }, [populationSheet]);
 
-  // Lookup by date for the opening/closing stock reconciliation.
-  const stockByDate = useMemo(() => {
-    const map: Record<string, StockCountDay> = {};
-    for (const row of stockCounts) map[dayjs(row.logDate).format('YYYY-MM-DD')] = row;
-    return map;
-  }, [stockCounts]);
-
-  // Most recent stock count with a variance — surfaced as a header badge so
-  // a shrinkage doesn't get buried inside the collapsed history.
-  const latestMismatch = useMemo(
-    () => [...stockCounts].sort((a, b) => (a.logDate < b.logDate ? 1 : -1)).find(s => s.variance !== 0),
-    [stockCounts],
-  );
-
   // Union of every date that has EITHER an environmental log OR a
-  // feed/mortality rollup entry OR a stock count, so a day logged only via
-  // General Record or a stock count still shows up in History.
+  // feed/mortality rollup entry, so a day logged only via General Record
+  // still shows up in History.
   const allDates = useMemo(() => {
-    const dates = new Set<string>([...grouped.map(([d]) => d), ...Object.keys(populationByDate), ...Object.keys(stockByDate)]);
+    const dates = new Set<string>([...grouped.map(([d]) => d), ...Object.keys(populationByDate)]);
     return Array.from(dates).sort((a, b) => (a < b ? 1 : -1));
-  }, [grouped, populationByDate, stockByDate]);
+  }, [grouped, populationByDate]);
 
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border shadow-sm p-4 space-y-4">
@@ -388,13 +316,6 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 font-semibold flex items-center gap-1">
                 <AlertTriangle className="w-2.5 h-2.5" />
                 {daysSince === null ? 'No logs yet' : `${daysSince}d overdue`}
-              </span>
-            )}
-            {latestMismatch && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 font-semibold flex items-center gap-1"
-                title={`Opening stock on ${dayjs(latestMismatch.logDate).format('D MMM')} was ${latestMismatch.openingStock.toLocaleString()}, expected ${latestMismatch.expectedOpeningStock?.toLocaleString() ?? '—'}`}>
-                <Scale className="w-2.5 h-2.5" />
-                Stock mismatch — {dayjs(latestMismatch.logDate).format('D MMM')}
               </span>
             )}
           </div>
@@ -451,7 +372,6 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
             : allDates.map(date => {
                 const dayLogs      = grouped.find(([d]) => d === date)?.[1] ?? [];
                 const popRecord    = populationByDate[date];
-                const stockRecord  = stockByDate[date];
                 const isToday  = date === today;
                 const daysAgo  = dayjs(today).diff(dayjs(date), 'day');
                 const dateLabel = isToday ? 'Today' : daysAgo === 1 ? 'Yesterday' : `${daysAgo}d ago`;
@@ -508,12 +428,6 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
                     {popRecord && (
                       <div className="pl-2 mt-1">
                         <PopulationRecordSummary record={popRecord} />
-                      </div>
-                    )}
-                    {/* Opening/closing stock reconciliation for the day */}
-                    {stockRecord && (
-                      <div className="pl-2 mt-1">
-                        <StockCountSummary record={stockRecord} />
                       </div>
                     )}
                   </div>

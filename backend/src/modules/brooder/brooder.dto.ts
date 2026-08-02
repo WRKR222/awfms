@@ -214,30 +214,6 @@ export const CreateGeneralMortalityLogSchema = z.object({
 );
 export type CreateGeneralMortalityLogDto = z.infer<typeof CreateGeneralMortalityLogSchema>;
 
-// ── Stock count (opening / closing stock reconciliation) ───────────────────
-// Whole-batch, one entry per (batch, logDate) — mirrors the O.stock / C.stock
-// columns on the farm's paper daily record sheet. Opening stock normally
-// carries forward automatically as the previous day's closing stock, but the
-// farm sometimes performs a physical bird count that finds FEWER birds than
-// expected (shrinkage not yet explained by a logged mortality/culling entry).
-// When the attendant-entered openingStock doesn't match the expected value
-// (previous day's closing stock), the server flags it as a variance for
-// Manager/Owner visibility — it does not block the save.
-export const CreateStockCountSchema = z.object({
-  batchId:        z.string().uuid(),
-  logDate:        z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  openingStock:   z.number().int().min(0),
-  mortalityCount: z.number().int().min(0).default(0),
-  cullingCount:   z.number().int().min(0).default(0),
-  closingStock:   z.number().int().min(0),
-  varianceReason: z.string().max(500).optional(),
-  notes:          z.string().max(500).optional(),
-}).refine(
-  d => d.closingStock <= d.openingStock,
-  { message: 'Closing stock cannot exceed opening stock', path: ['closingStock'] },
-);
-export type CreateStockCountDto = z.infer<typeof CreateStockCountSchema>;
-
 // ── Bird weight sample (checked against HyLine control standard) ──────────
 // Preferred: pass cageId — the service derives batchId + rowId + levelId
 // from the cage's active assignment, so weight can be logged from any

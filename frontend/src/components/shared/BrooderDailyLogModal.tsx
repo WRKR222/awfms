@@ -22,14 +22,12 @@
 //     new cage layout as a handful of patterns (e.g. "42 cages × 20 birds
 //     across 3 levels") instead of moving birds cage-by-cage. See the
 //     "Cage Reassignment" section below for the format.
-//   • Stock Count                       — opening/closing stock for the
-//     whole batch.
 //
 // Every section above submits INDEPENDENTLY of the others — one section
 // erroring (e.g. a duplicate daily-entry on a backdated date) never blocks
-// the rest from saving. This matters most for Stock Count and Mortality,
-// which should always go through even when a backdated Session or Daily
-// Entry submission fails or is rejected as a duplicate.
+// the rest from saving. This matters most for Mortality, which should
+// always go through even when a backdated Session or Daily Entry
+// submission fails or is rejected as a duplicate.
 //
 // On submit, one request per non-empty/included section fires (all
 // against endpoints that already existed, plus the new bulk-reassign one):
@@ -41,7 +39,6 @@
 //     the chosen scope)
 //   POST /brooder/batches/:batchId/reassign-bulk  (only if a reassignment
 //     block was added)
-//   POST /brooder/stock-counts                  (only if an opening stock was entered)
 //
 // This replaces:
 //   • BrooderPage's inline SessionLogModal / DailyEntryModal / TreatmentModal
@@ -58,7 +55,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import {
   X, Calendar, AlertTriangle, Plus, Droplets, Thermometer, Gauge, Sun,
-  Syringe, FlaskConical, Stethoscope, Pill, Wheat, HeartCrack, Info, ChevronDown, ChevronUp, Scale,
+  Syringe, FlaskConical, Stethoscope, Pill, Wheat, HeartCrack, Info, ChevronDown, ChevronUp,
   Grid3x3,
 } from 'lucide-react';
 import { api } from '../../lib/api';
@@ -212,7 +209,7 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
   // ── Section open/closed state ───────────────────────────────────────────
   const [openSection, setOpenSection] = useState({
     session: true, daily: true, treatment: !!presetScope, feed: true, mortality: !!presetScope,
-    reassign: false, stock: true,
+    reassign: false,
   });
   const toggle = (k: keyof typeof openSection) => setOpenSection(s => ({ ...s, [k]: !s[k] }));
 
@@ -351,27 +348,6 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
     .filter(b => b.isIsolation)
     .reduce((sum, b) => sum + b.levelIds.length * (Number(b.cageCount) || 0) * (Number(b.birdsPerCage) || 0), 0);
 
-  // ── Stock count — opening/closing stock reconciliation ─────────────────
-  // Opening and closing stock are no longer attendant-entered here — both
-  // are derived automatically so the daily log can't drift from the actual
-  // mortality/culling entered above. Opening stock is always the previous
-  // day's closing stock (or the batch's current live count if this batch
-  // has no stock-count history yet); closing stock is opening stock minus
-  // today's total lost (mortality + culling). A separate physical
-  // recount, if the farm ever needs one, is out of scope for this modal.
-  const { data: expectedOpeningData } = useQuery({
-    queryKey: ['brooder-expected-opening-stock', batch.id],
-    queryFn:  () => api.get(`/brooder/batches/${batch.id}/expected-opening-stock`).then(r => r.data),
-    staleTime: 30_000,
-  });
-  const expectedOpeningStock: number | null = expectedOpeningData?.expectedOpeningStock ?? null;
-  const expectedAsOfDate:     string | null = expectedOpeningData?.asOfDate ?? null;
-
-  const [stockNotes, setStockNotes] = useState('');
-
-  const openingStockNum = expectedOpeningStock ?? 0;
-  const closingStockNum = Math.max(0, openingStockNum - totalLost);
-
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   function errMsg(err: any): string {
@@ -384,8 +360,8 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
       // Every section below is wrapped in its own try/catch and collects
       // into `errors` rather than throwing — so one section's failure
       // (e.g. a duplicate Session or Daily Entry on a backdated date)
-      // never prevents Mortality, Stock Count, or Cage Reassignment from
-      // being submitted. All attempted sections run regardless of what
+      // never prevents Mortality or Cage Reassignment from being
+      // submitted. All attempted sections run regardless of what
       // came before.
       const errors: string[] = [];
 
@@ -539,39 +515,13 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
         }
       }
 
-      // 7) Stock count — opening/closing stock for the whole batch, derived
-      // automatically (opening = previous closing, closing = opening minus
-      // today's total lost). Sent once the expected opening stock has
-      // loaded, since it's a core daily record — runs independently of
-      // every section above, so a backdated Session/Daily Entry/Treatment
-      // failure never blocks it.
-      let stockResult: any = null;
-      if (expectedOpeningStock !== null) {
-        try {
-          const res = await api.post('/brooder/stock-counts', {
-            batchId:        batch.id,
-            logDate,
-            openingStock:   openingStockNum,
-            mortalityCount: Number(mortalityCount) || 0,
-            cullingCount:   Number(cullingCount)   || 0,
-            closingStock:   closingStockNum,
-            notes:          stockNotes || undefined,
-          });
-          stockResult = res.data;
-        } catch (err: any) {
-          errors.push(`Stock count: ${errMsg(err)}`);
-        }
-      }
-
-      return { errors, mortalityResult, stockResult, reassignResult };
+      return { errors, mortalityResult, reassignResult };
     },
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ['brooder-logs',     batch.id] });
       qc.invalidateQueries({ queryKey: ['brooder-last-log', batch.id] });
       qc.invalidateQueries({ queryKey: ['brooder-treatments', batch.id] });
       qc.invalidateQueries({ queryKey: ['brooder-population-record-sheet', batch.id] });
-      qc.invalidateQueries({ queryKey: ['brooder-stock-counts', batch.id] });
-      qc.invalidateQueries({ queryKey: ['brooder-expected-opening-stock', batch.id] });
       qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
       qc.invalidateQueries({ queryKey: ['brooder-rows-and-levels'] });
       qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
@@ -1242,50 +1192,6 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                       className={`${iCls} resize-none`} placeholder="Reassignment notes (optional)..." />
                   </>
                 )}
-              </>
-            )}
-          </div>
-
-          {/* ── Stock Count — opening/closing stock reconciliation ── */}
-          <div className="rounded-xl border border-indigo-100 dark:border-indigo-900/30 bg-indigo-50/40 dark:bg-indigo-900/10 p-3 space-y-3">
-            <SectionHeader icon={Scale} title="Stock Count" subtitle="whole unit — opening &amp; closing" accent="text-indigo-500"
-              open={openSection.stock} onToggle={() => toggle('stock')} />
-            {openSection.stock && (
-              <>
-                <div className="flex items-center gap-2 bg-white dark:bg-dark-bg rounded-xl p-3 text-sm">
-                  <Info className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                  <span className="text-gray-600 dark:text-gray-300">
-                    {expectedOpeningStock !== null ? (
-                      <>Opening stock: <strong className="text-gray-800 dark:text-gray-100">{expectedOpeningStock.toLocaleString()}</strong>
-                        {expectedAsOfDate
-                          ? <> — closing stock from {dayjs(expectedAsOfDate).format('D MMM')}</>
-                          : <> — batch's current live count (no prior stock count yet)</>}
-                      </>
-                    ) : 'Loading opening stock…'}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-xl bg-white dark:bg-dark-bg p-3 text-center">
-                    <p className={lCls}>Opening Stock</p>
-                    <p className="text-lg font-bold text-indigo-600 dark:text-indigo-400">
-                      {expectedOpeningStock !== null ? openingStockNum.toLocaleString() : '—'}
-                    </p>
-                  </div>
-                  <div className="rounded-xl bg-white dark:bg-dark-bg p-3 text-center">
-                    <p className={lCls}>Closing Stock</p>
-                    <p className="text-lg font-bold text-indigo-600 dark:text-indigo-400">
-                      {expectedOpeningStock !== null ? closingStockNum.toLocaleString() : '—'}
-                    </p>
-                  </div>
-                </div>
-                <p className="text-[10px] text-gray-400 -mt-1">
-                  Both are automatic — opening carries forward as yesterday's closing stock, and closing
-                  updates on its own from today's mortality/culling ({totalLost}).
-                </p>
-
-                <textarea value={stockNotes} onChange={e => setStockNotes(e.target.value)} rows={2}
-                  className={`${iCls} resize-none`} placeholder="Stock count notes (optional)..." />
               </>
             )}
           </div>
