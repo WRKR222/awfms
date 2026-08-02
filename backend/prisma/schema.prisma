@@ -155,6 +155,7 @@ enum NotificationType {
   BROODER_WEIGHT_ANOMALY    // bird weight sample outside HyLine min/max band
   BROODER_MORTALITY_HIGH    // cumulative mortality % exceeds HyLine week ceiling
   BROODER_STOCK_MISMATCH    // physical bird count (opening stock) doesn't match previous day's closing stock
+  BROODER_FEED_WASTAGE      // whole-brooder feed dispensed for the day exceeds the HyLine daily ration — Director-facing, includes cost of the excess
   REORDER_ALERT             // store item at/below reorder level after a stock-out
   // PM weekly item requisition (PM → Store, folded into the Issuance Plan)
   PM_REQUISITION_SUBMITTED       // PM submitted their weekly item list to Store
@@ -1678,6 +1679,42 @@ model BrooderGeneralFeedLog {
   @@index([batchId, entryDate])
   @@index([storeItemId, entryDate])
   @@map("brooder_general_feed_logs")
+}
+
+/// One row per moment a whole-brooder feed entry pushed a batch's day total
+/// PAST its HyLine daily ration. Written by BrooderService right after
+/// BrooderGeneralFeedLog.create() (see Req: Director feed-wastage tracking).
+/// excessKg is the INCREMENTAL amount added by the triggering entry — not a
+/// running cumulative total — so summing excessKg across a day's rows always
+/// equals that day's true total excess, even when several entries (e.g.
+/// morning + evening) are logged. Deliberately denormalised (batchCode,
+/// levelLabel, storeItemName snapshotted as plain strings) instead of
+/// Prisma relations, so this table stays a pure append-only ledger the
+/// Director's daily/weekly/monthly summaries can aggregate without joins,
+/// and historical rows keep reading correctly even if the source batch,
+/// level or store item is later renamed or deleted.
+/// No relation to BrooderGeneralFeedLog is enforced at the DB level for the
+/// same reason — generalFeedLogId is an informational pointer only.
+model BrooderFeedWastageLog {
+  id               String   @id @default(uuid())
+  batchId          String   @map("batch_id")
+  batchCode        String   @map("batch_code")
+  generalFeedLogId String   @map("general_feed_log_id")
+  feedType         String   @map("feed_type")
+  storeItemId      String?  @map("store_item_id")
+  storeItemName    String?  @map("store_item_name")
+  entryDate        DateTime @map("entry_date") @db.Date
+  requiredKgForDay Float    @map("required_kg_for_day")   // HyLine daily ration for the whole batch that day
+  dispensedKgTotal Float    @map("dispensed_kg_total")    // cumulative kg dispensed to the batch that day, including the triggering entry
+  excessKg         Float    @map("excess_kg")             // incremental kg the triggering entry added past the ration
+  unitCostKes      Decimal? @map("unit_cost_kes")    @db.Decimal(10, 2) // store item's unit cost at the time this was recorded (only when storeItemId is set)
+  excessCostKes    Decimal? @map("excess_cost_kes")  @db.Decimal(12, 2) // excessKg × unitCostKes
+  loggedById       String   @map("logged_by_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([batchId, entryDate])
+  @@index([entryDate])
+  @@map("brooder_feed_wastage_logs")
 }
 
 /// Batch-wide ("general population") mortality/culling log — the same

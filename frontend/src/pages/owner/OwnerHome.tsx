@@ -23,6 +23,7 @@ import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
 import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
+import { BrooderFeedWastagePanel } from '../../components/shared/BrooderFeedWastagePanel';
 
 type Range = 'daily' | 'weekly' | 'monthly' | 'quarterly';
 
@@ -561,6 +562,12 @@ function BrooderMapPanel() {
         {/* Req 7: Directors see live threshold violations immediately */}
         <BrooderControlStandardPanel />
         <BrooderFeedSummary />
+      </div>
+
+      {/* Feed wastage — whole-brooder days where more was given than the HyLine
+          daily ration called for, with the cost of that excess. */}
+      <div className="bg-white dark:bg-dark-card px-4 py-3 border-b border-gray-100 dark:border-dark-border">
+        <BrooderFeedWastagePanel />
       </div>
 
       {/* Required vs given feed — per row/level, this week — always visible so an

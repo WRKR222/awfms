@@ -84,6 +84,22 @@ export class BrooderController {
     return this.svc.getFeedIssuanceCalendar(weeks ? parseInt(weeks, 10) : 4);
   }
 
+  /** GET /brooder/feed-wastage-summary?period=daily|weekly|monthly&from=&to=&batchId=
+   *  Director-facing rollup of whole-brooder feed over-issuance: total kg
+   *  given beyond the HyLine daily ration and its cost, bucketed by day,
+   *  ISO week, or calendar month. Gated on FINANCE_VIEW (Owner/Accountant)
+   *  since it surfaces cost figures, unlike the plain kg-only alerts. */
+  @Get('feed-wastage-summary')
+  @RequirePermission(Permission.FINANCE_VIEW)
+  getFeedWastageSummary(
+    @Query('period') period?: 'daily' | 'weekly' | 'monthly',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('batchId') batchId?: string,
+  ) {
+    return this.svc.getFeedWastageSummary({ period, from, to, batchId });
+  }
+
   /** GET /brooder/missed-feed-alerts
    *  Flags any row/level whose required ration for YESTERDAY was not fully
    *  dispensed by the time the day rolled over. Surfaced on Lead Attendant

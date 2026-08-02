@@ -229,6 +229,41 @@ export function useMissedFeedAlerts() {
   });
 }
 
+// ── Feed wastage summary (whole-brooder over-issuance, Director-facing) ────
+//
+// Director-only view of days the general/whole-brooder feed log gave out
+// more feed than the HyLine daily ration called for, with the cost of the
+// excess where the feed was linked to a store item. The per-row/level path
+// can't appear here — it's hard-blocked from ever exceeding its ration.
+
+export interface FeedWastageBucket {
+  periodStart:   string;
+  excessKg:      number;
+  excessCostKes: number;
+  eventCount:    number;
+}
+
+export interface FeedWastageSummaryResponse {
+  period:  'daily' | 'weekly' | 'monthly';
+  from:    string;
+  to:      string;
+  totals: {
+    excessKg:      number;
+    excessCostKes: number;
+    eventCount:    number;
+  };
+  buckets: FeedWastageBucket[];
+}
+
+export function useFeedWastageSummary(period: 'daily' | 'weekly' | 'monthly' = 'daily') {
+  return useQuery<FeedWastageSummaryResponse>({
+    queryKey:      ['brooder-feed-wastage-summary', period],
+    queryFn:       () => api.get('/brooder/feed-wastage-summary', { params: { period } }).then(r => r.data),
+    staleTime:     60_000,
+    refetchInterval: 5 * 60_000,
+  });
+}
+
 // ── Daily feed breakdown (calendar week, for PM analysis) ───────────────────
 
 export interface DailyFeedBreakdownDay {
