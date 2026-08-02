@@ -352,10 +352,13 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
     .reduce((sum, b) => sum + b.levelIds.length * (Number(b.cageCount) || 0) * (Number(b.birdsPerCage) || 0), 0);
 
   // ── Stock count — opening/closing stock reconciliation ─────────────────
-  // Opening stock normally just carries forward as the previous day's
-  // closing stock (fetched below). The farm sometimes does a physical bird
-  // count that finds fewer birds than expected — when the attendant's
-  // entered opening stock doesn't match, we flag it and ask why.
+  // Opening and closing stock are no longer attendant-entered here — both
+  // are derived automatically so the daily log can't drift from the actual
+  // mortality/culling entered above. Opening stock is always the previous
+  // day's closing stock (or the batch's current live count if this batch
+  // has no stock-count history yet); closing stock is opening stock minus
+  // today's total lost (mortality + culling). A separate physical
+  // recount, if the farm ever needs one, is out of scope for this modal.
   const { data: expectedOpeningData } = useQuery({
     queryKey: ['brooder-expected-opening-stock', batch.id],
     queryFn:  () => api.get(`/brooder/batches/${batch.id}/expected-opening-stock`).then(r => r.data),
@@ -364,36 +367,10 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
   const expectedOpeningStock: number | null = expectedOpeningData?.expectedOpeningStock ?? null;
   const expectedAsOfDate:     string | null = expectedOpeningData?.asOfDate ?? null;
 
-  const [openingStock,        setOpeningStock]        = useState('');
-  const [openingStockTouched, setOpeningStockTouched] = useState(false);
-  const [closingStock,        setClosingStock]        = useState('');
-  const [closingStockTouched, setClosingStockTouched] = useState(false);
-  const [varianceReason,      setVarianceReason]      = useState('');
-  const [stockNotes,          setStockNotes]          = useState('');
+  const [stockNotes, setStockNotes] = useState('');
 
-  // Prefill opening stock from the expected value once it loads, as long as
-  // the attendant hasn't already typed something themselves.
-  useEffect(() => {
-    if (expectedOpeningStock !== null && !openingStockTouched) {
-      setOpeningStock(String(expectedOpeningStock));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expectedOpeningStock]);
-
-  // Keep closing stock following opening stock minus today's total lost,
-  // unless the attendant has manually overridden it (e.g. an end-of-day
-  // recount too).
-  useEffect(() => {
-    if (!closingStockTouched) {
-      const opening = Number(openingStock) || 0;
-      setClosingStock(String(Math.max(0, opening - totalLost)));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openingStock, totalLost]);
-
-  const openingStockNum = Number(openingStock) || 0;
-  const stockVariance    = expectedOpeningStock !== null ? openingStockNum - expectedOpeningStock : 0;
-  const hasStockMismatch = expectedOpeningStock !== null && openingStock !== '' && stockVariance !== 0;
+  const openingStockNum = expectedOpeningStock ?? 0;
+  const closingStockNum = Math.max(0, openingStockNum - totalLost);
 
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -562,14 +539,14 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
         }
       }
 
-      // 7) Stock count — opening/closing stock for the whole batch. Always
-      // submitted once the attendant has an opening stock value, since
-      // it's a core daily record — flags a variance server-side if it
-      // doesn't match the previous day's closing stock. Runs independently
-      // of every section above, so a backdated Session/Daily Entry/
-      // Treatment failure never blocks it.
+      // 7) Stock count — opening/closing stock for the whole batch, derived
+      // automatically (opening = previous closing, closing = opening minus
+      // today's total lost). Sent once the expected opening stock has
+      // loaded, since it's a core daily record — runs independently of
+      // every section above, so a backdated Session/Daily Entry/Treatment
+      // failure never blocks it.
       let stockResult: any = null;
-      if (openingStock !== '') {
+      if (expectedOpeningStock !== null) {
         try {
           const res = await api.post('/brooder/stock-counts', {
             batchId:        batch.id,
@@ -577,8 +554,7 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
             openingStock:   openingStockNum,
             mortalityCount: Number(mortalityCount) || 0,
             cullingCount:   Number(cullingCount)   || 0,
-            closingStock:   Number(closingStock)   || 0,
-            varianceReason: varianceReason || undefined,
+            closingStock:   closingStockNum,
             notes:          stockNotes || undefined,
           });
           stockResult = res.data;
@@ -653,17 +629,6 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
         setSubmitError('Give a reason (at least 3 characters) for each block marked as an isolation cage.');
         return;
       }
-    }
-
-    if (openingStock === '') {
-      setSubmitError('Enter an opening stock count for the day.'); return;
-    }
-    if (Number(closingStock) > openingStockNum) {
-      setSubmitError('Closing stock cannot exceed opening stock.'); return;
-    }
-    if (hasStockMismatch && !varianceReason.trim()) {
-      setSubmitError(`Opening stock (${openingStockNum.toLocaleString()}) doesn't match the expected ${expectedOpeningStock!.toLocaleString()} — give a reason (e.g. physical bird count).`);
-      return;
     }
 
     submit.mutate();
@@ -1291,60 +1256,33 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                   <Info className="w-4 h-4 text-gray-400 flex-shrink-0" />
                   <span className="text-gray-600 dark:text-gray-300">
                     {expectedOpeningStock !== null ? (
-                      <>Expected opening stock: <strong className="text-gray-800 dark:text-gray-100">{expectedOpeningStock.toLocaleString()}</strong>
+                      <>Opening stock: <strong className="text-gray-800 dark:text-gray-100">{expectedOpeningStock.toLocaleString()}</strong>
                         {expectedAsOfDate
                           ? <> — closing stock from {dayjs(expectedAsOfDate).format('D MMM')}</>
                           : <> — batch's current live count (no prior stock count yet)</>}
                       </>
-                    ) : 'Loading expected opening stock…'}
+                    ) : 'Loading opening stock…'}
                   </span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className={lCls}>Opening Stock</label>
-                    <input
-                      value={openingStock}
-                      onChange={e => { setOpeningStock(e.target.value); setOpeningStockTouched(true); }}
-                      type="number" min="0"
-                      className={`${iCls} text-center font-bold ${hasStockMismatch ? 'text-red-600 dark:text-red-400 border-red-300 dark:border-red-700' : 'text-indigo-600 dark:text-indigo-400'}`}
-                      placeholder="0"
-                    />
+                  <div className="rounded-xl bg-white dark:bg-dark-bg p-3 text-center">
+                    <p className={lCls}>Opening Stock</p>
+                    <p className="text-lg font-bold text-indigo-600 dark:text-indigo-400">
+                      {expectedOpeningStock !== null ? openingStockNum.toLocaleString() : '—'}
+                    </p>
                   </div>
-                  <div>
-                    <label className={lCls}>Closing Stock</label>
-                    <input
-                      value={closingStock}
-                      onChange={e => { setClosingStock(e.target.value); setClosingStockTouched(true); }}
-                      type="number" min="0"
-                      className={`${iCls} text-center font-bold text-indigo-600 dark:text-indigo-400`}
-                      placeholder="0"
-                    />
+                  <div className="rounded-xl bg-white dark:bg-dark-bg p-3 text-center">
+                    <p className={lCls}>Closing Stock</p>
+                    <p className="text-lg font-bold text-indigo-600 dark:text-indigo-400">
+                      {expectedOpeningStock !== null ? closingStockNum.toLocaleString() : '—'}
+                    </p>
                   </div>
                 </div>
                 <p className="text-[10px] text-gray-400 -mt-1">
-                  Closing stock defaults to Opening Stock − today's mortality/culling ({totalLost}), but can be overridden if you did an end-of-day recount too.
+                  Both are automatic — opening carries forward as yesterday's closing stock, and closing
+                  updates on its own from today's mortality/culling ({totalLost}).
                 </p>
-
-                {hasStockMismatch && (
-                  <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3 space-y-2">
-                    <p className="text-sm font-semibold text-red-700 dark:text-red-400 flex items-center gap-1.5">
-                      <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                      {stockVariance < 0
-                        ? `${Math.abs(stockVariance).toLocaleString()} fewer birds than expected`
-                        : `${stockVariance.toLocaleString()} more birds than expected`}
-                    </p>
-                    <p className="text-xs text-red-600 dark:text-red-400">
-                      A bird count found a different number than the previous day's closing stock ({expectedOpeningStock!.toLocaleString()}).
-                      This is flagged for the Manager and Owner to review — give a reason below (e.g. physical bird count, missed mortality entry).
-                    </p>
-                    <div>
-                      <label className={lCls}>Reason *</label>
-                      <input value={varianceReason} onChange={e => setVarianceReason(e.target.value)}
-                        className={iCls} placeholder="e.g. Physical bird count on 25/7 found fewer birds" />
-                    </div>
-                  </div>
-                )}
 
                 <textarea value={stockNotes} onChange={e => setStockNotes(e.target.value)} rows={2}
                   className={`${iCls} resize-none`} placeholder="Stock count notes (optional)..." />
