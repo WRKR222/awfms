@@ -12,6 +12,10 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     // it the request 403s and the modal shows the misleading "No feed has been
     // issued from the store this week yet" message even when Store has issued it.
     Permission.INVENTORY_VIEW,
+    // FIX: AttendantHome polls GET /tally-verifications/pending every 60s to
+    // show "awaiting tally" badges — without this the request 403s and the
+    // badge silently never appears (caught by .catch(() => [])).
+    Permission.PRODUCTION_SESSION_VIEW,
   ],
   [UserRole.MANAGER]: [
     Permission.FLOCK_VIEW, Permission.FLOCK_ENTRY_CREATE, Permission.FLOCK_ENTRY_APPROVE,
