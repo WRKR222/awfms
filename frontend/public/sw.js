@@ -2,17 +2,26 @@
  * AWFMS Service Worker — Offline-First PWA
  * 
  * Strategy:
- * - App shell (JS/CSS/HTML): Cache First — always serve from cache, update in background
+ * - Navigation (index.html / '/'): Network First — always try to get the
+ *   latest deploy; fall back to cache only when offline. index.html is NOT
+ *   content-hashed, so caching it Cache First meant the browser could keep
+ *   serving an old shell (pointing at old, since-deleted JS bundle files)
+ *   indefinitely, regardless of how many times a new version was deployed.
+ * - Hashed build assets (JS/CSS, filenames include a content hash): Cache
+ *   First — safe, because a new deploy always produces a new filename, so
+ *   there's nothing to go stale.
  * - API GET requests: Network First — try network, fall back to cache
  * - API POST/PATCH (data entry): Queue offline, replay when online
  * 
- * This ensures attendants can always log entries even with no signal.
+ * This ensures attendants can always log entries even with no signal, while
+ * still guaranteeing everyone is running the latest deployed app shell as
+ * soon as they have connectivity.
  */
 
-const CACHE_NAME = 'awfms-v2';
+const CACHE_NAME = 'awfms-v3'; // bumped so every client purges the old Cache-First-cached index.html on next activate
 const OFFLINE_QUEUE_KEY = 'awfms-offline-queue';
 
-// Files to pre-cache (app shell)
+// Files to pre-cache (offline fallback only — NOT served preferentially, see fetch handler below)
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -57,7 +66,16 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Cache First for app shell assets
+  // Navigations (the HTML shell) and index.html/'/' itself are never
+  // content-hashed — always prefer the network so a new deploy is picked up
+  // on the very next load, falling back to the cached shell only offline.
+  if (request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html') {
+    event.respondWith(networkFirst(request));
+    return;
+  }
+
+  // Cache First for hashed build assets (JS/CSS/images) — safe because a new
+  // deploy always produces a new, different filename.
   event.respondWith(cacheFirst(request));
 });
 
