@@ -96,4 +96,9 @@ export enum Permission {
   BREAKAGE_LOG                 = 'breakage:log',
   BREAKAGE_REVIEW              = 'breakage:review',
   BREAKAGE_VIEW                = 'breakage:view',
+
+  // Store production report verification
+  PRODUCTION_REPORT_UPLOAD     = 'production_report:upload',    // STORE only
+  PRODUCTION_REPORT_VIEW       = 'production_report:view',      // STORE, MANAGER, OWNER
+  PRODUCTION_REPORT_REVIEW     = 'production_report:review',    // OWNER (Director) — approve/reject discrepancies
 }

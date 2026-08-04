@@ -8,7 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth.store';
 import api from '../../lib/api/client';
-import { CheckSquare, Package, ClipboardList, Users, UserCheck, ChevronRight, Lock, AlertTriangle, Clock, Calendar } from 'lucide-react';
+import { CheckSquare, Package, ClipboardList, Users, UserCheck, ChevronRight, Lock, AlertTriangle, Clock, Calendar, FileSpreadsheet } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 
 export default function StoreHome() {
@@ -56,6 +56,14 @@ export default function StoreHome() {
       icon: ClipboardList,
       color: 'bg-indigo-500',
       route: '/store/issuance-plans',
+      badge: null,
+    },
+    {
+      label: 'Production Report',
+      sub: 'Upload the day-by-day production sheet for a batch',
+      icon: FileSpreadsheet,
+      color: 'bg-orange-500',
+      route: '/store/production-reports',
       badge: null,
     },
     {

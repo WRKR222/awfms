@@ -18,6 +18,10 @@ import { IssuancePlanCron } from './issuance-plan.cron';
 import { PMRequisitionService } from './pm-requisition.service';
 import { PMRequisitionController } from './pm-requisition.controller';
 import { PMRequisitionCron } from './pm-requisition.cron';
+import { ProductionReportParserService } from './production-report-parser.service';
+import { ProductionReportReconciliationService } from './production-report-reconciliation.service';
+import { ProductionReportService } from './production-report.service';
+import { ProductionReportController } from './production-report.controller';
 
 @Module({
   imports: [PrismaModule, NotificationsModule],
@@ -31,6 +35,9 @@ import { PMRequisitionCron } from './pm-requisition.cron';
     IssuancePlanCron,
     PMRequisitionService,
     PMRequisitionCron,
+    ProductionReportParserService,
+    ProductionReportReconciliationService,
+    ProductionReportService,
   ],
   controllers: [
     StoreController,
@@ -40,7 +47,8 @@ import { PMRequisitionCron } from './pm-requisition.cron';
     StockRequestController,
     IssuancePlanController,
     PMRequisitionController,
+    ProductionReportController,
   ],
-  exports: [StoreService, StoreInventoryService, TallyVerificationService, StockRequestService, IssuancePlanService, PMRequisitionService],
+  exports: [StoreService, StoreInventoryService, TallyVerificationService, StockRequestService, IssuancePlanService, PMRequisitionService, ProductionReportService],
 })
 export class StoreModule {}

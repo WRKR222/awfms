@@ -161,6 +161,11 @@ enum NotificationType {
   PM_REQUISITION_SUBMITTED       // PM submitted their weekly item list to Store
   PM_REQUISITION_EARLY_REMINDER  // Tuesday heads-up — 2 days before the Thursday deadline
   PM_REQUISITION_DUE_REMINDER    // Thursday — due today
+  // Store production report verification
+  PRODUCTION_REPORT_SUBMITTED    // Store uploaded/re-uploaded a report — Director-facing
+  PRODUCTION_REPORT_DISCREPANCY  // report contains mismatches vs. system-recorded data — Director-facing
+  PRODUCTION_REPORT_APPROVED     // Director approved a report — Store-facing
+  PRODUCTION_REPORT_REJECTED     // Director rejected a report — Store-facing, includes reason
 }
 
 enum IssuancePlanType {
@@ -304,6 +309,9 @@ model User {
   brooderGeneralMortalityLogs BrooderGeneralMortalityLog[] @relation("BrooderGeneralMortalityLoggedBy")
   brooderStockCounts          BrooderStockCount[]          @relation("BrooderStockCountLoggedBy")
 
+  // Store Production Report verification
+  productionReportsUploaded StoreProductionReport[] @relation("ProductionReportUploadedBy")
+  productionReportsReviewed StoreProductionReport[] @relation("ProductionReportReviewedBy")
 
   @@map("users")
 }
@@ -420,6 +428,7 @@ model Batch {
   brooderGeneralFeedLogs      BrooderGeneralFeedLog[]
   brooderGeneralMortalityLogs BrooderGeneralMortalityLog[]
   brooderStockCounts          BrooderStockCount[]
+  storeProductionReport       StoreProductionReport?
   @@index([stage])
   @@index([isActive])
   @@map("batches")
@@ -1863,6 +1872,100 @@ model StoreStockOut {
   @@index([storeItemId, issuedDate])
   @@index([issuedDate])
   @@map("store_stock_outs")
+}
+
+// ─── STORE PRODUCTION REPORT VERIFICATION ────────────────────────────────────
+// Stores upload a day-by-day production report (feed, mortality, opening/
+// closing stock, items issued e.g. charcoal/drugs) for a batch. It is used to
+// (a) backfill any daily log an attendant never recorded, and (b) deduct
+// store items that were actually consumed but never went through a formal
+// stock-out. Every field is cross-checked against whatever the attendant has
+// already recorded:
+//   • nothing recorded yet   → applied immediately (autofill), no approval needed
+//   • recorded and matches   → no-op
+//   • recorded and CONFLICTS → held back, never silently overwritten — this is
+//                              the only case that needs the Director
+//
+// So a clean report (no conflicts) is applied to the system the moment it's
+// submitted and needs no sign-off at all. A report is only PENDING while it
+// has open discrepancies; the Director's approve/reject is scoped to just
+// those flagged fields — approve trusts the report's value (an adjusting
+// entry is applied on top of the existing record), reject keeps the system's
+// existing value untouched and asks Store to re-upload.
+//
+// Only ONE current report is kept per batch (re-uploading replaces it) — the
+// report tracks "today's correct picture", not a per-day archive.
+
+enum StoreProductionReportStatus {
+  PENDING    // has one or more unresolved discrepancies awaiting Director decision
+  APPROVED   // no open discrepancies — everything the report carried has been applied
+  REJECTED   // Director rejected the report outright; nothing further applied, Store must re-upload
+}
+
+enum ProductionReportDiscrepancyType {
+  MORTALITY      // report mortality (whole-batch or per cage/level) != system-recorded mortality for that date
+  FEED           // report feed kg (whole-batch or per row/level) != system-recorded feed dispensed for that date
+  STOCK_COUNT    // report opening/closing stock != BrooderStockCount for that date
+  ITEM_ISSUANCE  // report-implied usage of a store item (e.g. charcoal bags) != recorded stock-outs for that date
+  OTHER
+}
+
+model StoreProductionReport {
+  id                String                       @id @default(uuid())
+  batchId           String                       @unique @map("batch_id")
+  fileName          String                       @map("file_name")
+  columnMapping     Json                         @map("column_mapping")   // canonicalField -> source header, as chosen/confirmed at submit time
+  rawRows           Json                         @map("raw_rows")         // ParsedReportRow[] incl. per-row/per-field resolution (matched | autofilled | discrepancy)
+  status            StoreProductionReportStatus  @default(PENDING)
+  discrepancyCount  Int                          @default(0) @map("discrepancy_count")
+  autofillCount     Int                          @default(0) @map("autofill_count")
+  matchedCount      Int                          @default(0) @map("matched_count")
+  resubmissionCount Int                          @default(0) @map("resubmission_count") // incremented every re-upload (e.g. after a rejection)
+  uploadedById      String                       @map("uploaded_by_id")
+  uploadedAt        DateTime                     @default(now()) @map("uploaded_at")
+  reviewedById      String?                      @map("reviewed_by_id")
+  reviewedAt        DateTime?                    @map("reviewed_at")
+  rejectionReason   String?                      @map("rejection_reason")
+  appliedAt         DateTime?                     @map("applied_at")       // set as soon as autofills/deductions are committed (immediately on submit, or when the Director clears remaining discrepancies)
+  createdAt         DateTime                     @default(now()) @map("created_at")
+  updatedAt         DateTime                     @updatedAt @map("updated_at")
+
+  batch         Batch                          @relation(fields: [batchId], references: [id])
+  uploadedBy    User                           @relation("ProductionReportUploadedBy", fields: [uploadedById], references: [id])
+  reviewedBy    User?                          @relation("ProductionReportReviewedBy", fields: [reviewedById], references: [id])
+  discrepancies ProductionReportDiscrepancy[]
+
+  @@index([status])
+  @@map("store_production_reports")
+}
+
+/// A single flagged mismatch between a report row/field and existing
+/// system-recorded data. Recomputed from scratch (deleted + recreated) every
+/// time the report is reprocessed, so this always reflects the CURRENT
+/// report only — never a history of past discrepancies.
+model ProductionReportDiscrepancy {
+  id              String                          @id @default(uuid())
+  reportId        String                          @map("report_id")
+  rowDate         DateTime                         @map("row_date") @db.Date
+  field           String                                                   // canonical field, e.g. "mortality", "feedKg", "item:Charcoal"
+  discrepancyType ProductionReportDiscrepancyType  @map("discrepancy_type")
+  locationRef     String?                          @map("location_ref")    // e.g. "Row 2 / Level 3", a cage label, or blank for whole-batch rows
+  systemValue     String?                          @map("system_value")
+  reportValue     String?                          @map("report_value")
+  notes           String?
+  // Resolved when the Director acts on the report (approve trusts the report's
+  // value and applies an adjusting entry; reject keeps the system value as-is).
+  resolved        Boolean                          @default(false)
+  resolution      String?                                                  // "APPLIED" | "NEEDS_MANUAL_CORRECTION"
+  resolvedById    String?                          @map("resolved_by_id")
+  resolvedAt      DateTime?                        @map("resolved_at")
+  createdAt       DateTime                         @default(now()) @map("created_at")
+
+  report StoreProductionReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
+  @@index([rowDate])
+  @@map("production_report_discrepancies")
 }
 
 /// Weekly or emergency issuance plan — replaces PurchaseRequest/LPO for stock issuance control

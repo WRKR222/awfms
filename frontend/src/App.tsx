@@ -39,6 +39,7 @@ import OwnerIssuancePlanPage from './pages/owner/OwnerIssuancePlanPage';
 import OwnerHome                 from './pages/owner/OwnerHome';
 import { AiReportsPage }         from './pages/owner/AiReportsPage';
 import { DataUploadPage }        from './pages/owner/DataUploadPage';
+import { ProductionReportReviewPage } from './pages/owner/ProductionReportReviewPage';
 import { OwnerSalesOrdersPage }  from './pages/owner/OwnerSalesOrdersPage';
 
 // Sales pages
@@ -56,6 +57,7 @@ import StoreInventoryPage   from './pages/store/StoreInventoryPage';
 import StoreHRPage          from './pages/store/StoreHRPage';          // GAP-01
 import StoreIssuancePlanPage from './pages/store/StoreIssuancePlanPage'; // Issuance Plan (replaces GAP-02 PR page)
 import StoreVisitorsPage    from './pages/store/StoreVisitorsPage';    // GAP-06
+import StoreProductionReportPage from './pages/store/StoreProductionReportPage';
 
 // Shared pages
 import TallyVerificationPage from './pages/shared/TallyVerificationPage';
@@ -244,6 +246,7 @@ function AppInner() {
           <Route path="analytics"         element={<AnalyticsDashboard role="OWNER" />} />
           <Route path="reports"           element={<AiReportsPage />} />
           <Route path="data-upload"       element={<DataUploadPage />} />
+          <Route path="production-reports" element={<ProductionReportReviewPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="sales-orders"       element={<OwnerSalesOrdersPage />} />
           <Route path="lpo"               element={<OwnerIssuancePlanPage />} /> {/* legacy path, now Issuance Plans */}
@@ -289,6 +292,7 @@ function AppInner() {
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="hr"                element={<StoreHRPage />} />           {/* GAP-01 */}
           <Route path="issuance-plans"    element={<StoreIssuancePlanPage />} /> {/* Issuance Plan (was Purchase Requests, GAP-02) */}
+          <Route path="production-reports" element={<StoreProductionReportPage />} />
           <Route path="visitors"          element={<StoreVisitorsPage />} />     {/* GAP-06 */}
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="settings"          element={<SettingsPage />} />

@@ -37,6 +37,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PM_REQUISITION_VIEW,    // PM can view their own requisitions
     // Tally sign-off — Production Manager is a primary signer
     Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
+    Permission.PRODUCTION_REPORT_VIEW,  // Manager can see the store production report for their batches
   ],
   [UserRole.ACCOUNTANT]: [
     Permission.FLOCK_VIEW, Permission.FEED_VIEW, Permission.FEED_STOCK_VIEW,
@@ -100,6 +101,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PM_REQUISITION_VIEW,     // Store can see the PM's weekly item list
     // Tally sign-off — Store signs the egg tally
     Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
+    // Store production report verification — Store uploads, Director reviews
+    Permission.PRODUCTION_REPORT_UPLOAD, Permission.PRODUCTION_REPORT_VIEW,
   ],
   [UserRole.SECURITY1]: [
     Permission.VISITOR_LOG_VIEW,
