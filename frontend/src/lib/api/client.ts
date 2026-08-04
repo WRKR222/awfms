@@ -43,12 +43,34 @@ const processQueue = (error: Error | null, token?: string) => {
   failedQueue = [];
 };
 
+// zustand-persist rehydrates `refreshToken` from localStorage ASYNCHRONOUSLY.
+// On a fresh page load, background polls (notifications, tally-verifications,
+// production/sessions, ...) can 401 and reach this interceptor before that
+// rehydration has landed — at which point `refreshToken` reads as null even
+// though the real one is still sitting in localStorage. Treating that as "not
+// logged in" and calling logout() would immediately persist an EMPTY auth
+// state over the real one, wiping a perfectly valid session (and bouncing the
+// user to /login for no reason). So: if hydration hasn't finished yet, wait
+// for it before deciding there's really no refresh token.
+let hydrated = useAuthStore.persist.hasHydrated();
+const hydrationPromise: Promise<void> = hydrated
+  ? Promise.resolve()
+  : new Promise<void>((resolve) => {
+      const unsub = useAuthStore.persist.onFinishHydration(() => {
+        hydrated = true;
+        resolve();
+        unsub();
+      });
+    });
+
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
 
     if (error.response?.status === 401 && !originalRequest._retry) {
+      if (!hydrated) await hydrationPromise;
+
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
