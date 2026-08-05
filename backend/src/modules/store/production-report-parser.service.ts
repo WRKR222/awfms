@@ -9,6 +9,7 @@ import * as XLSX from 'xlsx';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   CanonicalField, FIELD_SYNONYMS, ProductionReportColumnMapping, ParsedReportRow, ParsedItemUsage,
+  MULTI_READING_FIELDS, MultiReadingField, MAX_ENV_READINGS_PER_DAY, ENV_READING_LABELS, EnvReading,
 } from './production-report.dto';
 
 function normaliseHeader(h: string): string {
@@ -38,7 +39,7 @@ export class ProductionReportParserService {
    *  before anything is committed. */
   async detectHeaders(buffer: Buffer) {
     const { headers, rows } = this.readSheet(buffer);
-    if (!headers.length) return { headers: [], previewRows: [], suggestedMapping: { fields: {}, items: {} }, totalRows: 0 };
+    if (!headers.length) return { headers: [], previewRows: [], suggestedMapping: { fields: {}, items: {}, envFields: {} }, totalRows: 0 };
 
     const storeItems = await this.prisma.storeItem.findMany({
       where: { isActive: true },
@@ -68,9 +69,19 @@ export class ProductionReportParserService {
       if (!date) continue; // skip separator/blank rows — this format has occasional empty rows between weeks
 
       const locParts: string[] = [];
+      let rowNumber: number | undefined;
+      let levelNumber: number | undefined;
+      let cageNumber: number | undefined;
       for (const f of ['row', 'level', 'cage'] as CanonicalField[]) {
         const col = mapping.fields[f];
-        if (col && row[col] !== '' && row[col] != null) locParts.push(`${f[0].toUpperCase()}${f.slice(1)} ${row[col]}`);
+        if (col && row[col] !== '' && row[col] != null) {
+          locParts.push(`${f[0].toUpperCase()}${f.slice(1)} ${row[col]}`);
+          const m = String(row[col]).match(/\d+/);
+          const n = m ? parseInt(m[0], 10) : undefined;
+          if (f === 'row') rowNumber = n;
+          else if (f === 'level') levelNumber = n;
+          else if (f === 'cage') cageNumber = n;
+        }
       }
 
       const numOrUndef = (v: any): number | undefined => {
@@ -95,9 +106,30 @@ export class ProductionReportParserService {
         });
       }
 
+      // ── Environmental readings (temp/humidity/lux), 1-3×/day ────────────
+      // §11: if the sheet carries multiple same-day columns per metric, only
+      // the first MAX_ENV_READINGS_PER_DAY (in sheet column order, which is
+      // how envFields was built during suggestMapping/override) are read;
+      // if the sheet has just 1-2, record only that many.
+      const readEnvReadings = (field: MultiReadingField): EnvReading[] | undefined => {
+        const cols = mapping.envFields?.[field];
+        if (!cols || cols.length === 0) return undefined;
+        const readings: EnvReading[] = [];
+        for (let i = 0; i < Math.min(cols.length, MAX_ENV_READINGS_PER_DAY); i++) {
+          const cell = row[cols[i]];
+          if (cell === '' || cell == null) continue;
+          readings.push({ label: ENV_READING_LABELS[i], value: String(cell) });
+        }
+        return readings.length ? readings : undefined;
+      };
+      const temperatureReadings = readEnvReadings('temperature');
+      const humidityReadings = readEnvReadings('humidity');
+      const luxReadings = readEnvReadings('lux');
+
       out.push({
         date,
         locationRef: locParts.length ? locParts.join(' / ') : null,
+        rowNumber, levelNumber, cageNumber,
         feedKg:        numOrUndef(mapping.fields.feedKg        && row[mapping.fields.feedKg]),
         feedType:      strOrUndef(mapping.fields.feedType      && row[mapping.fields.feedType]),
         waterLts:      numOrUndef(mapping.fields.waterLts      && row[mapping.fields.waterLts]),
@@ -106,12 +138,22 @@ export class ProductionReportParserService {
         openingStock:  numOrUndef(mapping.fields.openingStock  && row[mapping.fields.openingStock]),
         closingStock:  numOrUndef(mapping.fields.closingStock  && row[mapping.fields.closingStock]),
         avgWeight:     strOrUndef(mapping.fields.avgWeight     && row[mapping.fields.avgWeight]),
-        temperature:   strOrUndef(mapping.fields.temperature   && row[mapping.fields.temperature]),
-        humidity:      strOrUndef(mapping.fields.humidity      && row[mapping.fields.humidity]),
-        lux:           strOrUndef(mapping.fields.lux           && row[mapping.fields.lux]),
-        drugsVaccines: strOrUndef(mapping.fields.drugsVaccines && row[mapping.fields.drugsVaccines]),
+        // Single-column fallback only used when there's no multi-reading
+        // mapping for that metric — otherwise the *Readings arrays are the
+        // source of truth and this stays undefined to avoid double-counting.
+        temperature:   temperatureReadings ? undefined : strOrUndef(mapping.fields.temperature && row[mapping.fields.temperature]),
+        humidity:      humidityReadings    ? undefined : strOrUndef(mapping.fields.humidity    && row[mapping.fields.humidity]),
+        lux:           luxReadings         ? undefined : strOrUndef(mapping.fields.lux          && row[mapping.fields.lux]),
+        temperatureReadings,
+        humidityReadings,
+        luxReadings,
+        drugsVaccines:  strOrUndef(mapping.fields.drugsVaccines  && row[mapping.fields.drugsVaccines]),
+        vaccineText:    strOrUndef(mapping.fields.vaccineText    && row[mapping.fields.vaccineText]),
+        supplementText: strOrUndef(mapping.fields.supplementText && row[mapping.fields.supplementText]),
+        treatmentText:  strOrUndef(mapping.fields.treatmentText  && row[mapping.fields.treatmentText]),
         notes:         strOrUndef(mapping.fields.notes         && row[mapping.fields.notes]),
         itemsIssued,
+        healthUsages: [], // matched during reconciliation, same pattern as feed
         raw: row,
         resolution: {},
       });
@@ -144,10 +186,22 @@ export class ProductionReportParserService {
     }
     if (bestScore < 2) headerRowIdx = 0; // fall back to first row if nothing looks like a header
 
-    const headers = (raw[headerRowIdx] as any[]).map(h => String(h ?? '').trim()).filter(h => h !== '');
+    // Column layout can carry duplicate header labels (e.g. "Temp", "Temp",
+    // "Temp" for AM/Noon/PM) — dedupe headers/rows must preserve each
+    // occurrence with a distinct key so envFields can address them
+    // individually, while still returning a display-friendly headers[] list.
     const headerRowFull = (raw[headerRowIdx] as any[]).map(h => String(h ?? '').trim());
+    const seen = new Map<string, number>();
+    const uniqueKeys = headerRowFull.map(h => {
+      if (h === '') return '';
+      const count = seen.get(h) ?? 0;
+      seen.set(h, count + 1);
+      return count === 0 ? h : `${h} (${count + 1})`;
+    });
+
+    const headers = uniqueKeys.filter(h => h !== '');
     const rows = raw.slice(headerRowIdx + 1).map(r =>
-      Object.fromEntries(headerRowFull.map((h, i) => [h, (r as any[])[i] ?? '']).filter(([h]) => h !== '')),
+      Object.fromEntries(uniqueKeys.map((h, i) => [h, (r as any[])[i] ?? '']).filter(([h]) => h !== '')),
     );
     return { headers, rows };
   }
@@ -167,9 +221,33 @@ export class ProductionReportParserService {
   ): ProductionReportColumnMapping {
     const fields: Partial<Record<CanonicalField, string>> = {};
     const items: Record<string, string> = {};
+    const envFields: Partial<Record<MultiReadingField, string[]>> = {};
     const usedHeaders = new Set<string>();
 
+    // First pass: collect every header matching a multi-reading field
+    // (temperature/humidity/lux), in sheet column order — a sheet with
+    // "Temp AM" / "Temp Noon" / "Temp PM" produces 3 entries here.
     for (const h of headers) {
+      const field = this.matchSynonym(h);
+      if (field && (MULTI_READING_FIELDS as readonly string[]).includes(field)) {
+        const mf = field as MultiReadingField;
+        (envFields[mf] ??= []).push(h);
+        usedHeaders.add(h);
+      }
+    }
+    // If a metric matched exactly once, it's just a normal single column —
+    // let it flow through `fields` instead of `envFields` (keeps simple
+    // sheets on the plain, backward-compatible path).
+    for (const mf of MULTI_READING_FIELDS) {
+      const cols = envFields[mf];
+      if (cols && cols.length === 1) {
+        fields[mf] = cols[0];
+        delete envFields[mf];
+      }
+    }
+
+    for (const h of headers) {
+      if (usedHeaders.has(h)) continue;
       const field = this.matchSynonym(h);
       if (field && !fields[field]) {
         fields[field] = h;
@@ -190,7 +268,7 @@ export class ProductionReportParserService {
       if (match) items[match.id] = h;
     }
 
-    return { fields, items };
+    return { fields, items, envFields };
   }
 
   private coerceDate(raw: any): string | null {

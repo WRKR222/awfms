@@ -7,7 +7,9 @@ import { NotificationsService } from '../../common/notifications/notifications.s
 import { RequestUser } from '../../auth/types/request-user.type';
 import { ProductionReportParserService } from './production-report-parser.service';
 import { ProductionReportReconciliationService } from './production-report-reconciliation.service';
-import { ProductionReportColumnMapping, SubmitReportResult } from './production-report.dto';
+import {
+  CANONICAL_FIELD_LABELS, CanonicalField, ProductionReportColumnMapping, SubmitReportResult, PreviewReportResult,
+} from './production-report.dto';
 
 @Injectable()
 export class ProductionReportService {
@@ -22,19 +24,58 @@ export class ProductionReportService {
     return this.parser.detectHeaders(buffer);
   }
 
-  async preview(buffer: Buffer, mapping: ProductionReportColumnMapping) {
-    // Preview only — parses and shows the rows as they'd be read, but does
-    // NOT run reconciliation (which writes to the system), so Store can
-    // sanity-check the column mapping before anything is applied.
+  /** Step 1b's "did I read your file correctly" screen — the FULL parsed
+   *  table (no 30-row cap: Store reviews the whole report, not a sample),
+   *  non-mutating, with the set of columns that actually carry data so the
+   *  frontend renders "fit to window, only recorded columns" per §2. */
+  async preview(buffer: Buffer, mapping: ProductionReportColumnMapping): Promise<PreviewReportResult> {
     const rows = this.parser.parseRows(buffer, mapping);
-    return { rows: rows.slice(0, 30), totalRows: rows.length };
+
+    const presentFields = (Object.keys(CANONICAL_FIELD_LABELS) as CanonicalField[]).filter(
+      f => mapping.fields[f] != null && rows.some(r => (r as any)[f] !== undefined && (r as any)[f] !== null && (r as any)[f] !== ''),
+    );
+
+    const itemIds = Object.keys(mapping.items ?? {});
+    let presentItemColumns: PreviewReportResult['presentItemColumns'] = [];
+    if (itemIds.length) {
+      const items = await this.prisma.storeItem.findMany({ where: { id: { in: itemIds } }, select: { id: true, name: true } });
+      const nameById = new Map(items.map(i => [i.id, i.name]));
+      presentItemColumns = itemIds
+        .filter(id => rows.some(r => r.itemsIssued.some(u => u.storeItemId === id)))
+        .map(id => ({ storeItemId: id, storeItemName: nameById.get(id) ?? '(unknown item)', header: mapping.items[id] }));
+    }
+
+    return { rows, totalRows: rows.length, presentFields, presentItemColumns };
+  }
+
+  /** Store rejects the parsed table at the verify step (§2a) before any
+   *  reconciliation has run — nothing was ever written, so this is a pure
+   *  audit-trail entry, not a state rollback. */
+  async discardPreview(batchId: string, fileName: string, mapping: ProductionReportColumnMapping, user: RequestUser) {
+    const batch = await this.prisma.batch.findUnique({ where: { id: batchId }, select: { id: true, batchCode: true } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId: user.id,
+        action: 'PRODUCTION_REPORT_UPLOAD_REJECTED',
+        entityType: 'Batch',
+        entityId: batchId,
+        newValues: { fileName, mapping } as any,
+      },
+    });
+
+    return { discarded: true };
   }
 
   /**
-   * Store submits (or re-submits) the current production report for a batch.
-   * Parses + reconciles immediately: anything that doesn't conflict with
-   * existing data is applied right away; only genuine conflicts wait on the
-   * Director. Re-uploading a batch's report replaces the previous one.
+   * Store submits (or re-submits) the current production report for a batch
+   * — always called only after Store has clicked Approve & Submit on the
+   * reviewed table from preview() (§2a: the frontend enforces this by only
+   * exposing the button after preview succeeds). Parses + reconciles
+   * immediately: anything that doesn't conflict with existing data is
+   * applied right away; only genuine conflicts wait on the Director.
+   * Re-uploading a batch's report replaces the previous one.
    */
   async submit(
     batchId: string,
@@ -49,11 +90,12 @@ export class ProductionReportService {
     const parsedRows = this.parser.parseRows(buffer, mapping);
     if (parsedRows.length === 0) throw new BadRequestException('No usable rows found in the file — check the column mapping.');
 
-    const { rows, discrepancies, autofillCount, matchedCount } =
+    const { rows, discrepancies, autofillCount, matchedCount, stage } =
       await this.reconciler.reconcile(batchId, parsedRows, user.id, fileName);
 
     const status = discrepancies.length > 0 ? 'PENDING' : 'APPROVED';
     const existing = await this.prisma.storeProductionReport.findUnique({ where: { batchId } });
+    const now = new Date();
 
     const report = await this.prisma.$transaction(async (tx) => {
       const saved = await tx.storeProductionReport.upsert({
@@ -61,15 +103,17 @@ export class ProductionReportService {
         create: {
           batchId, fileName, columnMapping: mapping as any, rawRows: rows as any,
           status, discrepancyCount: discrepancies.length, autofillCount, matchedCount,
-          uploadedById: user.id, appliedAt: new Date(),
+          uploadedById: user.id, appliedAt: now,
+          storeVerifiedById: user.id, storeVerifiedAt: now,
         },
         update: {
           fileName, columnMapping: mapping as any, rawRows: rows as any,
           status, discrepancyCount: discrepancies.length, autofillCount, matchedCount,
-          uploadedById: user.id, uploadedAt: new Date(),
+          uploadedById: user.id, uploadedAt: now,
           resubmissionCount: { increment: 1 },
           reviewedById: null, reviewedAt: null, rejectionReason: null,
-          appliedAt: new Date(),
+          appliedAt: now,
+          storeVerifiedById: user.id, storeVerifiedAt: now,
         },
       });
 
@@ -118,6 +162,7 @@ export class ProductionReportService {
       matchedCount,
       autofillCount,
       discrepancyCount: discrepancies.length,
+      stage,
     };
   }
 
@@ -128,6 +173,7 @@ export class ProductionReportService {
         discrepancies: { orderBy: { rowDate: 'desc' } },
         uploadedBy: { select: { fullName: true } },
         reviewedBy: { select: { fullName: true } },
+        storeVerifiedBy: { select: { fullName: true } },
         batch: { select: { batchCode: true } },
       },
     });
@@ -258,7 +304,11 @@ export class ProductionReportService {
       Humidity: r.humidity ?? '',
       Lux: r.lux ?? '',
       'Drugs/Vaccines': r.drugsVaccines ?? '',
+      Vaccine: r.vaccineText ?? '',
+      Supplement: r.supplementText ?? '',
+      Treatment: r.treatmentText ?? '',
       'Items Issued': (r.itemsIssued ?? []).map((i: any) => `${i.storeItemName}: ${i.quantity}${i.unit ?? ''}`).join(', '),
+      'Health Usages': (r.healthUsages ?? []).map((h: any) => `${h.kind}: ${h.storeItemName ?? h.rawText}${h.quantity ? ` (${h.quantity}${h.unit ?? ''})` : ''}`).join(', '),
       Notes: r.notes ?? '',
       'Mortality Status': r.resolution?.mortality ?? '',
       'Feed Status': r.resolution?.feedKg ?? '',

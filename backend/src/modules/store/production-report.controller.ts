@@ -37,13 +37,28 @@ export class ProductionReportController {
     return this.service.detectHeaders(file.buffer);
   }
 
-  /** POST /store/production-reports/preview — see how a mapping reads the file before submitting */
+  /** POST /store/production-reports/preview — see how a mapping reads the file before submitting.
+   *  Non-mutating — this is the §2a verify step Store reviews before Approve & Submit. */
   @Post('preview')
   @RequirePermission(Permission.PRODUCTION_REPORT_UPLOAD)
   @UseInterceptors(FileInterceptor('file'))
   preview(@UploadedFile() file: Express.Multer.File, @Body('mapping') mappingJson: string) {
     if (!file) throw new BadRequestException('No file uploaded');
     return this.service.preview(file.buffer, parseMapping(mappingJson));
+  }
+
+  /** POST /store/production-reports/:batchId/discard — Store rejects the parsed table at the
+   *  verify step (§2a) before anything is submitted for reconciliation. Nothing was mutated;
+   *  this just records that Store looked at it and discarded it. Plain JSON body (no file). */
+  @Post(':batchId/discard')
+  @RequirePermission(Permission.PRODUCTION_REPORT_UPLOAD)
+  discard(
+    @Param('batchId') batchId: string,
+    @Body('fileName') fileName: string,
+    @Body('mapping') mapping: ProductionReportColumnMapping,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.service.discardPreview(batchId, fileName, mapping ?? { fields: {}, items: {} }, user);
   }
 
   /** POST /store/production-reports/:batchId/submit — upload (or re-upload) the current report for a batch.

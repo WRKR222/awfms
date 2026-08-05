@@ -312,6 +312,7 @@ model User {
   // Store Production Report verification
   productionReportsUploaded StoreProductionReport[] @relation("ProductionReportUploadedBy")
   productionReportsReviewed StoreProductionReport[] @relation("ProductionReportReviewedBy")
+  productionReportsStoreVerified StoreProductionReport[] @relation("ProductionReportStoreVerifiedBy")
 
   @@map("users")
 }
@@ -1906,7 +1907,11 @@ enum ProductionReportDiscrepancyType {
   MORTALITY      // report mortality (whole-batch or per cage/level) != system-recorded mortality for that date
   FEED           // report feed kg (whole-batch or per row/level) != system-recorded feed dispensed for that date
   STOCK_COUNT    // report opening/closing stock != BrooderStockCount for that date
-  ITEM_ISSUANCE  // report-implied usage of a store item (e.g. charcoal bags) != recorded stock-outs for that date
+  ITEM_ISSUANCE  // report-implied usage of a store item (e.g. charcoal bags) != recorded stock-outs for that date, OR
+                 // more was used than has ever been issued to this batch — never auto-recorded, needs Store to issue
+                 // the shortfall (or the Director to approve trusting the report)
+  CAGE_REASSIGNMENT // a per-cage row's calculated headcount implies a cage now belongs to a different batch than
+                     // the cage map currently shows — never auto-applied across a batch boundary, needs Director sign-off
   OTHER
 }
 
@@ -1927,12 +1932,19 @@ model StoreProductionReport {
   reviewedAt        DateTime?                    @map("reviewed_at")
   rejectionReason   String?                      @map("rejection_reason")
   appliedAt         DateTime?                     @map("applied_at")       // set as soon as autofills/deductions are committed (immediately on submit, or when the Director clears remaining discrepancies)
+  // Store's own confirmation that they reviewed the parsed table before it was
+  // submitted for reconciliation — distinct from reviewedById/reviewedAt above,
+  // which is the Director's later sign-off on discrepancies. Populated inside
+  // submit(), since submit() is only ever called after Store's Approve click.
+  storeVerifiedById String?                      @map("store_verified_by_id")
+  storeVerifiedAt   DateTime?                     @map("store_verified_at")
   createdAt         DateTime                     @default(now()) @map("created_at")
   updatedAt         DateTime                     @updatedAt @map("updated_at")
 
   batch         Batch                          @relation(fields: [batchId], references: [id])
   uploadedBy    User                           @relation("ProductionReportUploadedBy", fields: [uploadedById], references: [id])
   reviewedBy    User?                          @relation("ProductionReportReviewedBy", fields: [reviewedById], references: [id])
+  storeVerifiedBy User?                        @relation("ProductionReportStoreVerifiedBy", fields: [storeVerifiedById], references: [id])
   discrepancies ProductionReportDiscrepancy[]
 
   @@index([status])
