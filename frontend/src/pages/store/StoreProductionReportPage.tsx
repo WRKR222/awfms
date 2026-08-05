@@ -348,14 +348,14 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
 
           <div>
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Column mapping — check before previewing</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
               {FIELD_OPTIONS.map(f => (
-                <div key={f.key} className="flex items-center gap-2">
-                  <label className="text-xs text-gray-500 w-32 flex-shrink-0">{f.label}</label>
+                <div key={f.key} className="flex flex-col gap-1 min-w-0">
+                  <label className="text-xs text-gray-500 truncate" title={f.label}>{f.label}</label>
                   <select
                     value={mapping.fields[f.key] ?? ''}
                     onChange={e => setMapping(m => ({ ...m, fields: { ...m.fields, [f.key]: e.target.value } }))}
-                    className="flex-1 text-xs border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1.5 bg-white dark:bg-dark-bg"
+                    className="w-full min-w-0 text-xs border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1.5 bg-white dark:bg-dark-bg"
                   >
                     <option value="">— not in this report —</option>
                     {headers.map(h => <option key={h} value={h}>{h}</option>)}
