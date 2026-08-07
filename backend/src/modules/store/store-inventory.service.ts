@@ -294,45 +294,55 @@ export class StoreInventoryService {
     // ── Issuance Plan Gate ─────────────────────────────────────────────────
     // Every stock-out must be authorised by an approved issuance plan line.
     // validateStockOut throws BadRequestException with a clear message if not.
-    const planAuth = await this.issuancePlanService.validateStockOut(
+    // It can return MORE THAN ONE allocation when the requested quantity is
+    // covered by combining several APPROVED weekly plans for the same item
+    // in the same week (e.g. a base plan + a top-up plan for specific days) —
+    // in that case we record one StoreStockOut per contributing plan so each
+    // plan's own quantityIssued tracking stays accurate.
+    const planAllocations = await this.issuancePlanService.validateStockOut(
       dto.storeItemId,
       dto.quantityOut,
       new Date(dto.issuedDate),
     );
     // ── End Gate ───────────────────────────────────────────────────────────
 
-    const totalCostKes = dto.quantityOut * Number(item.unitCostKes);
-
     // Use interactive transaction so we can capture the updated item (GAP-05)
-    const { stockOut, updatedItem } = await this.prisma.$transaction(async (tx) => {
-      const so = await tx.storeStockOut.create({
-        data: {
-          storeItemId:       dto.storeItemId,
-          issuedDate:        new Date(dto.issuedDate),
-          quantityOut:       dto.quantityOut,
-          unitCostKes:       item.unitCostKes,
-          totalCostKes,
-          issuedToName:      dto.recipientRole ? (this.ROLE_LABELS[dto.recipientRole] ?? dto.otherRecipient ?? dto.recipientRole) : (dto.issuedToName ?? null),
-          issuedToHouseId:   dto.issuedToHouseId ?? null,
-          issuedToBatchId:   dto.issuedToBatchId ?? null,
-          purpose:           dto.purpose ?? null,
-          notes:             dto.notes ?? null,
-          issuedById:        user.id,
-          issuancePlanId:    planAuth.planId,
-          issuancePlanItemId: planAuth.planItemId,
-        },
-      });
+    const { stockOuts, updatedItem } = await this.prisma.$transaction(async (tx) => {
+      const created = [];
+      for (const alloc of planAllocations) {
+        const allocCostKes = alloc.quantity * Number(item.unitCostKes);
+        const so = await tx.storeStockOut.create({
+          data: {
+            storeItemId:       dto.storeItemId,
+            issuedDate:        new Date(dto.issuedDate),
+            quantityOut:       alloc.quantity,
+            unitCostKes:       item.unitCostKes,
+            totalCostKes:      allocCostKes,
+            issuedToName:      dto.recipientRole ? (this.ROLE_LABELS[dto.recipientRole] ?? dto.otherRecipient ?? dto.recipientRole) : (dto.issuedToName ?? null),
+            issuedToHouseId:   dto.issuedToHouseId ?? null,
+            issuedToBatchId:   dto.issuedToBatchId ?? null,
+            purpose:           dto.purpose ?? null,
+            notes:             dto.notes ?? null,
+            issuedById:        user.id,
+            issuancePlanId:    alloc.planId,
+            issuancePlanItemId: alloc.planItemId,
+          },
+        });
+        created.push(so);
+      }
 
       const ui = await tx.storeItem.update({
         where: { id: dto.storeItemId },
         data: { currentStock: { decrement: dto.quantityOut } },
       });
 
-      return { stockOut: so, updatedItem: ui };
+      return { stockOuts: created, updatedItem: ui };
     });
 
-    // Increment the plan item's running issued quantity
-    await this.issuancePlanService.incrementIssuedQuantity(planAuth.planItemId, dto.quantityOut);
+    // Increment each contributing plan item's running issued quantity
+    for (const alloc of planAllocations) {
+      await this.issuancePlanService.incrementIssuedQuantity(alloc.planItemId, alloc.quantity);
+    }
 
     // ── GAP-05: Reorder-level alert ──────────────────────────────────────────
     // After the decrement, if the item is now at or below its reorder level,
@@ -388,7 +398,7 @@ export class StoreInventoryService {
       }
     }
 
-    return stockOut;
+    return stockOuts.length === 1 ? stockOuts[0] : stockOuts;
   }
 
   async listStockOuts(storeItemId?: string, fromDate?: string, toDate?: string) {

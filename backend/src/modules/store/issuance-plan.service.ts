@@ -709,13 +709,20 @@ export class IssuancePlanService {
     storeItemId: string,
     quantityOut: number,
     issuedDate: Date,
-  ): Promise<{ planId: string; planItemId: string }> {
+  ): Promise<{ planId: string; planItemId: string; quantity: number }[]> {
     const today = dayjs(issuedDate).startOf('day');
     const weekMonday = today.isoWeekday(1).startOf('day').toDate();
     const weekSunday = dayjs(weekMonday).add(6, 'day').endOf('day').toDate();
     const dayKey = DAY_KEYS[today.isoWeekday() - 1];
 
-    const weeklyItem = await this.prisma.issuancePlanItem.findFirst({
+    // NOTE: it's valid for a store item to appear on more than one APPROVED
+    // weekly plan covering the same week (e.g. a base plan plus a top-up
+    // plan adding extra kg for specific days). All of them must be counted
+    // together — findMany + FIFO allocation, not findFirst, or a combined
+    // issuance that's within the *total* approved allowance gets wrongly
+    // rejected because it looked only at whichever single plan came back
+    // first.
+    const weeklyItems = await this.prisma.issuancePlanItem.findMany({
       where: {
         storeItemId,
         status: 'APPROVED',
@@ -725,38 +732,57 @@ export class IssuancePlanService {
           weekEndDate: { gte: weekMonday },
         },
       },
+      include: { plan: { select: { createdAt: true } } },
+      orderBy: { plan: { createdAt: 'asc' } }, // FIFO: consume older plans' allowance first
     });
 
-    if (weeklyItem) {
-      const breakdown = weeklyItem.dailyBreakdown as Record<string, number> | null;
-      const dailyAllowed = breakdown ? (breakdown[dayKey] ?? 0) : 0;
+    if (weeklyItems.length > 0) {
+      const allocations: { planId: string; planItemId: string; quantity: number }[] = [];
+      let stillNeeded = quantityOut;
+      let totalDailyAllowed = 0;
+      let totalAlreadyToday = 0;
 
-      const issuedToday = await this.prisma.storeStockOut.aggregate({
-        _sum: { quantityOut: true },
-        where: {
-          issuancePlanItemId: weeklyItem.id,
-          issuedDate: { gte: today.toDate(), lt: today.add(1, 'day').toDate() },
-        },
-      });
-      const alreadyToday = Number(issuedToday._sum.quantityOut ?? 0);
-      const remainingToday = dailyAllowed - alreadyToday;
+      for (const weeklyItem of weeklyItems) {
+        const breakdown = weeklyItem.dailyBreakdown as Record<string, number> | null;
+        const dailyAllowed = breakdown ? (breakdown[dayKey] ?? 0) : 0;
+        totalDailyAllowed += dailyAllowed;
 
-      if (quantityOut <= remainingToday) {
-        return { planId: weeklyItem.planId, planItemId: weeklyItem.id };
+        const issuedToday = await this.prisma.storeStockOut.aggregate({
+          _sum: { quantityOut: true },
+          where: {
+            issuancePlanItemId: weeklyItem.id,
+            issuedDate: { gte: today.toDate(), lt: today.add(1, 'day').toDate() },
+          },
+        });
+        const alreadyToday = Number(issuedToday._sum.quantityOut ?? 0);
+        totalAlreadyToday += alreadyToday;
+
+        const remainingForItem = dailyAllowed - alreadyToday;
+        if (remainingForItem <= 0 || stillNeeded <= 0) continue;
+
+        const takeFromThisItem = Math.min(remainingForItem, stillNeeded);
+        allocations.push({ planId: weeklyItem.planId, planItemId: weeklyItem.id, quantity: takeFromThisItem });
+        stillNeeded -= takeFromThisItem;
+      }
+
+      if (stillNeeded <= 1e-9) {
+        return allocations;
       }
 
       const emergencyAuth = await this.findEmergencyAuth(storeItemId, quantityOut, issuedDate);
-      if (emergencyAuth) return emergencyAuth;
+      if (emergencyAuth) return [{ ...emergencyAuth, quantity: quantityOut }];
 
+      const remainingToday = totalDailyAllowed - totalAlreadyToday;
+      const planNote = weeklyItems.length > 1 ? ` (combined across ${weeklyItems.length} approved weekly plans)` : '';
       throw new BadRequestException(
-        `Quantity exceeds today's approved issuance plan. ` +
-          `Approved for ${dayKey}: ${dailyAllowed.toFixed(3)}, already issued: ${alreadyToday.toFixed(3)}, ` +
+        `Quantity exceeds today's approved issuance plan${planNote}. ` +
+          `Approved for ${dayKey}: ${totalDailyAllowed.toFixed(3)}, already issued: ${totalAlreadyToday.toFixed(3)}, ` +
           `remaining: ${Math.max(0, remainingToday).toFixed(3)}.`,
       );
     }
 
     const emergencyAuth = await this.findEmergencyAuth(storeItemId, quantityOut, issuedDate);
-    if (emergencyAuth) return emergencyAuth;
+    if (emergencyAuth) return [{ ...emergencyAuth, quantity: quantityOut }];
 
     throw new BadRequestException(
       `This item is not on an approved issuance plan and cannot be issued. ` +
