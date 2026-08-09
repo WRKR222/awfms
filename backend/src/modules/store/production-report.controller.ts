@@ -123,4 +123,14 @@ export class ProductionReportController {
   reject(@Param('reportId') reportId: string, @Body('reason') reason: string, @CurrentUser() user: RequestUser) {
     return this.service.reject(reportId, reason, user);
   }
+
+  /** POST /store/production-reports/:reportId/rollback — undo every auto-filled/
+   *  auto-corrected daily record this report ever wrote (across all its
+   *  uploads/resubmissions). Does not touch anything a Director separately
+   *  approved via /approve — see ProductionReportRollbackService. */
+  @Post(':reportId/rollback')
+  @RequirePermission(Permission.PRODUCTION_REPORT_REVIEW)
+  rollback(@Param('reportId') reportId: string, @CurrentUser() user: RequestUser) {
+    return this.service.rollback(reportId, user);
+  }
 }

@@ -140,6 +140,20 @@ export interface EnvReading {
   value: string;
 }
 
+/** One portion of a split "Feed Type" cell — e.g. the sheet writes
+ *  "chickcrumbs/growers 75:25%" to mean 75% of that day's feedKg total is
+ *  Chick Crumbs and 25% is Growers Mash (stores already issues the day's
+ *  stock-out split to that ratio, so the report is just describing it).
+ *  `percent` is normalised so every row's portions sum to exactly 100 (a
+ *  report showing "70:20%" is treated as 70/90 and 20/90, not 70% and 20%
+ *  of nothing) and `kg` is `feedKg * percent / 100`, rounded to 2dp, so the
+ *  portions' kg always sum to the row's feedKg exactly. */
+export interface FeedSplitPortion {
+  label: string;   // raw text for this portion, e.g. "chickcrumbs" or "growers"
+  percent: number; // 0-100, normalised so all portions on the row sum to 100
+  kg: number;      // this portion's share of row.feedKg
+}
+
 export interface ParsedReportRow {
   date: string; // YYYY-MM-DD
   locationRef: string | null; // combined Row/Level/Cage label if present, else null (whole-batch row)
@@ -153,6 +167,10 @@ export interface ParsedReportRow {
   cageNumber?: number;
   feedKg?: number;
   feedType?: string;
+  // Populated only when feedType text carries a two-way percentage split
+  // (e.g. "chickcrumbs/growers 75:25%") — see FeedSplitPortion. Undefined
+  // for the normal single-feed-type case, which is unaffected.
+  feedSplit?: FeedSplitPortion[];
   waterLts?: number;
   mortality?: number;
   culling?: number;
@@ -186,6 +204,7 @@ export interface ParsedReportRow {
     feedKg?: RowResolution;
     stockCount?: RowResolution;
     cageAssignment?: RowResolution; // set only for per-cage rows (rowNumber/levelNumber/cageNumber all present) — see §cage reassignment
+    environmental?: RowResolution; // rolls up temperature/humidity/lux across whatever sessions this row carried readings for
   };
 }
 

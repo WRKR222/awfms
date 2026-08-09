@@ -1912,6 +1912,9 @@ enum ProductionReportDiscrepancyType {
                  // the shortfall (or the Director to approve trusting the report)
   CAGE_REASSIGNMENT // a per-cage row's calculated headcount implies a cage now belongs to a different batch than
                      // the cage map currently shows — never auto-applied across a batch boundary, needs Director sign-off
+  ENVIRONMENTAL  // report temperature/humidity/lux for a session (morning/midday/evening) != what's already logged
+                 // for that exact session — auto-filled only when nothing was logged yet for that session;
+                 // a mismatch against an existing reading is always flagged, never silently overwritten
   OTHER
 }
 
@@ -1946,6 +1949,14 @@ model StoreProductionReport {
   reviewedBy    User?                          @relation("ProductionReportReviewedBy", fields: [reviewedById], references: [id])
   storeVerifiedBy User?                        @relation("ProductionReportStoreVerifiedBy", fields: [storeVerifiedById], references: [id])
   discrepancies ProductionReportDiscrepancy[]
+  appliedChanges ProductionReportAppliedChange[]
+  // Set once this report's applied changes have been rolled back (see
+  // ProductionReportAppliedChange) — a rolled-back report can never be
+  // rolled back again, and should be re-uploaded fresh rather than
+  // re-approved, since discrepancies were computed against state that no
+  // longer exists.
+  rolledBackAt     DateTime? @map("rolled_back_at")
+  rolledBackById   String?   @map("rolled_back_by_id")
 
   @@index([status])
   @@map("store_production_reports")
@@ -1978,6 +1989,58 @@ model ProductionReportDiscrepancy {
   @@index([reportId])
   @@index([rowDate])
   @@map("production_report_discrepancies")
+}
+
+/// Append-only ledger of every write the reconciliation engine makes while
+/// applying a production report — this is what makes "roll back my current
+/// uploaded report" a real, reliable operation instead of a best-effort
+/// text search through `notes`. Every CREATE, UPDATE, or JSON_APPEND the
+/// reconciliation service performs writes one row here, in the SAME
+/// transaction as the actual mutation, before it commits.
+///
+///   action = "CREATE"      → entityId is the created row's id; beforeState
+///                            is null; afterState is a snapshot of the
+///                            fields that row was created with. Rollback:
+///                            delete the row (if it still exists unchanged
+///                            — see rollback service for the safety checks).
+///   action = "UPDATE"      → entityId is the updated row's id; beforeState
+///                            is a snapshot of the fields BEFORE the update;
+///                            afterState is the fields AFTER. Rollback:
+///                            write beforeState back.
+///   action = "JSON_APPEND" → entityId is the parent row's id (e.g. a
+///                            BrooderLog id); afterState carries the exact
+///                            entry object that was appended into a JSON
+///                            array column (vaccinesJson/supplementsJson).
+///                            Rollback: remove that exact entry from the
+///                            array (matched by deep equality), deleting
+///                            the parent row if it ends up empty and was
+///                            itself created solely for this entry.
+///
+/// Rollback is only ever safe to run once per report and only while the
+/// report is still the CURRENT one for its batch (re-uploading replaces it,
+/// which already recomputes discrepancies fresh — rolling back a report
+/// that's since been superseded would undo a newer report's data instead).
+model ProductionReportAppliedChange {
+  id           String   @id @default(uuid())
+  reportId     String   @map("report_id")
+  batchId      String   @map("batch_id")
+  rowDate      DateTime? @map("row_date") @db.Date
+  entityType   String   @map("entity_type")   // e.g. "BrooderGeneralFeedLog", "BrooderLog.vaccinesJson", "BrooderCageAssignment"
+  entityId     String?  @map("entity_id")
+  action       String                          // "CREATE" | "UPDATE" | "JSON_APPEND"
+  beforeState  Json?    @map("before_state")
+  afterState   Json?    @map("after_state")
+  rolledBack   Boolean  @default(false) @map("rolled_back")
+  rolledBackAt DateTime? @map("rolled_back_at")
+  rolledBackById String? @map("rolled_back_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  report StoreProductionReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([reportId])
+  @@index([batchId])
+  @@index([reportId, rolledBack])
+  @@map("production_report_applied_changes")
 }
 
 /// Weekly or emergency issuance plan — replaces PurchaseRequest/LPO for stock issuance control

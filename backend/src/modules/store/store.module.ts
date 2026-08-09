@@ -20,6 +20,7 @@ import { PMRequisitionController } from './pm-requisition.controller';
 import { PMRequisitionCron } from './pm-requisition.cron';
 import { ProductionReportParserService } from './production-report-parser.service';
 import { ProductionReportReconciliationService } from './production-report-reconciliation.service';
+import { ProductionReportRollbackService } from './production-report-rollback.service';
 import { ProductionReportService } from './production-report.service';
 import { ProductionReportController } from './production-report.controller';
 
@@ -37,6 +38,7 @@ import { ProductionReportController } from './production-report.controller';
     PMRequisitionCron,
     ProductionReportParserService,
     ProductionReportReconciliationService,
+    ProductionReportRollbackService,
     ProductionReportService,
   ],
   controllers: [

@@ -10,6 +10,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   CanonicalField, FIELD_SYNONYMS, ProductionReportColumnMapping, ParsedReportRow, ParsedItemUsage,
   MULTI_READING_FIELDS, MultiReadingField, MAX_ENV_READINGS_PER_DAY, ENV_READING_LABELS, EnvReading,
+  FeedSplitPortion,
 } from './production-report.dto';
 
 function normaliseHeader(h: string): string {
@@ -27,6 +28,69 @@ function extractQuantity(raw: any): { qty: number; unit?: string } | null {
   const qty = parseFloat(m[1]);
   if (!Number.isFinite(qty)) return null;
   return { qty, unit: m[2] || undefined };
+}
+
+/** Splits a single cell that packs multiple same-day readings into one
+ *  string — e.g. "32,31,30" (Temp) or "100,70" (Lux) — into its individual
+ *  values. This is the common paper-sheet shorthand: one "Temp"/"Lux"/
+ *  "Humidity" column per day, with morning/midday/evening readings jammed
+ *  into the same cell separated by commas (occasionally semicolons or
+ *  slashes), rather than three separate columns. Blank tokens are dropped;
+ *  callers cap the result at MAX_ENV_READINGS_PER_DAY and drop any beyond
+ *  that (§ "ignore the extra values" — some rows carry more than 3 raw
+ *  readings; only the first 3, in order, are ever recorded). */
+export function splitMultiValueCell(raw: any): string[] {
+  const text = String(raw ?? '').trim();
+  if (!text) return [];
+  return text.split(/[,;/]+/).map(s => s.trim()).filter(s => s !== '');
+}
+
+/** Matches a two-way "<labelA>/<labelB> <pctA>[:/-]<pctB>[%]" split cell,
+ *  e.g. "chickcrumbs/growers 75:25%", "Chick Crumbs / Growers 75-25",
+ *  "crumbs/grower 75%:25%". Only ever a HINT that the cell is a split —
+ *  callers still fall back to the plain single-feedType path whenever this
+ *  returns null (no ratio found, more/fewer than 2 labels, or a
+ *  non-positive percentage), so an ordinary "Chick Mash" or "Growers Mash"
+ *  cell is completely unaffected. */
+const FEED_SPLIT_RATIO_RE = /^(.*?)\s+(\d+(?:\.\d+)?)\s*%?\s*[:\-/]\s*(\d+(?:\.\d+)?)\s*%?\s*$/;
+
+/** Parses a "Feed Type" cell for a two-way percentage split and returns each
+ *  portion's normalised percent (always summing to exactly 100) — kg is
+ *  filled in by the caller once feedKg for the row is known. Returns null
+ *  when the cell isn't a recognisable split (the normal, single-feed-type
+ *  case). */
+export function parseFeedSplitRatio(feedTypeText: string | undefined): { label: string; percent: number }[] | null {
+  const text = String(feedTypeText ?? '').trim();
+  if (!text) return null;
+  const m = FEED_SPLIT_RATIO_RE.exec(text);
+  if (!m) return null;
+  const pctA = parseFloat(m[2]);
+  const pctB = parseFloat(m[3]);
+  if (!Number.isFinite(pctA) || !Number.isFinite(pctB) || pctA <= 0 || pctB <= 0) return null;
+  const labels = m[1].split('/').map(s => s.trim()).filter(Boolean);
+  if (labels.length !== 2) return null; // only two-way splits are currently supported
+  const sum = pctA + pctB;
+  return [
+    { label: labels[0], percent: (pctA / sum) * 100 },
+    { label: labels[1], percent: (pctB / sum) * 100 },
+  ];
+}
+
+/** Builds the full FeedSplitPortion[] (percent + this row's kg share) for a
+ *  row, or undefined if the cell isn't a split or feedKg isn't known yet.
+ *  Portions' kg always sum to exactly feedKgTotal (rounding is applied only
+ *  to the first portion's complement so nothing is lost to rounding). */
+export function buildFeedSplit(feedTypeText: string | undefined, feedKgTotal: number | undefined): FeedSplitPortion[] | undefined {
+  if (feedKgTotal === undefined) return undefined;
+  const ratio = parseFeedSplitRatio(feedTypeText);
+  if (!ratio) return undefined;
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const firstKg = round2(feedKgTotal * ratio[0].percent / 100);
+  const secondKg = round2(feedKgTotal - firstKg); // remainder, so the two always add up exactly
+  return [
+    { label: ratio[0].label, percent: round2(ratio[0].percent), kg: firstKg },
+    { label: ratio[1].label, percent: round2(ratio[1].percent), kg: secondKg },
+  ];
 }
 
 @Injectable()
@@ -110,28 +174,46 @@ export class ProductionReportParserService {
       // §11: if the sheet carries multiple same-day columns per metric, only
       // the first MAX_ENV_READINGS_PER_DAY (in sheet column order, which is
       // how envFields was built during suggestMapping/override) are read;
-      // if the sheet has just 1-2, record only that many.
+      // if the sheet has just 1-2, record only that many. Just as commonly,
+      // a sheet has ONE column per metric but packs all of a day's readings
+      // into that one cell ("32,31,30") — that's handled by splitting the
+      // cell itself when there's no multi-column mapping for the metric.
       const readEnvReadings = (field: MultiReadingField): EnvReading[] | undefined => {
         const cols = mapping.envFields?.[field];
-        if (!cols || cols.length === 0) return undefined;
-        const readings: EnvReading[] = [];
-        for (let i = 0; i < Math.min(cols.length, MAX_ENV_READINGS_PER_DAY); i++) {
-          const cell = row[cols[i]];
-          if (cell === '' || cell == null) continue;
-          readings.push({ label: ENV_READING_LABELS[i], value: String(cell) });
+        if (cols && cols.length > 0) {
+          const readings: EnvReading[] = [];
+          for (let i = 0; i < Math.min(cols.length, MAX_ENV_READINGS_PER_DAY); i++) {
+            const cell = row[cols[i]];
+            if (cell === '' || cell == null) continue;
+            readings.push({ label: ENV_READING_LABELS[i], value: String(cell) });
+          }
+          return readings.length ? readings : undefined;
         }
-        return readings.length ? readings : undefined;
+        // Single-column case — split the cell itself if it packs more than
+        // one value. A cell with exactly one value falls through to the
+        // plain single-value field below (unchanged, backward-compatible).
+        const singleCol = mapping.fields[field];
+        if (!singleCol) return undefined;
+        const tokens = splitMultiValueCell(row[singleCol]).slice(0, MAX_ENV_READINGS_PER_DAY);
+        if (tokens.length <= 1) return undefined;
+        return tokens.map((value, i) => ({ label: ENV_READING_LABELS[i], value }));
       };
       const temperatureReadings = readEnvReadings('temperature');
       const humidityReadings = readEnvReadings('humidity');
       const luxReadings = readEnvReadings('lux');
 
+      const feedKgVal = numOrUndef(mapping.fields.feedKg && row[mapping.fields.feedKg]);
+      const feedTypeVal = strOrUndef(mapping.fields.feedType && row[mapping.fields.feedType]);
+
       out.push({
         date,
         locationRef: locParts.length ? locParts.join(' / ') : null,
         rowNumber, levelNumber, cageNumber,
-        feedKg:        numOrUndef(mapping.fields.feedKg        && row[mapping.fields.feedKg]),
-        feedType:      strOrUndef(mapping.fields.feedType      && row[mapping.fields.feedType]),
+        feedKg:        feedKgVal,
+        feedType:      feedTypeVal,
+        // e.g. "chickcrumbs/growers 75:25%" -> 75% Chick Crumbs, 25% Growers,
+        // each kg computed from feedKgVal. undefined for ordinary single-type cells.
+        feedSplit:     buildFeedSplit(feedTypeVal, feedKgVal),
         waterLts:      numOrUndef(mapping.fields.waterLts      && row[mapping.fields.waterLts]),
         mortality:     numOrUndef(mapping.fields.mortality     && row[mapping.fields.mortality]),
         culling:       numOrUndef(mapping.fields.culling       && row[mapping.fields.culling]),

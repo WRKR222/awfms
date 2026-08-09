@@ -7,6 +7,7 @@ import { NotificationsService } from '../../common/notifications/notifications.s
 import { RequestUser } from '../../auth/types/request-user.type';
 import { ProductionReportParserService } from './production-report-parser.service';
 import { ProductionReportReconciliationService } from './production-report-reconciliation.service';
+import { ProductionReportRollbackService, RollbackResult } from './production-report-rollback.service';
 import {
   CANONICAL_FIELD_LABELS, CanonicalField, ProductionReportColumnMapping, SubmitReportResult, PreviewReportResult,
 } from './production-report.dto';
@@ -17,6 +18,7 @@ export class ProductionReportService {
     private readonly prisma: PrismaService,
     private readonly parser: ProductionReportParserService,
     private readonly reconciler: ProductionReportReconciliationService,
+    private readonly rollbackService: ProductionReportRollbackService,
     private readonly notifications: NotificationsService,
   ) {}
 
@@ -90,7 +92,7 @@ export class ProductionReportService {
     const parsedRows = this.parser.parseRows(buffer, mapping);
     if (parsedRows.length === 0) throw new BadRequestException('No usable rows found in the file — check the column mapping.');
 
-    const { rows, discrepancies, autofillCount, matchedCount, stage } =
+    const { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage } =
       await this.reconciler.reconcile(batchId, parsedRows, user.id, fileName);
 
     const status = discrepancies.length > 0 ? 'PENDING' : 'APPROVED';
@@ -130,6 +132,27 @@ export class ProductionReportService {
             systemValue: d.systemValue,
             reportValue: d.reportValue,
             notes: d.notes,
+          })),
+        });
+      }
+
+      // Applied-change ledger — every write reconcile() just made, so this
+      // report's effects can be rolled back later (see
+      // ProductionReportRollbackService). Accumulates across resubmissions
+      // of the same batch's report (the report row's id is stable across
+      // re-uploads), which is what makes "roll back my current report"
+      // undo everything it has ever auto-filled, not just the latest pass.
+      if (appliedChanges.length) {
+        await tx.productionReportAppliedChange.createMany({
+          data: appliedChanges.map(c => ({
+            reportId: saved.id,
+            batchId: c.batchId,
+            rowDate: new Date(c.rowDate),
+            entityType: c.entityType,
+            entityId: c.entityId,
+            action: c.action,
+            beforeState: c.beforeState as any,
+            afterState: c.afterState as any,
           })),
         });
       }
@@ -281,6 +304,30 @@ export class ProductionReportService {
     ).catch(() => {});
 
     return updated;
+  }
+
+  /** Director (or Store, undoing their own upload) reverses everything the
+   *  reconciliation engine auto-applied for this report — every daily log,
+   *  stock-count, cage reassignment, and vaccine/supplement entry it
+   *  created or corrected. Does NOT touch anything separately applied via
+   *  approve()/applyDiscrepancy() — see ProductionReportRollbackService's
+   *  header comment for why that's out of scope for this action. Safe to
+   *  call once; a second call on the same report is rejected. */
+  async rollback(reportId: string, user: RequestUser): Promise<RollbackResult> {
+    const report = await this.prisma.storeProductionReport.findUnique({ where: { id: reportId }, include: { batch: true } });
+    if (!report) throw new NotFoundException('Report not found');
+
+    const result = await this.rollbackService.rollback(reportId, user);
+
+    await this.notifications.notifyRole(
+      UserRole.OWNER, NotificationType.PRODUCTION_REPORT_SUBMITTED,
+      `Production report rolled back — ${report.batch.batchCode}`,
+      `${result.reverted}/${result.totalChanges} auto-filled change(s) from this report were reversed.` +
+        (result.skipped.length ? ` ${result.skipped.length} could not be reversed automatically (edited since) and need a manual look.` : ''),
+      { entityId: reportId, entityType: 'StoreProductionReport' },
+    ).catch(() => {});
+
+    return result;
   }
 
   /** Director extracts the current report as a clean spreadsheet on request. */
