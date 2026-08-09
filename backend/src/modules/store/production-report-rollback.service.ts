@@ -105,6 +105,17 @@ export class ProductionReportRollbackService {
 
       case 'BrooderStockCount':
         if (action === 'CREATE') { await this.deleteIfUnchanged(tx.brooderStockCount, entityId, afterState); return; }
+        if (action === 'UPDATE') {
+          const existing = await tx.brooderStockCount.findUnique({ where: { id: entityId } });
+          if (!existing) throw new Error('Stock count row no longer exists.');
+          for (const key of Object.keys(afterState ?? {})) {
+            if (JSON.stringify((existing as any)[key]) !== JSON.stringify((afterState as any)[key])) {
+              throw new Error(`${key} has changed since the report set it — leaving as-is for manual review.`);
+            }
+          }
+          await tx.brooderStockCount.update({ where: { id: entityId }, data: beforeState });
+          return;
+        }
         break;
 
       case 'BrooderTreatmentLog':

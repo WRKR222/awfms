@@ -1,45 +1,42 @@
 // Pure-function unit tests for the report-reconciliation fixes:
-//   1. Additive delta correction — never duplicate a full amount when
-//      something is already recorded, only top up the difference, and
-//      never auto-reduce a system value the report shows less of.
+//   1. Report-is-authoritative correction — whatever the report says for a
+//      field is what gets recorded, whether higher or lower than what's
+//      already in the system, with no held-balance ceiling.
 //   2. Unit-word canonicalisation — "150G" / "150 GRAMS" / "150gm" all
 //      normalise identically for item-name / free-text matching.
 import { describe, it, expect } from 'vitest';
 import {
-  resolveAdditiveCorrection, canonicaliseUnitWords, normaliseText,
+  resolveReportCorrection, canonicaliseUnitWords, normaliseText,
 } from '../production-report-reconciliation.service';
 
-describe('resolveAdditiveCorrection (report says more/less than already recorded)', () => {
+describe('resolveReportCorrection (report is authoritative)', () => {
   it('matches cleanly when the report agrees with what is already recorded', () => {
-    const outcome = resolveAdditiveCorrection(12, 12, 100, 'ml');
+    const outcome = resolveReportCorrection(12, 12, 'ml');
     expect(outcome.resolution).toBe('MATCHED');
     expect(outcome.deltaToApply).toBe(0);
   });
 
   it('applies only the DELTA when the report shows more — the exact "6ml logged, report says 12ml" case', () => {
     // System already has 6ml logged for the day; report says 12ml total.
-    const outcome = resolveAdditiveCorrection(6, 12, 100, 'ml');
+    const outcome = resolveReportCorrection(6, 12, 'ml');
     expect(outcome.resolution).toBe('AUTOFILLED');
     expect(outcome.deltaToApply).toBe(6); // top-up only, never the full 12 again
   });
 
-  it('never applies a correction bigger than what is actually available (no over-issuance)', () => {
-    // Only 3ml is available beyond what's already logged, but the report
-    // wants 6 more (6 -> 12) — must NOT silently apply a partial amount or
-    // pretend it's fine; must flag it instead.
-    const outcome = resolveAdditiveCorrection(6, 12, 3, 'ml');
-    expect(outcome.resolution).toBe('DISCREPANCY');
-    expect(outcome.deltaToApply).toBe(0);
+  it('corrects with no held-balance ceiling — the report is trusted even beyond what was ever issued', () => {
+    const outcome = resolveReportCorrection(6, 12, 'ml');
+    expect(outcome.resolution).toBe('AUTOFILLED');
+    expect(outcome.deltaToApply).toBe(6);
   });
 
-  it('never auto-reduces when the report shows LESS than what is already recorded', () => {
-    const outcome = resolveAdditiveCorrection(12, 6, 100, 'ml');
-    expect(outcome.resolution).toBe('DISCREPANCY');
-    expect(outcome.deltaToApply).toBe(0);
+  it('corrects DOWN (negative delta) when the report shows LESS than what is already recorded', () => {
+    const outcome = resolveReportCorrection(12, 6, 'ml');
+    expect(outcome.resolution).toBe('AUTOFILLED');
+    expect(outcome.deltaToApply).toBe(-6);
   });
 
   it('applies the full amount as a top-up when nothing was recorded yet (alreadyRecorded = 0)', () => {
-    const outcome = resolveAdditiveCorrection(0, 12, 100, 'ml');
+    const outcome = resolveReportCorrection(0, 12, 'ml');
     expect(outcome.resolution).toBe('AUTOFILLED');
     expect(outcome.deltaToApply).toBe(12);
   });

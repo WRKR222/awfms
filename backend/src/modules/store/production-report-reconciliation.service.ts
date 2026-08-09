@@ -70,65 +70,51 @@ export interface AppliedChangeInput {
   afterState: unknown;
 }
 
-/** Outcome of the shared "additive-only correction" policy (§ delta
- *  correction): report says more happened than the system currently has
- *  recorded for this exact (item/field, batch, date) — rather than either
- *  (a) silently duplicating a whole new full-amount entry, or (b) always
- *  punting to a manual discrepancy, we record ONLY the difference, and only
- *  when that difference is actually covered by what's available (held
- *  stock balance for items, or nothing extra to check for pure counts like
- *  mortality). A report showing LESS than what's already recorded is never
- *  auto-applied — that would mean silently shrinking/deleting an existing
- *  entry, which always needs a human to confirm. */
+/** Outcome of the "report is authoritative" correction policy: whatever the
+ *  report says for this exact (item/field, batch, date) is what the system
+ *  ends up showing — no held-balance ceiling, no "report shows less, block
+ *  it" rule. `deltaToApply` can be NEGATIVE (report shows less than what's
+ *  already recorded) as well as positive; callers write it as a correction
+ *  entry (or a direct field overwrite, for singleton fields like
+ *  EggCollectionSession.feedKg) either way. This intentionally does NOT
+ *  raise a discrepancy for a value difference — see reconcileFeed /
+ *  reconcileMortality / reconcileStockCount / reconcileHealthUsages etc.,
+ *  which call this. Discrepancies are still raised elsewhere, but only for
+ *  things this function can't resolve by definition — the report naming an
+ *  item that doesn't exist in the store catalogue (nothing to attribute the
+ *  quantity to), a unit that can't be converted, or a row with nowhere to
+ *  write into yet (e.g. no egg-collection session exists for that date). */
 interface CorrectionOutcome {
   resolution: 'MATCHED' | 'AUTOFILLED' | 'DISCREPANCY';
-  /** The amount to actually write as a NEW log entry — 0 unless resolution
-   *  is 'AUTOFILLED'. Never the full report amount when something was
-   *  already recorded; only the top-up delta. */
+  /** The amount to write as a correction entry (or the new absolute value,
+   *  for a direct-overwrite field) — 0 unless resolution is 'AUTOFILLED'.
+   *  Can be negative. */
   deltaToApply: number;
   note: string;
 }
 
-/** Central "does the report's higher figure fit within what's actually
- *  available, and if so top up by the difference" decision — shared by
- *  feed, vaccines/supplements/treatments, and generic items-issued so the
- *  same never-duplicate / never-overissue policy applies everywhere.
- *  `alreadyRecorded` is whatever the system currently has logged for this
- *  exact (batch, date, item/field); `availableBalance` is resolved by the
- *  caller — day-scoped for feed (§ only issued what stores actually gave
- *  out that specific day), cumulative-since-ever for bulk items like
- *  charcoal/vaccines/supplements (issued in bulk to production to manage
- *  over time, per spec). */
-export function resolveAdditiveCorrection(
+/** Central "the report is authoritative" decision — shared by mortality,
+ *  feed, vaccines/supplements/treatments, and generic items-issued, so the
+ *  same policy applies everywhere: whatever the report says for this field
+ *  is what gets recorded, whether that's higher or lower than what the
+ *  system already has, and regardless of how much was ever issued to this
+ *  batch. Never raises a discrepancy on its own — a value difference is
+ *  always resolved by correcting to match the report, silently. */
+export function resolveReportCorrection(
   alreadyRecorded: number,
   reportQty: number,
-  availableBalance: number,
   unitLabel: string,
 ): CorrectionOutcome {
   const delta = reportQty - alreadyRecorded;
   if (Math.abs(delta) < 0.001) {
     return { resolution: 'MATCHED', deltaToApply: 0, note: '' };
   }
-  if (delta < 0) {
-    // Report shows LESS than what's already recorded — never silently
-    // reduce/delete an existing entry. Flag for a human to reconcile.
-    return {
-      resolution: 'DISCREPANCY', deltaToApply: 0,
-      note: `System already has ${alreadyRecorded} ${unitLabel} recorded, but the report shows only ${reportQty} ${unitLabel} — needs manual correction, not auto-reduced.`,
-    };
-  }
-  if (availableBalance >= delta - 0.001) {
-    return {
-      resolution: 'AUTOFILLED', deltaToApply: delta,
-      note: `${alreadyRecorded} ${unitLabel} was already recorded; the report confirms ${reportQty} ${unitLabel} total, so ${delta.toFixed(2)} ${unitLabel} was added as a correction (not duplicated).`,
-    };
-  }
-  const shortfall = delta - availableBalance;
   return {
-    resolution: 'DISCREPANCY', deltaToApply: 0,
-    note: availableBalance > 0
-      ? `Report confirms ${reportQty} ${unitLabel} total (system has ${alreadyRecorded} ${unitLabel}, +${delta.toFixed(2)} ${unitLabel} needed) but only ${availableBalance.toFixed(2)} ${unitLabel} is available to cover it — ${shortfall.toFixed(2)} ${unitLabel} short. Issue the difference to reconcile, or approve to record it anyway.`
-      : `Report confirms ${reportQty} ${unitLabel} total (system has ${alreadyRecorded} ${unitLabel}) but nothing further is available to cover the +${delta.toFixed(2)} ${unitLabel} needed — issue it first, or approve this discrepancy to record it anyway.`,
+    resolution: 'AUTOFILLED',
+    deltaToApply: delta,
+    note: delta > 0
+      ? `${alreadyRecorded} ${unitLabel} was already recorded; the report shows ${reportQty} ${unitLabel} total, so ${delta.toFixed(2)} ${unitLabel} was added to match it.`
+      : `${alreadyRecorded} ${unitLabel} was already recorded; the report shows only ${reportQty} ${unitLabel} total, so ${Math.abs(delta).toFixed(2)} ${unitLabel} was corrected down to match it.`,
   };
 }
 
@@ -352,7 +338,8 @@ export class ProductionReportReconciliationService {
         // EggCollectionSession from a production report alone (it requires
         // egg-count fields this report doesn't carry), so this always needs
         // manual reconciliation for a production-stage batch until an
-        // attendant has logged the base session.
+        // attendant has logged the base session. (This is a "nowhere to
+        // write yet" case, not a value difference, so it's still flagged.)
         row.resolution.mortality = 'DISCREPANCY';
         discrepancies.push({
           rowDate: row.date, field: 'mortality', discrepancyType: ProductionReportDiscrepancyType.MORTALITY,
@@ -364,60 +351,36 @@ export class ProductionReportReconciliationService {
       if (existing.mortalities === row.mortality) {
         row.resolution.mortality = 'MATCHED';
         onMatch();
-      } else if (existing.mortalities === 0) {
-        await this.prisma.eggCollectionSession.update({ where: { id: existing.id }, data: { mortalities: row.mortality! } });
-        this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.mortalities', existing.id, 'UPDATE', { mortalities: existing.mortalities }, { mortalities: row.mortality! });
-        row.resolution.mortality = 'AUTOFILLED';
-        onAutofill();
-      } else if (row.mortality! > existing.mortalities) {
-        // §delta correction — report confirms a higher mortality count than
-        // recorded; top up rather than leaving the whole field blocked.
-        const before = existing.mortalities;
-        await this.prisma.eggCollectionSession.update({ where: { id: existing.id }, data: { mortalities: row.mortality! } });
-        this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.mortalities', existing.id, 'UPDATE', { mortalities: before }, { mortalities: row.mortality! });
-        row.resolution.mortality = 'AUTOFILLED';
-        onAutofill();
-      } else {
-        row.resolution.mortality = 'DISCREPANCY';
-        discrepancies.push({
-          rowDate: row.date, field: 'mortality', discrepancyType: ProductionReportDiscrepancyType.MORTALITY,
-          locationRef: row.locationRef, systemValue: String(existing.mortalities), reportValue: String(row.mortality),
-          notes: 'System already recorded more mortality than the report shows — needs manual correction, not auto-reduced.',
-        });
+        return;
       }
+      // Report is authoritative — correct the session to match it, whether
+      // that's higher or lower than what's currently recorded.
+      const before = existing.mortalities;
+      await this.prisma.eggCollectionSession.update({ where: { id: existing.id }, data: { mortalities: row.mortality! } });
+      this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.mortalities', existing.id, 'UPDATE', { mortalities: before }, { mortalities: row.mortality! });
+      row.resolution.mortality = 'AUTOFILLED';
+      onAutofill();
       return;
     }
 
     const existing = await this.prisma.brooderGeneralMortalityLog.findMany({ where: { batchId, logDate } });
     const systemTotal = existing.reduce((s, e) => s + e.mortalityCount, 0);
-    const outcome = resolveAdditiveCorrection(systemTotal, row.mortality!, Number.POSITIVE_INFINITY, 'bird(s)');
-    // Mortality has no "stock balance" ceiling to check — it's a headcount,
-    // not something issued from a limited pool — so availableBalance is
-    // unbounded and only the MATCHED / (report lower -> DISCREPANCY) /
-    // (report higher -> AUTOFILLED delta) branches ever apply here.
+    const outcome = resolveReportCorrection(systemTotal, row.mortality!, 'bird(s)');
     if (outcome.resolution === 'MATCHED') {
       row.resolution.mortality = 'MATCHED';
       onMatch();
       return;
     }
-    if (outcome.resolution === 'AUTOFILLED') {
-      const created = await this.prisma.brooderGeneralMortalityLog.create({
-        data: {
-          batchId, logDate, mortalityCount: outcome.deltaToApply, cullingCount: existing.length === 0 ? (row.culling ?? 0) : 0,
-          notes: existing.length === 0 ? `Auto-filled ${noteSuffix}` : `Correction: ${outcome.note} ${noteSuffix}`,
-          loggedById: uploaderId,
-        },
-      });
-      this.logChange(appliedChanges, batchId, row.date, 'BrooderGeneralMortalityLog', created.id, 'CREATE', null, created);
-      row.resolution.mortality = 'AUTOFILLED';
-      onAutofill();
-      return;
-    }
-    row.resolution.mortality = 'DISCREPANCY';
-    discrepancies.push({
-      rowDate: row.date, field: 'mortality', discrepancyType: ProductionReportDiscrepancyType.MORTALITY,
-      locationRef: row.locationRef, systemValue: String(systemTotal), reportValue: String(row.mortality), notes: outcome.note,
+    const created = await this.prisma.brooderGeneralMortalityLog.create({
+      data: {
+        batchId, logDate, mortalityCount: outcome.deltaToApply, cullingCount: existing.length === 0 ? (row.culling ?? 0) : 0,
+        notes: existing.length === 0 ? `Auto-filled ${noteSuffix}` : `Correction: ${outcome.note} ${noteSuffix}`,
+        loggedById: uploaderId,
+      },
     });
+    this.logChange(appliedChanges, batchId, row.date, 'BrooderGeneralMortalityLog', created.id, 'CREATE', null, created);
+    row.resolution.mortality = 'AUTOFILLED';
+    onAutofill();
   }
 
   // ── Feed ─────────────────────────────────────────────────────────────────
@@ -443,6 +406,7 @@ export class ProductionReportReconciliationService {
         where: { batchId_houseId_sessionDate_shift: { batchId, houseId: batch.houseId, sessionDate: logDate, shift: 'AM' } },
       });
       if (!existing) {
+        // Nowhere to write yet — not a value difference, still flagged.
         row.resolution.feedKg = 'DISCREPANCY';
         discrepancies.push({
           rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
@@ -452,40 +416,22 @@ export class ProductionReportReconciliationService {
         return;
       }
       const systemFeed = existing.feedKg != null ? Number(existing.feedKg) : 0;
-      // §feed-is-day-specific — feed's available balance is only what was
-      // actually issued for THIS date, unlike bulk items (charcoal/vaccines
-      // /supplements) which draw down a cumulative held balance built up
-      // over time. This is what stops feed being "auto-recorded" on a day
-      // Store never actually issued any.
-      const dayBalance = matchedFeedItem ? await this.computeHeldBalanceForDate(matchedFeedItem.id, batchId, logDate) : 0;
-      const outcome = matchedFeedItem
-        ? resolveAdditiveCorrection(systemFeed, row.feedKg!, dayBalance, 'kg')
-        : (Math.abs(systemFeed - row.feedKg!) < 0.01
-            ? { resolution: 'MATCHED' as const, deltaToApply: 0, note: '' }
-            : { resolution: 'DISCREPANCY' as const, deltaToApply: 0, note: '' });
-
-      if (outcome.resolution === 'MATCHED') {
+      if (Math.abs(systemFeed - row.feedKg!) < 0.01) {
         row.resolution.feedKg = 'MATCHED';
         onMatch();
         return;
       }
-      if (outcome.resolution === 'AUTOFILLED' && matchedFeedItem) {
-        const newTotal = systemFeed + outcome.deltaToApply;
-        await this.prisma.eggCollectionSession.update({
-          where: { id: existing.id },
-          data: { feedKg: newTotal, feedTypeName: matchedFeedItem.name ?? row.feedType ?? existing.feedTypeName },
-        });
-        this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.feedKg', existing.id, 'UPDATE', { feedKg: systemFeed }, { feedKg: newTotal });
-        row.resolution.feedKg = 'AUTOFILLED';
-        onAutofill();
-        return;
-      }
-      row.resolution.feedKg = 'DISCREPANCY';
-      if (!matchedFeedItem) this.pushUnmatchedFeedDiscrepancy(row, discrepancies);
-      else discrepancies.push({
-        rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
-        locationRef: row.locationRef, systemValue: `${systemFeed} kg`, reportValue: `${row.feedKg} kg`, notes: outcome.note,
+      // Report is authoritative — correct to match it, whether higher or
+      // lower, regardless of whether a store item was matched (the field
+      // itself is just a number + a display label, no per-item balance to
+      // check for a single-value session field).
+      await this.prisma.eggCollectionSession.update({
+        where: { id: existing.id },
+        data: { feedKg: row.feedKg!, feedTypeName: matchedFeedItem?.name ?? row.feedType ?? existing.feedTypeName },
       });
+      this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.feedKg', existing.id, 'UPDATE', { feedKg: systemFeed }, { feedKg: row.feedKg! });
+      row.resolution.feedKg = 'AUTOFILLED';
+      onAutofill();
       return;
     }
 
@@ -499,66 +445,51 @@ export class ProductionReportReconciliationService {
       return;
     }
     if (!matchedFeedItem) {
-      // Can't check a day-specific issued balance without knowing which
-      // StoreItem this is — never silently write feed we can't attribute.
+      // Can't attribute the quantity to a specific store item — a name
+      // match failure, not a value difference, so this still needs a human
+      // to add/rename the store item (writing it with no item link would
+      // make it invisible to the per-item issued/remaining tracking).
       if (Math.abs(systemTotal - row.feedKg!) < 0.01) { row.resolution.feedKg = 'MATCHED'; onMatch(); return; }
       row.resolution.feedKg = 'DISCREPANCY';
       this.pushUnmatchedFeedDiscrepancy(row, discrepancies);
       return;
     }
 
-    // §feed-is-day-specific (see PRODUCTION branch above for the rationale)
-    // — only feed actually issued for THIS date can be auto-recorded.
-    const dayBalance = await this.computeHeldBalanceForDate(matchedFeedItem.id, batchId, logDate);
-    const outcome = resolveAdditiveCorrection(systemTotal, row.feedKg!, dayBalance, 'kg');
-
+    const outcome = resolveReportCorrection(systemTotal, row.feedKg!, 'kg');
     if (outcome.resolution === 'MATCHED') {
       row.resolution.feedKg = 'MATCHED';
       onMatch();
       return;
     }
-    if (outcome.resolution === 'AUTOFILLED') {
-      const created = await this.prisma.brooderGeneralFeedLog.create({
-        data: {
-          batchId, entryDate: logDate,
-          feedType: mapFeedType(matchedFeedItem.name, row.feedType),
-          storeItemId: matchedFeedItem.id, unit: matchedFeedItem.unit,
-          quantityDispensedKg: outcome.deltaToApply,
-          notes: [existing.length === 0 ? `Auto-filled ${noteSuffix}` : `Correction: ${outcome.note} ${noteSuffix}`, row.feedType ? `sheet feed type: "${row.feedType}"` : null].filter(Boolean).join(' — '),
-          loggedById: uploaderId,
-        },
-      });
-      this.logChange(appliedChanges, batchId, row.date, 'BrooderGeneralFeedLog', created.id, 'CREATE', null, created);
-      row.resolution.feedKg = 'AUTOFILLED';
-      onAutofill();
-      return;
-    }
-    row.resolution.feedKg = 'DISCREPANCY';
-    discrepancies.push({
-      rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
-      locationRef: row.locationRef, systemValue: `${systemTotal} kg`, reportValue: `${row.feedKg} kg`, notes: outcome.note,
+    const created = await this.prisma.brooderGeneralFeedLog.create({
+      data: {
+        batchId, entryDate: logDate,
+        feedType: mapFeedType(matchedFeedItem.name, row.feedType),
+        storeItemId: matchedFeedItem.id, unit: matchedFeedItem.unit,
+        quantityDispensedKg: outcome.deltaToApply,
+        notes: [existing.length === 0 ? `Auto-filled ${noteSuffix}` : `Correction: ${outcome.note} ${noteSuffix}`, row.feedType ? `sheet feed type: "${row.feedType}"` : null].filter(Boolean).join(' — '),
+        loggedById: uploaderId,
+      },
     });
+    this.logChange(appliedChanges, batchId, row.date, 'BrooderGeneralFeedLog', created.id, 'CREATE', null, created);
+    row.resolution.feedKg = 'AUTOFILLED';
+    onAutofill();
   }
 
   /** Reconciles a two-way split feed cell — e.g. "chickcrumbs/growers
    *  75:25%" on a 387kg row means 75% (290.25kg) is Chick Crumbs and 25%
    *  (96.75kg) is Growers Mash. Each portion is matched to its own StoreItem
-   *  and run through the exact same additive-correction / day-balance policy
-   *  as a normal single-item feed row (§feed-is-day-specific) — so a portion
-   *  is only ever auto-recorded up to what stores actually issued to
-   *  production (PM/Attendant) for THAT item on THAT day; a portion that
-   *  exceeds its own item's held balance is held back as its own
-   *  discrepancy rather than silently borrowing from the other portion's
-   *  balance.
+   *  and corrected to match the report exactly (§report-is-authoritative) —
+   *  no held-balance ceiling, no blocking a lower figure.
    *
    *  BROODING/GROWER (and OTHER, same brooder-style sheet): each portion
    *  becomes its own BrooderGeneralFeedLog row — the table already supports
    *  multiple same-day entries with different feedType/storeItemId, so a
    *  split maps onto it cleanly. PRODUCTION (egg-laying): EggCollectionSession
-   *  has only ONE combined feedKg/feedTypeName per session, with no per-item
-   *  breakdown — there's nowhere to safely record two different items'
-   *  worth against one field, so a split here is always flagged for the
-   *  Director/Store to reconcile manually rather than guessed at. */
+   *  has only ONE combined feedKg/feedTypeName field, so a split is written
+   *  as the report's total kg with a descriptive feedTypeName (e.g. "Chick
+   *  Crumbs 75% / Growers 25%") — there's no per-item breakdown to store at
+   *  that stage, same as the single-item PRODUCTION path above. */
   private async reconcileFeedSplit(
     row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
     stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER',
@@ -566,20 +497,42 @@ export class ProductionReportReconciliationService {
     feedItems: StoreItem[], discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
   ) {
     const portions = row.feedSplit!;
-    const splitSummary = portions.map(p => `${p.label} ${p.percent}% (${p.kg}kg)`).join(' / ');
+    const splitSummary = portions.map(p => `${p.label} ${p.percent}%`).join(' / ');
 
     if (stageBucket === 'PRODUCTION') {
-      row.resolution.feedKg = 'DISCREPANCY';
-      discrepancies.push({
-        rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
-        locationRef: row.locationRef, systemValue: null,
-        reportValue: `${row.feedKg} kg total — ${splitSummary}`,
-        notes: 'Report shows a split feed type, but a production-stage session only tracks one combined feed figure with no per-item breakdown — record each portion manually (or via Store Inventory) rather than guessing which item to deduct from.',
+      const existing = await this.prisma.eggCollectionSession.findUnique({
+        where: { batchId_houseId_sessionDate_shift: { batchId, houseId: batch.houseId, sessionDate: logDate, shift: 'AM' } },
       });
+      if (!existing) {
+        row.resolution.feedKg = 'DISCREPANCY';
+        discrepancies.push({
+          rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
+          locationRef: row.locationRef, systemValue: null, reportValue: `${row.feedKg} kg (${splitSummary})`,
+          notes: 'No egg-collection session exists yet for this date.',
+        });
+        return;
+      }
+      const systemFeed = existing.feedKg != null ? Number(existing.feedKg) : 0;
+      if (Math.abs(systemFeed - row.feedKg!) < 0.01) {
+        row.resolution.feedKg = 'MATCHED';
+        onMatch();
+        return;
+      }
+      const labelText = portions.map(p => {
+        const m = matchInventoryItem(p.label, feedItems);
+        return `${m?.name ?? p.label} ${p.percent}%`;
+      }).join(' / ');
+      await this.prisma.eggCollectionSession.update({
+        where: { id: existing.id },
+        data: { feedKg: row.feedKg!, feedTypeName: labelText },
+      });
+      this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.feedKg', existing.id, 'UPDATE', { feedKg: systemFeed }, { feedKg: row.feedKg! });
+      row.resolution.feedKg = 'AUTOFILLED';
+      onAutofill();
       return;
     }
 
-    // ── Brooder/grower stage — each portion is its own item + own day balance ──
+    // ── Brooder/grower stage — each portion is its own item, corrected independently ──
     const existing = await this.prisma.brooderGeneralFeedLog.findMany({ where: { batchId, entryDate: logDate } });
 
     if (existing.length === 0 && (row.feedKg ?? 0) <= 0) {
@@ -588,9 +541,9 @@ export class ProductionReportReconciliationService {
       return;
     }
 
-    let anyDiscrepancy = false;
     let anyAutofilled = false;
     let anyMatched = false;
+    let anyDiscrepancy = false;
 
     for (const portion of portions) {
       const matchedItem = matchInventoryItem(portion.label, feedItems);
@@ -607,40 +560,31 @@ export class ProductionReportReconciliationService {
       const systemQtyForItem = existing
         .filter(e => e.storeItemId === matchedItem.id)
         .reduce((s, e) => s + e.quantityDispensedKg, 0);
-      const dayBalance = await this.computeHeldBalanceForDate(matchedItem.id, batchId, logDate);
-      const outcome = resolveAdditiveCorrection(systemQtyForItem, portion.kg, dayBalance, 'kg');
+      const outcome = resolveReportCorrection(systemQtyForItem, portion.kg, 'kg');
 
       if (outcome.resolution === 'MATCHED') {
         anyMatched = true;
         continue;
       }
-      if (outcome.resolution === 'AUTOFILLED') {
-        const created = await this.prisma.brooderGeneralFeedLog.create({
-          data: {
-            batchId, entryDate: logDate,
-            feedType: mapFeedType(matchedItem.name, portion.label),
-            storeItemId: matchedItem.id, unit: matchedItem.unit,
-            quantityDispensedKg: outcome.deltaToApply,
-            notes: [
-              systemQtyForItem === 0 ? `Auto-filled ${noteSuffix}` : `Correction: ${outcome.note} ${noteSuffix}`,
-              `split portion: "${portion.label}" — ${portion.percent}% of sheet total "${row.feedType}"`,
-            ].filter(Boolean).join(' — '),
-            loggedById: uploaderId,
-          },
-        });
-        this.logChange(appliedChanges, batchId, row.date, 'BrooderGeneralFeedLog', created.id, 'CREATE', null, created);
-        anyAutofilled = true;
-        continue;
-      }
-      anyDiscrepancy = true;
-      discrepancies.push({
-        rowDate: row.date, field: `feedKg:${portion.label}`, discrepancyType: ProductionReportDiscrepancyType.FEED,
-        locationRef: row.locationRef, systemValue: `${systemQtyForItem} kg`, reportValue: `${portion.kg} kg`, notes: outcome.note,
+      const created = await this.prisma.brooderGeneralFeedLog.create({
+        data: {
+          batchId, entryDate: logDate,
+          feedType: mapFeedType(matchedItem.name, portion.label),
+          storeItemId: matchedItem.id, unit: matchedItem.unit,
+          quantityDispensedKg: outcome.deltaToApply,
+          notes: [
+            systemQtyForItem === 0 ? `Auto-filled ${noteSuffix}` : `Correction: ${outcome.note} ${noteSuffix}`,
+            `split portion: "${portion.label}" — ${portion.percent}% of sheet total "${row.feedType}"`,
+          ].filter(Boolean).join(' — '),
+          loggedById: uploaderId,
+        },
       });
+      this.logChange(appliedChanges, batchId, row.date, 'BrooderGeneralFeedLog', created.id, 'CREATE', null, created);
+      anyAutofilled = true;
     }
 
     row.resolution.feedKg = anyDiscrepancy ? 'DISCREPANCY' : anyAutofilled ? 'AUTOFILLED' : anyMatched ? 'MATCHED' : 'DISCREPANCY';
-    if (anyDiscrepancy) return; // onAutofill/onMatch below only for clean outcomes, mirrors other reconcile* methods
+    if (anyDiscrepancy) return;
     if (anyAutofilled) onAutofill();
     else onMatch();
   }
@@ -675,13 +619,15 @@ export class ProductionReportReconciliationService {
       row.resolution.stockCount = 'MATCHED';
       onMatch();
     } else {
-      row.resolution.stockCount = 'DISCREPANCY';
-      discrepancies.push({
-        rowDate: row.date, field: 'stockCount', discrepancyType: ProductionReportDiscrepancyType.STOCK_COUNT,
-        locationRef: row.locationRef,
-        systemValue: `O:${existing.openingStock} / C:${existing.closingStock}`,
-        reportValue: `O:${row.openingStock} / C:${row.closingStock}`,
+      // Report is authoritative — correct to match it.
+      const before = { openingStock: existing.openingStock, closingStock: existing.closingStock };
+      await this.prisma.brooderStockCount.update({
+        where: { id: existing.id },
+        data: { openingStock: row.openingStock!, closingStock: row.closingStock! },
       });
+      this.logChange(appliedChanges, batchId, row.date, 'BrooderStockCount', existing.id, 'UPDATE', before, { openingStock: row.openingStock!, closingStock: row.closingStock! });
+      row.resolution.stockCount = 'AUTOFILLED';
+      onAutofill();
     }
   }
 
@@ -848,12 +794,11 @@ export class ProductionReportReconciliationService {
    *  only the first 3 readings are ever used (extras ignored); 2 readings
    *  map to Morning+Midday, 1 to Morning only.
    *
-   *  Unlike feed/mortality, a sensor reading isn't additive — two different
-   *  numbers for the same session can't both be "the temperature at that
-   *  time" — so this mirrors reconcileStockCount's policy, not the delta-
-   *  correction one: nothing recorded yet -> record it; already recorded
-   *  and it matches -> no-op; already recorded and it DIFFERS -> flag for a
-   *  human, never silently overwritten. */
+   *  Unlike feed/mortality, a sensor reading isn't additive — a session can
+   *  only ever have had ONE actual temperature/humidity/lux at a given
+   *  time, so a differing report value is a correction, not a delta: it
+   *  overwrites the existing reading to match the report (§report-is-
+   *  authoritative), same as every other field here. */
   private async reconcileEnvironmental(
     row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
     discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
@@ -861,7 +806,7 @@ export class ProductionReportReconciliationService {
     const bySession = this.buildSessionReadings(row);
     if (bySession.length === 0) return;
 
-    let anyAutofill = false, anyMatch = false, anyDiscrepancy = false;
+    let anyAutofill = false, anyMatch = false;
 
     for (const { session, temperature, humidity, lux } of bySession) {
       if (temperature === undefined && humidity === undefined && lux === undefined) continue;
@@ -869,7 +814,7 @@ export class ProductionReportReconciliationService {
       const existing = await this.prisma.brooderLog.findFirst({ where: { batchId, logDate, logSession: session } });
       const toWrite: Record<string, number> = {};
 
-      for (const [metric, dbField, rawValue] of [
+      for (const [, dbField, rawValue] of [
         ['temperature', 'temperature', temperature],
         ['humidity', 'humidityPercent', humidity],
         ['lux', 'lightIntensityLux', lux],
@@ -878,18 +823,16 @@ export class ProductionReportReconciliationService {
         const num = parseFloat(rawValue);
         if (!Number.isFinite(num)) continue;
         const existingVal = existing ? (existing as any)[dbField] as number | null : null;
+        const rounded = dbField === 'lightIntensityLux' ? Math.round(num) : num;
         if (existingVal == null) {
-          toWrite[dbField] = dbField === 'lightIntensityLux' ? Math.round(num) : num;
+          toWrite[dbField] = rounded;
           anyAutofill = true;
         } else if (Math.abs(existingVal - num) < 0.5) {
           anyMatch = true;
         } else {
-          anyDiscrepancy = true;
-          discrepancies.push({
-            rowDate: row.date, field: `${metric}:${session}`, discrepancyType: ProductionReportDiscrepancyType.ENVIRONMENTAL,
-            locationRef: row.locationRef, systemValue: String(existingVal), reportValue: rawValue,
-            notes: `System already has ${metric} for ${session.toLowerCase()} recorded as ${existingVal}, but the report shows ${rawValue} — needs manual correction, not auto-overwritten.`,
-          });
+          // Differs from what's recorded — report is authoritative, correct it.
+          toWrite[dbField] = rounded;
+          anyAutofill = true;
         }
       }
 
@@ -907,7 +850,7 @@ export class ProductionReportReconciliationService {
       }
     }
 
-    row.resolution.environmental = anyDiscrepancy ? 'DISCREPANCY' : anyAutofill ? 'AUTOFILLED' : anyMatch ? 'MATCHED' : undefined;
+    row.resolution.environmental = anyAutofill ? 'AUTOFILLED' : anyMatch ? 'MATCHED' : undefined;
     if (anyAutofill) onAutofill();
     else if (anyMatch) onMatch();
   }
@@ -1045,11 +988,11 @@ export class ProductionReportReconciliationService {
     return false;
   }
 
-  /** Shared wrapper around resolveAdditiveCorrection() for a single matched
-   *  StoreItem's health-usage quantity, using the cumulative (bulk) held
-   *  balance — vaccines/supplements/treatments are issued to production in
-   *  bulk, per spec, unlike feed. Handles the §4 unit-conversion step first,
-   *  same as the old recordUsageAgainstHeldBalance did. */
+  /** Shared wrapper around resolveReportCorrection() for a single matched
+   *  StoreItem's health-usage quantity. Handles the §4 unit-conversion step
+   *  first — a unit that can't be converted still needs a human (can't know
+   *  what number to write), but once the quantity is in the item's own
+   *  unit, whatever the report says is what gets recorded. */
   private async resolveItemCorrection(
     row: ParsedReportRow, item: StoreItem, alreadyRecorded: number, reportQty: number, reportUnit: string | undefined,
     rawText: string, batchId: string, logDate: Date, discrepancies: ReconcileOutcome['discrepancies'],
@@ -1067,20 +1010,7 @@ export class ProductionReportReconciliationService {
       }
       neededQty = converted;
     }
-    const heldBalance = await this.computeHeldBalance(item.id, batchId);
-    // The delta itself must fit within what's held on top of whatever's
-    // already logged — the balance already nets out everything logged so
-    // far (see computeHeldBalance), so it's compared directly against delta.
-    const outcome = resolveAdditiveCorrection(alreadyRecorded, neededQty, heldBalance, item.unit);
-    if (outcome.resolution === 'DISCREPANCY') {
-      discrepancies.push({
-        rowDate: row.date, field: `item:${item.name}`, discrepancyType: ProductionReportDiscrepancyType.ITEM_ISSUANCE,
-        locationRef: row.locationRef,
-        systemValue: `${alreadyRecorded} ${item.unit}`, reportValue: `${reportQty} ${reportUnit ?? item.unit}`,
-        notes: outcome.note,
-      });
-    }
-    return outcome;
+    return resolveReportCorrection(alreadyRecorded, neededQty, item.unit);
   }
 
   /** Persists one matched vaccine/supplement/treatment usage into the
@@ -1186,16 +1116,8 @@ export class ProductionReportReconciliationService {
       neededQty = converted;
     }
     const alreadyLoggedToday = await this.sumTodaysLoggedUsage(item.id, batchId, logDate);
-    const heldBalance = await this.computeHeldBalance(item.id, batchId);
-    const outcome = resolveAdditiveCorrection(alreadyLoggedToday, neededQty, heldBalance, item.unit);
+    const outcome = resolveReportCorrection(alreadyLoggedToday, neededQty, item.unit);
     setResolution(outcome.resolution);
-    if (outcome.resolution === 'DISCREPANCY') {
-      discrepancies.push({
-        rowDate: row.date, field: `item:${item.name}`, discrepancyType: ProductionReportDiscrepancyType.ITEM_ISSUANCE,
-        locationRef: row.locationRef, systemValue: `${alreadyLoggedToday} ${item.unit}`, reportValue: `${reportQty} ${reportUnit ?? item.unit}`,
-        notes: outcome.note,
-      });
-    }
     // NOTE — scope limitation (unchanged from before this fix): generic
     // items (charcoal, cleaning supplies, ...) have no dedicated per-batch
     // usage-log table to write an AUTOFILLED delta into (see class doc
@@ -1204,8 +1126,8 @@ export class ProductionReportReconciliationService {
   }
 
   // (The old recordUsageAgainstHeldBalance held-balance/unit-conversion
-  // decision now lives in resolveItemCorrection() above, generalised to
-  // support additive delta-only correction via resolveAdditiveCorrection().)
+  // decision now lives in resolveItemCorrection() above, generalised via
+  // resolveReportCorrection().)
 
   /** How much of `storeItemId` has already been logged as used for this
    *  (batch, date) — feed log / treatment log / brooder vaccine-supplement
@@ -1227,79 +1149,6 @@ export class ProductionReportReconciliationService {
       }
     }
     return total;
-  }
-
-  /** §8/§9 — recipient-held balance for an item: everything issued to this
-   *  batch, minus everything already logged as used against it, computed
-   *  rather than separately tracked (avoids a second source of truth).
-   *  Pooled across recipient (PM vs. Attendant) since the codebase has no
-   *  structured field distinguishing who physically holds it — every
-   *  StoreStockOut with issuedToBatchId set is treated as one custody pool
-   *  for that batch. Never negative. */
-  private async computeHeldBalance(storeItemId: string, batchId: string): Promise<number> {
-    const issuedAgg = await this.prisma.storeStockOut.aggregate({
-      where: { storeItemId, issuedToBatchId: batchId },
-      _sum: { quantityOut: true },
-    });
-    const issued = Number(issuedAgg._sum.quantityOut ?? 0);
-
-    const feedAgg = await this.prisma.brooderGeneralFeedLog.aggregate({
-      where: { batchId, storeItemId },
-      _sum: { quantityDispensedKg: true },
-    });
-    const feedUsed = Number(feedAgg._sum.quantityDispensedKg ?? 0);
-
-    const treatmentAgg = await this.prisma.brooderTreatmentLog.aggregate({
-      where: { batchId, storeItemId },
-      _sum: { quantityUsed: true },
-    });
-    const treatmentUsed = Number(treatmentAgg._sum.quantityUsed ?? 0);
-
-    // vaccinesJson/supplementsJson are JSON arrays — no SQL-level aggregate
-    // available, so reduce in JS. Scoped to the once-daily (logSession: null)
-    // rows, which is the only place they're ever written, and to this batch,
-    // so row counts stay small.
-    const logs = await this.prisma.brooderLog.findMany({
-      where: { batchId, logSession: null },
-      select: { vaccinesJson: true, supplementsJson: true },
-    });
-    let jsonUsed = 0;
-    for (const log of logs) {
-      for (const arr of [log.vaccinesJson, log.supplementsJson]) {
-        if (!Array.isArray(arr)) continue;
-        for (const entry of arr as any[]) {
-          if (entry?.storeItemId === storeItemId && typeof entry?.quantityUsed === 'number') jsonUsed += entry.quantityUsed;
-        }
-      }
-    }
-
-    return Math.max(0, issued - feedUsed - treatmentUsed - jsonUsed);
-  }
-
-  /** Day-scoped counterpart to computeHeldBalance(), used ONLY for feed.
-   *  Per spec: charcoal/vaccines/supplements are issued to production in
-   *  bulk to manage over several days, so it's correct to draw against
-   *  everything ever issued (computeHeldBalance). Feed is different — Store
-   *  issues the specific amount needed for that specific day, so a report
-   *  claiming feed was used on a day nothing was issued must never be
-   *  auto-recorded just because some earlier delivery is still sitting in
-   *  the cumulative balance. Scoped to StoreStockOut rows issued ON this
-   *  exact date, minus whatever's already been logged as dispensed on this
-   *  exact date. */
-  private async computeHeldBalanceForDate(storeItemId: string, batchId: string, logDate: Date): Promise<number> {
-    const issuedAgg = await this.prisma.storeStockOut.aggregate({
-      where: { storeItemId, issuedToBatchId: batchId, issuedDate: logDate },
-      _sum: { quantityOut: true },
-    });
-    const issued = Number(issuedAgg._sum.quantityOut ?? 0);
-
-    const feedAgg = await this.prisma.brooderGeneralFeedLog.aggregate({
-      where: { batchId, storeItemId, entryDate: logDate },
-      _sum: { quantityDispensedKg: true },
-    });
-    const feedUsed = Number(feedAgg._sum.quantityDispensedKg ?? 0);
-
-    return Math.max(0, issued - feedUsed);
   }
 
   /** Director trusts the report's value for one discrepancy and applies an
