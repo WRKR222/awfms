@@ -30,6 +30,7 @@
     "prisma",
     "prisma.config.ts",
     "scripts",
-    "src/modules/__tests__"
+    "src/modules/__tests__",
+    "src/modules/store/__tests__"
   ]
 }
