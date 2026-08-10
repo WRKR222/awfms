@@ -77,6 +77,21 @@ export class ProductionReportController {
     return this.service.submit(batchId, file.buffer, parseMapping(mappingJson), file.originalname, user);
   }
 
+  /** POST /store/production-reports/:batchId/match-item — Store manually
+   *  matches a report label the automatic matcher couldn't place (e.g.
+   *  "chickcrumbs") to an existing store item. Saved as a reusable alias
+   *  and re-applied to the current report immediately. */
+  @Post(':batchId/match-item')
+  @RequirePermission(Permission.PRODUCTION_REPORT_UPLOAD)
+  matchItem(
+    @Param('batchId') batchId: string,
+    @Body('rawLabel') rawLabel: string,
+    @Body('storeItemId') storeItemId: string,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.service.matchItem(batchId, rawLabel, storeItemId, user);
+  }
+
   /** GET /store/production-reports/pending — Director's queue of reports with open discrepancies */
   @Get('pending')
   @RequirePermission(Permission.PRODUCTION_REPORT_REVIEW)

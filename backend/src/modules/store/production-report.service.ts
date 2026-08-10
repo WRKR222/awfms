@@ -6,7 +6,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { ProductionReportParserService } from './production-report-parser.service';
-import { ProductionReportReconciliationService } from './production-report-reconciliation.service';
+import { ProductionReportReconciliationService, normaliseText } from './production-report-reconciliation.service';
 import { ProductionReportRollbackService, RollbackResult } from './production-report-rollback.service';
 import {
   CANONICAL_FIELD_LABELS, CanonicalField, ProductionReportColumnMapping, SubmitReportResult, PreviewReportResult,
@@ -202,6 +202,67 @@ export class ProductionReportService {
     });
     if (!report) throw new NotFoundException('No production report has been uploaded for this batch yet');
     return report;
+  }
+
+  /** Store manually matches a report label the automatic matcher couldn't
+   *  place (a "Could not match this ... to any store item" discrepancy) to
+   *  an actual StoreItem. Saves it as a reusable StoreItemAlias — so the
+   *  exact same sheet wording auto-matches on every future report from now
+   *  on — then re-reconciles this batch's CURRENT report using its already-
+   *  parsed rawRows (no re-upload/re-parse needed): whatever was blocked
+   *  only by the missing match now applies immediately. */
+  async matchItem(batchId: string, rawLabel: string, storeItemId: string, user: RequestUser) {
+    if (!rawLabel?.trim()) throw new BadRequestException('rawLabel is required');
+    const [report, storeItem] = await Promise.all([
+      this.prisma.storeProductionReport.findUnique({ where: { batchId }, include: { batch: { select: { batchCode: true } } } }),
+      this.prisma.storeItem.findUnique({ where: { id: storeItemId } }),
+    ]);
+    if (!report) throw new NotFoundException('No production report has been uploaded for this batch yet');
+    if (!storeItem) throw new NotFoundException('Store item not found');
+
+    const normalisedAlias = normaliseText(rawLabel);
+    if (!normalisedAlias) throw new BadRequestException('rawLabel has no matchable text');
+
+    await this.prisma.storeItemAlias.upsert({
+      where: { normalisedAlias },
+      create: { normalisedAlias, rawAlias: rawLabel, storeItemId, createdById: user.id },
+      update: { storeItemId, rawAlias: rawLabel }, // re-matching an existing label points it at a different item
+    });
+
+    const rows = report.rawRows as any;
+    const { rows: reconciledRows, discrepancies, appliedChanges, autofillCount, matchedCount } =
+      await this.reconciler.reconcile(batchId, rows, user.id, report.fileName);
+
+    const status = discrepancies.length > 0 ? 'PENDING' : 'APPROVED';
+    const now = new Date();
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const saved = await tx.storeProductionReport.update({
+        where: { id: report.id },
+        data: { rawRows: reconciledRows as any, status, discrepancyCount: discrepancies.length, autofillCount, matchedCount, appliedAt: now },
+      });
+
+      await tx.productionReportDiscrepancy.deleteMany({ where: { reportId: saved.id } });
+      if (discrepancies.length) {
+        await tx.productionReportDiscrepancy.createMany({
+          data: discrepancies.map(d => ({
+            reportId: saved.id, rowDate: new Date(d.rowDate), field: d.field, discrepancyType: d.discrepancyType,
+            locationRef: d.locationRef, systemValue: d.systemValue, reportValue: d.reportValue, notes: d.notes,
+          })),
+        });
+      }
+      if (appliedChanges.length) {
+        await tx.productionReportAppliedChange.createMany({
+          data: appliedChanges.map(c => ({
+            reportId: saved.id, batchId: c.batchId, rowDate: new Date(c.rowDate), entityType: c.entityType,
+            entityId: c.entityId, action: c.action, beforeState: c.beforeState as any, afterState: c.afterState as any,
+          })),
+        });
+      }
+      return saved;
+    });
+
+    return { report: updated, matchedItem: { id: storeItem.id, name: storeItem.name }, autofillCount, matchedCount, discrepancyCount: discrepancies.length };
   }
 
   async listPending() {

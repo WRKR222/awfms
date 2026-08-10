@@ -193,6 +193,18 @@ function matchInventoryItem(reportText: string | undefined, candidates: StoreIte
   return best;
 }
 
+/** matchInventoryItem(), but checks Store's manually-recorded aliases
+ *  (StoreItemAlias, keyed by normaliseText()) FIRST — a label Store has
+ *  already matched once always wins outright, even if it would otherwise
+ *  fuzzy-match a different/no item. Falls back to matchInventoryItem()
+ *  when there's no alias for this exact text. */
+function resolveItemMatch(reportText: string | undefined, candidates: StoreItem[], aliasMap: Map<string, StoreItem>): StoreItem | null {
+  if (!reportText) return null;
+  const norm = normaliseText(reportText);
+  if (norm && aliasMap.has(norm)) return aliasMap.get(norm)!;
+  return matchInventoryItem(reportText, candidates);
+}
+
 /** Pulls the leading numeric quantity + trailing unit text out of free text
  *  like "6bags", "2 bags", "39.2mls", "Amprolium 10ml" — mirrors the parser's
  *  extractQuantity() but lives here too since health-usage text isn't run
@@ -257,6 +269,13 @@ export class ProductionReportReconciliationService {
     });
     const treatmentItems = vaccineItems; // treatments also live under MEDICATION per spec §3
 
+    // Store's manually-resolved "this label means this item" corrections
+    // (see resolveItemMatch above) — checked before the fuzzy matcher at
+    // every match site below, so a label Store has matched once never
+    // re-flags as unmatched on a later report.
+    const aliasRows = await this.prisma.storeItemAlias.findMany({ include: { storeItem: true } });
+    const aliasMap: Map<string, StoreItem> = new Map(aliasRows.map(a => [a.normalisedAlias, a.storeItem] as [string, StoreItem]));
+
     for (const row of rows) {
       const logDate = new Date(row.date);
       const isCageRow = stageBucket === 'BROODING' && row.cageNumber != null;
@@ -268,7 +287,7 @@ export class ProductionReportReconciliationService {
 
       // ── Feed ─────────────────────────────────────────────────────────────
       if (row.feedKg !== undefined) {
-        await this.reconcileFeed(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
+        await this.reconcileFeed(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, aliasMap, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
       }
 
       // ── Opening/closing stock — whole-batch rows only. Per-cage rows with
@@ -283,10 +302,15 @@ export class ProductionReportReconciliationService {
         await this.reconcileCageAssignment(row, batchId, batch, logDate, uploaderId, noteSuffix, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
       }
 
+      // ── Water consumption ────────────────────────────────────────────────
+      if (row.waterLts !== undefined) {
+        await this.reconcileWater(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch.houseId, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
+      }
+
       // ── Vaccines / supplements / treatments (§3) ────────────────────────
       await this.reconcileHealthUsages(
         row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch,
-        vaccineItems, supplementItems, treatmentItems, discrepancies, appliedChanges,
+        vaccineItems, supplementItems, treatmentItems, aliasMap, discrepancies, appliedChanges,
         () => { autofillCount++; }, () => { matchedCount++; },
       );
 
@@ -383,23 +407,94 @@ export class ProductionReportReconciliationService {
     onAutofill();
   }
 
+  // ── Water consumption ────────────────────────────────────────────────────
+  /** Writes the report's water figure into the same place its unit already
+   *  implies — BrooderLog.waterConsumptionL (once-daily, logSession: null)
+   *  for BROODING/GROWER, EggCollectionSession.waterLiters for PRODUCTION —
+   *  using the same match/autofill/discrepancy pattern as every other single-
+   *  value field here (cf. reconcileStockCount). This field was previously
+   *  parsed off the sheet (ParsedReportRow.waterLts) but never actually
+   *  written anywhere by reconcile(), so report-recorded water consumption
+   *  silently never reached either table. */
+  private async reconcileWater(
+    row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
+    stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER', houseId: string,
+    discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
+  ) {
+    const reportWater = row.waterLts!;
+
+    if (stageBucket === 'PRODUCTION') {
+      const existing = await this.prisma.eggCollectionSession.findUnique({
+        where: { batchId_houseId_sessionDate_shift: { batchId, houseId, sessionDate: logDate, shift: 'AM' } },
+      });
+      if (!existing) {
+        // Same "nowhere to write yet" case as reconcileMortality — a
+        // production-stage water figure can't be auto-filled into a
+        // session an attendant hasn't created yet.
+        row.resolution.water = 'DISCREPANCY';
+        discrepancies.push({
+          rowDate: row.date, field: 'water', discrepancyType: ProductionReportDiscrepancyType.OTHER,
+          locationRef: row.locationRef, systemValue: null, reportValue: String(reportWater),
+          notes: 'No egg-collection session exists yet for this date — water consumption can\'t be auto-filled into a session that hasn\'t been created by an attendant.',
+        });
+        return;
+      }
+      const existingWater = existing.waterLiters != null ? Number(existing.waterLiters) : null;
+      if (existingWater != null && Math.abs(existingWater - reportWater) < 0.01) {
+        row.resolution.water = 'MATCHED';
+        onMatch();
+        return;
+      }
+      // Report is authoritative — correct it, whether nothing was logged
+      // yet or the logged figure conflicts with the report.
+      await this.prisma.eggCollectionSession.update({ where: { id: existing.id }, data: { waterLiters: reportWater } });
+      this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.waterLiters', existing.id, 'UPDATE', { waterLiters: existingWater }, { waterLiters: reportWater });
+      row.resolution.water = 'AUTOFILLED';
+      onAutofill();
+      return;
+    }
+
+    // BROODING / GROWER — once-daily BrooderLog row (logSession: null),
+    // the same row vaccines/supplements/notes live on.
+    const existing = await this.prisma.brooderLog.findFirst({ where: { batchId, logDate, logSession: null } });
+    if (existing) {
+      if (existing.waterConsumptionL != null && Math.abs(existing.waterConsumptionL - reportWater) < 0.01) {
+        row.resolution.water = 'MATCHED';
+        onMatch();
+        return;
+      }
+      const before = existing.waterConsumptionL;
+      await this.prisma.brooderLog.update({ where: { id: existing.id }, data: { waterConsumptionL: reportWater } });
+      this.logChange(appliedChanges, batchId, row.date, 'BrooderLog.waterConsumptionL', existing.id, 'UPDATE', { waterConsumptionL: before }, { waterConsumptionL: reportWater });
+      row.resolution.water = 'AUTOFILLED';
+      onAutofill();
+      return;
+    }
+    const created = await this.prisma.brooderLog.create({
+      data: { batchId, logDate, logSession: null, waterConsumptionL: reportWater, notes: `Auto-filled ${noteSuffix}`, loggedById: uploaderId },
+    });
+    this.logChange(appliedChanges, batchId, row.date, 'BrooderLog', created.id, 'CREATE', null, created);
+    row.resolution.water = 'AUTOFILLED';
+    onAutofill();
+  }
+
   // ── Feed ─────────────────────────────────────────────────────────────────
   private async reconcileFeed(
     row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
     stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER',
     batch: { batchCode: string; houseId: string },
-    feedItems: StoreItem[], discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
+    feedItems: StoreItem[], aliasMap: Map<string, StoreItem>, discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
   ) {
     // ── Split feed cell (e.g. "chickcrumbs/growers 75:25%") ────────────────
     // Each portion is matched + reconciled against its OWN StoreItem
     // (Crumbs vs Growers), independently, since stores already issued that
     // day's stock-out split to the report's ratio — see reconcileFeedSplit.
     if (row.feedSplit && row.feedSplit.length >= 2) {
-      await this.reconcileFeedSplit(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, discrepancies, appliedChanges, onAutofill, onMatch);
+      await this.reconcileFeedSplit(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, aliasMap, discrepancies, appliedChanges, onAutofill, onMatch);
       return;
     }
 
-    const matchedFeedItem = matchInventoryItem(row.feedType, feedItems);
+    const matchedFeedItem = resolveItemMatch(row.feedType, feedItems, aliasMap);
 
     if (stageBucket === 'PRODUCTION') {
       const existing = await this.prisma.eggCollectionSession.findUnique({
@@ -494,7 +589,7 @@ export class ProductionReportReconciliationService {
     row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
     stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER',
     batch: { batchCode: string; houseId: string },
-    feedItems: StoreItem[], discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
+    feedItems: StoreItem[], aliasMap: Map<string, StoreItem>, discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
   ) {
     const portions = row.feedSplit!;
     const splitSummary = portions.map(p => `${p.label} ${p.percent}%`).join(' / ');
@@ -519,7 +614,7 @@ export class ProductionReportReconciliationService {
         return;
       }
       const labelText = portions.map(p => {
-        const m = matchInventoryItem(p.label, feedItems);
+        const m = resolveItemMatch(p.label, feedItems, aliasMap);
         return `${m?.name ?? p.label} ${p.percent}%`;
       }).join(' / ');
       await this.prisma.eggCollectionSession.update({
@@ -546,13 +641,13 @@ export class ProductionReportReconciliationService {
     let anyDiscrepancy = false;
 
     for (const portion of portions) {
-      const matchedItem = matchInventoryItem(portion.label, feedItems);
+      const matchedItem = resolveItemMatch(portion.label, feedItems, aliasMap);
       if (!matchedItem) {
         anyDiscrepancy = true;
         discrepancies.push({
-          rowDate: row.date, field: `feedKg:${portion.label}`, discrepancyType: ProductionReportDiscrepancyType.FEED,
-          locationRef: row.locationRef, systemValue: null, reportValue: `${portion.kg} kg (${portion.percent}% of ${row.feedKg} kg)`,
-          notes: `Could not match split portion "${portion.label}" to any store item — add/rename the store item or fix the sheet.`,
+          rowDate: row.date, field: `feedType:${portion.label}`, discrepancyType: ProductionReportDiscrepancyType.FEED,
+          locationRef: row.locationRef, systemValue: null, reportValue: portion.label,
+          notes: `Could not match split portion "${portion.label}" (${portion.percent}% of ${row.feedKg} kg) to any store item — add/rename the store item, or match it manually.`,
         });
         continue;
       }
@@ -883,7 +978,7 @@ export class ProductionReportReconciliationService {
     row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
     stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER',
     batch: { batchCode: string; houseId: string },
-    vaccineItems: StoreItem[], supplementItems: StoreItem[], treatmentItems: StoreItem[],
+    vaccineItems: StoreItem[], supplementItems: StoreItem[], treatmentItems: StoreItem[], aliasMap: Map<string, StoreItem>,
     discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
   ) {
     type Candidate = { kind: ParsedHealthUsage['kind']; text: string | undefined; pool: StoreItem[] };
@@ -901,14 +996,14 @@ export class ProductionReportReconciliationService {
       let bestKind: ParsedHealthUsage['kind'] = 'treatment';
       let bestItem: StoreItem | null = null;
       for (const [kind, pool] of allPools) {
-        const m = matchInventoryItem(row.drugsVaccines, pool);
+        const m = resolveItemMatch(row.drugsVaccines, pool, aliasMap);
         if (m) { bestItem = m; bestKind = kind; break; }
       }
       candidates.push({ kind: bestKind, text: row.drugsVaccines, pool: bestItem ? [bestItem] : [...vaccineItems, ...supplementItems, ...treatmentItems] });
     }
 
     for (const c of candidates) {
-      const matched = matchInventoryItem(c.text, c.pool);
+      const matched = resolveItemMatch(c.text, c.pool, aliasMap);
       const qty = extractQuantity(c.text);
       const usage: ParsedHealthUsage = {
         kind: c.kind, rawText: c.text!, storeItemId: matched?.id ?? null, storeItemName: matched?.name ?? null,
@@ -955,6 +1050,13 @@ export class ProductionReportReconciliationService {
       if (correction.resolution === 'DISCREPANCY') continue; // never write on a blocked/short correction
       // AUTOFILLED — write only the delta amount, not the full report figure.
       onAutofill();
+      // `correction.deltaToApply` comes out of resolveItemCorrection() already
+      // converted into the store item's own stock unit (e.g. report said
+      // "12MLS", item is stocked in litres -> deltaToApply is 0.012, in
+      // litres) — `usage.unit` stays the REPORT's raw unit ("MLS") on
+      // purpose here; writeHealthUsageLog() is the one place that decides
+      // which of the two (raw dose vs. converted quantityUsed) each field
+      // gets, so it needs both.
       const deltaUsage: ParsedHealthUsage = { ...usage, quantity: correction.deltaToApply };
       const created = await this.writeHealthUsageLog(stageBucket, batchId, logDate, uploaderId, batch.houseId, c.kind, matched, deltaUsage, noteSuffix, alreadyLoggedQty > 0 ? correction.note : undefined);
       this.logChange(appliedChanges, batchId, row.date, created.entityType, created.entityId, created.action, created.beforeState, created.afterState);
@@ -1030,7 +1132,13 @@ export class ProductionReportReconciliationService {
         where: { batchId_houseId_sessionDate_shift: { batchId, houseId, sessionDate: logDate, shift: 'AM' } },
       });
       if (!existing) return { entityType: 'EggCollectionSession.vaccineGiven', entityId: null, action: 'CREATE', beforeState: null, afterState: null }; // nothing to attach to
-      const line = `${item.name}${usage.quantity ? ` (${usage.quantity}${usage.unit ?? item.unit})` : ''} — ${suffix}`;
+      // `usage.rawText` is the dosage exactly as the report wrote it (e.g.
+      // "12MLS/120LTS") — never rebuilt from the converted quantity, which
+      // would pair a converted number with the report's un-converted unit
+      // (e.g. "0.012MLS" instead of "0.012L"). `usage.quantity`, when
+      // present, is already expressed in the store item's own unit
+      // (`item.unit`), not the report's.
+      const line = `${item.name} (${usage.rawText})${usage.quantity != null ? ` — ${usage.quantity}${item.unit} used` : ''} — ${suffix}`;
       const before = existing.vaccineGiven;
       const after = existing.vaccineGiven ? `${existing.vaccineGiven}; ${line}` : line;
       await this.prisma.eggCollectionSession.update({ where: { id: existing.id }, data: { vaccineGiven: after } });
@@ -1041,8 +1149,11 @@ export class ProductionReportReconciliationService {
       const created = await this.prisma.brooderTreatmentLog.create({
         data: {
           batchId, treatmentDate: logDate, drugName: item.name, storeItemId: item.id,
-          dose: usage.quantity ? `${usage.quantity}${usage.unit ?? item.unit}` : usage.rawText,
-          doseUnit: usage.unit ?? item.unit, quantityUsed: usage.quantity, quantityUsedUnit: item.unit,
+          // `dose` is the clinical dosage description as written on the
+          // report — always the raw text, never rebuilt from the converted
+          // quantityUsed figure (see note above).
+          dose: usage.rawText, doseUnit: usage.unit ?? item.unit,
+          quantityUsed: usage.quantity, quantityUsedUnit: item.unit,
           notes: suffix, loggedById: uploaderId,
         },
       });
@@ -1052,7 +1163,10 @@ export class ProductionReportReconciliationService {
     // vaccine / supplement — append to the once-daily BrooderLog row
     // (logSession: null), creating it if this is the first daily entry.
     const entry = {
-      name: item.name, dose: usage.quantity ? `${usage.quantity}${usage.unit ?? item.unit}` : usage.rawText,
+      // Same rule as above: `dose` always keeps the report's original
+      // dosage text; `quantityUsed`/`unit` carry the converted, store-unit
+      // figure that's actually deducted from stock.
+      name: item.name, dose: usage.rawText,
       storeItemId: item.id, quantityUsed: usage.quantity, unit: item.unit,
     };
     const existing = await this.prisma.brooderLog.findFirst({ where: { batchId, logDate, logSession: null } });

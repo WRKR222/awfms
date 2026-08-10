@@ -25,8 +25,76 @@ interface Discrepancy {
   locationRef: string | null;
   systemValue: string | null;
   reportValue: string | null;
+  notes: string | null;
   resolved: boolean;
   resolution: string | null;
+}
+
+interface StoreItemOption { id: string; name: string; category: string; unit: string; }
+
+function useStoreItems() {
+  return useQuery<StoreItemOption[]>({
+    queryKey: ['store-items-active'],
+    queryFn: async () => (await api.get('/store/inventory/items', { params: { isActive: true } })).data,
+    staleTime: 60_000,
+  });
+}
+
+/** A discrepancy the automatic matcher couldn't resolve — "Could not match
+ *  this ... to any store item" (see production-report-reconciliation.
+ *  service.ts). Lets Store pick which existing store item the sheet's
+ *  wording actually means; saved as a reusable alias so the same wording
+ *  auto-matches on every future report from then on. */
+function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
+  const { data: items = [] } = useStoreItems();
+  const qc = useQueryClient();
+  const [storeItemId, setStoreItemId] = useState('');
+
+  const match = useMutation({
+    mutationFn: async () => (await api.post(`/store/production-reports/${batchId}/match-item`, { rawLabel: d.reportValue, storeItemId })).data as { matchedItem: { id: string; name: string } },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['production-report', batchId] }),
+  });
+
+  if (match.isSuccess) {
+    return (
+      <div className="flex items-center gap-2 bg-green-50 dark:bg-green-900/10 border border-green-100 dark:border-green-900/30 rounded-xl p-3 text-sm text-green-700 dark:text-green-400">
+        <CheckCircle className="w-4 h-4 flex-shrink-0" />
+        Matched "{d.reportValue}" to {match.data.matchedItem.name} — applied.
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/30 rounded-xl p-3 text-sm space-y-2">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
+        <div>
+          <p className="font-medium text-gray-800 dark:text-gray-200">
+            "{d.reportValue}" — {dayjs(d.rowDate).format('D MMM YYYY')}{d.locationRef ? ` (${d.locationRef})` : ''}
+          </p>
+          <p className="text-xs text-gray-500">Doesn't match any store item by name. Pick which item this is:</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 pl-6">
+        <select
+          value={storeItemId}
+          onChange={e => setStoreItemId(e.target.value)}
+          className="flex-1 text-xs border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1.5 bg-white dark:bg-dark-bg"
+        >
+          <option value="">Select the matching store item…</option>
+          {items.map(i => <option key={i.id} value={i.id}>{i.name} ({i.category.replace(/_/g, ' ').toLowerCase()})</option>)}
+        </select>
+        <button
+          disabled={!storeItemId || match.isPending}
+          onClick={() => match.mutate()}
+          className="bg-brand-green text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-brand-green/90 disabled:opacity-50 flex-shrink-0"
+        >
+          {match.isPending ? 'Matching…' : 'Match'}
+        </button>
+      </div>
+      {match.isError && <p className="text-xs text-red-500 pl-6">{(match.error as any)?.response?.data?.message ?? 'Match failed'}</p>}
+    </div>
+  );
 }
 
 interface Report {
@@ -141,15 +209,20 @@ function CurrentReportPanel({ batchId }: { batchId: string }) {
         <div className="space-y-2">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Open discrepancies — awaiting Director review</p>
           {report.discrepancies.filter(d => !d.resolved).map(d => (
-            <div key={d.id} className="flex items-start gap-2 bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/30 rounded-xl p-3 text-sm">
-              <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
-              <div>
-                <p className="font-medium text-gray-800 dark:text-gray-200">
-                  {d.field} — {dayjs(d.rowDate).format('D MMM YYYY')}{d.locationRef ? ` (${d.locationRef})` : ''}
-                </p>
-                <p className="text-xs text-gray-500">System: {d.systemValue ?? '—'} · Report: {d.reportValue ?? '—'}</p>
+            d.notes?.includes('Could not match') ? (
+              <UnmatchedItemRow key={d.id} d={d} batchId={batchId} />
+            ) : (
+              <div key={d.id} className="flex items-start gap-2 bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/30 rounded-xl p-3 text-sm">
+                <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="font-medium text-gray-800 dark:text-gray-200">
+                    {d.field} — {dayjs(d.rowDate).format('D MMM YYYY')}{d.locationRef ? ` (${d.locationRef})` : ''}
+                  </p>
+                  <p className="text-xs text-gray-500">System: {d.systemValue ?? '—'} · Report: {d.reportValue ?? '—'}</p>
+                  {d.notes && <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">{d.notes}</p>}
+                </div>
               </div>
-            </div>
+            )
           ))}
         </div>
       )}
@@ -165,6 +238,8 @@ function CurrentReportPanel({ batchId }: { batchId: string }) {
   );
 }
 
+import { ProductionReportTable } from '../../components/production-report/ReportTable';
+
 // Every canonical field the parser understands, in the order they read most
 // naturally on a sheet — mirrors CANONICAL_FIELD_LABELS in the backend DTO.
 const FIELD_OPTIONS: { key: string; label: string }[] = [
@@ -179,71 +254,6 @@ const FIELD_OPTIONS: { key: string; label: string }[] = [
   { key: 'drugsVaccines', label: 'Drugs/Vaccines (blended col.)' }, { key: 'notes', label: 'Remarks' },
 ];
 
-// Columns shown in the verify table, in display order — filtered down to
-// whatever presentFields/presentItemColumns says actually has data (§2:
-// "only columns that actually have data", so a sheet with no water-litres
-// column doesn't waste table width on an empty column of dashes).
-const TABLE_COLUMNS: { key: string; label: string; render?: (row: any) => string }[] = [
-  { key: 'date', label: 'Date', render: r => dayjs(r.date).format('D MMM') },
-  { key: 'locationRef', label: 'Row/Level/Cage', render: r => r.locationRef ?? '—' },
-  { key: 'feedKg', label: 'Feed (Kg)' },
-  { key: 'feedType', label: 'Feed Type' },
-  { key: 'waterLts', label: 'Water (L)' },
-  { key: 'mortality', label: 'Mortality' },
-  { key: 'culling', label: 'Culling' },
-  { key: 'openingStock', label: 'Opening' },
-  { key: 'closingStock', label: 'Closing' },
-  { key: 'avgWeight', label: 'Avg Weight' },
-  { key: 'temperature', label: 'Temp', render: r => r.temperatureReadings?.length ? r.temperatureReadings.map((x: any) => x.value).join(' / ') : (r.temperature ?? '—') },
-  { key: 'humidity', label: 'Humidity', render: r => r.humidityReadings?.length ? r.humidityReadings.map((x: any) => x.value).join(' / ') : (r.humidity ?? '—') },
-  { key: 'lux', label: 'Lux', render: r => r.luxReadings?.length ? r.luxReadings.map((x: any) => x.value).join(' / ') : (r.lux ?? '—') },
-  { key: 'vaccineText', label: 'Vaccine' },
-  { key: 'supplementText', label: 'Supplement' },
-  { key: 'treatmentText', label: 'Treatment' },
-  { key: 'drugsVaccines', label: 'Drugs/Vaccines' },
-  { key: 'notes', label: 'Remarks' },
-];
-
-function VerifyTable({ rows, presentFields, presentItemColumns }: {
-  rows: any[]; presentFields: string[]; presentItemColumns: { storeItemId: string; storeItemName: string; header: string }[];
-}) {
-  const cols = TABLE_COLUMNS.filter(c => presentFields.includes(c.key) || c.key === 'date');
-  return (
-    <div className="border border-gray-200 dark:border-dark-border rounded-xl overflow-auto max-h-[420px]">
-      <table className="min-w-full text-xs">
-        <thead className="bg-gray-50 dark:bg-dark-bg sticky top-0">
-          <tr>
-            {cols.map(c => (
-              <th key={c.key} className="px-2.5 py-2 text-left font-semibold text-gray-500 whitespace-nowrap">{c.label}</th>
-            ))}
-            {presentItemColumns.map(ic => (
-              <th key={ic.storeItemId} className="px-2.5 py-2 text-left font-semibold text-gray-500 whitespace-nowrap">{ic.storeItemName}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100 dark:divide-dark-border">
-          {rows.map((r, i) => (
-            <tr key={i} className="hover:bg-gray-50 dark:hover:bg-dark-bg/60">
-              {cols.map(c => (
-                <td key={c.key} className="px-2.5 py-1.5 whitespace-nowrap text-gray-700 dark:text-gray-300">
-                  {c.render ? c.render(r) : (r[c.key] ?? '—')}
-                </td>
-              ))}
-              {presentItemColumns.map(ic => {
-                const usage = r.itemsIssued?.find((u: any) => u.storeItemId === ic.storeItemId);
-                return (
-                  <td key={ic.storeItemId} className="px-2.5 py-1.5 whitespace-nowrap text-gray-700 dark:text-gray-300">
-                    {usage ? `${usage.quantity}${usage.unit ?? ''}` : '—'}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: () => void }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -426,7 +436,7 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
           </div>
 
           {previewData && (
-            <VerifyTable rows={previewData.rows} presentFields={previewData.presentFields} presentItemColumns={previewData.presentItemColumns} />
+            <ProductionReportTable rows={previewData.rows} presentFields={previewData.presentFields} presentItemColumns={previewData.presentItemColumns} />
           )}
 
           <p className="text-xs text-gray-500">

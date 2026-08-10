@@ -205,6 +205,7 @@ export interface ParsedReportRow {
     stockCount?: RowResolution;
     cageAssignment?: RowResolution; // set only for per-cage rows (rowNumber/levelNumber/cageNumber all present) — see §cage reassignment
     environmental?: RowResolution; // rolls up temperature/humidity/lux across whatever sessions this row carried readings for
+    water?: RowResolution; // report waterLts vs. BrooderLog.waterConsumptionL (brooding) / EggCollectionSession.waterLiters (production)
   };
 }
 

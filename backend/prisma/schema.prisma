@@ -313,6 +313,7 @@ model User {
   productionReportsUploaded StoreProductionReport[] @relation("ProductionReportUploadedBy")
   productionReportsReviewed StoreProductionReport[] @relation("ProductionReportReviewedBy")
   productionReportsStoreVerified StoreProductionReport[] @relation("ProductionReportStoreVerifiedBy")
+  storeItemAliasesCreated StoreItemAlias[]
 
   @@map("users")
 }
@@ -1816,10 +1817,35 @@ model StoreItem {
   brooderFeedLogs         BrooderLevelFeedLog[]     @relation("BrooderFeedLogStoreItem")
   brooderTreatmentLogs    BrooderTreatmentLog[]     @relation("BrooderTreatmentLogStoreItem")
   brooderGeneralFeedLogs  BrooderGeneralFeedLog[]   @relation("BrooderGeneralFeedLogStoreItem")
+  reportAliases           StoreItemAlias[]
 
   @@index([category])
   @@index([isActive])
   @@map("store_items")
+}
+
+/// Store's manual "this free-text label on a production-report sheet means
+/// THIS store item" mapping — created when Store resolves a report row the
+/// automatic matcher (matchInventoryItem, substring/fuzzy) couldn't match to
+/// anything. Looked up by normalisedAlias (same normaliseText() used
+/// throughout report reconciliation) BEFORE the fuzzy matcher runs, so once
+/// Store has matched a label once, every future report using that exact
+/// wording auto-matches from then on — the sheet's spelling for an item
+/// rarely changes week to week, so this is a one-time fix per label, not a
+/// per-report chore.
+model StoreItemAlias {
+  id              String   @id @default(uuid())
+  storeItemId     String   @map("store_item_id")
+  normalisedAlias String   @unique @map("normalised_alias") // normaliseText(rawAlias) — the actual lookup key
+  rawAlias        String   @map("raw_alias")                // original sheet text, kept for display/audit only
+  createdById     String   @map("created_by_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  storeItem StoreItem @relation(fields: [storeItemId], references: [id])
+  createdBy User      @relation(fields: [createdById], references: [id])
+
+  @@index([storeItemId])
+  @@map("store_item_aliases")
 }
 
 /// Goods received into store (from purchase / delivery)
