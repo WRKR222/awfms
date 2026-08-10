@@ -1835,7 +1835,7 @@ model StoreItem {
 /// per-report chore.
 model StoreItemAlias {
   id              String   @id @default(uuid())
-  storeItemId     String   @map("store_item_id")
+  storeItemId     String   @map("store_item_id") @db.Uuid
   normalisedAlias String   @unique @map("normalised_alias") // normaliseText(rawAlias) — the actual lookup key
   rawAlias        String   @map("raw_alias")                // original sheet text, kept for display/audit only
   createdById     String   @map("created_by_id")

@@ -12,7 +12,7 @@
 
 CREATE TABLE IF NOT EXISTS "store_item_aliases" (
   "id"                TEXT      NOT NULL DEFAULT gen_random_uuid()::text,
-  "store_item_id"     TEXT      NOT NULL REFERENCES "store_items"("id") ON DELETE CASCADE,
+  "store_item_id"     UUID      NOT NULL REFERENCES "store_items"("id") ON DELETE CASCADE,
   "normalised_alias"  TEXT      NOT NULL,
   "raw_alias"         TEXT      NOT NULL,
   "created_by_id"     TEXT      NOT NULL REFERENCES "users"("id"),
