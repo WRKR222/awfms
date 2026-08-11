@@ -20,7 +20,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { AlertTriangle, CheckCircle, XCircle, Download, RefreshCw, FileSpreadsheet } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
-import { ProductionReportTable, computePresentColumns } from '../../components/production-report/ReportTable';
+import { ProductionReportTable } from '../../components/production-report/ReportTable';
 
 interface Batch { id: string; batchCode: string; }
 
@@ -175,8 +175,6 @@ function BatchReportPanel({ batchId }: { batchId: string }) {
     </div>
   );
 
-  const { presentFields, presentItemColumns } = computePresentColumns(report.rawRows ?? []);
-
   return (
     <div className="space-y-4">
       <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-5 space-y-4">
@@ -221,7 +219,12 @@ function BatchReportPanel({ batchId }: { batchId: string }) {
           </div>
         </div>
 
-        <ProductionReportTable rows={report.rawRows ?? []} presentFields={presentFields} presentItemColumns={presentItemColumns} />
+        <div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+            Report as uploaded — every column, every row (same table Store sees)
+          </p>
+          <ProductionReportTable rows={report.rawRows ?? []} />
+        </div>
       </div>
 
       <NeedsInputPanel report={report} />

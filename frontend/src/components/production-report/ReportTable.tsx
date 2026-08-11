@@ -3,49 +3,43 @@
 // StoreProductionReport.rawRows, and what the parser's preview() returns
 // before submission) as a day-by-day table — the "looks like the Excel
 // sheet" view used both by Store (reviewing a fresh upload before
-// submitting) and by the Director (pulling a batch's current stored
-// report). Kept in one place so both stay visually/behaviourally identical.
+// submitting, and pulling up what's currently on file) and by the Director
+// (pulling a batch's current stored report). Kept in one place so both
+// stay visually/behaviourally identical — same component, same data, same
+// columns, for both roles.
+//
+// IMPORTANT: this renders the report AS UPLOADED. Every column the source
+// spreadsheet had, and every cell in every row, is shown — including
+// columns the system doesn't understand as a canonical field or a matched
+// store item (e.g. "Cracked eggs", "%Yield", "Week", "Day" on a real farm
+// sheet). Nothing is filtered out for being "not mapped" or "empty across
+// every row". The parser already preserves the untouched header->cell map
+// per row as `row.raw` (see production-report-parser.service.ts
+// readSheet()/parseRows()) specifically so this view can be a faithful
+// reproduction of the original file rather than just the subset the system
+// knows how to reconcile.
 import dayjs from '../../lib/dayjs';
 
 export interface PresentItemColumn { storeItemId: string; storeItemName: string; header?: string; }
 
-// Every canonical field the parser understands, in display order — mirrors
-// CANONICAL_FIELD_LABELS in the backend DTO.
-const TABLE_COLUMNS: { key: string; label: string; render?: (row: any) => string }[] = [
-  { key: 'date', label: 'Date', render: r => dayjs(r.date).format('D MMM') },
-  { key: 'locationRef', label: 'Row/Level/Cage', render: r => r.locationRef ?? '—' },
-  { key: 'feedKg', label: 'Feed (Kg)' },
-  { key: 'feedType', label: 'Feed Type' },
-  { key: 'waterLts', label: 'Water (L)' },
-  { key: 'mortality', label: 'Mortality' },
-  { key: 'culling', label: 'Culling' },
-  { key: 'openingStock', label: 'Opening' },
-  { key: 'closingStock', label: 'Closing' },
-  { key: 'avgWeight', label: 'Avg Weight' },
-  { key: 'temperature', label: 'Temp', render: r => r.temperatureReadings?.length ? r.temperatureReadings.map((x: any) => x.value).join(' / ') : (r.temperature ?? '—') },
-  { key: 'humidity', label: 'Humidity', render: r => r.humidityReadings?.length ? r.humidityReadings.map((x: any) => x.value).join(' / ') : (r.humidity ?? '—') },
-  { key: 'lux', label: 'Lux', render: r => r.luxReadings?.length ? r.luxReadings.map((x: any) => x.value).join(' / ') : (r.lux ?? '—') },
-  { key: 'vaccineText', label: 'Vaccine' },
-  { key: 'supplementText', label: 'Supplement' },
-  { key: 'treatmentText', label: 'Treatment' },
-  { key: 'drugsVaccines', label: 'Drugs/Vaccines' },
-  { key: 'notes', label: 'Remarks' },
-];
-
-const READING_ARRAY_KEYS: Record<string, string> = { temperature: 'temperatureReadings', humidity: 'humidityReadings', lux: 'luxReadings' };
-
-/** Same "only columns with data" rule preview() uses server-side (§2), but
- *  computed client-side from rawRows so pulling a stored report doesn't
- *  need a second endpoint just to know which columns to show. */
+/** Kept only for backward compatibility with callers still importing this
+ *  (e.g. anything computing which canonical fields the report touched for
+ *  its own summary text) — no longer used to decide which columns render
+ *  in the table itself. See header comment above: the table now always
+ *  shows every original column. */
 export function computePresentColumns(rows: any[]): { presentFields: string[]; presentItemColumns: PresentItemColumn[] } {
-  const presentFields = TABLE_COLUMNS
-    .map(c => c.key)
-    .filter(key => rows.some(r => {
-      const arrKey = READING_ARRAY_KEYS[key];
-      if (arrKey && Array.isArray(r[arrKey]) && r[arrKey].length) return true;
-      const v = r[key];
-      return v !== undefined && v !== null && v !== '';
-    }));
+  const READING_ARRAY_KEYS: Record<string, string> = { temperature: 'temperatureReadings', humidity: 'humidityReadings', lux: 'luxReadings' };
+  const CANONICAL_KEYS = [
+    'date', 'locationRef', 'feedKg', 'feedType', 'waterLts', 'mortality', 'culling',
+    'openingStock', 'closingStock', 'avgWeight', 'temperature', 'humidity', 'lux',
+    'vaccineText', 'supplementText', 'treatmentText', 'drugsVaccines', 'notes',
+  ];
+  const presentFields = CANONICAL_KEYS.filter(key => rows.some(r => {
+    const arrKey = READING_ARRAY_KEYS[key];
+    if (arrKey && Array.isArray(r[arrKey]) && r[arrKey].length) return true;
+    const v = r[key];
+    return v !== undefined && v !== null && v !== '';
+  }));
 
   const seen = new Map<string, PresentItemColumn>();
   for (const r of rows) {
@@ -56,44 +50,83 @@ export function computePresentColumns(rows: any[]): { presentFields: string[]; p
   return { presentFields, presentItemColumns: [...seen.values()] };
 }
 
-export function ProductionReportTable({ rows, presentFields, presentItemColumns }: {
-  rows: any[]; presentFields: string[]; presentItemColumns: PresentItemColumn[];
+/** Every header the ORIGINAL uploaded sheet carried, in original column
+ *  order — derived from each row's `raw` (the untouched header->cell map
+ *  the parser keeps per row). Rows normally all share the exact same key
+ *  set, but this unions across every row (first-seen order) just in case,
+ *  so a header is never dropped just because one particular row happened
+ *  to omit it. */
+function computeRawHeaders(rows: any[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const r of rows) {
+    for (const h of Object.keys(r?.raw ?? {})) {
+      if (!seen.has(h)) { seen.add(h); out.push(h); }
+    }
+  }
+  return out;
+}
+
+function formatCell(v: any): string {
+  if (v === undefined || v === null || v === '') return '—';
+  if (v instanceof Date) return dayjs(v).format('D MMM YYYY');
+  return String(v);
+}
+
+/** Small per-row status dot — purely additive context (does not hide or
+ *  replace any column). Reflects the worst outcome among whatever fields
+ *  on that row were cross-checked against the system: a discrepancy on
+ *  ANY field beats an autofill, which beats a plain match. Rows the
+ *  reconciler never touched (nothing to cross-check) show a neutral dot. */
+function rowStatus(row: any): { color: string; label: string } {
+  const vals = Object.values(row?.resolution ?? {}).filter(Boolean) as string[];
+  if (vals.includes('DISCREPANCY')) return { color: 'bg-amber-400', label: 'Has a discrepancy — see the list below the table' };
+  if (vals.includes('AUTOFILLED')) return { color: 'bg-blue-400', label: 'Auto-filled into the system (nothing was recorded yet)' };
+  if (vals.includes('MATCHED')) return { color: 'bg-green-400', label: 'Matches what is already recorded' };
+  return { color: 'bg-gray-300', label: 'Nothing on this row was cross-checked against system records' };
+}
+
+export function ProductionReportTable({ rows }: {
+  rows: any[];
+  /** @deprecated no longer used — every original column always renders */
+  presentFields?: string[];
+  /** @deprecated no longer used — every original column always renders */
+  presentItemColumns?: PresentItemColumn[];
 }) {
-  const cols = TABLE_COLUMNS.filter(c => presentFields.includes(c.key) || c.key === 'date');
   if (rows.length === 0) {
     return <p className="text-sm text-gray-400 text-center py-8">No rows in this report.</p>;
   }
+  const headers = computeRawHeaders(rows);
+
   return (
     <div className="border border-gray-200 dark:border-dark-border rounded-xl overflow-auto max-h-[420px]">
       <table className="min-w-full text-xs">
         <thead className="bg-gray-50 dark:bg-dark-bg sticky top-0">
           <tr>
-            {cols.map(c => (
-              <th key={c.key} className="px-2.5 py-2 text-left font-semibold text-gray-500 whitespace-nowrap">{c.label}</th>
-            ))}
-            {presentItemColumns.map(ic => (
-              <th key={ic.storeItemId} className="px-2.5 py-2 text-left font-semibold text-gray-500 whitespace-nowrap">{ic.header ?? ic.storeItemName}</th>
+            <th className="px-2 py-2 text-left font-semibold text-gray-500 whitespace-nowrap w-6" title="Reconciliation status for this row">
+              <span className="sr-only">Status</span>
+            </th>
+            {headers.map(h => (
+              <th key={h} className="px-2.5 py-2 text-left font-semibold text-gray-500 whitespace-nowrap">{h}</th>
             ))}
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-dark-border">
-          {rows.map((r, i) => (
-            <tr key={i} className="hover:bg-gray-50 dark:hover:bg-dark-bg/60">
-              {cols.map(c => (
-                <td key={c.key} className="px-2.5 py-1.5 whitespace-nowrap text-gray-700 dark:text-gray-300">
-                  {c.render ? c.render(r) : (r[c.key] ?? '—')}
+          {rows.map((r, i) => {
+            const status = rowStatus(r);
+            return (
+              <tr key={i} className="hover:bg-gray-50 dark:hover:bg-dark-bg/60">
+                <td className="px-2 py-1.5">
+                  <span className={`inline-block w-2 h-2 rounded-full ${status.color}`} title={status.label} />
                 </td>
-              ))}
-              {presentItemColumns.map(ic => {
-                const usage = r.itemsIssued?.find((u: any) => u.storeItemId === ic.storeItemId);
-                return (
-                  <td key={ic.storeItemId} className="px-2.5 py-1.5 whitespace-nowrap text-gray-700 dark:text-gray-300">
-                    {usage ? `${usage.quantity}${usage.unit ?? ''}` : '—'}
+                {headers.map(h => (
+                  <td key={h} className="px-2.5 py-1.5 whitespace-nowrap text-gray-700 dark:text-gray-300">
+                    {formatCell(r.raw?.[h])}
                   </td>
-                );
-              })}
-            </tr>
-          ))}
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

@@ -17,7 +17,13 @@ import { ProductionReportColumnMapping } from './production-report.dto';
 function parseMapping(json: string): ProductionReportColumnMapping {
   try {
     const parsed = JSON.parse(json ?? '{}');
-    return { fields: parsed.fields ?? {}, items: parsed.items ?? {} };
+    // envFields (multi-reading Temp AM/Noon/PM style columns) must survive
+    // this round-trip too — dropping it here silently discarded every
+    // extra reading beyond the first whenever the frontend's detected
+    // mapping carried one, even though the frontend itself preserved it
+    // fine. Only fields/items were ever picked out before, so a sheet with
+    // e.g. 3 Temp columns quietly lost 2 of them on submit.
+    return { fields: parsed.fields ?? {}, items: parsed.items ?? {}, envFields: parsed.envFields ?? undefined };
   } catch {
     throw new BadRequestException('mapping must be valid JSON with "fields" and "items"');
   }

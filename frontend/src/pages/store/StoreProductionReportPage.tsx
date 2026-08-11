@@ -17,6 +17,7 @@ import {
   RefreshCw, Clock, XCircle, Download, Eye, X,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
+import { ProductionReportTable } from '../../components/production-report/ReportTable';
 
 interface Batch { id: string; batchCode: string; }
 
@@ -130,6 +131,10 @@ interface Report {
   storeVerifiedBy?: { fullName: string };
   storeVerifiedAt?: string | null;
   rolledBackAt?: string | null;
+  // The exact parsed table as uploaded — every column/cell from the sheet,
+  // per row (see ProductionReportTable). Store needs to see this too, not
+  // just the Director — same table, same data, same component.
+  rawRows?: any[];
 }
 
 /** Undoes every auto-filled/auto-corrected daily record this report has
@@ -357,6 +362,15 @@ function CurrentReportPanel({ batchId }: { batchId: string }) {
         </div>
       </div>
 
+      {report.rawRows && report.rawRows.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+            Report as uploaded — every column, every row
+          </p>
+          <ProductionReportTable rows={report.rawRows} />
+        </div>
+      )}
+
       {report.status === 'REJECTED' && report.rejectionReason && (
         <div className="bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/30 rounded-xl p-3 text-sm text-red-700 dark:text-red-400">
           <span className="font-semibold">Rejected: </span>{report.rejectionReason}
@@ -401,8 +415,6 @@ function CurrentReportPanel({ batchId }: { batchId: string }) {
     </div>
   );
 }
-
-import { ProductionReportTable } from '../../components/production-report/ReportTable';
 
 // Every canonical field the parser understands, in the order they read most
 // naturally on a sheet — mirrors CANONICAL_FIELD_LABELS in the backend DTO.
@@ -600,13 +612,14 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
           </div>
 
           {previewData && (
-            <ProductionReportTable rows={previewData.rows} presentFields={previewData.presentFields} presentItemColumns={previewData.presentItemColumns} />
+            <ProductionReportTable rows={previewData.rows} />
           )}
 
           <p className="text-xs text-gray-500">
-            Review every row above. Approving submits this for reconciliation against feed, mortality, and store
-            records — anything that doesn't conflict is applied immediately. If the table doesn't look right,
-            reject it and fix the file or the column mapping instead.
+            Review every row above — this is the sheet exactly as uploaded, every column and cell included, not
+            just the ones the system recognises. Approving submits this for reconciliation against feed,
+            mortality, and store records — anything that doesn't conflict is applied immediately. If the table
+            doesn't look right, reject it and fix the file or the column mapping instead.
           </p>
 
           <div className="flex items-center gap-2 pt-1">
