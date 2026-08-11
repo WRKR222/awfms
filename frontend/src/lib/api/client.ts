@@ -86,6 +86,8 @@ apiClient.interceptors.response.use(
       try {
         const { refreshToken, setTokens, logout } = useAuthStore.getState();
         if (!refreshToken) {
+          // Never had a session (or it was cleared) — plain "please log in",
+          // not "your session expired", so don't tag this with a reason.
           logout();
           window.location.href = '/login';
           return Promise.reject(error);
@@ -100,7 +102,13 @@ apiClient.interceptors.response.use(
       } catch (refreshError) {
         processQueue(refreshError as Error);
         useAuthStore.getState().logout();
-        window.location.href = '/login';
+        // A refresh token DID exist but the server rejected it (expired,
+        // revoked, or no longer recognised — e.g. after a deploy that
+        // reset the database). Tag the redirect so the login page can
+        // show a clear "your session expired" message instead of just
+        // silently dropping the user back at a blank login form with no
+        // explanation of why they were logged out.
+        window.location.href = '/login?sessionExpired=1';
         return Promise.reject(refreshError);
       } finally {
         isRefreshing = false;

@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Loader2, Eye, EyeOff, User, Lock } from 'lucide-react';
+import { Loader2, Eye, EyeOff, User, Lock, Info } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
 import { authApi } from '../../lib/api/auth.api';
 import { useAuthStore } from '../../stores/auth.store';
@@ -91,6 +91,23 @@ export default function LoginPage() {
   const [usernameFocused, setUsernameFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
   const [mounted, setMounted] = useState(false);
+
+  // The API client tags the redirect to here with ?sessionExpired=1 when a
+  // refresh token existed but the server rejected it (expired, revoked, or
+  // no longer recognised — e.g. right after a deploy that reset the
+  // database) — see lib/api/client.ts. Captured once via the useState
+  // initializer so the banner stays visible even after the URL is cleaned
+  // up below (otherwise it would vanish the instant searchParams changes).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [showSessionExpired] = useState(() => searchParams.get('sessionExpired') === '1');
+
+  useEffect(() => {
+    if (showSessionExpired) {
+      searchParams.delete('sessionExpired');
+      setSearchParams(searchParams, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => setMounted(true), 50);
@@ -180,6 +197,14 @@ export default function LoginPage() {
               <h2 className="text-2xl font-bold text-white">Welcome back</h2>
               <p className="text-white/40 text-sm mt-1">Sign in to your account</p>
             </div>
+
+            {/* Session expired notice */}
+            {showSessionExpired && (
+              <div className="mb-6 px-4 py-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-sm flex items-start gap-2.5">
+                <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <span>Your session expired — please sign in again to continue.</span>
+              </div>
+            )}
 
             {/* Error */}
             {loginMutation.isError && (
