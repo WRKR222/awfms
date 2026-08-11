@@ -54,7 +54,7 @@ function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
   const [storeItemId, setStoreItemId] = useState('');
 
   const match = useMutation({
-    mutationFn: async () => (await api.post(`/store/production-reports/${batchId}/match-item`, { rawLabel: d.reportValue, storeItemId })).data as { matchedItem: { id: string; name: string } },
+    mutationFn: async () => (await api.post(`/store/production-reports/${batchId}/match-item`, { rawLabel: d.reportValue, storeItemId, discrepancyId: d.id })).data as { matchedItem: { id: string; name: string } },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['production-report', batchId] }),
   });
 
@@ -62,7 +62,7 @@ function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
     return (
       <div className="flex items-center gap-2 bg-green-50 dark:bg-green-900/10 border border-green-100 dark:border-green-900/30 rounded-xl p-3 text-sm text-green-700 dark:text-green-400">
         <CheckCircle className="w-4 h-4 flex-shrink-0" />
-        Matched "{d.reportValue}" to {match.data.matchedItem.name} — applied.
+        {d.reportValue?.trim() ? `Matched "${d.reportValue}" to ${match.data.matchedItem.name} — applied.` : `Resolved against ${match.data.matchedItem.name}.`}
       </div>
     );
   }
@@ -129,6 +129,71 @@ interface Report {
   uploadedBy?: { fullName: string };
   storeVerifiedBy?: { fullName: string };
   storeVerifiedAt?: string | null;
+  rolledBackAt?: string | null;
+}
+
+/** Undoes every auto-filled/auto-corrected daily record this report has
+ *  ever written (across all its uploads/resubmissions) — the "I uploaded
+ *  the wrong sheet after it already applied" escape hatch. Only relevant
+ *  once something's actually been auto-filled; a report re-upload starts
+ *  this fresh (see submit() resetting rolledBackAt), so it's hidden again
+ *  after that. Does not touch anything separately Director-approved via
+ *  applyDiscrepancy() — see ProductionReportRollbackService. */
+function RollbackPanel({ report, batchId }: { report: Report; batchId: string }) {
+  const qc = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+
+  const rollback = useMutation({
+    mutationFn: async () => (await api.post(`/store/production-reports/${report.id}/rollback`)).data as {
+      reverted: number; totalChanges: number; skipped: { entityType: string; reason: string }[];
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['production-report', batchId] }); setConfirming(false); },
+  });
+
+  if (report.rolledBackAt) {
+    return <p className="text-xs text-gray-400">Rolled back {dayjs(report.rolledBackAt).format('D MMM YYYY, HH:mm')} — every auto-filled entry this report wrote has been reversed.</p>;
+  }
+  if (report.autofillCount === 0) return null;
+
+  return (
+    <div className="pt-1">
+      {!confirming ? (
+        <button
+          onClick={() => setConfirming(true)}
+          className="text-xs font-semibold text-red-600 hover:text-red-700 flex items-center gap-1"
+        >
+          <RefreshCw className="w-3 h-3" /> Roll back this report's auto-filled entries
+        </button>
+      ) : (
+        <div className="bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-900/30 rounded-xl p-3 space-y-2">
+          <p className="text-xs text-red-700 dark:text-red-400">
+            This reverses all {report.autofillCount} auto-filled/auto-corrected entr{report.autofillCount === 1 ? 'y' : 'ies'} this
+            report has written for this batch — mortality, feed, water, environmental, stock counts, cage moves. Anything an
+            attendant has hand-edited since is left alone. This can't be undone.
+          </p>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setConfirming(false)} className="flex-1 text-xs font-semibold text-gray-500 px-3 py-1.5 rounded-lg hover:bg-white dark:hover:bg-dark-bg">
+              Cancel
+            </button>
+            <button
+              disabled={rollback.isPending}
+              onClick={() => rollback.mutate()}
+              className="flex-1 bg-red-500 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-red-600 disabled:opacity-50"
+            >
+              {rollback.isPending ? 'Rolling back…' : 'Confirm rollback'}
+            </button>
+          </div>
+        </div>
+      )}
+      {rollback.isSuccess && (
+        <p className="text-xs text-green-600 mt-1">
+          Reverted {rollback.data.reverted}/{rollback.data.totalChanges}.
+          {rollback.data.skipped.length ? ` ${rollback.data.skipped.length} couldn't be reversed (edited since) — check those manually.` : ''}
+        </p>
+      )}
+      {rollback.isError && <p className="text-xs text-red-500 mt-1">{(rollback.error as any)?.response?.data?.message ?? 'Rollback failed'}</p>}
+    </div>
+  );
 }
 
 function useBatches() {
@@ -189,7 +254,9 @@ function ResolvePanel({ report, batchId }: { report: Report; batchId: string }) 
     onSuccess: () => qc.invalidateQueries({ queryKey: ['production-report', batchId] }),
   });
   const reject = useMutation({
-    mutationFn: async () => (await api.post(`/store/production-reports/${report.id}/reject`, { reason })).data,
+    mutationFn: async () => (await api.post(`/store/production-reports/${report.id}/reject`, { reason })).data as {
+      rollbackReverted: number; rollbackSkipped: { entityType: string; reason: string }[];
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['production-report', batchId] });
       setShowReject(false); setReason('');
@@ -320,13 +387,17 @@ function CurrentReportPanel({ batchId }: { batchId: string }) {
         </div>
       )}
 
-      <a
-        href={`${api.defaults.baseURL}/store/production-reports/${batchId}/export`}
-        target="_blank" rel="noreferrer"
-        className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-green hover:underline"
-      >
-        <Download className="w-3.5 h-3.5" /> Export current report
-      </a>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <a
+          href={`${api.defaults.baseURL}/store/production-reports/${batchId}/export`}
+          target="_blank" rel="noreferrer"
+          className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-green hover:underline"
+        >
+          <Download className="w-3.5 h-3.5" /> Export current report
+        </a>
+      </div>
+
+      <RollbackPanel report={report} batchId={batchId} />
     </div>
   );
 }

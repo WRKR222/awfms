@@ -1,5 +1,5 @@
 // src/modules/store/production-report.service.ts
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import * as XLSX from 'xlsx';
 import { UserRole, NotificationType } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -114,6 +114,11 @@ export class ProductionReportService {
           uploadedById: user.id, uploadedAt: now,
           resubmissionCount: { increment: 1 },
           reviewedById: null, reviewedAt: null, rejectionReason: null,
+          // A prior rejection may have rolled this report's applied changes
+          // back (see reject() below) — a fresh upload starts a clean slate,
+          // so it must be reversible again too, not permanently blocked by
+          // the old rollback flag.
+          rolledBackAt: null, rolledBackById: null,
           appliedAt: now,
           storeVerifiedById: user.id, storeVerifiedAt: now,
         },
@@ -210,15 +215,49 @@ export class ProductionReportService {
    *  exact same sheet wording auto-matches on every future report from now
    *  on — then re-reconciles this batch's CURRENT report using its already-
    *  parsed rawRows (no re-upload/re-parse needed): whatever was blocked
-   *  only by the missing match now applies immediately. */
-  async matchItem(batchId: string, rawLabel: string, storeItemId: string, user: RequestUser) {
-    if (!rawLabel?.trim()) throw new BadRequestException('rawLabel is required');
+   *  only by the missing match now applies immediately.
+   *
+   *  When the cell was genuinely blank (rawLabel has no real text —
+   *  UnmatchedItemRow's "This cell had only whitespace" case), there's
+   *  nothing to build a text alias FROM, so a rawLabel-keyed re-reconcile
+   *  can never resolve it — every future blank cell needs re-matching too,
+   *  which is correct: there's no text for it to match against next time.
+   *  In that case `discrepancyId` closes out just that one discrepancy,
+   *  recording the picked item for the audit trail without inventing an
+   *  alias for empty text. */
+  async matchItem(batchId: string, rawLabel: string, storeItemId: string, discrepancyId: string | undefined, user: RequestUser) {
     const [report, storeItem] = await Promise.all([
       this.prisma.storeProductionReport.findUnique({ where: { batchId }, include: { batch: { select: { batchCode: true } } } }),
       this.prisma.storeItem.findUnique({ where: { id: storeItemId } }),
     ]);
     if (!report) throw new NotFoundException('No production report has been uploaded for this batch yet');
     if (!storeItem) throw new NotFoundException('Store item not found');
+
+    if (!rawLabel?.trim()) {
+      if (!discrepancyId) throw new BadRequestException('rawLabel has no matchable text — pass discrepancyId to resolve a blank-cell discrepancy directly.');
+      const discrepancy = await this.prisma.productionReportDiscrepancy.findUnique({ where: { id: discrepancyId } });
+      if (!discrepancy || discrepancy.reportId !== report.id) throw new NotFoundException('Discrepancy not found on this report');
+      if (discrepancy.resolved) throw new BadRequestException('This discrepancy is already resolved');
+
+      const updatedDiscrepancy = await this.prisma.productionReportDiscrepancy.update({
+        where: { id: discrepancyId },
+        data: {
+          resolved: true,
+          resolution: 'APPLIED',
+          resolvedById: user.id,
+          resolvedAt: new Date(),
+          notes: [discrepancy.notes, `Blank cell — Store confirmed no ${discrepancy.field} was actually given, closed against ${storeItem.name} for reference.`].filter(Boolean).join(' — '),
+        },
+      });
+
+      const stillUnresolved = await this.prisma.productionReportDiscrepancy.count({ where: { reportId: report.id, resolved: false } });
+      const updatedReport = await this.prisma.storeProductionReport.update({
+        where: { id: report.id },
+        data: stillUnresolved === 0 ? { status: 'APPROVED' } : {},
+      });
+
+      return { report: updatedReport, matchedItem: { id: storeItem.id, name: storeItem.name }, discrepancy: updatedDiscrepancy, discrepancyCount: stillUnresolved };
+    }
 
     const normalisedAlias = normaliseText(rawLabel);
     if (!normalisedAlias) throw new BadRequestException('rawLabel has no matchable text');
@@ -287,13 +326,17 @@ export class ProductionReportService {
     });
   }
 
-  /** Director trusts the report over the system for every currently open
-   *  discrepancy on this report — each gets an adjusting entry applied (see
-   *  ProductionReportReconciliationService.applyDiscrepancy), and the report
-   *  moves to APPROVED once none remain unresolved. */
+  /** Store (or Director) trusts the report over the system for every
+   *  currently open discrepancy on this report — each gets an adjusting
+   *  entry applied (see ProductionReportReconciliationService.
+   *  applyDiscrepancy), and the report moves to APPROVED once none remain
+   *  unresolved. No role check here beyond the PRODUCTION_REPORT_REVIEW
+   *  permission the controller already enforces — that permission is
+   *  granted to STORE precisely so Store can resolve its own reports
+   *  end-to-end with no separate Director sign-off (see
+   *  role-permissions.map.ts). A hardcoded OWNER-only check here would
+   *  silently defeat that. */
   async approve(reportId: string, user: RequestUser) {
-    if (user.role !== UserRole.OWNER) throw new ForbiddenException('Only the Director may approve a production report');
-
     const report = await this.prisma.storeProductionReport.findUnique({
       where: { id: reportId },
       include: { discrepancies: { where: { resolved: false } } },
@@ -342,10 +385,18 @@ export class ProductionReportService {
     return { report: updated, results };
   }
 
-  /** Director rejects the report outright — nothing further is applied, and
-   *  Store must correct and re-upload (which recomputes everything fresh). */
+  /** Store (or Director) rejects the report outright — no separate
+   *  Director sign-off required, same reasoning as approve() above.
+   *  Rejecting also rolls back everything this report auto-applied (see
+   *  ProductionReportRollbackService), so a rejected report leaves no
+   *  trace in daily-log history — otherwise its auto-filled mortality/
+   *  feed/etc. entries would sit there indistinguishable from an
+   *  attendant's own records even though the report itself was thrown
+   *  out. Best-effort: any entry an attendant has since hand-edited is
+   *  left in place (reported back as `rollbackSkipped`) rather than
+   *  silently overwritten. Store must correct and re-upload afterward
+   *  (which recomputes everything fresh). */
   async reject(reportId: string, reason: string, user: RequestUser) {
-    if (user.role !== UserRole.OWNER) throw new ForbiddenException('Only the Director may reject a production report');
     if (!reason?.trim()) throw new BadRequestException('A rejection reason is required');
 
     const report = await this.prisma.storeProductionReport.findUnique({ where: { id: reportId }, include: { batch: true } });
@@ -357,14 +408,29 @@ export class ProductionReportService {
       data: { status: 'REJECTED', rejectionReason: reason, reviewedById: user.id, reviewedAt: new Date() },
     });
 
+    let rollbackSkipped: RollbackResult['skipped'] = [];
+    let rollbackReverted = 0;
+    if (!report.rolledBackAt) {
+      try {
+        const result = await this.rollbackService.rollback(reportId, user);
+        rollbackSkipped = result.skipped;
+        rollbackReverted = result.reverted;
+      } catch (err: any) {
+        // Nothing had been auto-applied yet (0 changes) or it was already
+        // rolled back — not fatal to the rejection itself.
+      }
+    }
+
     await this.notifications.notifyRole(
       UserRole.STORE, NotificationType.PRODUCTION_REPORT_REJECTED,
       `Production report rejected — ${report.batch.batchCode}`,
-      `Reason: ${reason}. Please correct and re-upload.`,
+      `Reason: ${reason}. ${rollbackReverted} auto-filled change(s) were reversed.` +
+        (rollbackSkipped.length ? ` ${rollbackSkipped.length} could not be reversed (edited since) and need a manual look.` : '') +
+        ` Please correct and re-upload.`,
       { entityId: reportId, entityType: 'StoreProductionReport' },
     ).catch(() => {});
 
-    return updated;
+    return { ...updated, rollbackReverted, rollbackSkipped };
   }
 
   /** Director (or Store, undoing their own upload) reverses everything the

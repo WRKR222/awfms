@@ -80,16 +80,20 @@ export class ProductionReportController {
   /** POST /store/production-reports/:batchId/match-item — Store manually
    *  matches a report label the automatic matcher couldn't place (e.g.
    *  "chickcrumbs") to an existing store item. Saved as a reusable alias
-   *  and re-applied to the current report immediately. */
+   *  and re-applied to the current report immediately. When the cell was
+   *  genuinely blank (rawLabel empty — see UnmatchedItemRow's "blank cell"
+   *  case) there's no text to alias, so `discrepancyId` closes out that one
+   *  discrepancy directly instead. */
   @Post(':batchId/match-item')
   @RequirePermission(Permission.PRODUCTION_REPORT_UPLOAD)
   matchItem(
     @Param('batchId') batchId: string,
     @Body('rawLabel') rawLabel: string,
     @Body('storeItemId') storeItemId: string,
+    @Body('discrepancyId') discrepancyId: string,
     @CurrentUser() user: RequestUser,
   ) {
-    return this.service.matchItem(batchId, rawLabel, storeItemId, user);
+    return this.service.matchItem(batchId, rawLabel, storeItemId, discrepancyId, user);
   }
 
   /** GET /store/production-reports/pending — queue of reports with open discrepancies still

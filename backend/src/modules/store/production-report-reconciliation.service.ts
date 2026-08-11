@@ -981,6 +981,15 @@ export class ProductionReportReconciliationService {
     vaccineItems: StoreItem[], supplementItems: StoreItem[], treatmentItems: StoreItem[], aliasMap: Map<string, StoreItem>,
     discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
   ) {
+    // reconcile() can run more than once over the SAME already-parsed rows
+    // — e.g. matchItem() re-reconciles the current report's saved rawRows
+    // after Store manually matches an item name, without re-parsing the
+    // file. row.healthUsages was already populated by the first pass, so
+    // without clearing it here every re-run would append a second (third,
+    // fourth, ...) copy of every vaccine/supplement/treatment entry onto
+    // the row instead of replacing it.
+    row.healthUsages = [];
+
     type Candidate = { kind: ParsedHealthUsage['kind']; text: string | undefined; pool: StoreItem[] };
     const candidates: Candidate[] = [];
     if (row.vaccineText) candidates.push({ kind: 'vaccine', text: row.vaccineText, pool: vaccineItems });
