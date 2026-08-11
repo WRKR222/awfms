@@ -67,7 +67,18 @@ export function parseFeedSplitRatio(feedTypeText: string | undefined): { label: 
   const pctA = parseFloat(m[2]);
   const pctB = parseFloat(m[3]);
   if (!Number.isFinite(pctA) || !Number.isFinite(pctB) || pctA <= 0 || pctB <= 0) return null;
-  const labels = m[1].split('/').map(s => s.trim()).filter(Boolean);
+  // Split on "/" or ":" (NOT "-" — a hyphenated single-word label like
+  // "Pre-layer" must survive intact; the percentage pair already consumed
+  // the numeric ":"/"-"/"/" between pctA and pctB via the regex above, so
+  // this only ever sees the label prefix, e.g. "Developer:Pre layer" or
+  // "Chickcrumbs/Growers"). Real sheets use both "/" (e.g.
+  // "Chickcrumbs/Growers 75:25%") and ":" (e.g. "Developer:Pre layer
+  // 75:25%") as the label separator interchangeably with whichever
+  // separator they used for the percentages — treating only "/" as valid
+  // silently failed to split cells like the latter, leaving the whole
+  // "Developer:Pre layer 75:25%" string to be matched as one (nonexistent)
+  // feed name instead of two real ones.
+  const labels = m[1].split(/[/:]+/).map(s => s.trim()).filter(Boolean);
   if (labels.length !== 2) return null; // only two-way splits are currently supported
   const sum = pctA + pctB;
   return [
@@ -305,10 +316,31 @@ export class ProductionReportParserService {
   private matchSynonym(header: string): CanonicalField | null {
     const norm = normaliseHeader(header);
     if (!norm) return null;
+    // Exact match first, across every field. Several synonym lists include a
+    // short, generic entry (feedKg's "feed", "feeds") meant to catch a bare
+    // "Feed" header — but "Feed Type" normalises to "feedtype", which
+    // CONTAINS "feed" as a substring. If substring matching ran first, that
+    // generic entry would grab "Feed Type" before feedType's own exact
+    // synonym ("feedtype") ever got a chance — which is exactly what was
+    // happening: the column was silently dropped (feedKg was already
+    // claimed by "Feeds/Kgs", so the match on "feed" went nowhere and never
+    // got reassigned to feedType). Checking every field's EXACT synonyms
+    // before any field's substring synonyms means a header that IS a
+    // synonym outright always wins, regardless of field declaration order.
     for (const [field, syns] of Object.entries(FIELD_SYNONYMS) as [CanonicalField, string[]][]) {
-      if (syns.some(s => norm === s || norm.includes(s))) return field;
+      if (syns.includes(norm)) return field;
     }
-    return null;
+    // Fall back to substring matching only once no field matched exactly —
+    // and prefer the LONGEST synonym across all fields, so a more specific
+    // partial match (e.g. a hypothetical multi-word synonym) always beats a
+    // shorter, more generic one, regardless of which field it belongs to.
+    let best: { field: CanonicalField; len: number } | null = null;
+    for (const [field, syns] of Object.entries(FIELD_SYNONYMS) as [CanonicalField, string[]][]) {
+      for (const s of syns) {
+        if (norm.includes(s) && (!best || s.length > best.len)) best = { field, len: s.length };
+      }
+    }
+    return best?.field ?? null;
   }
 
   private suggestMapping(
