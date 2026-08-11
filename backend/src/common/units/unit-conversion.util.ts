@@ -52,13 +52,38 @@ const UNIT_TO_BASE: Record<string, UnitDef> = {
   litres: { dim: 'volume', factor: 1 },
 };
 
-// Units with no numeric conversion — always require an exact string match
-// against the StoreItem's unit. Not exhaustive; anything not present in
-// UNIT_TO_BASE is already treated this way by convertToUnit()'s null return.
-export const COUNT_UNITS = new Set(['bag', 'bags', 'sachet', 'sachets', 'dose', 'doses', 'pcs', 'pc', 'piece', 'pieces', 'unit', 'units', 'roll', 'rolls', 'box', 'boxes']);
+// Units with no numeric conversion — always require an exact match against
+// the StoreItem's unit, ONCE both sides have been folded to a single
+// canonical spelling (see COUNT_UNIT_CANONICAL below). Not exhaustive;
+// anything not present in UNIT_TO_BASE is already treated this way by
+// convertToUnit()'s null return.
+export const COUNT_UNITS = new Set(['bag', 'sachet', 'dose', 'piece', 'roll', 'box', 'unit']);
+
+// Plural (and a couple of common abbreviation) spellings of count-based
+// units, folded onto one canonical singular form. This is what makes a
+// report cell like "6 bags" reconcile cleanly against a StoreItem whose
+// `unit` column is stored as "BAG" — without this, normaliseUnit() would
+// leave them as the two different strings "bags" and "bag", the equality
+// check in convertToUnit() would fail, neither string is in UNIT_TO_BASE
+// (count-based units have no numeric factor), and the pair would
+// incorrectly fall through to "needs manual conversion" even though they
+// obviously mean the same unit. Kept separate from UNIT_WORD_CANONICAL in
+// production-report-reconciliation.service.ts, which does the equivalent
+// job for free-text ITEM NAME matching rather than a StoreItem's `unit`
+// column — the two lists happen to overlap but serve different call sites.
+const COUNT_UNIT_CANONICAL: Record<string, string> = {
+  bag: 'bag', bags: 'bag',
+  sachet: 'sachet', sachets: 'sachet',
+  dose: 'dose', doses: 'dose',
+  piece: 'piece', pieces: 'piece', pc: 'piece', pcs: 'piece',
+  roll: 'roll', rolls: 'roll',
+  box: 'box', boxes: 'box',
+  unit: 'unit', units: 'unit',
+};
 
 export function normaliseUnit(u: string | undefined | null): string {
-  return String(u ?? '').trim().toLowerCase().replace(/[^a-z]/g, '');
+  const base = String(u ?? '').trim().toLowerCase().replace(/[^a-z]/g, '');
+  return COUNT_UNIT_CANONICAL[base] ?? base;
 }
 
 /** Converts `qty` from `fromUnit` to `toUnit`. Returns null when either unit

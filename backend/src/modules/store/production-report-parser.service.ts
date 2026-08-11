@@ -153,7 +153,21 @@ export class ProductionReportParserService {
         const n = parseFloat(String(v).replace(/[^\d.\-]/g, ''));
         return Number.isFinite(n) ? n : undefined;
       };
-      const strOrUndef = (v: any): string | undefined => (v === '' || v == null ? undefined : String(v));
+      // Trims before checking for emptiness — a cell containing only
+      // whitespace (a stray space left over from copy/paste, a formula that
+      // resolves to " ", etc.) must be treated as blank, not as "text
+      // present". Without the trim, a whitespace-only vaccine/supplement/
+      // treatment cell survives as a truthy, non-empty string, gets fed into
+      // the item matcher in the reconciliation service, fails to match
+      // anything (there's no store item named " "), and raises a
+      // "doesn't match any store item by name" discrepancy every single day
+      // the sheet has that stray space — with nothing visible for Store to
+      // even look at, since the "raw text" it's complaining about is blank.
+      const strOrUndef = (v: any): string | undefined => {
+        if (v === '' || v == null) return undefined;
+        const s = String(v).trim();
+        return s === '' ? undefined : s;
+      };
 
       const itemsIssued: ParsedItemUsage[] = [];
       for (const [storeItemId, col] of itemEntries) {

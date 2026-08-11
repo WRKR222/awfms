@@ -3,8 +3,11 @@
 // is committed, Store reviews the FULL parsed table (§2/§2a) and explicitly
 // clicks Approve & Submit — only after that does reconciliation run.
 // Anything that doesn't conflict with what's already recorded is applied
-// immediately; only genuine conflicts wait on the Director. Re-uploading
-// replaces the current report for that batch.
+// immediately; genuine conflicts show up below as open discrepancies, which
+// Store also resolves itself — either by matching an unrecognised item name
+// (UnmatchedItemRow) or by trusting/rejecting the report as a whole
+// (ResolvePanel). No separate Director/Owner sign-off is required at any
+// step. Re-uploading replaces the current report for that batch.
 
 import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -64,15 +67,31 @@ function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
     );
   }
 
+  // `field` on this discrepancy is the kind ("vaccine" / "supplement" /
+  // "treatment") or "item:<StoreItem name>" for generic issued items —
+  // always show it so Store knows WHICH column/field is unmatched even in
+  // the rare case reportValue itself comes back blank.
+  const kindLabel = d.field.startsWith('item:') ? d.field.slice(5) : d.field.charAt(0).toUpperCase() + d.field.slice(1);
+  const hasRawText = !!d.reportValue?.trim();
+
   return (
     <div className="bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/30 rounded-xl p-3 text-sm space-y-2">
       <div className="flex items-start gap-2">
         <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
         <div>
           <p className="font-medium text-gray-800 dark:text-gray-200">
-            "{d.reportValue}" — {dayjs(d.rowDate).format('D MMM YYYY')}{d.locationRef ? ` (${d.locationRef})` : ''}
+            <span className="inline-block bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 text-[10px] font-semibold uppercase tracking-wide rounded px-1.5 py-0.5 mr-1.5 align-middle">
+              {kindLabel}
+            </span>
+            {hasRawText ? `"${d.reportValue}"` : <span className="text-gray-400 italic">(blank cell on the sheet)</span>}
+            {' — '}{dayjs(d.rowDate).format('D MMM YYYY')}{d.locationRef ? ` (${d.locationRef})` : ''}
           </p>
-          <p className="text-xs text-gray-500">Doesn't match any store item by name. Pick which item this is:</p>
+          <p className="text-xs text-gray-500">
+            {hasRawText
+              ? `"${d.reportValue}" doesn't match any store item by name. Pick which item this is:`
+              : 'This cell had only whitespace and no real text — nothing to match. Re-upload after clearing the cell, or pick an item below if it was meant to say something:'}
+          </p>
+          {d.notes && <p className="text-[11px] text-gray-400 mt-0.5">{d.notes}</p>}
         </div>
       </div>
       <div className="flex items-center gap-2 pl-6">
@@ -153,6 +172,79 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+/** The handful of open discrepancies that couldn't auto-reconcile and
+ *  aren't a "doesn't match any store item by name" case — a unit that
+ *  couldn't be converted, a cage reassignment across batches, a day with
+ *  nowhere yet to write into, etc. Store trusts the report (closing these
+ *  out as-is) or rejects the whole report to fix and re-upload. No
+ *  Director/Owner sign-off required — Store owns this end-to-end. */
+function ResolvePanel({ report, batchId }: { report: Report; batchId: string }) {
+  const qc = useQueryClient();
+  const [reason, setReason] = useState('');
+  const [showReject, setShowReject] = useState(false);
+  const open = report.discrepancies.filter(d => !d.resolved && !d.notes?.includes('Could not match'));
+
+  const approve = useMutation({
+    mutationFn: async () => (await api.post(`/store/production-reports/${report.id}/approve`)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['production-report', batchId] }),
+  });
+  const reject = useMutation({
+    mutationFn: async () => (await api.post(`/store/production-reports/${report.id}/reject`, { reason })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['production-report', batchId] });
+      setShowReject(false); setReason('');
+    },
+  });
+
+  if (open.length === 0) return null;
+
+  return (
+    <div className="space-y-2 pt-1">
+      {!showReject ? (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => approve.mutate()}
+            disabled={approve.isPending}
+            className="flex-1 bg-brand-green text-white px-4 py-2.5 rounded-xl text-sm font-semibold hover:bg-brand-green/90 disabled:opacity-50 flex items-center justify-center gap-1.5"
+          >
+            <CheckCircle className="w-4 h-4" /> {approve.isPending ? 'Applying…' : 'Trust the report for these'}
+          </button>
+          <button
+            onClick={() => setShowReject(true)}
+            className="flex-1 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-4 py-2.5 rounded-xl text-sm font-semibold hover:bg-red-100 flex items-center justify-center gap-1.5"
+          >
+            <XCircle className="w-4 h-4" /> Reject
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <textarea
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="Reason for rejecting"
+            className="w-full text-sm border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2 bg-white dark:bg-dark-bg"
+            rows={2}
+          />
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowReject(false)} className="flex-1 text-sm font-semibold text-gray-500 px-4 py-2 rounded-xl hover:bg-gray-50 dark:hover:bg-dark-bg">
+              Cancel
+            </button>
+            <button
+              disabled={!reason.trim() || reject.isPending}
+              onClick={() => reject.mutate()}
+              className="flex-1 bg-red-500 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-red-600 disabled:opacity-50"
+            >
+              {reject.isPending ? 'Rejecting…' : 'Confirm rejection'}
+            </button>
+          </div>
+        </div>
+      )}
+      {approve.isError && <p className="text-xs text-red-500">{(approve.error as any)?.response?.data?.message ?? 'Approval failed'}</p>}
+      {reject.isError && <p className="text-xs text-red-500">{(reject.error as any)?.response?.data?.message ?? 'Rejection failed'}</p>}
+    </div>
+  );
+}
+
 function CurrentReportPanel({ batchId }: { batchId: string }) {
   const { data: report, isLoading } = useCurrentReport(batchId);
 
@@ -207,7 +299,7 @@ function CurrentReportPanel({ batchId }: { batchId: string }) {
 
       {report.discrepancies.filter(d => !d.resolved).length > 0 && (
         <div className="space-y-2">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Open discrepancies — awaiting Director review</p>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Open discrepancies — resolve to finalize</p>
           {report.discrepancies.filter(d => !d.resolved).map(d => (
             d.notes?.includes('Could not match') ? (
               <UnmatchedItemRow key={d.id} d={d} batchId={batchId} />
@@ -224,6 +316,7 @@ function CurrentReportPanel({ batchId }: { batchId: string }) {
               </div>
             )
           ))}
+          <ResolvePanel report={report} batchId={batchId} />
         </div>
       )}
 
@@ -470,7 +563,7 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
         <div className="bg-green-50 dark:bg-green-900/20 border border-green-100 dark:border-green-900/30 rounded-xl p-3 text-sm text-green-700 dark:text-green-400">
           Submitted — {submit.data.matchedCount} matched, {submit.data.autofillCount} auto-filled
           {submit.data.discrepancyCount > 0
-            ? `, ${submit.data.discrepancyCount} discrepanc${submit.data.discrepancyCount === 1 ? 'y' : 'ies'} sent to the Director.`
+            ? `, ${submit.data.discrepancyCount} discrepanc${submit.data.discrepancyCount === 1 ? 'y' : 'ies'} to resolve below.`
             : ' — applied with no discrepancies.'}
         </div>
       )}
@@ -505,7 +598,8 @@ export function StoreProductionReportPage() {
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
           Upload the day-by-day production sheet for a batch — feed, mortality, stock, and items used are
           checked against what's already recorded and applied automatically wherever there's no conflict.
-          You'll review the full parsed table before anything is submitted.
+          You'll review the full parsed table before anything is submitted, and resolve any remaining
+          discrepancies yourself — no Director sign-off needed.
         </p>
       </div>
 

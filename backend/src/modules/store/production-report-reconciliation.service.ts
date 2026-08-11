@@ -1003,6 +1003,11 @@ export class ProductionReportReconciliationService {
     }
 
     for (const c of candidates) {
+      // Defensive: a blank/whitespace-only cell should never reach here (the
+      // parser already trims and drops those to `undefined` before a row is
+      // built), but skip it outright rather than raising a discrepancy for
+      // text nobody can act on if one ever slips through.
+      if (!c.text || !c.text.trim()) continue;
       const matched = resolveItemMatch(c.text, c.pool, aliasMap);
       const qty = extractQuantity(c.text);
       const usage: ParsedHealthUsage = {
@@ -1013,10 +1018,18 @@ export class ProductionReportReconciliationService {
 
       if (!matched) {
         usage.resolution = 'DISCREPANCY';
+        // Name the exact field ("vaccine"/"supplement"/"treatment") AND
+        // quote the exact raw text the sheet carried, in the note itself —
+        // the frontend's UnmatchedItemRow only has `reportValue` to show as
+        // the item's display label, so if that's ever blank the row renders
+        // with nothing for Store to go on. Spelling it out here means the
+        // note alone is always enough to diagnose the mismatch, even before
+        // the "could not match" branch above.
         discrepancies.push({
           rowDate: row.date, field: c.kind, discrepancyType: ProductionReportDiscrepancyType.ITEM_ISSUANCE,
           locationRef: row.locationRef, systemValue: null, reportValue: c.text ?? null,
-          notes: `Could not match this ${c.kind} to any store item — add/rename the store item or fix the sheet.`,
+          notes: `Could not match this ${c.kind} — the report says "${c.text}" — to any store item. `
+            + `Add a store item with that name, add it as an alias for an existing item, or fix the wording on the sheet.`,
         });
         continue;
       }

@@ -101,8 +101,16 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PM_REQUISITION_VIEW,     // Store can see the PM's weekly item list
     // Tally sign-off — Store signs the egg tally
     Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
-    // Store production report verification — Store uploads, Director reviews
+    // Store production report verification — Store uploads AND resolves it (see below)
     Permission.PRODUCTION_REPORT_UPLOAD, Permission.PRODUCTION_REPORT_VIEW,
+    // Store resolves its own report's discrepancies end-to-end — no
+    // separate Director/Owner sign-off step. Matching an unrecognised item
+    // name (PRODUCTION_REPORT_UPLOAD, via /match-item) only ever closes out
+    // ITEM_ISSUANCE-by-name discrepancies; everything else that couldn't
+    // auto-reconcile (unit mismatches, cage reassignments across batches, a
+    // day with nowhere yet to write into, etc.) is closed via approve/
+    // reject/rollback, which is what PRODUCTION_REPORT_REVIEW gates.
+    Permission.PRODUCTION_REPORT_REVIEW,
   ],
   [UserRole.SECURITY1]: [
     Permission.VISITOR_LOG_VIEW,

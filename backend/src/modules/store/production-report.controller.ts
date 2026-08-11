@@ -92,7 +92,8 @@ export class ProductionReportController {
     return this.service.matchItem(batchId, rawLabel, storeItemId, user);
   }
 
-  /** GET /store/production-reports/pending — Director's queue of reports with open discrepancies */
+  /** GET /store/production-reports/pending — queue of reports with open discrepancies still
+   *  needing a resolution decision. Store resolves its own reports directly; Owner can too. */
   @Get('pending')
   @RequirePermission(Permission.PRODUCTION_REPORT_REVIEW)
   listPending() {
@@ -125,14 +126,15 @@ export class ProductionReportController {
     res.send(buffer);
   }
 
-  /** POST /store/production-reports/:reportId/approve — Director trusts the report for every open discrepancy */
+  /** POST /store/production-reports/:reportId/approve — trust the report for every still-open
+   *  discrepancy on it. Store closes out its own reports here — no separate Director sign-off. */
   @Post(':reportId/approve')
   @RequirePermission(Permission.PRODUCTION_REPORT_REVIEW)
   approve(@Param('reportId') reportId: string, @CurrentUser() user: RequestUser) {
     return this.service.approve(reportId, user);
   }
 
-  /** POST /store/production-reports/:reportId/reject — Director rejects outright; Store must fix and re-upload */
+  /** POST /store/production-reports/:reportId/reject — reject outright; fix the file/mapping and re-upload */
   @Post(':reportId/reject')
   @RequirePermission(Permission.PRODUCTION_REPORT_REVIEW)
   reject(@Param('reportId') reportId: string, @Body('reason') reason: string, @CurrentUser() user: RequestUser) {
@@ -141,8 +143,8 @@ export class ProductionReportController {
 
   /** POST /store/production-reports/:reportId/rollback — undo every auto-filled/
    *  auto-corrected daily record this report ever wrote (across all its
-   *  uploads/resubmissions). Does not touch anything a Director separately
-   *  approved via /approve — see ProductionReportRollbackService. */
+   *  uploads/resubmissions). Does not touch anything already approved via
+   *  /approve — see ProductionReportRollbackService. */
   @Post(':reportId/rollback')
   @RequirePermission(Permission.PRODUCTION_REPORT_REVIEW)
   rollback(@Param('reportId') reportId: string, @CurrentUser() user: RequestUser) {
