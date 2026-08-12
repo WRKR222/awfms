@@ -4,7 +4,7 @@
 // Population, mortality, reassignment, and weighing are now tracked per
 // CAGE — clicking a level opens this modal, but the very first field is a
 // CAGE picker restricted to that level's cages (44 per level on rows 1, 2,
-// 4, 5, 6; 42 per level on row 3). Everything downstream (place / reassign /
+// 3, 4, 5; 42 per level on row 6). Everything downstream (place / reassign /
 // clear) acts on the selected cage; the level's aggregate figures shown
 // elsewhere are an automatic rollup of its cages.
 //

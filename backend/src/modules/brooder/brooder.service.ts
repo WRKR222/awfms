@@ -814,7 +814,15 @@ export class BrooderService {
       .filter(a => a.cageId !== cageId && a.cageId !== dto.sourceCageId)
       .reduce((s, a) => s + a.birdCount, 0);
     const newTotal = siblingsTotal + dto.birdCount;
-    if (newTotal > batch.currentBirdCount) {
+    // A genuine reassignment (sourceCageId set — birds are being MOVED, not
+    // freshly placed) is allowed through even if it puts the batch's total
+    // over its recorded live count — covers current and backdated corrections
+    // — but the Director is notified below rather than the move being
+    // silently accepted. A fresh placement into an empty cage (no source)
+    // still hits this guard, since that's new birds appearing from nowhere
+    // rather than a reassignment.
+    const reassignOverCapacityBy = newTotal - batch.currentBirdCount;
+    if (newTotal > batch.currentBirdCount && !dto.sourceCageId) {
       throw new BadRequestException(
         `Cannot assign ${dto.birdCount} birds to this cage: total would be ${newTotal} ` +
         `but batch ${batch.batchCode} only has ${batch.currentBirdCount} live birds. ` +
@@ -836,7 +844,7 @@ export class BrooderService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // ── Decrement the source cage (bird reassignment) ────────────────────
       let sourceLevelId: string | null = null;
       if (dto.sourceCageId) {
@@ -966,6 +974,21 @@ export class BrooderService {
       if (e?.code === 'P2002') throw new ConflictException('Active assignment already exists for this cage');
       throw e;
     });
+
+    if (dto.sourceCageId && reassignOverCapacityBy > 0) {
+      await this.notifications.notifyRole(
+        UserRole.OWNER,
+        'BROODER_CAGE_REASSIGN_OVER_CAPACITY' as any,
+        `Cage reassignment exceeds live bird count — ${batch.batchCode}`,
+        `The reassignment applied for ${batch.batchCode} on ${dto.placedDate} brings its cage-map ` +
+        `total to ${newTotal.toLocaleString()} birds, ${reassignOverCapacityBy.toLocaleString()} more ` +
+        `than the ${batch.currentBirdCount.toLocaleString()} live birds currently on record for this ` +
+        `batch. The reassignment was applied as requested — please review.`,
+        { entityId: batch.id, entityType: 'Brooder' },
+      ).catch(() => {});
+    }
+
+    return result;
   }
 
   /** @deprecated kept only so any stale client still calling the old
@@ -1083,11 +1106,11 @@ export class BrooderService {
 
   /**
    * Reassign a batch's WHOLE cage layout in one call from a handful of
-   * patterns, instead of moving birds cage-by-cage. Example: "Row C: 42
-   * cages x 20 birds on Levels 4/3/2, plus cage 43 x 20 birds on Level 4"
-   * is two blocks — { rowId: C, levelIds: [L4,L3,L2], cageCount: 42,
-   * birdsPerCage: 20 } and { rowId: C, levelIds: [L4], cageCount: 1,
-   * startCageNumber: 43, birdsPerCage: 20 }.
+   * patterns, instead of moving birds cage-by-cage. Example: "Row F: 42
+   * cages x 20 birds on Levels 4/3/2, plus cage 43 on Level 4 held aside
+   * for isolation" is two blocks — { rowId: F, levelIds: [L4,L3,L2],
+   * cageCount: 42, birdsPerCage: 20 } and { rowId: F, levelIds: [L4],
+   * cageCount: 1, startCageNumber: 43, birdsPerCage: 20, isIsolation: true }.
    *
    * This call defines the batch's ENTIRE new layout: every cage the batch
    * currently holds is cleared first, then the blocks are applied — the
@@ -1153,12 +1176,7 @@ export class BrooderService {
     }
 
     const totalBirds = placements.reduce((s, p) => s + p.birdCount, 0);
-    if (totalBirds > batch.currentBirdCount) {
-      throw new BadRequestException(
-        `This layout assigns ${totalBirds.toLocaleString()} birds total, but batch ${batch.batchCode} ` +
-        `only has ${batch.currentBirdCount.toLocaleString()} live birds.`,
-      );
-    }
+    const overCapacityBy = totalBirds - batch.currentBirdCount;
 
     // None of the target cages may already hold a DIFFERENT batch.
     const targetCageIds = placements.map(p => p.cageId);
@@ -1211,6 +1229,23 @@ export class BrooderService {
         levelsTouched: touchedLevelIds.size,
       };
     });
+
+    if (overCapacityBy > 0) {
+      // Layout is allowed through even though it assigns more birds than the
+      // batch currently has on record (covers backdated reassignments and
+      // corrections applied after the fact) — but it's a real discrepancy
+      // the Director needs to see, not something to silently accept.
+      await this.notifications.notifyRole(
+        UserRole.OWNER,
+        'BROODER_CAGE_REASSIGN_OVER_CAPACITY' as any,
+        `Cage reassignment exceeds live bird count — ${batch.batchCode}`,
+        `The cage layout applied for ${batch.batchCode} on ${dto.placedDate} assigns ` +
+        `${totalBirds.toLocaleString()} birds, ${overCapacityBy.toLocaleString()} more than the ` +
+        `${batch.currentBirdCount.toLocaleString()} live birds currently on record for this batch. ` +
+        `The reassignment was applied as requested — please review.`,
+        { entityId: batch.id, entityType: 'Brooder' },
+      ).catch(() => {});
+    }
 
     this.refresh();
     return result;

@@ -166,6 +166,8 @@ enum NotificationType {
   PRODUCTION_REPORT_DISCREPANCY  // report contains mismatches vs. system-recorded data — Director-facing
   PRODUCTION_REPORT_APPROVED     // Director approved a report — Store-facing
   PRODUCTION_REPORT_REJECTED     // Director rejected a report — Store-facing, includes reason
+  // Brooder cage reassignment
+  BROODER_CAGE_REASSIGN_OVER_CAPACITY  // a cage reassignment (current or backdated) was applied even though it put a batch's cage-map total over its recorded live bird count — Director-facing
 }
 
 enum IssuancePlanType {
@@ -1459,9 +1461,9 @@ model BrooderLevel {
   @@map("brooder_levels")
 }
 
-/// A single physical cage within a BrooderLevel. Row 1/2/4/5/6 have 44 cages
-/// per level; Rows 3 and 6 have 42 cages per level (physical constraint of that
-/// deck). Cages are the unit of record for population, mortality,
+/// A single physical cage within a BrooderLevel. Row 6 has 42 cages per level
+/// (physical constraint of that deck); every other row (1/2/3/4/5) has 44.
+/// Cages are the unit of record for population, mortality,
 /// reassignment, and weighing going forward — BrooderLevelAssignment /
 /// BrooderLevelMortalityLog remain as level-level ROLLUPS (recomputed from
 /// their cages) so existing feed-schedule and dashboard logic that reads at

@@ -308,7 +308,7 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
   // as a handful of patterns instead of moving birds cage-by-cage. Each
   // block fills a number of consecutive cages (from a start cage number)
   // with a fixed number of birds, replicated across every level chosen for
-  // that block — e.g. "Row C: 42 cages × 20 birds across Levels 4/3/2" is
+  // that block — e.g. "Row F: 42 cages × 20 birds across Levels 4/3/2" is
   // one block; "cage 43 × 20 birds on Level 4" is a second block.
   interface ReassignBlock {
     id: string;

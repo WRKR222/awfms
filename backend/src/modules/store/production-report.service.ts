@@ -165,15 +165,7 @@ export class ProductionReportService {
       return saved;
     });
 
-    if (discrepancies.length > 0) {
-      await this.notifications.notifyRole(
-        UserRole.OWNER,
-        NotificationType.PRODUCTION_REPORT_DISCREPANCY,
-        `Production report discrepancy — ${batch.batchCode}`,
-        `${existing ? 'Re-uploaded' : 'Uploaded'} report for ${batch.batchCode} has ${discrepancies.length} mismatch(es) against recorded data and needs your review.`,
-        { entityId: report.id, entityType: 'StoreProductionReport' },
-      ).catch(() => {});
-    } else {
+    if (discrepancies.length === 0) {
       await this.notifications.notifyRole(
         UserRole.OWNER,
         NotificationType.PRODUCTION_REPORT_SUBMITTED,
