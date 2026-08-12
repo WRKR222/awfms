@@ -1205,15 +1205,20 @@ export class BrooderService {
 
       await tx.brooderCageAssignment.deleteMany({ where: { batchId } });
 
-      for (const p of placements) {
-        if (p.birdCount === 0) continue;
-        await tx.brooderCageAssignment.create({
-          data: {
-            cageId: p.cageId, batchId, birdCount: p.birdCount,
-            placedDate, notes: dto.notes ?? null, assignedById: userId,
-            isIsolation: p.isIsolation, isolationReason: p.isIsolation ? p.isolationReason : null,
-          },
-        });
+      // Bulk-insert every placement in a single round trip instead of one
+      // create() per cage — with large layouts (e.g. a 42-cage row) the old
+      // per-cage loop could rack up enough sequential round trips inside the
+      // interactive transaction to blow past Prisma's transaction timeout,
+      // which surfaces later as a confusing "Transaction not found" error.
+      const rowsToInsert = placements
+        .filter(p => p.birdCount > 0)
+        .map(p => ({
+          cageId: p.cageId, batchId, birdCount: p.birdCount,
+          placedDate, notes: dto.notes ?? null, assignedById: userId,
+          isIsolation: p.isIsolation, isolationReason: p.isIsolation ? p.isolationReason : null,
+        }));
+      if (rowsToInsert.length > 0) {
+        await tx.brooderCageAssignment.createMany({ data: rowsToInsert });
       }
 
       for (const levelId of touchedLevelIds) {
@@ -1228,6 +1233,13 @@ export class BrooderService {
         totalBirds,
         levelsTouched: touchedLevelIds.size,
       };
+    }, {
+      // Safety margin on top of the createMany() optimization above: large
+      // reassignments still do one recomputeLevelRollup() round trip per
+      // touched level, so give the transaction more room than Prisma's
+      // conservative defaults (5s timeout / 2s maxWait) before it gives up.
+      maxWait: 10_000,
+      timeout: 20_000,
     });
 
     if (overCapacityBy > 0) {
