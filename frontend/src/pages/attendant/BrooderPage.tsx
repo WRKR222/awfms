@@ -56,8 +56,16 @@ interface BrooderBatch {
   isActive:         boolean;
 }
 
-interface VaccineEntry    { name: string; dose: string; route?: string; }
-interface SupplementEntry { name: string; dose: string; }
+// `dose` is always the dosage exactly as the report/attendant wrote it
+// (e.g. "SOLVITA(12MLS/120LTS)") — never a converted figure. `quantityUsed`
+// + `unit`, when present, are the amount actually deducted from stock, in
+// the store item's own unit (e.g. 0.012 / "L") — see writeHealthUsageLog()
+// in production-report-reconciliation.service.ts. Kept as two separate
+// fields rather than folded into `dose` so the UI never pairs a converted
+// number with the report's un-converted unit (e.g. showing "0.012MLS",
+// which is neither the report's dosage nor a correct quantity).
+interface VaccineEntry    { name: string; dose: string; route?: string; quantityUsed?: number | null; unit?: string | null; }
+interface SupplementEntry { name: string; dose: string; quantityUsed?: number | null; unit?: string | null; }
 
 interface BrooderLog {
   id:                string;
@@ -168,6 +176,11 @@ function SessionEntry({ log }: { log: BrooderLog }) {
               <span key={i} className="flex items-center gap-1 text-purple-600 dark:text-purple-400">
                 <Syringe className="w-3 h-3 flex-shrink-0" />
                 {v.name}{v.dose ? ` · ${v.dose}` : ''}
+                {v.quantityUsed != null && (
+                  <span className="text-gray-400 dark:text-gray-500">
+                    {' '}({v.quantityUsed}{v.unit ?? ''} used)
+                  </span>
+                )}
               </span>
             ))}
             {(log.supplementsJson && log.supplementsJson.length > 0
@@ -177,6 +190,11 @@ function SessionEntry({ log }: { log: BrooderLog }) {
               <span key={i} className="flex items-center gap-1 text-teal-600 dark:text-teal-400">
                 <FlaskConical className="w-3 h-3 flex-shrink-0" />
                 {s.name}{s.dose ? ` · ${s.dose}` : ''}
+                {s.quantityUsed != null && (
+                  <span className="text-gray-400 dark:text-gray-500">
+                    {' '}({s.quantityUsed}{s.unit ?? ''} used)
+                  </span>
+                )}
               </span>
             ))}
           </div>

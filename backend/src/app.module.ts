@@ -8,6 +8,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AuthModule }     from './auth/auth.module';
 import { PrismaModule }   from './common/prisma/prisma.module';
 import { NotificationsModule } from './common/notifications/notifications.module';
+import { FeedWastageModule } from './common/feed/feed-wastage.module';
 import { FlockModule }    from './modules/flock/flock.module';
 import { FeedModule }     from './modules/feed/feed.module';
 import { HealthModule }   from './modules/health/health.module';
@@ -34,6 +35,7 @@ import { BrooderModule }  from './modules/brooder/brooder.module';
 
     PrismaModule,
     NotificationsModule,
+    FeedWastageModule,
 
     AuthModule,
     UsersModule,      // FIX: was missing — /users routes did not exist at all

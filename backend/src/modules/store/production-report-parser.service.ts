@@ -127,6 +127,18 @@ export class ProductionReportParserService {
     return { headers, previewRows, suggestedMapping, totalRows: rows.length };
   }
 
+  /** The original sheet's header row, in original column order — the same
+   *  order each row's `raw` map is built in (see parseRows() -> `raw: row`
+   *  below). Callers that need to render/persist the report's columns in
+   *  their true original order (rather than trusting a JS object's key
+   *  order, which jsonb does NOT preserve once round-tripped through
+   *  Postgres — see StoreProductionReport.rawHeaders in schema.prisma)
+   *  should call this once at parse/submit time and persist the result
+   *  alongside rawRows. */
+  getHeaders(buffer: Buffer): string[] {
+    return this.readSheet(buffer).headers;
+  }
+
   /** Parse every row into canonical ParsedReportRow shape using a confirmed
    *  mapping. No cross-checking happens here — that's the reconciliation
    *  service's job — this is pure "read the sheet" logic. */

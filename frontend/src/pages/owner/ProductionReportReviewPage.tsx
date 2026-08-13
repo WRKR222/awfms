@@ -42,6 +42,11 @@ interface Report {
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   fileName: string;
   rawRows: any[];
+  // Original sheet column order — see StoreProductionReport.rawHeaders on
+  // the backend. rawRows alone (jsonb) doesn't reliably preserve column
+  // order once persisted; this is what keeps the Director's table matching
+  // the sheet's actual column arrangement.
+  rawHeaders?: string[];
   discrepancyCount: number;
   autofillCount: number;
   matchedCount: number;
@@ -223,7 +228,7 @@ function BatchReportPanel({ batchId }: { batchId: string }) {
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
             Report as uploaded — every column, every row (same table Store sees)
           </p>
-          <ProductionReportTable rows={report.rawRows ?? []} />
+          <ProductionReportTable rows={report.rawRows ?? []} headers={report.rawHeaders} />
         </div>
       </div>
 

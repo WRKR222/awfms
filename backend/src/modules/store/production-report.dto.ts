@@ -228,4 +228,5 @@ export interface PreviewReportResult {
   totalRows: number;
   presentFields: CanonicalField[]; // fields with at least one non-empty value across all rows
   presentItemColumns: { storeItemId: string; storeItemName: string; header: string }[];
+  headers: string[]; // original sheet column order — see StoreProductionReport.rawHeaders
 }

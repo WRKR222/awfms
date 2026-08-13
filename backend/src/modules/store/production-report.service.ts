@@ -32,6 +32,7 @@ export class ProductionReportService {
    *  frontend renders "fit to window, only recorded columns" per §2. */
   async preview(buffer: Buffer, mapping: ProductionReportColumnMapping): Promise<PreviewReportResult> {
     const rows = this.parser.parseRows(buffer, mapping);
+    const headers = this.parser.getHeaders(buffer);
 
     const presentFields = (Object.keys(CANONICAL_FIELD_LABELS) as CanonicalField[]).filter(
       f => mapping.fields[f] != null && rows.some(r => (r as any)[f] !== undefined && (r as any)[f] !== null && (r as any)[f] !== ''),
@@ -47,7 +48,7 @@ export class ProductionReportService {
         .map(id => ({ storeItemId: id, storeItemName: nameById.get(id) ?? '(unknown item)', header: mapping.items[id] }));
     }
 
-    return { rows, totalRows: rows.length, presentFields, presentItemColumns };
+    return { rows, totalRows: rows.length, presentFields, presentItemColumns, headers };
   }
 
   /** Store rejects the parsed table at the verify step (§2a) before any
@@ -91,6 +92,11 @@ export class ProductionReportService {
 
     const parsedRows = this.parser.parseRows(buffer, mapping);
     if (parsedRows.length === 0) throw new BadRequestException('No usable rows found in the file — check the column mapping.');
+    // Original sheet column order — persisted alongside rawRows so the
+    // report table can render columns in the order the file actually had
+    // them, regardless of jsonb's key-order-losing storage of rawRows
+    // itself (see StoreProductionReport.rawHeaders in schema.prisma).
+    const rawHeaders = this.parser.getHeaders(buffer);
 
     const { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage } =
       await this.reconciler.reconcile(batchId, parsedRows, user.id, fileName);
@@ -103,13 +109,13 @@ export class ProductionReportService {
       const saved = await tx.storeProductionReport.upsert({
         where: { batchId },
         create: {
-          batchId, fileName, columnMapping: mapping as any, rawRows: rows as any,
+          batchId, fileName, columnMapping: mapping as any, rawRows: rows as any, rawHeaders,
           status, discrepancyCount: discrepancies.length, autofillCount, matchedCount,
           uploadedById: user.id, appliedAt: now,
           storeVerifiedById: user.id, storeVerifiedAt: now,
         },
         update: {
-          fileName, columnMapping: mapping as any, rawRows: rows as any,
+          fileName, columnMapping: mapping as any, rawRows: rows as any, rawHeaders,
           status, discrepancyCount: discrepancies.length, autofillCount, matchedCount,
           uploadedById: user.id, uploadedAt: now,
           resubmissionCount: { increment: 1 },

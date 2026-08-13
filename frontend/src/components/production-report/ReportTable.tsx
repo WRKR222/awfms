@@ -86,8 +86,17 @@ function rowStatus(row: any): { color: string; label: string } {
   return { color: 'bg-gray-300', label: 'Nothing on this row was cross-checked against system records' };
 }
 
-export function ProductionReportTable({ rows }: {
+export function ProductionReportTable({ rows, headers: orderedHeaders }: {
   rows: any[];
+  /** Original sheet column order (StoreProductionReport.rawHeaders). Pass
+   *  this whenever it's available — rawRows is stored as jsonb, which does
+   *  NOT preserve object key order once round-tripped through Postgres, so
+   *  deriving column order from Object.keys(row.raw) alone (the
+   *  computeRawHeaders() fallback below) can render columns in a different
+   *  order than the uploaded sheet had them, particularly for the
+   *  Director's view of an already-submitted report. Omit only for reports
+   *  saved before this field existed (falls back to computeRawHeaders). */
+  headers?: string[];
   /** @deprecated no longer used — every original column always renders */
   presentFields?: string[];
   /** @deprecated no longer used — every original column always renders */
@@ -96,7 +105,10 @@ export function ProductionReportTable({ rows }: {
   if (rows.length === 0) {
     return <p className="text-sm text-gray-400 text-center py-8">No rows in this report.</p>;
   }
-  const headers = computeRawHeaders(rows);
+  // Prefer the persisted original order; fall back to reconstructing it
+  // from the rows themselves only for older reports that predate
+  // rawHeaders (or if it somehow came back empty).
+  const headers = orderedHeaders && orderedHeaders.length ? orderedHeaders : computeRawHeaders(rows);
 
   return (
     <div className="border border-gray-200 dark:border-dark-border rounded-xl overflow-auto max-h-[420px]">

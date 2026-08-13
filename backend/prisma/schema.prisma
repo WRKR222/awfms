@@ -1952,6 +1952,19 @@ model StoreProductionReport {
   fileName          String                       @map("file_name")
   columnMapping     Json                         @map("column_mapping")   // canonicalField -> source header, as chosen/confirmed at submit time
   rawRows           Json                         @map("raw_rows")         // ParsedReportRow[] incl. per-row/per-field resolution (matched | autofilled | discrepancy)
+  // The ORIGINAL spreadsheet's header order, e.g. ["Date","Week","Day",
+  // "Drugs/Vaccine/Supplement...","mls/bird","Water/lts",...]. rawRows is a
+  // Json (jsonb) column — jsonb explicitly does NOT preserve object key
+  // order (see Postgres docs §8.14), so `Object.keys(row.raw)` on a row
+  // pulled back out of the database can come back in a different order than
+  // the file was uploaded in, even though it was correct at parse time.
+  // Persisting the column order separately, as a native Postgres text
+  // array (which DOES preserve order), is what lets ReportTable render the
+  // report exactly as the sheet was arranged — for Store's own view AND the
+  // Director's — regardless of how jsonb chose to store rawRows. Empty for
+  // reports submitted before this field existed; ReportTable falls back to
+  // deriving order from rawRows for those older rows.
+  rawHeaders        String[]                     @default([]) @map("raw_headers")
   status            StoreProductionReportStatus  @default(PENDING)
   discrepancyCount  Int                          @default(0) @map("discrepancy_count")
   autofillCount     Int                          @default(0) @map("autofill_count")

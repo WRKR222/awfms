@@ -135,6 +135,10 @@ interface Report {
   // per row (see ProductionReportTable). Store needs to see this too, not
   // just the Director — same table, same data, same component.
   rawRows?: any[];
+  // Original sheet column order — see StoreProductionReport.rawHeaders on
+  // the backend. Empty/undefined for reports submitted before this field
+  // existed; ProductionReportTable falls back gracefully in that case.
+  rawHeaders?: string[];
 }
 
 /** Undoes every auto-filled/auto-corrected daily record this report has
@@ -367,7 +371,7 @@ function CurrentReportPanel({ batchId }: { batchId: string }) {
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
             Report as uploaded — every column, every row
           </p>
-          <ProductionReportTable rows={report.rawRows} />
+          <ProductionReportTable rows={report.rawRows} headers={report.rawHeaders} />
         </div>
       )}
 
@@ -444,7 +448,7 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
   // Reject and go fix the mapping/sheet. submit() is only ever reachable
   // from here — there is no "submit" button back on the mapping screen.
   const [step, setStep] = useState<'mapping' | 'verify'>('mapping');
-  const [previewData, setPreviewData] = useState<{ rows: any[]; totalRows: number; presentFields: string[]; presentItemColumns: any[] } | null>(null);
+  const [previewData, setPreviewData] = useState<{ rows: any[]; totalRows: number; presentFields: string[]; presentItemColumns: any[]; headers?: string[] } | null>(null);
 
   const resetAll = () => {
     setFile(null); setHeaders([]); setMapping({ fields: {}, items: {} });
@@ -612,7 +616,7 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
           </div>
 
           {previewData && (
-            <ProductionReportTable rows={previewData.rows} />
+            <ProductionReportTable rows={previewData.rows} headers={previewData.headers} />
           )}
 
           <p className="text-xs text-gray-500">

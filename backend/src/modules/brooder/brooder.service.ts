@@ -41,6 +41,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
+import { FeedWastageService } from '../../common/feed/feed-wastage.service';
 import { StoreInventoryService } from '../store/store-inventory.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DASHBOARD_REFRESH_EVENT } from '../../common/events/app-event-bus';
@@ -103,6 +104,7 @@ export class BrooderService {
     private readonly notifications: NotificationsService,
     private readonly eventEmitter:  EventEmitter2,
     private readonly storeInventory: StoreInventoryService,
+    private readonly feedWastage:   FeedWastageService,
   ) {}
 
   private refresh() {
@@ -1205,20 +1207,15 @@ export class BrooderService {
 
       await tx.brooderCageAssignment.deleteMany({ where: { batchId } });
 
-      // Bulk-insert every placement in a single round trip instead of one
-      // create() per cage — with large layouts (e.g. a 42-cage row) the old
-      // per-cage loop could rack up enough sequential round trips inside the
-      // interactive transaction to blow past Prisma's transaction timeout,
-      // which surfaces later as a confusing "Transaction not found" error.
-      const rowsToInsert = placements
-        .filter(p => p.birdCount > 0)
-        .map(p => ({
-          cageId: p.cageId, batchId, birdCount: p.birdCount,
-          placedDate, notes: dto.notes ?? null, assignedById: userId,
-          isIsolation: p.isIsolation, isolationReason: p.isIsolation ? p.isolationReason : null,
-        }));
-      if (rowsToInsert.length > 0) {
-        await tx.brooderCageAssignment.createMany({ data: rowsToInsert });
+      for (const p of placements) {
+        if (p.birdCount === 0) continue;
+        await tx.brooderCageAssignment.create({
+          data: {
+            cageId: p.cageId, batchId, birdCount: p.birdCount,
+            placedDate, notes: dto.notes ?? null, assignedById: userId,
+            isIsolation: p.isIsolation, isolationReason: p.isIsolation ? p.isolationReason : null,
+          },
+        });
       }
 
       for (const levelId of touchedLevelIds) {
@@ -1233,13 +1230,6 @@ export class BrooderService {
         totalBirds,
         levelsTouched: touchedLevelIds.size,
       };
-    }, {
-      // Safety margin on top of the createMany() optimization above: large
-      // reassignments still do one recomputeLevelRollup() round trip per
-      // touched level, so give the transaction more room than Prisma's
-      // conservative defaults (5s timeout / 2s maxWait) before it gives up.
-      maxWait: 10_000,
-      timeout: 20_000,
     });
 
     if (overCapacityBy > 0) {
@@ -1821,7 +1811,7 @@ export class BrooderService {
     // day. Best-effort — a failure here must never surface as a 500; the
     // feed log itself has already been saved by this point.
     try {
-      await this.recordFeedWastageIfOverIssued({
+      await this.feedWastage.recordIfOverIssued({
         batch,
         entryDate,
         dailyRationKg,
@@ -1884,120 +1874,11 @@ export class BrooderService {
   }
 
   // ── Feed wastage: over-issuance detection + cost (whole-brooder path) ────
-  //
-  // Called right after a BrooderGeneralFeedLog row is saved. Recomputes the
-  // batch's TOTAL feed for that calendar date (every general-log entry,
-  // including the one that just triggered this call — morning + evening
-  // entries are common) and compares it against the HyLine daily ration.
-  //
-  // excessKg is deliberately the INCREMENTAL amount this specific entry
-  // added past the ration, not the day's running total:
-  //   - if the day was already under ration before this entry, and this
-  //     entry alone pushes it over, excessKg = (new total − ration).
-  //   - if the day was ALREADY over ration before this entry (e.g. an
-  //     evening top-up on a day that was already fully fed), the entire
-  //     new entry counts as excess.
-  // That keeps a per-event notification meaningful ("this entry added Xkg
-  // over") while still letting excessKg sum correctly to the day's true
-  // total when rolled up for the daily/weekly/monthly Director summary.
-  //
-  // Cost is priced off the CURRENT StoreItem.unitCostKes for whichever
-  // store item this triggering entry was logged against — the log rows
-  // don't carry a per-entry price snapshot, so this is the best available
-  // figure at write time. If the entry wasn't linked to a store item (feed
-  // logged without a store selection), only the excess kg is recorded —
-  // no cost figure is fabricated.
-  private async recordFeedWastageIfOverIssued(params: {
-    batch: { id: string; batchCode: string };
-    entryDate: Date;
-    dailyRationKg: number;
-    generalFeedLogId: string;
-    feedType: string;
-    storeItemId: string | null;
-    thisEntryKg: number;
-    loggedById: string;
-  }) {
-    const {
-      batch, entryDate, dailyRationKg, generalFeedLogId,
-      feedType, storeItemId, thisEntryKg, loggedById,
-    } = params;
-
-    // No valid ration to compare against (e.g. batch has 0 live birds) —
-    // nothing meaningful to flag.
-    if (!dailyRationKg || dailyRationKg <= 0) return;
-
-    const dayStr        = dayjs(entryDate).format('YYYY-MM-DD');
-    const entryDateStart = new Date(`${dayStr}T00:00:00.000Z`);
-    const entryDateEnd   = new Date(`${dayStr}T23:59:59.999Z`);
-
-    const dayTotal = await this.prisma.brooderGeneralFeedLog.aggregate({
-      where: { batchId: batch.id, entryDate: { gte: entryDateStart, lte: entryDateEnd } },
-      _sum:  { quantityDispensedKg: true },
-    });
-    const dispensedKgTotal = Math.round((dayTotal._sum.quantityDispensedKg ?? 0) * 100) / 100;
-
-    const dispensedBeforeThisEntry = Math.max(0, dispensedKgTotal - thisEntryKg);
-    const excessBefore = Math.max(0, dispensedBeforeThisEntry - dailyRationKg);
-    const excessAfter  = Math.max(0, dispensedKgTotal - dailyRationKg);
-    const excessKg     = Math.round((excessAfter - excessBefore) * 100) / 100;
-
-    // Rounding-noise tolerance — mirrors the 0.05kg tolerance the
-    // under-issuance (missed-feed) check uses, applied here symmetrically.
-    if (excessKg <= 0.05) return;
-
-    let unitCostKes: number | null = null;
-    let storeItemName: string | null = null;
-    if (storeItemId) {
-      const item = await this.prisma.storeItem.findUnique({
-        where:  { id: storeItemId },
-        select: { name: true, unitCostKes: true },
-      });
-      if (item) {
-        storeItemName = item.name;
-        unitCostKes   = Number(item.unitCostKes);
-      }
-    }
-    const excessCostKes = unitCostKes != null
-      ? Math.round(excessKg * unitCostKes * 100) / 100
-      : null;
-
-    await this.prisma.brooderFeedWastageLog.create({
-      data: {
-        batchId:          batch.id,
-        batchCode:        batch.batchCode,
-        generalFeedLogId,
-        feedType,
-        storeItemId,
-        storeItemName,
-        entryDate:        entryDateStart,
-        requiredKgForDay: dailyRationKg,
-        dispensedKgTotal,
-        excessKg,
-        unitCostKes,
-        excessCostKes,
-        loggedById,
-      },
-    });
-
-    const costLine = excessCostKes != null
-      ? ` Cost of the excess: KES ${excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
-        `(${storeItemName} @ KES ${unitCostKes!.toFixed(2)}/kg).`
-      : ' This feed entry was not linked to a store item, so no cost could be calculated.';
-
-    // Director-only — unlike the other Brooder alerts (mortality, weight
-    // anomaly, stock mismatch) this one deliberately does NOT go through
-    // alertRoles(), which also notifies MANAGER. Feed cost/wastage tracking
-    // is Director-facing only.
-    await this.notifications.notifyRole(
-      UserRole.OWNER,
-      'BROODER_FEED_WASTAGE' as any,
-      `Feed Over-Issued — ${batch.batchCode}`,
-      `Batch ${batch.batchCode} has been given ${dispensedKgTotal.toFixed(2)}kg of feed so far today ` +
-      `against a required ${dailyRationKg.toFixed(2)}kg — ${excessKg.toFixed(2)}kg more than estimated.` +
-      costLine,
-      { entityId: batch.id, entityType: 'Brooder' },
-    );
-  }
+  // Moved to FeedWastageService (src/common/feed/feed-wastage.service.ts) so
+  // ProductionReportReconciliationService can share the exact same check for
+  // feed auto-filled from production reports — see that file's header
+  // comment. This class now just calls `this.feedWastage.recordIfOverIssued`
+  // above.
 
   // ── Director feed-wastage summary (daily / weekly / monthly) ─────────────
   //

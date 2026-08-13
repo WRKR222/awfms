@@ -2,6 +2,7 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { NotificationsModule } from '../../common/notifications/notifications.module';
+import { FeedWastageModule } from '../../common/feed/feed-wastage.module';
 import { StoreService } from './store.service';
 import { StoreController } from './store.controller';
 import { StoreInventoryService } from './store-inventory.service';
@@ -25,7 +26,7 @@ import { ProductionReportService } from './production-report.service';
 import { ProductionReportController } from './production-report.controller';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule],
+  imports: [PrismaModule, NotificationsModule, FeedWastageModule],
   providers: [
     StoreService,
     StoreInventoryService,

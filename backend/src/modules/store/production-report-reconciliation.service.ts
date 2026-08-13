@@ -38,6 +38,9 @@ import {
 } from '@prisma/client';
 import { ParsedReportRow, ParsedHealthUsage, EnvReading } from './production-report.dto';
 import { convertToUnit } from '../../common/units/unit-conversion.util';
+import { FeedWastageService } from '../../common/feed/feed-wastage.service';
+import { batchAgeWeeks, brooderRequiredFeedKg } from '../../common/feed/feed-standard.util';
+import dayjs from 'dayjs';
 
 export interface ReconcileOutcome {
   rows: ParsedReportRow[];
@@ -223,7 +226,10 @@ function extractQuantity(raw: string | undefined): { qty: number; unit?: string 
 export class ProductionReportReconciliationService {
   private readonly logger = new Logger(ProductionReportReconciliationService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly feedWastage: FeedWastageService,
+  ) {}
 
   /** Run the full cross-check + autofill pass over every parsed row for a
    *  batch. Mutates the real brooder/production/cage-map tables for anything
@@ -239,7 +245,7 @@ export class ProductionReportReconciliationService {
     // ── Stage detection (§5) ────────────────────────────────────────────────
     const batch = await this.prisma.batch.findUnique({
       where: { id: batchId },
-      select: { batchCode: true, stage: true, houseId: true, currentBirdCount: true },
+      select: { batchCode: true, stage: true, houseId: true, currentBirdCount: true, dateReceived: true },
     });
     if (!batch) throw new BadRequestException('Batch not found');
     const isProduction = batch.stage === BatchStage.PRODUCTION;
@@ -482,7 +488,7 @@ export class ProductionReportReconciliationService {
   private async reconcileFeed(
     row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
     stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER',
-    batch: { batchCode: string; houseId: string },
+    batch: { batchCode: string; houseId: string; currentBirdCount: number; dateReceived: Date },
     feedItems: StoreItem[], aliasMap: Map<string, StoreItem>, discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
   ) {
     // ── Split feed cell (e.g. "chickcrumbs/growers 75:25%") ────────────────
@@ -569,6 +575,35 @@ export class ProductionReportReconciliationService {
     this.logChange(appliedChanges, batchId, row.date, 'BrooderGeneralFeedLog', created.id, 'CREATE', null, created);
     row.resolution.feedKg = 'AUTOFILLED';
     onAutofill();
+
+    // ── Director-facing feed wastage tracking ────────────────────────────
+    // Feed auto-filled from a production report is written straight into
+    // BrooderGeneralFeedLog above, same table the manual "General
+    // population sheet" path writes into — so it needs the exact same
+    // over-issuance check that path runs (see FeedWastageService), or a
+    // batch over-fed entirely via an auto-reconciled report would never
+    // show up in the Director's feed-wastage summary. Best-effort — a
+    // failure here must never surface as a reconciliation error; the feed
+    // log itself has already been saved by this point.
+    try {
+      const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
+      const dailyRationKg = brooderRequiredFeedKg(batch.currentBirdCount, ageWeeks, 1);
+      await this.feedWastage.recordIfOverIssued({
+        batch: { id: batchId, batchCode: batch.batchCode },
+        entryDate: logDate,
+        dailyRationKg,
+        generalFeedLogId: created.id,
+        feedType: created.feedType,
+        storeItemId: matchedFeedItem.id,
+        thisEntryKg: outcome.deltaToApply,
+        loggedById: uploaderId,
+      });
+    } catch (wastageErr: any) {
+      this.logger.warn(
+        `[ProductionReportReconciliation] Feed-wastage check failed for batch ${batchId} ` +
+        `on ${row.date} (${wastageErr?.code ?? wastageErr?.message}). Report row was still applied.`,
+      );
+    }
   }
 
   /** Reconciles a two-way split feed cell — e.g. "chickcrumbs/growers
@@ -588,7 +623,7 @@ export class ProductionReportReconciliationService {
   private async reconcileFeedSplit(
     row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
     stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER',
-    batch: { batchCode: string; houseId: string },
+    batch: { batchCode: string; houseId: string; currentBirdCount: number; dateReceived: Date },
     feedItems: StoreItem[], aliasMap: Map<string, StoreItem>, discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
   ) {
     const portions = row.feedSplit!;
@@ -676,6 +711,32 @@ export class ProductionReportReconciliationService {
       });
       this.logChange(appliedChanges, batchId, row.date, 'BrooderGeneralFeedLog', created.id, 'CREATE', null, created);
       anyAutofilled = true;
+
+      // ── Director-facing feed wastage tracking (per split portion) ──────
+      // Same rationale as the single-item feed path above — each portion is
+      // its own BrooderGeneralFeedLog row, so each needs its own
+      // over-issuance check against the day's running total (which
+      // recordIfOverIssued recomputes fresh each call, so multiple portions
+      // in the same loop stack correctly rather than double-counting).
+      try {
+        const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
+        const dailyRationKg = brooderRequiredFeedKg(batch.currentBirdCount, ageWeeks, 1);
+        await this.feedWastage.recordIfOverIssued({
+          batch: { id: batchId, batchCode: batch.batchCode },
+          entryDate: logDate,
+          dailyRationKg,
+          generalFeedLogId: created.id,
+          feedType: created.feedType,
+          storeItemId: matchedItem.id,
+          thisEntryKg: outcome.deltaToApply,
+          loggedById: uploaderId,
+        });
+      } catch (wastageErr: any) {
+        this.logger.warn(
+          `[ProductionReportReconciliation] Feed-wastage check failed for batch ${batchId} ` +
+          `on ${row.date} split portion "${portion.label}" (${wastageErr?.code ?? wastageErr?.message}). Report row was still applied.`,
+        );
+      }
     }
 
     row.resolution.feedKg = anyDiscrepancy ? 'DISCREPANCY' : anyAutofilled ? 'AUTOFILLED' : anyMatched ? 'MATCHED' : 'DISCREPANCY';
