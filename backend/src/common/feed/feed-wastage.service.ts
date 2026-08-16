@@ -33,6 +33,31 @@ export interface RecordFeedWastageParams {
   loggedById: string;
 }
 
+export interface RecordProductionFeedWastageParams {
+  batch: { id: string; batchCode: string };
+  entryDate: Date;
+  /** The report row's "O.stock" (opening stock) figure — the population of
+   *  record for PRODUCTION-stage feed wastage, see reconciliation service
+   *  for why this is opening stock specifically, never closing stock or
+   *  Batch.currentBirdCount. */
+  populationOpeningStock: number;
+  /** Required feed (kg) for populationOpeningStock over this single day,
+   *  already computed by the caller (feed-standard.util's requiredFeedKg). */
+  requiredKg: number;
+  /** The day's actual reported feed (kg) — EggCollectionSession.feedKg is a
+   *  single whole-day figure, not an incremental entry like the brooder's
+   *  BrooderGeneralFeedLog, so this is compared directly (no "increment
+   *  since last entry" math needed here). */
+  actualKg: number;
+  /** EggCollectionSession.id — reused as the informational pointer the
+   *  brooder path stores in generalFeedLogId (that column has no FK
+   *  constraint; it's a plain string reference either way). */
+  sourceEntityId: string;
+  feedType: string;
+  storeItemId: string | null;
+  loggedById: string;
+}
+
 @Injectable()
 export class FeedWastageService {
   private readonly logger = new Logger(FeedWastageService.name);
@@ -149,6 +174,88 @@ export class FeedWastageService {
       `Feed Over-Issued — ${batch.batchCode}`,
       `Batch ${batch.batchCode} has been given ${dispensedKgTotal.toFixed(2)}kg of feed so far today ` +
       `against a required ${dailyRationKg.toFixed(2)}kg — ${excessKg.toFixed(2)}kg more than estimated.` +
+      costLine,
+      { entityId: batch.id, entityType: 'Brooder' },
+    );
+  }
+
+  // ── Feed wastage: PRODUCTION stage, population = report's opening stock ──
+  //
+  // Companion to recordIfOverIssued() above, for laying batches. The two
+  // differ in one important way: EggCollectionSession.feedKg is a single
+  // whole-day figure that gets overwritten wholesale on correction (see
+  // reconcileFeed's PRODUCTION branch), not an append-only log of
+  // individual entries — so there's no "incremental amount THIS entry
+  // added" to compute here, unlike the brooder path. excessKg is simply
+  // actualKg − requiredKg for the day.
+  //
+  // requiredKg is computed by the caller from the report row's OPENING
+  // STOCK (never closing stock, never Batch.currentBirdCount) — a laying
+  // batch's population of record for a given day is whatever the farm's
+  // own daily sheet says was present that morning, not today's live
+  // headcount.
+  async recordProductionOverIssuance(params: RecordProductionFeedWastageParams) {
+    const {
+      batch, entryDate, populationOpeningStock, requiredKg, actualKg,
+      sourceEntityId, feedType, storeItemId, loggedById,
+    } = params;
+
+    if (!requiredKg || requiredKg <= 0) return;
+
+    const excessKg = Math.round((actualKg - requiredKg) * 100) / 100;
+    // Same rounding-noise tolerance as the brooder check.
+    if (excessKg <= 0.05) return;
+
+    const dayStr         = dayjs(entryDate).format('YYYY-MM-DD');
+    const entryDateStart = new Date(`${dayStr}T00:00:00.000Z`);
+
+    let unitCostKes: number | null = null;
+    let storeItemName: string | null = null;
+    if (storeItemId) {
+      const item = await this.prisma.storeItem.findUnique({
+        where:  { id: storeItemId },
+        select: { name: true, unitCostKes: true },
+      });
+      if (item) {
+        storeItemName = item.name;
+        unitCostKes   = Number(item.unitCostKes);
+      }
+    }
+    const excessCostKes = unitCostKes != null
+      ? Math.round(excessKg * unitCostKes * 100) / 100
+      : null;
+
+    await this.prisma.brooderFeedWastageLog.create({
+      data: {
+        batchId:          batch.id,
+        batchCode:        batch.batchCode,
+        generalFeedLogId: sourceEntityId,
+        feedType,
+        storeItemId,
+        storeItemName,
+        entryDate:        entryDateStart,
+        requiredKgForDay: requiredKg,
+        dispensedKgTotal: actualKg,
+        excessKg,
+        unitCostKes,
+        excessCostKes,
+        loggedById,
+      },
+    });
+
+    const costLine = excessCostKes != null
+      ? ` Cost of the excess: KES ${excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
+        `(${storeItemName} @ KES ${unitCostKes!.toFixed(2)}/kg).`
+      : ' This feed entry was not linked to a store item, so no cost could be calculated.';
+
+    // Director-only, same as the brooder alert.
+    await this.notifications.notifyRole(
+      UserRole.OWNER,
+      'BROODER_FEED_WASTAGE' as any,
+      `Feed Over-Issued — ${batch.batchCode}`,
+      `Batch ${batch.batchCode} was recorded with ${actualKg.toFixed(2)}kg of feed on ${dayStr} ` +
+      `against a required ${requiredKg.toFixed(2)}kg for its reported opening stock of ` +
+      `${populationOpeningStock.toLocaleString()} birds — ${excessKg.toFixed(2)}kg more than estimated.` +
       costLine,
       { entityId: batch.id, entityType: 'Brooder' },
     );

@@ -34,12 +34,13 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
-  FeedType, ProductionReportDiscrepancyType, StoreItem, BatchStage, BrooderLogSession,
+  FeedType, ProductionReportDiscrepancyType, StoreItem, BatchStage, BrooderLogSession, UserRole,
 } from '@prisma/client';
 import { ParsedReportRow, ParsedHealthUsage, EnvReading } from './production-report.dto';
 import { convertToUnit } from '../../common/units/unit-conversion.util';
 import { FeedWastageService } from '../../common/feed/feed-wastage.service';
-import { batchAgeWeeks, brooderRequiredFeedKg } from '../../common/feed/feed-standard.util';
+import { NotificationsService } from '../../common/notifications/notifications.service';
+import { batchAgeWeeks, brooderRequiredFeedKg, requiredFeedKg } from '../../common/feed/feed-standard.util';
 import dayjs from 'dayjs';
 
 export interface ReconcileOutcome {
@@ -229,6 +230,7 @@ export class ProductionReportReconciliationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly feedWastage: FeedWastageService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** Run the full cross-check + autofill pass over every parsed row for a
@@ -520,6 +522,7 @@ export class ProductionReportReconciliationService {
       if (Math.abs(systemFeed - row.feedKg!) < 0.01) {
         row.resolution.feedKg = 'MATCHED';
         onMatch();
+        await this.checkProductionFeedWastage(row, batchId, batch, logDate, existing.id, systemFeed, matchedFeedItem, uploaderId);
         return;
       }
       // Report is authoritative — correct to match it, whether higher or
@@ -533,6 +536,7 @@ export class ProductionReportReconciliationService {
       this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.feedKg', existing.id, 'UPDATE', { feedKg: systemFeed }, { feedKg: row.feedKg! });
       row.resolution.feedKg = 'AUTOFILLED';
       onAutofill();
+      await this.checkProductionFeedWastage(row, batchId, batch, logDate, existing.id, row.feedKg!, matchedFeedItem, uploaderId);
       return;
     }
 
@@ -601,6 +605,53 @@ export class ProductionReportReconciliationService {
     } catch (wastageErr: any) {
       this.logger.warn(
         `[ProductionReportReconciliation] Feed-wastage check failed for batch ${batchId} ` +
+        `on ${row.date} (${wastageErr?.code ?? wastageErr?.message}). Report row was still applied.`,
+      );
+    }
+  }
+
+  // ── PRODUCTION-stage feed wastage: population from the report's OPENING
+  // STOCK only ─────────────────────────────────────────────────────────────
+  //
+  // Unlike the brooder path above (which compares feed against
+  // Batch.currentBirdCount — the live, continuously-updated headcount kept
+  // current by BrooderGeneralMortalityLog/health events), a laying batch's
+  // day-to-day population for feed-wastage purposes comes from the report
+  // itself: the "O.stock" (opening stock) column on that day's row. This is
+  // deliberate — once a batch is in PRODUCTION, the farm's own daily record
+  // sheet IS the population of record for that day (closing stock is
+  // end-of-day, after that day's own losses/culls, so it's not what was
+  // actually present and eating feed that day — opening stock is).
+  //
+  // Best-effort, same as the brooder check: never let a failure here
+  // surface as a reconciliation error, and skip silently (no throw) if the
+  // row didn't carry an opening-stock figure at all — there's no population
+  // to compare against, so there's nothing to flag.
+  private async checkProductionFeedWastage(
+    row: ParsedReportRow, batchId: string,
+    batch: { batchCode: string; dateReceived: Date },
+    logDate: Date, sessionId: string, actualFeedKg: number,
+    matchedFeedItem: StoreItem | null, uploaderId: string,
+  ) {
+    if (row.openingStock == null || row.openingStock <= 0) return;
+    try {
+      const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
+      const feedType = mapFeedType(matchedFeedItem?.name, row.feedType);
+      const requiredKg = requiredFeedKg(row.openingStock, FeedType.LAYER_MASH, ageWeeks, 1);
+      await this.feedWastage.recordProductionOverIssuance({
+        batch: { id: batchId, batchCode: batch.batchCode },
+        entryDate: logDate,
+        populationOpeningStock: row.openingStock,
+        requiredKg,
+        actualKg: actualFeedKg,
+        sourceEntityId: sessionId,
+        feedType,
+        storeItemId: matchedFeedItem?.id ?? null,
+        loggedById: uploaderId,
+      });
+    } catch (wastageErr: any) {
+      this.logger.warn(
+        `[ProductionReportReconciliation] Production feed-wastage check failed for batch ${batchId} ` +
         `on ${row.date} (${wastageErr?.code ?? wastageErr?.message}). Report row was still applied.`,
       );
     }
@@ -754,16 +805,55 @@ export class ProductionReportReconciliationService {
   }
 
   // ── Opening/closing stock (whole-batch) ─────────────────────────────────
+  //
+  // This is also the ONLY place BrooderStockCount rows ever get written —
+  // there's no manual attendant endpoint for it (see brooder.controller.ts),
+  // so a batch's opening/closing stock only ever comes from an uploaded
+  // report. That makes this report's closingStock the most authoritative
+  // whole-batch headcount the farm has: a physical count of what's actually
+  // in the brooder at end of day, as opposed to Batch.currentBirdCount,
+  // which only ever moves by SUBTRACTING logged mortality/culling from
+  // whatever it started at — so it silently drifts from reality if any
+  // death ever went unlogged (bird escaped, uncounted DOA found late,
+  // logging gap, etc.) without a physical count ever correcting it back.
+  // See syncGeneralPopulationFromClosingStock below for how that correction
+  // is applied, and why it's gated on this being the MOST RECENT stock
+  // count/mortality data point the system has for the batch.
   private async reconcileStockCount(
     row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
     discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
   ) {
+    // ── Expected opening stock: the most recent PRIOR stock count's closing
+    // figure. Not assumed to be exactly "yesterday" — reports can have gaps
+    // between upload dates, so this looks back to whatever the last known
+    // count actually was, however many days ago that fell. ──────────────────
+    const priorCount = await this.prisma.brooderStockCount.findFirst({
+      where: { batchId, logDate: { lt: logDate } },
+      orderBy: { logDate: 'desc' },
+      select: { closingStock: true, logDate: true },
+    });
+    const expectedOpeningStock = priorCount?.closingStock ?? null;
+    const openingVariance = expectedOpeningStock != null ? row.openingStock! - expectedOpeningStock : 0;
+
+    // ── Same-day arithmetic check: this row's OWN closing stock should equal
+    // its own opening stock minus its own recorded mortality/culling —
+    // independent of any cross-day variance above. A row can have a correct
+    // opening figure yet still not add up internally (sheet math error). ──
+    const dayLosses = (row.mortality ?? 0) + (row.culling ?? 0);
+    const expectedClosingFromRow = Math.max(0, row.openingStock! - dayLosses);
+    const arithmeticMismatch = row.closingStock! !== expectedClosingFromRow;
+
+    const varianceReason = openingVariance !== 0
+      ? `Opening stock (${row.openingStock}) differs from the previous count's closing stock (${expectedOpeningStock}) by ${Math.abs(openingVariance)} bird(s).`
+      : null;
+
     const existing = await this.prisma.brooderStockCount.findUnique({ where: { batchId_logDate: { batchId, logDate } } });
     if (!existing) {
       const created = await this.prisma.brooderStockCount.create({
         data: {
           batchId, logDate,
           openingStock: row.openingStock!, closingStock: row.closingStock!,
+          expectedOpeningStock, variance: openingVariance, varianceReason,
           mortalityCount: row.mortality ?? 0, cullingCount: row.culling ?? 0,
           notes: `Auto-filled ${noteSuffix}`, loggedById: uploaderId,
         },
@@ -774,17 +864,129 @@ export class ProductionReportReconciliationService {
     } else if (existing.openingStock === row.openingStock && existing.closingStock === row.closingStock) {
       row.resolution.stockCount = 'MATCHED';
       onMatch();
+      // Even an unchanged row gets its variance figures backfilled if this
+      // is the first time a prior count exists to compare against (e.g. the
+      // previous day's report was only uploaded after this one).
+      if (existing.expectedOpeningStock !== expectedOpeningStock || existing.variance !== openingVariance) {
+        await this.prisma.brooderStockCount.update({
+          where: { id: existing.id },
+          data: { expectedOpeningStock, variance: openingVariance, varianceReason },
+        });
+      }
     } else {
       // Report is authoritative — correct to match it.
       const before = { openingStock: existing.openingStock, closingStock: existing.closingStock };
       await this.prisma.brooderStockCount.update({
         where: { id: existing.id },
-        data: { openingStock: row.openingStock!, closingStock: row.closingStock! },
+        data: {
+          openingStock: row.openingStock!, closingStock: row.closingStock!,
+          expectedOpeningStock, variance: openingVariance, varianceReason,
+        },
       });
       this.logChange(appliedChanges, batchId, row.date, 'BrooderStockCount', existing.id, 'UPDATE', before, { openingStock: row.openingStock!, closingStock: row.closingStock! });
       row.resolution.stockCount = 'AUTOFILLED';
       onAutofill();
     }
+
+    // ── Flag 1: opening count doesn't match the previous count's closing
+    // figure — a physical recount found more/fewer birds than expected. ────
+    if (openingVariance !== 0 && expectedOpeningStock != null) {
+      const direction = openingVariance > 0 ? 'increased' : 'decreased';
+      await this.alertStockMismatch(
+        batchId,
+        `Stock Count Mismatch — Batch`,
+        `The opening stock reported for ${row.date} is ${row.openingStock!.toLocaleString()}, but the previous count ` +
+        `(${dayjs(priorCount!.logDate).format('YYYY-MM-DD')}) closed at ${expectedOpeningStock.toLocaleString()} — ` +
+        `the count has ${direction} by ${Math.abs(openingVariance).toLocaleString()} bird(s) with no recorded reason.`,
+      );
+    }
+
+    // ── Flag 2: this row's own closing stock doesn't reconcile against its
+    // own opening stock minus its own recorded mortality/culling. ──────────
+    if (arithmeticMismatch) {
+      await this.alertStockMismatch(
+        batchId,
+        `Stock Count Doesn't Add Up — Batch`,
+        `On ${row.date}, the report shows opening stock ${row.openingStock} minus ${dayLosses} mortality/culling, ` +
+        `which should leave ${expectedClosingFromRow}, but the reported closing stock is ${row.closingStock} instead — ` +
+        `a ${Math.abs(row.closingStock! - expectedClosingFromRow)}-bird discrepancy in how the sheet's own figures were calculated.`,
+      );
+    }
+
+    await this.syncGeneralPopulationFromClosingStock(batchId, logDate, row.closingStock!, row.date, appliedChanges);
+  }
+
+  // ── BROODER_STOCK_MISMATCH — Manager + Owner facing, best-effort ────────
+  // Covers two distinct kinds of stock-count problems (see the two call
+  // sites in reconcileStockCount): a cross-day drift between one count's
+  // closing figure and the next count's opening figure, and a same-day
+  // arithmetic error where a row's own closing stock doesn't follow from
+  // its own opening stock minus its own recorded losses. Both are
+  // visibility-only — never blocks the report's auto-fill — since the farm
+  // still needs the raw sheet figures captured even when they don't add up;
+  // this just makes sure a human looks at it.
+  private async alertStockMismatch(batchId: string, title: string, message: string) {
+    try {
+      const batch = await this.prisma.batch.findUnique({ where: { id: batchId }, select: { batchCode: true } });
+      const fullTitle = `${title} ${batch?.batchCode ?? ''}`.trim();
+      await Promise.all([
+        this.notifications.notifyRole(UserRole.MANAGER, 'BROODER_STOCK_MISMATCH', fullTitle, message, { entityId: batchId, entityType: 'Brooder' }),
+        this.notifications.notifyRole(UserRole.OWNER, 'BROODER_STOCK_MISMATCH', fullTitle, message, { entityId: batchId, entityType: 'Brooder' }),
+      ]);
+    } catch (err: any) {
+      this.logger.warn(`[ProductionReportReconciliation] Stock-mismatch alert failed for batch ${batchId} (${err?.message}).`);
+    }
+  }
+
+  // ── Sync Batch.currentBirdCount ("general population") to a report's
+  // closing stock ──────────────────────────────────────────────────────────
+  //
+  // Batch.currentBirdCount is otherwise a pure decrement counter — every
+  // BrooderGeneralMortalityLog entry subtracts from it, but nothing ever
+  // corrects it back up against an actual physical count. A closing-stock
+  // figure on the daily record sheet IS that physical count, so once a
+  // report carries one, it should become the batch's general population —
+  // not just be filed away in BrooderStockCount for reference.
+  //
+  // Guarded to only apply when this row's date is the MOST RECENT
+  // population data point the system has for the batch (the latest of any
+  // existing BrooderStockCount or BrooderGeneralMortalityLog entry) — a
+  // backdated/historical report being reconciled after the fact must never
+  // roll the live count backward to an old closing-stock figure, since
+  // mortality logged since then has already moved it further.
+  private async syncGeneralPopulationFromClosingStock(
+    batchId: string, logDate: Date, closingStock: number, rowDateStr: string,
+    appliedChanges: AppliedChangeInput[],
+  ) {
+    const [latestStockCount, latestMortality, batch] = await Promise.all([
+      this.prisma.brooderStockCount.findFirst({
+        where: { batchId, logDate: { not: logDate } }, orderBy: { logDate: 'desc' }, select: { logDate: true },
+      }),
+      this.prisma.brooderGeneralMortalityLog.findFirst({
+        where: { batchId }, orderBy: { logDate: 'desc' }, select: { logDate: true },
+      }),
+      this.prisma.batch.findUnique({ where: { id: batchId }, select: { currentBirdCount: true } }),
+    ]);
+    if (!batch) return;
+
+    const latestKnownDate = [latestStockCount?.logDate, latestMortality?.logDate]
+      .filter((d): d is Date => !!d)
+      .reduce<Date | undefined>((max, d) => (!max || d.getTime() > max.getTime() ? d : max), undefined);
+
+    if (latestKnownDate && logDate.getTime() < latestKnownDate.getTime()) {
+      // A more recent stock count or mortality entry already exists — this
+      // report row is backdated, so leave the live count alone.
+      return;
+    }
+
+    if (batch.currentBirdCount === closingStock) return;
+
+    const before = batch.currentBirdCount;
+    await this.prisma.batch.update({ where: { id: batchId }, data: { currentBirdCount: closingStock } });
+    this.logChange(
+      appliedChanges, batchId, rowDateStr, 'Batch.currentBirdCount', batchId, 'UPDATE',
+      { currentBirdCount: before }, { currentBirdCount: closingStock },
+    );
   }
 
   // ── Cage reassignment / recount (per-cage rows) ─────────────────────────

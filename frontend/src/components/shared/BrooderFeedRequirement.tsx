@@ -121,7 +121,12 @@ function RowLine({ row }: { row: FeedRequirementRow }) {
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-gray-500 dark:text-gray-400 flex-shrink-0">{l.label}</span>
                     <span className="font-mono text-gray-700 dark:text-gray-200 truncate">{l.batchCode}</span>
-                    <span className="text-gray-400 flex-shrink-0">{l.birdCount.toLocaleString()}b</span>
+                    <span
+                      className="text-gray-400 flex-shrink-0"
+                      title={l.populationAsOf ? `Population updated as of ${new Date(l.populationAsOf).toLocaleDateString()}` : 'Population not yet counted'}
+                    >
+                      {l.birdCount.toLocaleString()}b
+                    </span>
                     {isEarlyLevel && <EarlyPhaseBadge />}
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">

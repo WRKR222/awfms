@@ -112,6 +112,11 @@ export interface FeedRequirementLevel {
   label:               string;
   batchCode:           string | null;
   birdCount:           number;
+  /** Live cage/level count — updates as counts happen (mortality,
+   *  reassignment, physical recounts), not sourced from a production
+   *  report. Render as "updated as of {date}" rather than implying the
+   *  figure is as-of today. Null if this level has never been assigned. */
+  populationAsOf:      string | null;
   hylineWeek:          number | null;
   gramsPerBirdPerDay:  number | null;
   dailyRationKg:       number | null;

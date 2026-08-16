@@ -672,6 +672,12 @@ export class BrooderService {
             birdCount: a.birdCount,
             placedDate: a.placedDate,
             notes:     a.notes,
+            // This level's population is a LIVE count (moves as cage-map
+            // reassignments/mortality/counts happen), not a value pulled
+            // from a production report — so the UI shows it labeled with
+            // when it was last touched, rather than implying it's tied to
+            // a specific report date.
+            populationAsOf: a.updatedAt,
           } : null,
           // ── Per-cage breakdown ── population, mortality, reassignment,
           // and weighing are recorded per cage; this is the level's rollup
@@ -688,6 +694,7 @@ export class BrooderService {
               notes:           cage.assignment.notes,
               isIsolation:     cage.assignment.isIsolation,
               isolationReason: cage.assignment.isolationReason,
+              populationAsOf:  cage.assignment.updatedAt,
             } : null,
           })),
           batch: batch ? {
@@ -2385,6 +2392,11 @@ export class BrooderService {
             label:               l.label,
             batchCode:           l.batch?.batchCode ?? null,
             birdCount:           l.assignment?.birdCount ?? 0,
+            // Live cage/level count — updates as counts happen, not sourced
+            // from a production report. Surfaced so the UI can label the
+            // figure "updated as of {date}" instead of implying it's as of
+            // today or as of a report date.
+            populationAsOf:      l.assignment?.populationAsOf ?? null,
             hylineWeek:          l.hylineWeek,
             gramsPerBirdPerDay:  l.gramsPerBirdPerDay,
             // weekly
