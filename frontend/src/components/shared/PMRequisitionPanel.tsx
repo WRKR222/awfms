@@ -6,6 +6,10 @@
 // requisition against the current week (top-up on a week in progress — may
 // land on an emergency plan if the week's weekly plan was already
 // submitted) or the coming week (the routine one, due by Thursday).
+//
+// A week is not limited to a single requisition — the PM can send several
+// separate lists across the week, so every one for the week is shown here,
+// not just the first.
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
@@ -30,7 +34,9 @@ function RequisitionCard({ requisition, weekStart, label }: { requisition: any; 
         <div className="flex items-center gap-2">
           <ClipboardList className="w-4 h-4 text-brand-green" />
           <div>
-            <p className="text-sm font-bold text-gray-700 dark:text-gray-200">PM Item Requisition — {label}</p>
+            <p className="text-sm font-bold text-gray-700 dark:text-gray-200">
+              PM Item Requisition — {label} <span className="text-gray-400 font-normal">({requisition.requisitionRef})</span>
+            </p>
             <p className="text-[11px] text-gray-400">{weekStart.format('D MMM')} – {weekStart.add(6, 'day').format('D MMM YYYY')}</p>
           </div>
         </div>
@@ -64,6 +70,11 @@ function RequisitionCard({ requisition, weekStart, label }: { requisition: any; 
                       Not in store
                     </span>
                   )}
+                  {it.dailyBreakdown && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                      By day
+                    </span>
+                  )}
                 </span>
                 <span className="text-gray-400">{Number(it.quantityNeeded).toFixed(2)} {it.storeItem?.unit ?? it.customItemUnit ?? ''}</span>
               </div>
@@ -93,13 +104,12 @@ export function PMRequisitionPanel() {
     queryFn: () => api.get('/store/pm-requisitions', { params: { weekStartDate: nextWeekStr } }).then(r => r.data),
   });
 
-  const thisWeekReq = thisWeekReqs[0];
-  const nextWeekReq = nextWeekReqs[0];
-
+  // A week isn't limited to one requisition — show every one Store/Director
+  // can see for each week, not just the first.
   const dow = dayjs().day();
   const pastPmDeadline = dow === 5 || dow === 6; // Fri / Sat — past the PM's own Thursday deadline for next week
 
-  if (!thisWeekReq && !nextWeekReq) {
+  if (thisWeekReqs.length === 0 && nextWeekReqs.length === 0) {
     // Avoid clutter once we're well past the routine Thursday deadline and
     // there's still nothing for either week — a gentle note is only useful
     // context earlier in the week.
@@ -114,8 +124,12 @@ export function PMRequisitionPanel() {
 
   return (
     <div className="space-y-3">
-      {thisWeekReq && <RequisitionCard requisition={thisWeekReq} weekStart={thisWeek} label="This Week" />}
-      {nextWeekReq && <RequisitionCard requisition={nextWeekReq} weekStart={nextWeek} label="Next Week" />}
+      {thisWeekReqs.map((req: any) => (
+        <RequisitionCard key={req.id} requisition={req} weekStart={thisWeek} label="This Week" />
+      ))}
+      {nextWeekReqs.map((req: any) => (
+        <RequisitionCard key={req.id} requisition={req} weekStart={nextWeek} label="Next Week" />
+      ))}
     </div>
   );
 }

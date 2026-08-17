@@ -1,7 +1,7 @@
 // src/modules/store/pm-requisition.dto.ts
 import {
   IsString, IsOptional, IsArray, ValidateNested,
-  IsNumber, Min, IsDateString, MaxLength,
+  IsNumber, Min, IsDateString, MaxLength, IsObject,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
@@ -36,8 +36,17 @@ export class PMRequisitionItemDto {
   @MaxLength(50)
   customItemUnit?: string;
 
+  /** Total for the week. If dailyBreakdown is also supplied, the service
+   *  recomputes this as the sum of the daily figures — send your best total
+   *  here regardless so a client that skips daily entry still works. */
   @Transform(toNum) @IsNumber() @Min(0.01)
   quantityNeeded: number;
+
+  /** Day-specific amount needed from Store, straight off the weekly plan —
+   *  e.g. { MON: 5, WED: 5, FRI: 10 }. Optional; omit for a flat weekly total. */
+  @IsOptional()
+  @IsObject()
+  dailyBreakdown?: Record<string, number>;
 
   @IsOptional()
   @IsString()
@@ -45,7 +54,12 @@ export class PMRequisitionItemDto {
   notes?: string;
 }
 
-/** Upserts the DRAFT requisition for the given week — creates one if none exists yet. */
+/**
+ * Upserts the current DRAFT requisition for the given week — reuses an
+ * in-progress draft if one exists, or opens a new one. A week can have any
+ * number of SUBMITTED requisitions (PM is not limited to one submission per
+ * week); this only ever touches the single active DRAFT.
+ */
 export class SavePMRequisitionDraftDto {
   /** ISO date string for the Monday of the target (coming) week */
   @IsDateString()

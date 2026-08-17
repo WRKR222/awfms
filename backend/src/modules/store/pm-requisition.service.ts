@@ -56,8 +56,14 @@ export class PMRequisitionService {
   /**
    * Create-or-update the DRAFT requisition for a given week in one call —
    * PM can keep coming back to add/remove/adjust items right up until they
-   * submit. Only one requisition per week; reuses the existing DRAFT if
-   * present rather than creating duplicates.
+   * submit. Reuses the existing DRAFT for the week if present.
+   *
+   * A week is NOT limited to one submission: once a requisition has been
+   * SUBMITTED, calling this again simply opens a brand new DRAFT for the
+   * same week (a fresh requisitionRef) rather than blocking — the PM can
+   * key in and send as many separate item lists as the week needs, e.g. a
+   * routine Thursday list followed by a later top-up when something extra
+   * comes up. Each submission is folded into the issuance plan independently.
    */
   async saveDraft(
     dto: {
@@ -69,6 +75,7 @@ export class PMRequisitionService {
         customItemName?: string;
         customItemUnit?: string;
         quantityNeeded: number;
+        dailyBreakdown?: Record<string, number>;
         notes?: string;
       }[];
     },
@@ -94,23 +101,17 @@ export class PMRequisitionService {
     }
     const sunday = sundayOf(monday);
 
+    // Reuse THIS user's own in-progress draft for the week if one exists.
+    // Scoped to createdById so one PM's still-being-assembled draft never
+    // gets silently reused/overwritten by another PM raising a separate list
+    // for the same week.
     let requisition = await this.prisma.pMItemRequisition.findFirst({
-      where: { weekStartDate: monday, status: 'DRAFT' as any },
+      where: { weekStartDate: monday, status: 'DRAFT' as any, createdById: userId },
     });
 
     if (!requisition) {
-      // Can't open a new draft once the week has already been submitted —
-      // edit the submitted one via updateSubmitted-style flow is out of
-      // scope; keep this simple and predictable.
-      const alreadySubmitted = await this.prisma.pMItemRequisition.findFirst({
-        where: { weekStartDate: monday, status: 'SUBMITTED' as any },
-      });
-      if (alreadySubmitted) {
-        throw new BadRequestException(
-          `A requisition for the week of ${dayjs(monday).format('D MMM YYYY')} has already been submitted (${alreadySubmitted.requisitionRef}).`,
-        );
-      }
-
+      // No cap on how many requisitions a week can have — a prior SUBMITTED
+      // list (or several) for this week is fine; this just opens the next one.
       const count = await this.prisma.pMItemRequisition.count();
       requisition = await this.prisma.pMItemRequisition.create({
         data: {
@@ -133,14 +134,25 @@ export class PMRequisitionService {
     await this.prisma.pMItemRequisitionItem.deleteMany({ where: { requisitionId: requisition.id } });
     if (dto.items.length > 0) {
       await this.prisma.pMItemRequisitionItem.createMany({
-        data: dto.items.map((item) => ({
-          requisitionId: requisition!.id,
-          storeItemId: item.storeItemId ?? null,
-          customItemName: item.storeItemId ? null : item.customItemName!.trim(),
-          customItemUnit: item.storeItemId ? null : (item.customItemUnit?.trim() || null),
-          quantityNeeded: item.quantityNeeded,
-          notes: item.notes,
-        })),
+        data: dto.items.map((item) => {
+          // When a daily breakdown is given, it — not the raw quantityNeeded
+          // the client sent — is the source of truth for the weekly total,
+          // exactly like IssuancePlanItem.quantityPlanned derives from its
+          // own dailyBreakdown.
+          const breakdown = item.dailyBreakdown;
+          const qty = breakdown
+            ? Object.values(breakdown).reduce((s: number, v: unknown) => s + Number(v ?? 0), 0)
+            : Number(item.quantityNeeded);
+          return {
+            requisitionId: requisition!.id,
+            storeItemId: item.storeItemId ?? null,
+            customItemName: item.storeItemId ? null : item.customItemName!.trim(),
+            customItemUnit: item.storeItemId ? null : (item.customItemUnit?.trim() || null),
+            quantityNeeded: isFinite(qty) && qty > 0 ? qty : Number(item.quantityNeeded),
+            dailyBreakdown: breakdown ?? undefined,
+            notes: item.notes,
+          };
+        }),
       });
     }
 
@@ -212,6 +224,52 @@ export class PMRequisitionService {
     }
     await this.prisma.pMItemRequisition.delete({ where: { id } });
     return { deleted: true };
+  }
+
+  /**
+   * Delete a single line — from a DRAFT (simple removal) or from an
+   * already-SUBMITTED requisition. For a submitted, catalog-backed line that
+   * was already folded into an Issuance Plan draft, this cascades: the
+   * linked IssuancePlanItem is removed too, so Store, the Director, and
+   * anyone else looking at that plan see the line disappear along with it.
+   * Refused if stock has already been issued against that plan line — the
+   * requisition line can't un-happen at that point.
+   */
+  async deleteItem(requisitionId: string, itemId: string, userId: string) {
+    const requisition = await this.prisma.pMItemRequisition.findUnique({
+      where: { id: requisitionId },
+      include: { items: true },
+    });
+    if (!requisition) throw new NotFoundException('Requisition not found');
+    if (requisition.createdById !== userId) {
+      throw new ForbiddenException('You can only delete items from your own requisition');
+    }
+    const item = requisition.items.find((i) => i.id === itemId);
+    if (!item) throw new NotFoundException('Requisition item not found');
+
+    // Cascade to the injected IssuancePlanItem first — this is where the
+    // "already issued" guard lives, so a failure here leaves both records
+    // untouched rather than deleting the requisition line but not its plan line.
+    if (item.issuancePlanItemId) {
+      await this.issuancePlans.removeInjectedItem(item.issuancePlanItemId);
+    }
+
+    await this.prisma.pMItemRequisitionItem.delete({ where: { id: itemId } });
+
+    if (requisition.status === ('SUBMITTED' as any)) {
+      const lineLabel = item.storeItemId ? 'A catalog item line' : `The custom line "${item.customItemName ?? 'an item'}"`;
+      await this.notifications.notifyRole(
+        UserRole.STORE,
+        NotificationType.PM_REQUISITION_ITEM_REMOVED as any,
+        'PM Removed an Item from a Requisition',
+        `${lineLabel} was removed from requisition ${requisition.requisitionRef} ` +
+          `(week of ${dayjs(requisition.weekStartDate).format('D MMM YYYY')})` +
+          `${item.issuancePlanItemId ? ' — it has also been pulled off the issuance plan draft it was folded into.' : '.'}`,
+        { entityId: requisitionId, entityType: 'PMItemRequisition' },
+      );
+    }
+
+    return this.getById(requisitionId);
   }
 
   async list(filters: { weekStartDate?: string; status?: string }) {

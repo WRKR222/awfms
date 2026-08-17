@@ -47,4 +47,14 @@ export class PMRequisitionController {
   remove(@Param('id') id: string, @CurrentUser() user: any) {
     return this.svc.deleteDraft(id, user.id);
   }
+
+  // Delete a single line — works on a DRAFT or an already-SUBMITTED
+  // requisition. If the line was already folded into an issuance plan draft,
+  // that plan line is cascade-deleted too, so the change is visible to Store,
+  // the Director, and anyone else with plan-view access, not just the PM.
+  @Delete(':id/items/:itemId')
+  @RequirePermission(Permission.PM_REQUISITION_CREATE)
+  removeItem(@Param('id') id: string, @Param('itemId') itemId: string, @CurrentUser() user: any) {
+    return this.svc.deleteItem(id, itemId, user.id);
+  }
 }

@@ -161,6 +161,7 @@ enum NotificationType {
   PM_REQUISITION_SUBMITTED       // PM submitted their weekly item list to Store
   PM_REQUISITION_EARLY_REMINDER  // Tuesday heads-up — 2 days before the Thursday deadline
   PM_REQUISITION_DUE_REMINDER    // Thursday — due today
+  PM_REQUISITION_ITEM_REMOVED    // PM deleted a line from an already-submitted requisition
   // Store production report verification
   PRODUCTION_REPORT_SUBMITTED    // Store uploaded/re-uploaded a report — Director-facing
   PRODUCTION_REPORT_DISCREPANCY  // report contains mismatches vs. system-recorded data — Director-facing
@@ -2234,7 +2235,15 @@ model PMItemRequisitionItem {
   customItemName  String? @map("custom_item_name")
   /// Optional free-text unit for a custom item (e.g. "bags", "rolls").
   customItemUnit  String? @map("custom_item_unit")
+  /// Total quantity needed for the week. When dailyBreakdown is supplied this
+  /// is derived (summed) from it, mirroring how IssuancePlanItem.quantityPlanned
+  /// relates to its own dailyBreakdown.
   quantityNeeded  Decimal @map("quantity_needed") @db.Decimal(10, 3)
+  /// Optional JSON: { MON, TUE, WED, THU, FRI, SAT, SUN } — the day-specific
+  /// amount the PM needs from Store, straight off the weekly plan. Carried
+  /// through verbatim onto the injected IssuancePlanItem for catalog lines
+  /// (WEEKLY target plans only — EMERGENCY items have no daily shape).
+  dailyBreakdown  Json?   @map("daily_breakdown")
   notes           String?
 
   /// Set once this line has been folded into an IssuancePlan (WEEKLY or,

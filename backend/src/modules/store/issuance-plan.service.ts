@@ -241,9 +241,18 @@ export class IssuancePlanService {
     for (const line of pendingLines) {
       // Guaranteed non-null by the pendingLines filter above (custom lines are excluded).
       const storeItemId = line.storeItemId!;
-      const qty = Number(line.quantityNeeded);
       const unitPrice = Number(line.storeItem!.unitCostKes);
       const notes = `PM requisition ${requisition.requisitionRef}${line.notes ? ` — ${line.notes}` : ''}`;
+
+      // Day-specific amounts only make sense on a WEEKLY plan (EMERGENCY
+      // items have no daily shape) — carry the PM's per-day figures straight
+      // through so Store sees the same MON..SUN split the PM entered against
+      // the weekly plan, rather than a single lump total.
+      const breakdown = (line.dailyBreakdown as Record<string, number> | null) ?? null;
+      const dailyBreakdown = targetPlan.type === 'WEEKLY' && breakdown ? breakdown : undefined;
+      const qty = dailyBreakdown
+        ? Object.values(dailyBreakdown).reduce((s: number, v: unknown) => s + Number(v ?? 0), 0)
+        : Number(line.quantityNeeded);
 
       const planItem = await this.prisma.issuancePlanItem.create({
         data: {
@@ -251,6 +260,7 @@ export class IssuancePlanService {
           storeItemId,
           quantityPlanned: qty,
           unitPriceKes: unitPrice,
+          dailyBreakdown: dailyBreakdown ?? Prisma.JsonNull,
           source: 'PM_REQUISITION',
           status: 'PENDING_DIRECTOR',
           notes,
@@ -325,6 +335,26 @@ export class IssuancePlanService {
         createdById,
       },
     });
+  }
+
+  /**
+   * Cascade delete for a PM requisition line: removes the IssuancePlanItem
+   * that was auto-folded into a plan draft from that line, so the deletion
+   * is reflected wherever the plan is visible (Store, Director, and anyone
+   * else with plan-view access) — not just on the requisition itself.
+   * Refused once stock has actually been issued against the line, same as
+   * the manual removal path in updatePlan.
+   */
+  async removeInjectedItem(issuancePlanItemId: string) {
+    const item = await this.prisma.issuancePlanItem.findUnique({ where: { id: issuancePlanItemId } });
+    if (!item) return; // already gone — nothing to cascade
+    if (Number(item.quantityIssued) > 0) {
+      throw new BadRequestException(
+        'This item already has stock issued against it on the issuance plan, so the requisition line behind it cannot be deleted.',
+      );
+    }
+    await this.prisma.issuancePlanItem.delete({ where: { id: issuancePlanItemId } });
+    await this.syncPhase(item.planId);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
