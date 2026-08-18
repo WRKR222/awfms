@@ -53,7 +53,7 @@ export class PMRequisitionController {
   // that plan line is cascade-deleted too, so the change is visible to Store,
   // the Director, and anyone else with plan-view access, not just the PM.
   @Delete(':id/items/:itemId')
-  @RequirePermission(Permission.PM_REQUISITION_CREATE)
+  @RequirePermission(Permission.PM_REQUISITION_ITEM_DELETE)
   removeItem(@Param('id') id: string, @Param('itemId') itemId: string, @CurrentUser() user: any) {
     return this.svc.deleteItem(id, itemId, user.id);
   }

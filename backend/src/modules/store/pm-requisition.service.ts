@@ -241,9 +241,15 @@ export class PMRequisitionService {
       include: { items: true },
     });
     if (!requisition) throw new NotFoundException('Requisition not found');
-    if (requisition.createdById !== userId) {
-      throw new ForbiddenException('You can only delete items from your own requisition');
-    }
+    // No longer restricted to the requisition's own creator — this is now
+    // gated purely by PM_REQUISITION_ITEM_DELETE at the controller (granted
+    // to MANAGER, STORE, and OWNER — every role that can view a
+    // requisition), so any of them can remove a line, e.g. Store cleaning
+    // up a line the PM already handled outside the system, or the Director
+    // pulling a line during review. userId is still passed through (used
+    // below for the notification and kept in the signature for that and
+    // any future auditing use) even though it's no longer checked against
+    // requisition.createdById.
     const item = requisition.items.find((i) => i.id === itemId);
     if (!item) throw new NotFoundException('Requisition item not found');
 

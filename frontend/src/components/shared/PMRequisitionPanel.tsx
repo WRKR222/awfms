@@ -10,10 +10,10 @@
 // A week is not limited to a single requisition — the PM can send several
 // separate lists across the week, so every one for the week is shown here,
 // not just the first.
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
-import { ClipboardList, Clock, CheckCircle } from 'lucide-react';
+import { ClipboardList, Clock, CheckCircle, X } from 'lucide-react';
 
 function nextMondayDate() {
   const today = dayjs();
@@ -27,7 +27,13 @@ function thisMondayDate() {
   return today.subtract(daysSinceMon, 'day').startOf('day');
 }
 
-function RequisitionCard({ requisition, weekStart, label }: { requisition: any; weekStart: any; label: string }) {
+function RequisitionCard({
+  requisition, weekStart, label, onDeleteItem, deletingItemId,
+}: {
+  requisition: any; weekStart: any; label: string;
+  onDeleteItem: (requisitionId: string, itemId: string) => void;
+  deletingItemId: string | null;
+}) {
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-4">
       <div className="flex items-center justify-between mb-3">
@@ -76,7 +82,17 @@ function RequisitionCard({ requisition, weekStart, label }: { requisition: any; 
                     </span>
                   )}
                 </span>
-                <span className="text-gray-400">{Number(it.quantityNeeded).toFixed(2)} {it.storeItem?.unit ?? it.customItemUnit ?? ''}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-400">{Number(it.quantityNeeded).toFixed(2)} {it.storeItem?.unit ?? it.customItemUnit ?? ''}</span>
+                  <button
+                    onClick={() => onDeleteItem(requisition.id, it.id)}
+                    disabled={deletingItemId === it.id}
+                    className="p-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500 disabled:opacity-50 flex-shrink-0"
+                    title="Delete this item — also removes it from the issuance plan draft it was folded into"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -90,6 +106,7 @@ function RequisitionCard({ requisition, weekStart, label }: { requisition: any; 
 }
 
 export function PMRequisitionPanel() {
+  const qc = useQueryClient();
   const thisWeek = thisMondayDate();
   const nextWeek = nextMondayDate();
   const thisWeekStr = thisWeek.format('YYYY-MM-DD');
@@ -103,6 +120,22 @@ export function PMRequisitionPanel() {
     queryKey: ['pm-requisitions', nextWeekStr],
     queryFn: () => api.get('/store/pm-requisitions', { params: { weekStartDate: nextWeekStr } }).then(r => r.data),
   });
+
+  // Lets Store/Director remove a line straight from this panel too — not
+  // just the PM who originally sent it. Backed by
+  // PM_REQUISITION_ITEM_DELETE (granted to MANAGER, STORE, and OWNER), and
+  // cascades to whichever issuance plan draft the line was folded into,
+  // same as the PM's own delete on RequisitionsPage.
+  const deleteItem = useMutation({
+    mutationFn: ({ requisitionId, itemId }: { requisitionId: string; itemId: string }) =>
+      api.delete(`/store/pm-requisitions/${requisitionId}/items/${itemId}`).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['pm-requisitions'] });
+    },
+  });
+  const handleDeleteItem = (requisitionId: string, itemId: string) =>
+    deleteItem.mutate({ requisitionId, itemId });
+  const deletingItemId = deleteItem.isPending ? deleteItem.variables?.itemId ?? null : null;
 
   // A week isn't limited to one requisition — show every one Store/Director
   // can see for each week, not just the first.
@@ -125,10 +158,10 @@ export function PMRequisitionPanel() {
   return (
     <div className="space-y-3">
       {thisWeekReqs.map((req: any) => (
-        <RequisitionCard key={req.id} requisition={req} weekStart={thisWeek} label="This Week" />
+        <RequisitionCard key={req.id} requisition={req} weekStart={thisWeek} label="This Week" onDeleteItem={handleDeleteItem} deletingItemId={deletingItemId} />
       ))}
       {nextWeekReqs.map((req: any) => (
-        <RequisitionCard key={req.id} requisition={req} weekStart={nextWeek} label="Next Week" />
+        <RequisitionCard key={req.id} requisition={req} weekStart={nextWeek} label="Next Week" onDeleteItem={handleDeleteItem} deletingItemId={deletingItemId} />
       ))}
     </div>
   );

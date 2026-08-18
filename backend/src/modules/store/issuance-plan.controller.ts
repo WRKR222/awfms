@@ -4,6 +4,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Param,
   Body,
   Query,
@@ -65,6 +66,17 @@ export class IssuancePlanController {
   @RequirePermission(Permission.INVENTORY_MANAGE)
   submit(@Param('id') id: string, @CurrentUser() user: any) {
     return this.svc.submitPlan(id, user.id);
+  }
+
+  // ── Delete (Store only, DRAFT plans only) ──────────────────────────────────
+  // Store can pull a draft plan entirely, e.g. one created by mistake or no
+  // longer needed for the week. Refused once the plan has been submitted —
+  // see IssuancePlanService.deletePlan for the full reasoning.
+
+  @Delete(':id')
+  @RequirePermission(Permission.INVENTORY_MANAGE)
+  remove(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.svc.deletePlan(id, user.role);
   }
 
   // ── Update (edit line items) — Store (DRAFT) or Director (their queue) ─────

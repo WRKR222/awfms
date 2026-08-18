@@ -382,6 +382,70 @@ export class IssuancePlanService {
     await this.syncPhase(item.planId);
   }
 
+  /**
+   * Delete an issuance plan DRAFT — Store-only, and only while the plan
+   * hasn't been submitted yet (phase === DRAFT). Once submitted, a plan
+   * has real Accountant/Director approval state and possibly stock issued
+   * against it, so it's refused past that point — Store should instead
+   * remove/edit individual items via updatePlan, or let the normal
+   * approve/reject flow run its course.
+   *
+   * IssuancePlanItem.plan has onDelete: Cascade, so deleting the plan
+   * itself would normally cascade-delete its items automatically — BUT two
+   * OTHER tables hold their own (non-cascading) FK into an IssuancePlanItem:
+   *   • PMItemRequisitionItem.issuancePlanItemId (a PM requisition line that
+   *     was auto-folded into this plan draft — see injectRequisitionItemsIntoPlan)
+   *   • StoreStockOut.issuancePlanItemId (traceability from an actual
+   *     stock-out back to the plan line it was issued against)
+   * Those rows still pointing at an item being cascade-deleted would hit
+   * the same class of FK violation fixed in removeInjectedItem/deleteItem
+   * above (e.g. pm_item_requisition_items_issuance_plan_item_id_fkey) — so
+   * both are cleared (set to null) for every item on this plan, in the same
+   * transaction, before the plan itself is deleted.
+   *
+   * quantityIssued should always be 0 for every item on a still-DRAFT plan
+   * (nothing has been approved yet, and approval gates stock-out), but the
+   * check below is kept as a defensive guard rather than assumed.
+   */
+  async deletePlan(id: string, userRole: string) {
+    if (userRole !== UserRole.STORE) {
+      throw new ForbiddenException('Only Store can delete an issuance plan draft');
+    }
+    const plan = await this.prisma.issuancePlan.findUnique({
+      where: { id },
+      include: { items: true },
+    });
+    if (!plan) throw new NotFoundException('Issuance plan not found');
+    if (plan.phase !== ('DRAFT' as any)) {
+      throw new BadRequestException(
+        'Only a DRAFT issuance plan can be deleted — it has already been submitted for approval.',
+      );
+    }
+    const issuedItem = plan.items.find((i) => Number(i.quantityIssued) > 0);
+    if (issuedItem) {
+      throw new BadRequestException(
+        'This plan already has stock issued against at least one item, so it cannot be deleted.',
+      );
+    }
+
+    const itemIds = plan.items.map((i) => i.id);
+    await this.prisma.$transaction(async (tx) => {
+      if (itemIds.length > 0) {
+        await tx.pMItemRequisitionItem.updateMany({
+          where: { issuancePlanItemId: { in: itemIds } },
+          data: { issuancePlanItemId: null },
+        });
+        await tx.storeStockOut.updateMany({
+          where: { issuancePlanItemId: { in: itemIds } },
+          data: { issuancePlanItemId: null },
+        });
+      }
+      await tx.issuancePlan.delete({ where: { id } });
+    });
+
+    return { deleted: true };
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // UPDATE (edit line items)
   // Store can edit DRAFT plans any day. Director can edit items in their queue.

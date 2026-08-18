@@ -35,6 +35,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.STOCK_REQUEST_VIEW,     // PM can view their stock requests
     Permission.PM_REQUISITION_CREATE,  // PM sends the weekly item list to Store
     Permission.PM_REQUISITION_VIEW,    // PM can view their own requisitions
+    Permission.PM_REQUISITION_ITEM_DELETE, // PM can remove a line from any requisition they can view
     // Tally sign-off — Production Manager is a primary signer
     Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
     Permission.PRODUCTION_REPORT_VIEW,  // Manager can see the store production report for their batches
@@ -101,6 +102,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.STOCK_REQUEST_VIEW,      // Store can view stock requests
     Permission.STOCK_REQUEST_FULFILL,   // Store can fulfill/issue stock requests
     Permission.PM_REQUISITION_VIEW,     // Store can see the PM's weekly item list
+    Permission.PM_REQUISITION_ITEM_DELETE, // Store can remove a line from a PM's requisition
     // Tally sign-off — Store signs the egg tally
     Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
     // Store production report verification — Store uploads AND resolves it (see below)

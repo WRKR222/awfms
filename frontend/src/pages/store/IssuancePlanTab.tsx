@@ -7,7 +7,7 @@ import { useAuthStore } from '../../stores/auth.store';
 import dayjs from '../../lib/dayjs';
 import {
   ClipboardList, Plus, X, CheckCircle, XCircle, FileDown,
-  ChevronDown, ChevronUp, AlertTriangle, Zap, Pencil, Calculator,
+  ChevronDown, ChevronUp, AlertTriangle, Zap, Pencil, Calculator, Trash2,
 } from 'lucide-react';
 import { useIssuableStoreItems, FEED_CATEGORIES, MEDICATION_CATEGORIES } from '../../hooks/useIssuableStoreItems';
 import { PMRequisitionPanel } from '../../components/shared/PMRequisitionPanel';
@@ -284,6 +284,13 @@ function PlanCard({
     onSuccess: () => { onRefresh(); },
   });
 
+  // Store-only, DRAFT-only — see IssuancePlanService.deletePlan for why
+  // it's refused once submitted (approval state + possible stock-outs).
+  const deleteMutation = useMutation({
+    mutationFn: () => api.delete(`/store/issuance-plans/${plan.id}`).then(r => r.data),
+    onSuccess: () => { onRefresh(); },
+  });
+
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
@@ -307,6 +314,7 @@ function PlanCard({
   const pendingCount = items.length - approvedCount - rejectedCount;
 
   const canSubmit = userRole === 'STORE' && plan.phase === 'DRAFT';
+  const canDelete = userRole === 'STORE' && plan.phase === 'DRAFT';
   // Next-week weekly plans may only be submitted on Saturday; a plan for the
   // current week is treated as a catch-up (missed last Saturday) and can be
   // submitted any day. Emergency plans are never gated by day of week.
@@ -459,11 +467,30 @@ function PlanCard({
                 <FileDown className="w-3.5 h-3.5" /> {pdfLoading ? 'Generating…' : 'Download PDF'}
               </button>
             )}
+
+            {canDelete && (
+              <button
+                onClick={() => {
+                  if (window.confirm(`Delete draft plan ${plan.planRef}? This cannot be undone.`)) {
+                    deleteMutation.mutate();
+                  }
+                }}
+                disabled={deleteMutation.isPending}
+                className="flex items-center gap-1.5 border border-red-200 dark:border-red-900/40 text-red-500 px-4 py-2 rounded-xl text-xs font-semibold hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> {deleteMutation.isPending ? 'Deleting…' : 'Delete Draft'}
+              </button>
+            )}
           </div>
 
           {submitMutation.isError && (
             <p className="text-xs text-red-500">
               {(submitMutation.error as any)?.response?.data?.message ?? 'Failed to submit plan.'}
+            </p>
+          )}
+          {deleteMutation.isError && (
+            <p className="text-xs text-red-500">
+              {(deleteMutation.error as any)?.response?.data?.message ?? 'Failed to delete plan.'}
             </p>
           )}
           {pdfError && <p className="text-xs text-red-500">{pdfError}</p>}
