@@ -635,10 +635,44 @@ export class ProductionReportReconciliationService {
       return;
     }
 
+    // Population of record for THIS day's ration, for wastage purposes —
+    // the report's own opening-stock figure for the day, same rule
+    // checkProductionFeedWastage already applies for PRODUCTION-stage rows
+    // (see that method's header comment). Falls back to the batch's live
+    // currentBirdCount only when the row didn't carry an opening-stock
+    // figure at all (e.g. a sheet that omits stock columns entirely) — using
+    // TODAY's count for a HISTORICAL report date silently mis-prices the
+    // ration on every day where mortality has occurred since that date was
+    // uploaded, which is what was happening here before this fix.
+    const wastagePopulation = row.openingStock ?? batch.currentBirdCount;
+    const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
+    const dailyRationKg = brooderRequiredFeedKg(wastagePopulation, ageWeeks, 1);
+
     const outcome = resolveReportCorrection(systemTotal, row.feedKg!, 'kg');
     if (outcome.resolution === 'MATCHED') {
       row.resolution.feedKg = 'MATCHED';
       onMatch();
+      // Nothing new is being written this call (the report already agrees
+      // with what's logged), so recordIfOverIssued's incremental-delta math
+      // has nothing to work with — but the day itself may still be over
+      // ration (e.g. an attendant logged it directly). backfillDayIfOverIssued
+      // is the day-total, idempotent check built for exactly this case: it
+      // no-ops if this day was already flagged, and otherwise sums the
+      // day's existing entries against the correct per-day ration.
+      try {
+        await this.feedWastage.backfillDayIfOverIssued({
+          batch: { id: batchId, batchCode: batch.batchCode },
+          entryDate: logDate,
+          dailyRationKg,
+          loggedById: uploaderId,
+          notify: true,
+        });
+      } catch (wastageErr: any) {
+        this.logger.warn(
+          `[ProductionReportReconciliation] Feed-wastage backfill check failed for batch ${batchId} ` +
+          `on ${row.date} (${wastageErr?.code ?? wastageErr?.message}).`,
+        );
+      }
       return;
     }
     const created = await this.prisma.brooderGeneralFeedLog.create({
@@ -665,8 +699,6 @@ export class ProductionReportReconciliationService {
     // failure here must never surface as a reconciliation error; the feed
     // log itself has already been saved by this point.
     try {
-      const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
-      const dailyRationKg = brooderRequiredFeedKg(batch.currentBirdCount, ageWeeks, 1);
       await this.feedWastage.recordIfOverIssued({
         batch: { id: batchId, batchCode: batch.batchCode },
         entryDate: logDate,
@@ -688,13 +720,14 @@ export class ProductionReportReconciliationService {
   // ── PRODUCTION-stage feed wastage: population from the report's OPENING
   // STOCK only ─────────────────────────────────────────────────────────────
   //
-  // Unlike the brooder path above (which compares feed against
-  // Batch.currentBirdCount — the live, continuously-updated headcount kept
-  // current by BrooderGeneralMortalityLog/health events), a laying batch's
-  // day-to-day population for feed-wastage purposes comes from the report
-  // itself: the "O.stock" (opening stock) column on that day's row. This is
-  // deliberate — once a batch is in PRODUCTION, the farm's own daily record
-  // sheet IS the population of record for that day (closing stock is
+  // Same rule the brooder path above now applies too (see wastagePopulation
+  // in reconcileFeed/reconcileFeedSplit) — a laying batch's day-to-day
+  // population for feed-wastage purposes comes from the report itself: the
+  // "O.stock" (opening stock) column on that day's row, never
+  // Batch.currentBirdCount, which is only today's live count and is wrong
+  // for pricing a HISTORICAL report date. This is deliberate — once a batch
+  // is in PRODUCTION, the farm's own daily record sheet IS the population of
+  // record for that day (closing stock is
   // end-of-day, after that day's own losses/culls, so it's not what was
   // actually present and eating feed that day — opening stock is).
   //
@@ -831,6 +864,14 @@ export class ProductionReportReconciliationService {
     let anyMatched = false;
     let anyDiscrepancy = false;
 
+    // Same population-of-record rule as the single-item feed path above —
+    // use the report's own opening stock for this day's ration, not
+    // today's live currentBirdCount, so a report uploaded for a past date
+    // isn't priced against a headcount that has since changed.
+    const wastagePopulation = row.openingStock ?? batch.currentBirdCount;
+    const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
+    const dailyRationKg = brooderRequiredFeedKg(wastagePopulation, ageWeeks, 1);
+
     for (const portion of portions) {
       const matchedItem = resolveItemMatch(portion.label, feedItems, aliasMap);
       if (!matchedItem) {
@@ -875,8 +916,12 @@ export class ProductionReportReconciliationService {
       // recordIfOverIssued recomputes fresh each call, so multiple portions
       // in the same loop stack correctly rather than double-counting).
       try {
-        const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
-        const dailyRationKg = brooderRequiredFeedKg(batch.currentBirdCount, ageWeeks, 1);
+        // NOTE: dailyRationKg here is the outer, opening-stock-based figure
+        // computed once above — do NOT redeclare it against
+        // batch.currentBirdCount inside this loop (that redeclaration used
+        // to shadow the outer one and silently re-introduce the "priced
+        // against today's live count instead of the report day's opening
+        // stock" bug for every split-feed row).
         await this.feedWastage.recordIfOverIssued({
           batch: { id: batchId, batchCode: batch.batchCode },
           entryDate: logDate,
@@ -897,8 +942,30 @@ export class ProductionReportReconciliationService {
 
     row.resolution.feedKg = anyDiscrepancy ? 'DISCREPANCY' : anyAutofilled ? 'AUTOFILLED' : anyMatched ? 'MATCHED' : 'DISCREPANCY';
     if (anyDiscrepancy) return;
-    if (anyAutofilled) onAutofill();
-    else onMatch();
+    if (anyAutofilled) {
+      onAutofill();
+    } else {
+      onMatch();
+      // Same gap as the single-item path: if every portion already matched,
+      // nothing new was written this call, so recordIfOverIssued (which
+      // only computes an INCREMENTAL delta) never ran. backfillDayIfOverIssued
+      // is idempotent per (batch, day) — safe to call even though the
+      // single-item path may also call it for a different day's row.
+      try {
+        await this.feedWastage.backfillDayIfOverIssued({
+          batch: { id: batchId, batchCode: batch.batchCode },
+          entryDate: logDate,
+          dailyRationKg,
+          loggedById: uploaderId,
+          notify: true,
+        });
+      } catch (wastageErr: any) {
+        this.logger.warn(
+          `[ProductionReportReconciliation] Feed-wastage backfill check failed for batch ${batchId} ` +
+          `on ${row.date} (split, ${wastageErr?.code ?? wastageErr?.message}).`,
+        );
+      }
+    }
   }
 
   private pushUnmatchedFeedDiscrepancy(row: ParsedReportRow, discrepancies: ReconcileOutcome['discrepancies']) {
