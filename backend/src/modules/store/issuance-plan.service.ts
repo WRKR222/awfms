@@ -338,21 +338,46 @@ export class IssuancePlanService {
   }
 
   /**
+   * Guard-check ONLY — throws if this IssuancePlanItem already has stock
+   * issued against it, without deleting anything. Split out from
+   * removeInjectedItem() so a caller that also owns a row with a FK into
+   * this item (PMItemRequisitionItem.issuancePlanItemId) can check the
+   * guard, delete ITS OWN row first (clearing the FK reference), and only
+   * then call removeInjectedItem() — see PMRequisitionService.deleteItem
+   * for why that ordering matters: deleting the IssuancePlanItem first
+   * fails with a FK violation
+   * (pm_item_requisition_items_issuance_plan_item_id_fkey) while a
+   * requisition item row still points at it.
+   */
+  async assertItemRemovable(issuancePlanItemId: string) {
+    const item = await this.prisma.issuancePlanItem.findUnique({ where: { id: issuancePlanItemId } });
+    if (!item) return null; // already gone — nothing to cascade
+    if (Number(item.quantityIssued) > 0) {
+      throw new BadRequestException(
+        'This item already has stock issued against it on the issuance plan, so the requisition line behind it cannot be deleted.',
+      );
+    }
+    return item;
+  }
+
+  /**
    * Cascade delete for a PM requisition line: removes the IssuancePlanItem
    * that was auto-folded into a plan draft from that line, so the deletion
    * is reflected wherever the plan is visible (Store, Director, and anyone
    * else with plan-view access) — not just on the requisition itself.
    * Refused once stock has actually been issued against the line, same as
    * the manual removal path in updatePlan.
+   *
+   * IMPORTANT — caller contract: if the row calling this also holds a FK
+   * into this IssuancePlanItem (e.g. PMItemRequisitionItem.issuancePlanItemId),
+   * that FK-holding row must already be deleted (or nulled out) BEFORE this
+   * runs, via assertItemRemovable() for the guard check first. Deleting the
+   * IssuancePlanItem while another row still references it violates the FK
+   * constraint. See PMRequisitionService.deleteItem for the correct order.
    */
   async removeInjectedItem(issuancePlanItemId: string) {
-    const item = await this.prisma.issuancePlanItem.findUnique({ where: { id: issuancePlanItemId } });
+    const item = await this.assertItemRemovable(issuancePlanItemId);
     if (!item) return; // already gone — nothing to cascade
-    if (Number(item.quantityIssued) > 0) {
-      throw new BadRequestException(
-        'This item already has stock issued against it on the issuance plan, so the requisition line behind it cannot be deleted.',
-      );
-    }
     await this.prisma.issuancePlanItem.delete({ where: { id: issuancePlanItemId } });
     await this.syncPhase(item.planId);
   }

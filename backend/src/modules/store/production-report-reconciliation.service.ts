@@ -40,7 +40,7 @@ import { ParsedReportRow, ParsedHealthUsage, EnvReading } from './production-rep
 import { convertToUnit } from '../../common/units/unit-conversion.util';
 import { FeedWastageService } from '../../common/feed/feed-wastage.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { batchAgeWeeks, brooderRequiredFeedKg, requiredFeedKg, checkWeightViolation } from '../../common/feed/feed-standard.util';
+import { batchAgeWeeks, brooderRequiredFeedKg, requiredFeedKg, checkWeightViolation, hylineGramsPerBirdPerDay, HYLINE_SCHEDULE_MAX_WEEK } from '../../common/feed/feed-standard.util';
 import { WeightAlertService } from '../weight/weight-alert.service';
 import dayjs from 'dayjs';
 
@@ -712,7 +712,37 @@ export class ProductionReportReconciliationService {
     try {
       const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
       const feedType = mapFeedType(matchedFeedItem?.name, row.feedType);
-      const requiredKg = requiredFeedKg(row.openingStock, FeedType.LAYER_MASH, ageWeeks, 1);
+
+      // TODO(reminder — confirm with Director): g/bird/day for this check
+      // is now sourced from the SAME live HYLINE_SCHEDULE table shown on the
+      // Director/Manager dashboard (BrooderControlStandardPanel — the one
+      // with the weekly feed AND min/max weight columns), via
+      // hylineGramsPerBirdPerDay(), instead of the old flat 115g
+      // "production phase" bracket in gramsPerBirdPerDay(). Requested
+      // 2026-08-18 while the current batch is still at week 8, so this
+      // hasn't been exercised past the table's last real row yet.
+      //
+      // HYLINE_SCHEDULE only has rows through week 19 (Prelayer) — it's a
+      // REARING chart, not an in-lay one — so hylineStandard() clamps any
+      // ageWeeks beyond that to week 19's figure (89g/bird). The Director
+      // still needs to supply real production-phase (in-lay, week 20+)
+      // g/bird/day figures to extend the table; until that happens, every
+      // row for a batch past week 19 is under-priced against week 19's
+      // pre-lay ration, not a true in-lay one. The warning below fires the
+      // first time that clamp is actually hit so it doesn't go unnoticed.
+      if (ageWeeks > HYLINE_SCHEDULE_MAX_WEEK) {
+        this.logger.warn(
+          `[ProductionReportReconciliation] Batch ${batch.batchCode} is at week ${ageWeeks}, ` +
+          `past the HYLINE_SCHEDULE table's last row (week ${HYLINE_SCHEDULE_MAX_WEEK}). ` +
+          `Feed-wastage requiredKg for ${row.date} is being clamped to week ${HYLINE_SCHEDULE_MAX_WEEK}'s ` +
+          `pre-lay ration — real in-lay g/bird/day figures still need to be added to the schedule.`,
+        );
+      }
+
+      const requiredKg = requiredFeedKg(
+        row.openingStock, FeedType.LAYER_MASH, ageWeeks, 1,
+        (_feedType, aw) => hylineGramsPerBirdPerDay(aw),
+      );
       await this.feedWastage.recordProductionOverIssuance({
         batch: { id: batchId, batchCode: batch.batchCode },
         entryDate: logDate,

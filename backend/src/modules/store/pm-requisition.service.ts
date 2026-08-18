@@ -247,14 +247,25 @@ export class PMRequisitionService {
     const item = requisition.items.find((i) => i.id === itemId);
     if (!item) throw new NotFoundException('Requisition item not found');
 
-    // Cascade to the injected IssuancePlanItem first — this is where the
+    // Guard-check the injected IssuancePlanItem FIRST — this is where the
     // "already issued" guard lives, so a failure here leaves both records
     // untouched rather than deleting the requisition line but not its plan line.
+    // This only checks; it does not delete anything yet.
+    if (item.issuancePlanItemId) {
+      await this.issuancePlans.assertItemRemovable(item.issuancePlanItemId);
+    }
+
+    // Delete the requisition item BEFORE the IssuancePlanItem it points to.
+    // PMItemRequisitionItem.issuancePlanItemId is a FK into IssuancePlanItem;
+    // deleting the IssuancePlanItem first (the old order) violates
+    // pm_item_requisition_items_issuance_plan_item_id_fkey because this row
+    // is still referencing it. Deleting the child first clears that
+    // reference so the plan item can then be removed cleanly below.
+    await this.prisma.pMItemRequisitionItem.delete({ where: { id: itemId } });
+
     if (item.issuancePlanItemId) {
       await this.issuancePlans.removeInjectedItem(item.issuancePlanItemId);
     }
-
-    await this.prisma.pMItemRequisitionItem.delete({ where: { id: itemId } });
 
     if (requisition.status === ('SUBMITTED' as any)) {
       const lineLabel = item.storeItemId ? 'A catalog item line' : `The custom line "${item.customItemName ?? 'an item'}"`;

@@ -147,9 +147,17 @@ export function batchAgeWeeks(anchorDate: Date, referenceDate: Date = farmNow())
   return Math.max(1, Math.floor(Math.max(0, ageInDays) / 7) + 1);
 }
 
+/** Last week the HYLINE_SCHEDULE table has a real row for (19 = Prelayer,
+ *  the end of the rearing chart — the farm has not yet supplied
+ *  production-phase (in-lay) week rows past this point). Exported so
+ *  callers that reuse this table for the production/laying stage can
+ *  detect when a batch has aged past what the table actually covers,
+ *  rather than silently trusting the clamped week-19 value. */
+export const HYLINE_SCHEDULE_MAX_WEEK = 19;
+
 /** Returns the HyLine standard for a given age in weeks (1-indexed, clamped to 1-19). */
 export function hylineStandard(ageWeeks: number): HyLineWeekStandard {
-  const week = Math.max(1, Math.min(19, Math.round(ageWeeks)));
+  const week = Math.max(1, Math.min(HYLINE_SCHEDULE_MAX_WEEK, Math.round(ageWeeks)));
   return HYLINE_SCHEDULE[week - 1];
 }
 
