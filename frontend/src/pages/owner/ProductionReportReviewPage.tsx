@@ -18,7 +18,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
-import { AlertTriangle, CheckCircle, XCircle, Download, RefreshCw, FileSpreadsheet } from 'lucide-react';
+import { AlertTriangle, CheckCircle, XCircle, Download, RefreshCw, FileSpreadsheet, Scale } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import { ProductionReportTable } from '../../components/production-report/ReportTable';
 
@@ -169,6 +169,152 @@ function NeedsInputPanel({ report }: { report: Report }) {
   );
 }
 
+interface WeightAlert {
+  id: string;
+  batchId: string;
+  sampleDate: string;
+  averageWeightG: string | number;
+  standardMinG: number;
+  standardMaxG: number;
+  ageWeeks: number;
+  direction: 'BELOW_MIN' | 'ABOVE_MAX';
+  deviationG: string | number;
+  deviationPct: string | number;
+  feedContext: { note: string; totalDispensedKg: number; recommendedKg: number | null; pctOfRecommended: number | null; windowDays: number } | null;
+  mortalityContext: { note: string; totalDeaths: number; cumulativePct: number | null; standardCeilingPct: number | null; overCeiling: boolean; windowDays: number } | null;
+  aiAnalysis: string | null;
+  status: 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
+  createdAt: string;
+  batch?: { batchCode: string; house?: { name: string } | null };
+}
+
+function useWeightAlerts(batchId: string) {
+  return useQuery<WeightAlert[]>({
+    queryKey: ['weight-alerts', batchId],
+    queryFn: () => api.get('/weight/alerts', { params: { batchId } }).then(r => r.data),
+    enabled: !!batchId,
+  });
+}
+
+/** Director's "average weight is outside the HyLine standard band" queue
+ *  for this batch — separate from the report's own discrepancy list
+ *  because there's nothing to approve/reject here (see
+ *  ProductionReportDiscrepancyType.WEIGHT doc comment: it's persisted
+ *  pre-resolved and never enters that gate). Every flag carries the
+ *  cross-referenced feed-intake and mortality context captured at the
+ *  moment it was raised, plus the AI's best-effort read on likely cause —
+ *  see WeightAlertService.evaluateWeightSample() on the backend. */
+function WeightAlertsPanel({ batchId }: { batchId: string }) {
+  const qc = useQueryClient();
+  const { data: alerts = [], isLoading } = useWeightAlerts(batchId);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const setStatus = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: 'ACKNOWLEDGED' | 'RESOLVED' }) =>
+      api.patch(`/weight/alerts/${id}/status`, { status }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['weight-alerts', batchId] }),
+  });
+
+  if (isLoading || alerts.length === 0) return null;
+
+  const open = alerts.filter(a => a.status !== 'RESOLVED');
+  if (open.length === 0) return null;
+
+  return (
+    <div className="bg-white dark:bg-dark-card rounded-2xl border border-red-200 dark:border-red-900/40 p-5 space-y-3">
+      <div className="flex items-center gap-2">
+        <Scale className="w-4 h-4 text-red-500" />
+        <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+          Weight vs. HyLine standard — {open.length} flag{open.length === 1 ? '' : 's'}
+        </p>
+      </div>
+      <p className="text-xs text-gray-500">
+        Recorded average weight fell outside the standard min/max band for the batch's age. Each flag below is
+        cross-referenced against recent feed intake and mortality to help judge the likely cause — expand for detail.
+      </p>
+      <div className="space-y-2">
+        {open.map(a => {
+          const isBelow = a.direction === 'BELOW_MIN';
+          const expanded = expandedId === a.id;
+          return (
+            <div key={a.id} className="border border-red-100 dark:border-red-900/30 rounded-xl overflow-hidden">
+              <button
+                onClick={() => setExpandedId(expanded ? null : a.id)}
+                className="w-full flex items-start gap-2 bg-red-50 dark:bg-red-900/10 px-3 py-3 text-left"
+              >
+                <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                    Week {a.ageWeeks} — {Number(a.averageWeightG).toFixed(0)}g is {Math.abs(Number(a.deviationG)).toFixed(0)}g
+                    ({Math.abs(Number(a.deviationPct)).toFixed(1)}%) {isBelow ? 'below minimum' : 'above maximum'}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Standard band: {a.standardMinG}–{a.standardMaxG}g · {dayjs(a.sampleDate).format('D MMM YYYY')}
+                    {a.status === 'ACKNOWLEDGED' && ' · Acknowledged'}
+                  </p>
+                </div>
+              </button>
+
+              {expanded && (
+                <div className="p-3 space-y-3 border-t border-red-100 dark:border-red-900/30">
+                  {a.feedContext && (
+                    <div className="bg-gray-50 dark:bg-dark-bg rounded-lg p-3">
+                      <p className="text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1">
+                        Feed intake, last {a.feedContext.windowDays} days
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {a.feedContext.totalDispensedKg}kg dispensed
+                        {a.feedContext.recommendedKg != null && ` vs. ${a.feedContext.recommendedKg}kg recommended`}
+                        {a.feedContext.pctOfRecommended != null && ` (${a.feedContext.pctOfRecommended.toFixed(0)}%)`}
+                      </p>
+                      <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">{a.feedContext.note}</p>
+                    </div>
+                  )}
+                  {a.mortalityContext && (
+                    <div className={`rounded-lg p-3 ${a.mortalityContext.overCeiling ? 'bg-red-50 dark:bg-red-900/10' : 'bg-gray-50 dark:bg-dark-bg'}`}>
+                      <p className="text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1">
+                        Mortality, last {a.mortalityContext.windowDays} days
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {a.mortalityContext.totalDeaths} death(s)
+                        {a.mortalityContext.cumulativePct != null && ` · Cumulative ${a.mortalityContext.cumulativePct}%`}
+                        {a.mortalityContext.standardCeilingPct != null && ` vs. HyLine ceiling ${a.mortalityContext.standardCeilingPct}%`}
+                      </p>
+                      <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">{a.mortalityContext.note}</p>
+                    </div>
+                  )}
+                  {a.aiAnalysis && (
+                    <div className="bg-blue-50 dark:bg-blue-900/10 rounded-lg p-3">
+                      <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 mb-1">AI analysis</p>
+                      <p className="text-xs text-gray-700 dark:text-gray-300">{a.aiAnalysis}</p>
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    {a.status === 'OPEN' && (
+                      <button
+                        onClick={() => setStatus.mutate({ id: a.id, status: 'ACKNOWLEDGED' })}
+                        className="text-xs font-semibold text-amber-600 hover:underline"
+                      >
+                        Acknowledge
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setStatus.mutate({ id: a.id, status: 'RESOLVED' })}
+                      className="text-xs font-semibold text-brand-green hover:underline"
+                    >
+                      Mark resolved
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function BatchReportPanel({ batchId }: { batchId: string }) {
   const { data: report, isLoading, isFetching, refetch } = useBatchReport(batchId);
 
@@ -232,6 +378,7 @@ function BatchReportPanel({ batchId }: { batchId: string }) {
         </div>
       </div>
 
+      <WeightAlertsPanel batchId={batchId} />
       <NeedsInputPanel report={report} />
     </div>
   );

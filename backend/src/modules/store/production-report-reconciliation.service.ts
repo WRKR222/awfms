@@ -40,7 +40,8 @@ import { ParsedReportRow, ParsedHealthUsage, EnvReading } from './production-rep
 import { convertToUnit } from '../../common/units/unit-conversion.util';
 import { FeedWastageService } from '../../common/feed/feed-wastage.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { batchAgeWeeks, brooderRequiredFeedKg, requiredFeedKg } from '../../common/feed/feed-standard.util';
+import { batchAgeWeeks, brooderRequiredFeedKg, requiredFeedKg, checkWeightViolation } from '../../common/feed/feed-standard.util';
+import { WeightAlertService } from '../weight/weight-alert.service';
 import dayjs from 'dayjs';
 
 export interface ReconcileOutcome {
@@ -53,6 +54,12 @@ export interface ReconcileOutcome {
     systemValue: string | null;
     reportValue: string | null;
     notes?: string;
+    // Set for WEIGHT discrepancies — they're informational (nothing to
+    // approve/reject; the standard-band comparison is the whole story,
+    // already fully captured in the linked ProductionWeightAlert) so
+    // they're persisted pre-resolved and never enter the Director's
+    // "Needs your input" approval gate — see reconcileWeight().
+    preResolved?: boolean;
   }[];
   // Every CREATE/UPDATE/JSON_APPEND the reconciliation pass performed —
   // persisted verbatim into ProductionReportAppliedChange by the caller
@@ -231,6 +238,7 @@ export class ProductionReportReconciliationService {
     private readonly prisma: PrismaService,
     private readonly feedWastage: FeedWastageService,
     private readonly notifications: NotificationsService,
+    private readonly weightAlerts: WeightAlertService,
   ) {}
 
   /** Run the full cross-check + autofill pass over every parsed row for a
@@ -247,7 +255,7 @@ export class ProductionReportReconciliationService {
     // ── Stage detection (§5) ────────────────────────────────────────────────
     const batch = await this.prisma.batch.findUnique({
       where: { id: batchId },
-      select: { batchCode: true, stage: true, houseId: true, currentBirdCount: true, dateReceived: true },
+      select: { batchCode: true, stage: true, houseId: true, currentBirdCount: true, dateReceived: true, dateOfHatch: true },
     });
     if (!batch) throw new BadRequestException('Batch not found');
     const isProduction = batch.stage === BatchStage.PRODUCTION;
@@ -291,6 +299,17 @@ export class ProductionReportReconciliationService {
       // ── Mortality ────────────────────────────────────────────────────────
       if (row.mortality !== undefined) {
         await this.reconcileMortality(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch.houseId, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
+      }
+
+      // ── Bird weight vs. HyLine standard band (§ ProductionWeightAlert) ──
+      // Unlike every other field here, this is never "corrected" — there's
+      // nothing in the report to autofill or overwrite; it's purely a
+      // cross-check against the standard table, with a Director-facing
+      // flag (+ cross-referenced feed/mortality context + AI read) raised
+      // when the sampled average falls outside the band for the batch's
+      // age at this row's date. See WeightAlertService.
+      if (row.avgWeight !== undefined) {
+        await this.reconcileWeight(row, batchId, logDate, batch.dateOfHatch, discrepancies, () => { matchedCount++; });
       }
 
       // ── Feed ─────────────────────────────────────────────────────────────
@@ -413,6 +432,62 @@ export class ProductionReportReconciliationService {
     this.logChange(appliedChanges, batchId, row.date, 'BrooderGeneralMortalityLog', created.id, 'CREATE', null, created);
     row.resolution.mortality = 'AUTOFILLED';
     onAutofill();
+  }
+
+  // ── Bird weight vs. HyLine standard band ───────────────────────────────
+  /** row.avgWeight is free text off the sheet (e.g. "612", "612g", "612 g")
+   *  — parse the leading number, compare it to the HyLine min/max band for
+   *  the batch's age AT THIS ROW'S DATE (not "today" — a re-uploaded
+   *  historical report must be checked against the band for the week it
+   *  actually covers), and record both a lightweight `weightCheck` summary
+   *  on the row (for the report review table) and — only when the sample
+   *  is outside the band — a full ProductionWeightAlert via
+   *  WeightAlertService (cross-referenced feed/mortality context, AI
+   *  analysis, Director notification). Never raises a discrepancy that
+   *  blocks report approval — see the ProductionReportDiscrepancyType.WEIGHT
+   *  doc-comment in schema.prisma — it's informational, not a
+   *  match/autofill/conflict in the sense the rest of this file uses. */
+  private async reconcileWeight(
+    row: ParsedReportRow, batchId: string, logDate: Date, dateOfHatch: Date,
+    discrepancies: ReconcileOutcome['discrepancies'], onMatch: () => void,
+  ) {
+    const parsed = parseFloat(String(row.avgWeight ?? '').replace(/[^0-9.]/g, ''));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      row.resolution.avgWeight = 'SKIPPED';
+      return;
+    }
+
+    const ageWeeks = batchAgeWeeks(dateOfHatch, logDate);
+    const check = checkWeightViolation(parsed, ageWeeks);
+
+    if (!check.violated) {
+      row.resolution.avgWeight = 'MATCHED';
+      row.weightCheck = {
+        averageWeightG: parsed, standardMinG: check.standard.weightMinG, standardMaxG: check.standard.weightMaxG,
+        ageWeeks, direction: null, deviationG: 0,
+      };
+      onMatch();
+      return;
+    }
+
+    const direction = parsed < check.standard.weightMinG ? 'BELOW_MIN' : 'ABOVE_MAX';
+    const boundary = direction === 'BELOW_MIN' ? check.standard.weightMinG : check.standard.weightMaxG;
+    row.resolution.avgWeight = 'DISCREPANCY';
+    row.weightCheck = {
+      averageWeightG: parsed, standardMinG: check.standard.weightMinG, standardMaxG: check.standard.weightMaxG,
+      ageWeeks, direction, deviationG: Math.round((parsed - boundary) * 100) / 100,
+    };
+    discrepancies.push({
+      rowDate: row.date, field: 'avgWeight', discrepancyType: ProductionReportDiscrepancyType.WEIGHT,
+      locationRef: row.locationRef, systemValue: `${check.standard.weightMinG}-${check.standard.weightMaxG}g (Week ${check.standard.week} standard)`,
+      reportValue: `${parsed}g`, notes: check.message, preResolved: true,
+    });
+
+    const alert = await this.weightAlerts.evaluateWeightSample({
+      batchId, sampleDate: logDate, averageWeightG: parsed,
+      source: 'PRODUCTION_REPORT',
+    }).catch(() => null);
+    if (alert) row.weightCheck.alertId = alert.id;
   }
 
   // ── Water consumption ────────────────────────────────────────────────────
@@ -1721,6 +1796,14 @@ export class ProductionReportReconciliationService {
         data: { [dbField]: dbField === 'lightIntensityLux' ? Math.round(value) : value },
       });
       return { applied: true, note: `${metric[0].toUpperCase()}${metric.slice(1)} for ${sessionLabel.toLowerCase()} corrected to ${value}.` };
+    }
+
+    if (discrepancy.discrepancyType === ProductionReportDiscrepancyType.WEIGHT) {
+      // Informational only — persisted pre-resolved by reconcileWeight()
+      // so this path shouldn't normally run, but handle it defensively
+      // (e.g. a manual re-application) rather than falling through to the
+      // generic "unrecognised type" message below.
+      return { applied: false, note: 'Weight-vs-standard flag is informational — see the Weight Alerts panel for the full cross-referenced analysis; no report data to apply.' };
     }
 
     return { applied: false, note: 'Unrecognised discrepancy type — needs manual review.' };

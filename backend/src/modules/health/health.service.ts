@@ -2,6 +2,8 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { HealthEventType, VaccinationRoute, UserRole, NotificationType } from '@prisma/client';
+import { WeightAlertService } from '../weight/weight-alert.service';
+import { batchAgeWeeks } from '../../common/feed/feed-standard.util';
 import dayjs from 'dayjs';
 
 @Injectable()
@@ -9,6 +11,7 @@ export class HealthService {
   constructor(
     private prisma: PrismaService,
     private notifications: NotificationsService,
+    private weightAlerts: WeightAlertService,
   ) {}
 
   // ── Health Events ──────────────────────────────────────────────────────────
@@ -23,6 +26,17 @@ export class HealthService {
     treatment?: string;
     notes?: string;
     rowCode?: string; // optional: explicit row code for CULLING/BIRD_MORTALITY events
+    // ── WEIGHING event fields ──────────────────────────────────────────
+    // `affectedCount` doubles as "birds sampled" for WEIGHING (see frontend
+    // label swap in ManagerCullingPage). individualWeightsG is the primary
+    // input going forward — one entry per sampled bird, in grams — with
+    // totalWeightG/sampleCount kept for backward compatibility with any
+    // caller that only has the aggregate. sourceUploadId is set when the
+    // PM autofilled this entry from a BirdWeightReportUpload.
+    sampleCount?: number;
+    totalWeightG?: number;
+    individualWeightsG?: number[];
+    sourceUploadId?: string;
   }, recordedById: string) {
     // Only pass fields that exist on HealthEvent model — avoids Prisma "Unknown arg" errors.
     // HealthEvent has: batchId, eventType, eventDate, affectedCount, symptoms, diagnosis,
@@ -40,6 +54,59 @@ export class HealthService {
         recordedById,
       },
     });
+
+    // ── WEIGHING: persist the actual weight sample and check it against
+    //    the HyLine standard band. Previously this data was collected by
+    //    the Farm Events form (sampleCount/totalWeightG) but silently
+    //    dropped here — HealthEvent has no weight columns — so nothing
+    //    was ever saved for a "Bird Weighing" event. Now it's written to
+    //    BirdWeightSample (the same table the brooder cage-map weighing
+    //    flow uses), including per-bird weights when the form/upload
+    //    provided them, and run through WeightAlertService exactly like a
+    //    production report's avgWeight column.
+    if (dto.eventType === 'WEIGHING') {
+      const individualWeightsG = (dto.individualWeightsG ?? []).filter(w => Number.isFinite(w) && w > 0);
+      const sampleCount = individualWeightsG.length > 0 ? individualWeightsG.length : (dto.sampleCount ?? dto.affectedCount);
+      const totalWeightG = individualWeightsG.length > 0
+        ? Math.round(individualWeightsG.reduce((s, w) => s + w, 0))
+        : Math.round(dto.totalWeightG ?? 0);
+
+      if (sampleCount > 0 && totalWeightG > 0) {
+        const batch = await this.prisma.batch.findUnique({
+          where: { id: dto.batchId },
+          select: { dateOfHatch: true },
+        });
+        const sampleDate = new Date(dto.eventDate);
+        const ageWeeks = batch ? batchAgeWeeks(batch.dateOfHatch, sampleDate) : 1;
+        const averageWeightG = Math.round((totalWeightG / sampleCount) * 100) / 100;
+
+        const sample = await this.prisma.birdWeightSample.create({
+          data: {
+            batchId: dto.batchId,
+            sampleDate,
+            sampleCount,
+            totalWeightG,
+            averageWeightG,
+            ageWeeks,
+            individualWeightsG,
+            sourceUploadId: dto.sourceUploadId ?? null,
+            notes: dto.notes ?? null,
+            recordedById,
+          },
+        });
+
+        // Best-effort — a failure here must never block the Farm Event
+        // itself from being saved (see WeightAlertService header note).
+        await this.weightAlerts.evaluateWeightSample({
+          batchId: dto.batchId,
+          sampleDate,
+          averageWeightG,
+          sampleCount,
+          source: 'FARM_EVENT',
+          sourceId: sample.id,
+        }).catch(() => { /* alert is best-effort; sample is already saved */ });
+      }
+    }
 
     // When a batch is sold or discarded, update its stage explicitly so the
     // BatchStage enum is correct (SOLD vs DISCARDED — not just CLOSED).

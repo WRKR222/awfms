@@ -38,6 +38,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     // Tally sign-off — Production Manager is a primary signer
     Permission.PRODUCTION_SESSION_VIEW, Permission.TALLY_SIGN, Permission.TALLY_LOCK_VIEW,
     Permission.PRODUCTION_REPORT_VIEW,  // Manager can see the store production report for their batches
+    Permission.WEIGHT_ALERT_VIEW,       // PM can see weight-standard flags for their batches
+    Permission.BIRD_WEIGHT_REPORT_UPLOAD, // PM uploads bird weight reports to autofill Farm Events
   ],
   [UserRole.ACCOUNTANT]: [
     Permission.FLOCK_VIEW, Permission.FEED_VIEW, Permission.FEED_STOCK_VIEW,

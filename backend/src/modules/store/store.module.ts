@@ -24,9 +24,10 @@ import { ProductionReportReconciliationService } from './production-report-recon
 import { ProductionReportRollbackService } from './production-report-rollback.service';
 import { ProductionReportService } from './production-report.service';
 import { ProductionReportController } from './production-report.controller';
+import { WeightModule } from '../weight/weight.module';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule, FeedWastageModule],
+  imports: [PrismaModule, NotificationsModule, FeedWastageModule, WeightModule],
   providers: [
     StoreService,
     StoreInventoryService,

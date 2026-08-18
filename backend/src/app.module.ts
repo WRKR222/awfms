@@ -25,6 +25,7 @@ import { VisitorsModule } from './modules/visitors/visitors.module';
 import { DataUploadModule } from './modules/data-upload/data-upload.module';
 import { UsersModule }    from './modules/users/users.module';  // FIX: was never registered
 import { BrooderModule }  from './modules/brooder/brooder.module';
+import { WeightModule }   from './modules/weight/weight.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { BrooderModule }  from './modules/brooder/brooder.module';
     VisitorsModule,
     DataUploadModule,
     BrooderModule,
+    WeightModule,
   ],
 })
 export class AppModule {}

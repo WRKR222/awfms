@@ -206,6 +206,22 @@ export interface ParsedReportRow {
     cageAssignment?: RowResolution; // set only for per-cage rows (rowNumber/levelNumber/cageNumber all present) — see §cage reassignment
     environmental?: RowResolution; // rolls up temperature/humidity/lux across whatever sessions this row carried readings for
     water?: RowResolution; // report waterLts vs. BrooderLog.waterConsumptionL (brooding) / EggCollectionSession.waterLiters (production)
+    avgWeight?: RowResolution; // 'MATCHED' = within the HyLine standard band, 'DISCREPANCY' = outside it (see weightCheck for detail), 'SKIPPED' = couldn't be evaluated (e.g. avgWeight text didn't parse to a number)
+  };
+
+  // Populated only when row.avgWeight parsed to a usable number — the
+  // HyLine standard comparison result for this row's average weight, for
+  // rendering the flag inline in the report review table without a second
+  // round-trip. See WeightAlertService for the persisted, cross-referenced
+  // version of this (ProductionWeightAlert), which this just summarises.
+  weightCheck?: {
+    averageWeightG: number;
+    standardMinG: number;
+    standardMaxG: number;
+    ageWeeks: number;
+    direction: 'BELOW_MIN' | 'ABOVE_MAX' | null; // null when within band
+    deviationG: number; // 0 when within band
+    alertId?: string; // ProductionWeightAlert.id, when a violation raised one
   };
 }
 

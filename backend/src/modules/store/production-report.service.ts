@@ -143,6 +143,8 @@ export class ProductionReportService {
             systemValue: d.systemValue,
             reportValue: d.reportValue,
             notes: d.notes,
+            resolved: !!d.preResolved,
+            resolution: d.preResolved ? 'APPLIED' : undefined,
           })),
         });
       }
@@ -285,6 +287,7 @@ export class ProductionReportService {
           data: discrepancies.map(d => ({
             reportId: saved.id, rowDate: new Date(d.rowDate), field: d.field, discrepancyType: d.discrepancyType,
             locationRef: d.locationRef, systemValue: d.systemValue, reportValue: d.reportValue, notes: d.notes,
+            resolved: !!d.preResolved, resolution: d.preResolved ? 'APPLIED' : undefined,
           })),
         });
       }

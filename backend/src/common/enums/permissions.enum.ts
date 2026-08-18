@@ -28,6 +28,11 @@ export enum Permission {
   VISITOR_NOTICE_CREATE        = 'visitor:notice:create',
   VISITOR_NOTICE_APPROVE       = 'visitor:notice:approve', // Director/Owner
 
+  // Bird weight standard-band monitoring
+  WEIGHT_ALERT_VIEW            = 'weight:alert:view',             // OWNER (+ MANAGER for their own batches)
+  WEIGHT_ALERT_MANAGE          = 'weight:alert:manage',           // OWNER only — acknowledge/resolve
+  BIRD_WEIGHT_REPORT_UPLOAD    = 'weight:report:upload',          // MANAGER (PM) only
+
   PRODUCTION_VIEW              = 'production:view',
   PRODUCTION_ENTRY_CREATE      = 'production:entry:create',  // Lead Attendant
   PRODUCTION_ENTRY_APPROVE     = 'production:entry:approve', // Manager (same-evening verify + tally edit)

@@ -1,14 +1,15 @@
 // src/pages/manager/ManagerCullingPage.tsx
 // Farm Events — covers all event types per PDF spec
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { useBatches } from '../../hooks/useFlock';
+import { useAuthStore } from '../../stores/auth.store';
 import {
   AlertTriangle, Plus, CheckCircle, Trash2, Scale, ShieldOff,
   ShieldCheck, Scissors, Bug, Stethoscope, Package, Archive,
-  Activity, Syringe, ClipboardList, HeartCrack,
+  Activity, Syringe, ClipboardList, HeartCrack, Upload, Wand2, X,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 
@@ -59,25 +60,96 @@ interface EventForm {
   symptoms?: string;
   diagnosis?: string;
   treatment?: string;
-  sampleCount?: number;
-  totalWeightG?: number;
   notes?: string;
   // Row selector for CULLING / BIRD_MORTALITY in production house
   selectedRow?: string;
+}
+
+/** PM-only modal for uploading a bird weight report spreadsheet — see
+ *  BirdWeightReportService on the backend for the accepted column layout
+ *  (Date + Batch + either "Bird 1..N" individual-weight columns or a
+ *  Sample Count / Total Weight (g) pair). Purely an upload+parse step;
+ *  nothing is written to any batch until the PM picks a batch + date below
+ *  and hits "Autofill from report". */
+function BirdWeightReportUploadModal({ onClose }: { onClose: () => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const upload = useMutation({
+    mutationFn: async () => {
+      if (!file) throw new Error('No file selected');
+      const form = new FormData();
+      form.append('file', file);
+      return api.post('/weight/reports/upload', form, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data);
+    },
+  });
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div
+        className="bg-white dark:bg-dark-card rounded-2xl p-5 max-w-md w-full space-y-3"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-gray-800 dark:text-gray-100">Upload Bird Weight Report</h3>
+          <button onClick={onClose}><X className="w-4 h-4 text-gray-400" /></button>
+        </div>
+        <p className="text-xs text-gray-500">
+          Upload a spreadsheet (.xlsx/.csv) of weights taken outside the app — with a "Date" and "Batch" column,
+          plus either individual "Bird 1", "Bird 2"… weight columns (grams) or a Sample Count + Total Weight (g)
+          pair. Once uploaded, open "Log Event" → Bird Weighing, pick the batch and date, and tap
+          "Autofill from report" to pull the weights in.
+        </p>
+        <label className="flex items-center justify-center gap-2 border-2 border-dashed border-gray-200 dark:border-dark-border rounded-xl py-6 cursor-pointer text-sm text-gray-500 hover:border-brand-green">
+          <Upload className="w-4 h-4" />
+          {file ? file.name : 'Choose file…'}
+          <input type="file" accept=".xlsx,.xls,.csv" className="hidden"
+            onChange={e => setFile(e.target.files?.[0] ?? null)} />
+        </label>
+        {upload.isSuccess && (
+          <div className="bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 text-xs rounded-xl p-3">
+            Parsed {upload.data.rows.length} row(s).
+            {upload.data.unmatchedBatchCodes.length > 0 && (
+              <p className="mt-1 text-amber-600 dark:text-amber-400">
+                Unmatched batch code(s): {upload.data.unmatchedBatchCodes.join(', ')} — these rows won't autofill until the batch code is corrected and re-uploaded.
+              </p>
+            )}
+          </div>
+        )}
+        {upload.isError && (
+          <p className="text-xs text-red-500">{(upload.error as any)?.response?.data?.message ?? 'Upload failed. Check the file format.'}</p>
+        )}
+        <div className="flex gap-2">
+          <button
+            onClick={() => upload.mutate()}
+            disabled={!file || upload.isPending}
+            className="flex-1 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-green/90 disabled:opacity-50"
+          >
+            {upload.isPending ? 'Uploading…' : 'Upload & Parse'}
+          </button>
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-semibold border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300">
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function ManagerCullingPage() {
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [individualWeights, setIndividualWeights] = useState<(number | '')[]>([]);
+  const [autofillNote, setAutofillNote] = useState<string | null>(null);
   const { data: batches = [] } = useBatches({ isActive: true });
+  const role = useAuthStore(s => s.user?.role);
 
   const { data: logs = [], isLoading } = useQuery({
     queryKey: ['health-events'],
     queryFn: () => api.get('/health/events?limit=50').then(r => r.data).catch(() => []),
   });
 
-  const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<EventForm>({
+  const { register, handleSubmit, watch, reset, setValue, formState: { errors } } = useForm<EventForm>({
     defaultValues: {
       batchId: '', eventType: 'CULLING', eventDate: dayjs().format('YYYY-MM-DD'),
       affectedCount: 1, notes: '', selectedRow: '',
@@ -86,12 +158,42 @@ export function ManagerCullingPage() {
 
   const selectedType = watch('eventType');
   const selectedBatchId = watch('batchId');
+  const eventDate = watch('eventDate');
   const eventCfg = EVENT_TYPES.find(e => e.value === selectedType);
-  const sampleCount = watch('sampleCount');
-  const totalWeightG = watch('totalWeightG');
-  const avgWeight = (sampleCount && totalWeightG && Number(sampleCount) > 0)
-    ? (Number(totalWeightG) / Number(sampleCount)).toFixed(1)
-    : null;
+  const affectedCount = watch('affectedCount');
+
+  // Individual per-bird weights (grams) drive everything else for WEIGHING —
+  // resize the array to match "Birds Sampled" as it changes, keeping any
+  // values already entered for the birds still in range.
+  useEffect(() => {
+    if (selectedType !== 'WEIGHING') return;
+    const n = Math.max(0, Number(affectedCount) || 0);
+    setIndividualWeights(prev => {
+      if (prev.length === n) return prev;
+      if (n > prev.length) return [...prev, ...Array(n - prev.length).fill('')];
+      return prev.slice(0, n);
+    });
+  }, [affectedCount, selectedType]);
+
+  const filledWeights = individualWeights.filter(w => Number(w) > 0) as number[];
+  const totalWeightG = filledWeights.length > 0 ? filledWeights.reduce((s, w) => s + Number(w), 0) : 0;
+  const avgWeight = filledWeights.length > 0 ? (totalWeightG / filledWeights.length).toFixed(1) : null;
+
+  // Autofill from a PM-uploaded bird weight report (see BirdWeightReportService).
+  const autofill = useMutation({
+    mutationFn: () => api.get('/weight/reports/autofill', { params: { batchId: selectedBatchId, date: eventDate } }).then(r => r.data),
+    onSuccess: (data) => {
+      if (!data.found) { setAutofillNote('No uploaded bird weight report found for this batch and date.'); return; }
+      const weights: number[] = data.individualWeightsG?.length ? data.individualWeightsG : [];
+      setValue('affectedCount', data.sampleCount);
+      setIndividualWeights(weights.length > 0 ? weights : Array(data.sampleCount).fill(''));
+      setAutofillNote(
+        weights.length > 0
+          ? `Autofilled ${weights.length} individual bird weight(s) from the uploaded report (${dayjs(data.reportDate).format('D MMM YYYY')}).`
+          : `Autofilled sample count (${data.sampleCount}) and total weight (${data.totalWeightG}g) from the uploaded report — no individual weights were in that upload, so you can still enter them below.`,
+      );
+    },
+  });
 
   // Determine if selected batch is in production house
   const selectedBatch = (batches as any[]).find((b: any) => b.id === selectedBatchId);
@@ -127,8 +229,13 @@ export function ManagerCullingPage() {
         rowCode: (supportsRowSelect && data.selectedRow) ? data.selectedRow : undefined,
         selectedRow: undefined, // don't send this extra field
         affectedCount: Number(data.affectedCount),
-        sampleCount: data.sampleCount ? Number(data.sampleCount) : undefined,
-        totalWeightG: data.totalWeightG ? Number(data.totalWeightG) : undefined,
+        // Weighing: individual per-bird weights (grams) are the source of
+        // truth — sampleCount/totalWeightG are derived from them here so
+        // the backend never has to guess which is authoritative. Sent only
+        // for WEIGHING events; harmless/ignored otherwise.
+        sampleCount: data.eventType === 'WEIGHING' ? filledWeights.length : undefined,
+        totalWeightG: data.eventType === 'WEIGHING' ? totalWeightG : undefined,
+        individualWeightsG: data.eventType === 'WEIGHING' ? filledWeights : undefined,
       }).then(r => r.data);
     },
     onSuccess: (_data, variables) => {
@@ -158,6 +265,8 @@ export function ManagerCullingPage() {
 
       setSubmitted(true);
       reset();
+      setIndividualWeights([]);
+      setAutofillNote(null);
       setTimeout(() => { setSubmitted(false); setShowForm(false); }, 2000);
     },
   });
@@ -174,13 +283,25 @@ export function ManagerCullingPage() {
           <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100">Farm Events</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Log disease outbreaks, culling, weighing, batch closures and more</p>
         </div>
-        <button
-          onClick={() => setShowForm(v => !v)}
-          className="flex items-center gap-2 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-green/90 transition-colors"
-        >
-          <Plus className="w-4 h-4" /> Log Event
-        </button>
+        <div className="flex items-center gap-2">
+          {role === 'MANAGER' && (
+            <button
+              onClick={() => setShowUploadModal(true)}
+              className="flex items-center gap-2 border border-gray-200 dark:border-dark-border text-gray-700 dark:text-gray-200 px-4 py-2 rounded-xl text-sm font-semibold hover:bg-gray-50 dark:hover:bg-dark-bg transition-colors"
+            >
+              <Upload className="w-4 h-4" /> Upload Bird Weight Report
+            </button>
+          )}
+          <button
+            onClick={() => setShowForm(v => !v)}
+            className="flex items-center gap-2 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-green/90 transition-colors"
+          >
+            <Plus className="w-4 h-4" /> Log Event
+          </button>
+        </div>
       </div>
+
+      {showUploadModal && <BirdWeightReportUploadModal onClose={() => setShowUploadModal(false)} />}
 
       {submitted && (
         <div className="flex items-center gap-2 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 px-4 py-3 rounded-xl text-sm font-medium">
@@ -279,21 +400,60 @@ export function ManagerCullingPage() {
           )}
 
           {eventCfg?.showWeight && (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <label className={lCls}>Sample Count</label>
-                <input type="number" min={1} className={iCls} {...register('sampleCount', { valueAsNumber: true })} />
+            <div className="bg-gray-50 dark:bg-dark-bg border border-gray-100 dark:border-dark-border rounded-xl p-3 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                  Individual bird weights (g) — one box per bird sampled
+                </p>
+                <button
+                  type="button"
+                  onClick={() => autofill.mutate()}
+                  disabled={!selectedBatchId || !eventDate || autofill.isPending}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-green hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Wand2 className="w-3.5 h-3.5" /> {autofill.isPending ? 'Checking…' : 'Autofill from report'}
+                </button>
               </div>
-              <div>
-                <label className={lCls}>Total Weight (g)</label>
-                <input type="number" min={1} className={iCls} {...register('totalWeightG', { valueAsNumber: true })} />
-              </div>
-              <div>
-                <label className={lCls}>Avg Weight / Bird</label>
-                <div className={`${iCls} bg-gray-50 dark:bg-dark-bg cursor-not-allowed text-gray-500`}>
-                  {avgWeight ? `${avgWeight} g` : '—'}
+
+              {autofillNote && (
+                <p className="text-[11px] text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/10 rounded-lg px-2.5 py-1.5">{autofillNote}</p>
+              )}
+
+              {individualWeights.length === 0 ? (
+                <p className="text-xs text-gray-400">Set "Birds Sampled" above (or use Autofill) to enter individual weights.</p>
+              ) : (
+                <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                  {individualWeights.map((w, i) => (
+                    <div key={i}>
+                      <label className="block text-[10px] text-gray-400 mb-0.5">Bird {i + 1}</label>
+                      <input
+                        type="number" min={1} step="1" placeholder="g"
+                        value={w}
+                        onChange={e => {
+                          const val = e.target.value === '' ? '' : Number(e.target.value);
+                          setIndividualWeights(prev => prev.map((p, idx) => (idx === i ? val : p)));
+                        }}
+                        className="w-full border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1.5 text-xs bg-white dark:bg-dark-card text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div className="bg-white dark:bg-dark-card rounded-lg px-3 py-2 border border-gray-100 dark:border-dark-border">
+                  <p className="text-[10px] text-gray-400 uppercase tracking-wide">Total Weight (auto)</p>
+                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">{totalWeightG > 0 ? `${totalWeightG} g` : '—'}</p>
+                </div>
+                <div className="bg-white dark:bg-dark-card rounded-lg px-3 py-2 border border-gray-100 dark:border-dark-border">
+                  <p className="text-[10px] text-gray-400 uppercase tracking-wide">Avg Weight / Bird (auto)</p>
+                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">{avgWeight ? `${avgWeight} g` : '—'}</p>
                 </div>
               </div>
+              <p className="text-[10px] text-gray-400">
+                Compared automatically against the HyLine standard band for this batch's age — the Director is
+                notified if the average falls outside it.
+              </p>
             </div>
           )}
 
@@ -306,7 +466,7 @@ export function ManagerCullingPage() {
               className="bg-brand-green text-white px-5 py-2 rounded-xl text-sm font-semibold hover:bg-brand-green/90 disabled:opacity-60">
               {create.isPending ? 'Saving…' : 'Log Event'}
             </button>
-            <button type="button" onClick={() => { setShowForm(false); reset(); }}
+            <button type="button" onClick={() => { setShowForm(false); reset(); setIndividualWeights([]); setAutofillNote(null); }}
               className="px-5 py-2 rounded-xl text-sm font-semibold border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300">
               Cancel
             </button>
