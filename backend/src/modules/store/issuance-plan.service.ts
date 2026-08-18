@@ -621,19 +621,36 @@ export class IssuancePlanService {
       data: { status: 'PENDING_DIRECTOR' },
     });
 
+    // Flip phase away from DRAFT first — syncPhase's wasSubmitted check
+    // reads `plan.phase !== 'DRAFT'`, so this has to move off DRAFT before
+    // the recompute below can return anything other than DRAFT itself.
     await this.prisma.issuancePlan.update({
       where: { id },
       data: { phase: 'PENDING_DIRECTOR' },
     });
 
-    // Notify Director only — Accountant receives a read-only copy once approved
-    await this.notifications.notifyRole(
-      UserRole.OWNER,
-      NotificationType.ISSUANCE_PLAN_SUBMITTED as any,
-      'New Issuance Plan Awaiting Your Approval',
-      `${plan.type === 'EMERGENCY' ? 'Emergency issuance plan' : 'Weekly issuance plan'} ${plan.planRef} (${plan.items.length} item${plan.items.length > 1 ? 's' : ''}) has been submitted and requires your approval.`,
-      { entityId: id, entityType: 'IssuancePlan' },
-    );
+    // Recompute the REAL phase now that the plan counts as submitted,
+    // instead of leaving it hardcoded at PENDING_DIRECTOR. If every item on
+    // this plan already has a final status — e.g. one was approved before
+    // submission (the premature-approval bug fixed above; existing plans
+    // from before that fix can still be in this state), or Store submitted
+    // a plan where every line had already been individually decided some
+    // other way — the plan should resolve straight to DECIDED, not sit
+    // showing "awaiting Director" when nothing is actually pending.
+    const finalPhase = await this.syncPhase(id);
+
+    // Notify Director only if something is genuinely still pending on this
+    // plan — an "awaiting your approval" alert for a plan that already
+    // resolved to DECIDED on submit would be misleading.
+    if (finalPhase === 'PENDING_DIRECTOR') {
+      await this.notifications.notifyRole(
+        UserRole.OWNER,
+        NotificationType.ISSUANCE_PLAN_SUBMITTED as any,
+        'New Issuance Plan Awaiting Your Approval',
+        `${plan.type === 'EMERGENCY' ? 'Emergency issuance plan' : 'Weekly issuance plan'} ${plan.planRef} (${plan.items.length} item${plan.items.length > 1 ? 's' : ''}) has been submitted and requires your approval.`,
+        { entityId: id, entityType: 'IssuancePlan' },
+      );
+    }
 
     return this.getPlan(id);
   }
@@ -664,6 +681,22 @@ export class IssuancePlanService {
       include: { plan: true, storeItem: true },
     });
     if (!item || item.planId !== planId) throw new NotFoundException('Issuance plan item not found');
+
+    // Guard against approving an item before Store has actually submitted
+    // the plan. injectRequisitionItemsIntoPlan (PM requisition → draft
+    // auto-fold) writes injected items with status PENDING_DIRECTOR right
+    // away, purely so they're ready to go the moment Store submits — that
+    // status alone must never be read as "ready for the Director," only
+    // plan.phase leaving DRAFT (via submitPlan) means that. Without this
+    // check, a Director calling approve directly on an item from a still-
+    // DRAFT plan (e.g. an auto-created EMERGENCY draft nobody has
+    // submitted yet) could approve it before Store ever saw or agreed to
+    // send that plan.
+    if (item.plan.phase === 'DRAFT') {
+      throw new BadRequestException(
+        'This plan has not been submitted by Store yet — it cannot be approved while still a draft.',
+      );
+    }
 
     if (item.status !== 'PENDING_DIRECTOR') {
       throw new BadRequestException('This item is not awaiting Director approval');
@@ -753,6 +786,13 @@ export class IssuancePlanService {
     });
     if (!item || item.planId !== planId) throw new NotFoundException('Issuance plan item not found');
 
+    // Same guard as approveItem — see that method for the full reasoning.
+    if (item.plan.phase === 'DRAFT') {
+      throw new BadRequestException(
+        'This plan has not been submitted by Store yet — it cannot be rejected while still a draft.',
+      );
+    }
+
     if (item.status !== 'PENDING_DIRECTOR') {
       throw new BadRequestException('This item cannot be rejected in its current status');
     }
@@ -793,13 +833,24 @@ export class IssuancePlanService {
   // LIST + GET
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async listPlans(filters: { type?: string; phase?: string; weekStartDate?: string }) {
+  async listPlans(filters: { type?: string; phase?: string; weekStartDate?: string }, userRole?: string) {
+    const where: any = {
+      ...(filters.type ? { type: filters.type as any } : {}),
+      ...(filters.weekStartDate ? { weekStartDate: dayjs(filters.weekStartDate).toDate() } : {}),
+    };
+
+    // Director should never see a DRAFT plan — it hasn't been submitted by
+    // Store yet, so there's nothing for them to review or approve. This
+    // overrides any explicit ?phase=DRAFT the Director might pass, rather
+    // than merely being a default, so there's no query-string way around it.
+    if (userRole === 'OWNER') {
+      where.phase = filters.phase && filters.phase !== 'DRAFT' ? (filters.phase as any) : { not: 'DRAFT' };
+    } else if (filters.phase) {
+      where.phase = filters.phase as any;
+    }
+
     return this.prisma.issuancePlan.findMany({
-      where: {
-        ...(filters.type ? { type: filters.type as any } : {}),
-        ...(filters.phase ? { phase: filters.phase as any } : {}),
-        ...(filters.weekStartDate ? { weekStartDate: dayjs(filters.weekStartDate).toDate() } : {}),
-      },
+      where,
       include: {
         createdBy: { select: { id: true, fullName: true, role: true } },
         items: { include: ITEM_INCLUDE },
@@ -808,7 +859,7 @@ export class IssuancePlanService {
     });
   }
 
-  async getPlan(id: string) {
+  async getPlan(id: string, userRole?: string) {
     const plan = await this.prisma.issuancePlan.findUnique({
       where: { id },
       include: {
@@ -817,6 +868,11 @@ export class IssuancePlanService {
       },
     });
     if (!plan) throw new NotFoundException('Issuance plan not found');
+    // Same rule as listPlans — a DRAFT plan doesn't exist yet as far as the
+    // Director is concerned, including by direct ID (e.g. a stale link).
+    if (userRole === 'OWNER' && plan.phase === ('DRAFT' as any)) {
+      throw new NotFoundException('Issuance plan not found');
+    }
     return plan;
   }
 
@@ -1169,7 +1225,15 @@ export class IssuancePlanService {
     const pendingItems = await this.prisma.issuancePlanItem.findMany({
       where: {
         status: 'PENDING_DIRECTOR',
-        plan: { weekStartDate: { lte: today.add(7, 'day').toDate() } },
+        // item.status alone is NOT a reliable "ready for Director" signal —
+        // every item is stamped PENDING_DIRECTOR at creation time (see
+        // createPlan / injectRequisitionItemsIntoPlan / injectFeedLineIntoPlan),
+        // including on a plan that's still an unsubmitted DRAFT. Without this
+        // filter, this reminder would page the Director about items on a
+        // plan Store never actually submitted — which is exactly how a
+        // Director ended up approving a still-DRAFT emergency plan (one
+        // auto-created from a PM requisition) before Store had submitted it.
+        plan: { phase: { not: 'DRAFT' }, weekStartDate: { lte: today.add(7, 'day').toDate() } },
       },
       include: { plan: true, storeItem: true },
     });
