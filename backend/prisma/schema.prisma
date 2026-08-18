@@ -169,6 +169,9 @@ enum NotificationType {
   PRODUCTION_REPORT_REJECTED     // Director rejected a report — Store-facing, includes reason
   // Brooder cage reassignment
   BROODER_CAGE_REASSIGN_OVER_CAPACITY  // a cage reassignment (current or backdated) was applied even though it put a batch's cage-map total over its recorded live bird count — Director-facing
+  // Production-stage bird weight vs. HyLine standard band (§ ProductionWeightAlert)
+  WEIGHT_BELOW_STANDARD  // recorded average weight (report row or Farm Event weighing) is below the HyLine minimum for the batch's age — Director-facing
+  WEIGHT_ABOVE_STANDARD  // recorded average weight is above the HyLine maximum for the batch's age — Director-facing
 }
 
 enum IssuancePlanType {
@@ -422,6 +425,7 @@ model Batch {
   treatmentLogs         BrooderTreatmentLog[]
   productionEntries     ProductionEntry[]
   weightSamples         BirdWeightSample[]
+  weightAlerts          ProductionWeightAlert[]
   vaccinationRecords    VaccinationRecord[]
   healthEvents          HealthEvent[]
   eggCollectionSessions EggCollectionSession[]
@@ -490,6 +494,16 @@ model BirdWeightSample {
   totalWeightG   Int      @map("total_weight_g")
   averageWeightG Decimal  @map("average_weight_g") @db.Decimal(8, 2)
   ageWeeks       Int      @map("age_weeks")
+  // Individual weight (g) of each sampled bird, in entry order. Optional —
+  // legacy/manual samples may only carry the aggregate totalWeightG. When
+  // present, totalWeightG/averageWeightG are derived from this array
+  // (sum / count) rather than entered separately — see BirdWeightSample
+  // creation in HealthService.logHealthEvent (Farm Events "Bird Weighing")
+  // and BirdWeightReportService (PM bird-weight-report upload autofill).
+  individualWeightsG Int[] @default([]) @map("individual_weights_g")
+  // Set when this sample was created (or autofilled) from a PM-uploaded
+  // bird weight report rather than typed directly into the Farm Events form.
+  sourceUploadId String?  @map("source_upload_id")
   notes          String?
   recordedById   String   @map("recorded_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -503,6 +517,96 @@ model BirdWeightSample {
   @@index([levelId, sampleDate])
   @@index([cageId, sampleDate])
   @@map("bird_weight_samples")
+}
+
+/// Where a weight sample that triggered a ProductionWeightAlert came from —
+/// an uploaded/reconciled production report row, or a Farm Events "Bird
+/// Weighing" entry (which itself may have been autofilled from a PM bird
+/// weight report upload).
+enum WeightAlertSource {
+  PRODUCTION_REPORT
+  FARM_EVENT
+}
+
+enum WeightAlertDirection {
+  BELOW_MIN
+  ABOVE_MAX
+}
+
+enum WeightAlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+/// Director-facing record of a recorded average bird weight falling outside
+/// the HyLine standard min/max band for the batch's age. Persisted (rather
+/// than just fired as a one-off notification) so the Director can open it
+/// later and see the cross-referenced feed-intake and mortality context
+/// that was captured at the moment of the flag, plus the AI's best-effort
+/// read on likely cause — see WeightAlertService.evaluateWeightSample().
+model ProductionWeightAlert {
+  id                String                @id @default(uuid())
+  batchId           String                @map("batch_id")
+  source            WeightAlertSource
+  // BirdWeightSample.id (FARM_EVENT) or StoreProductionReport.id + rowDate
+  // encoded as "<reportId>:<rowDate>" (PRODUCTION_REPORT) — kept loose
+  // (String, not a hard FK) because the two source tables don't share a
+  // common id space and a report can be re-uploaded/rolled back.
+  sourceId          String?               @map("source_id")
+  sampleDate        DateTime              @map("sample_date") @db.Date
+  sampleCount        Int?                 @map("sample_count")
+  averageWeightG    Decimal               @map("average_weight_g") @db.Decimal(8, 2)
+  standardMinG      Int                   @map("standard_min_g")
+  standardMaxG      Int                   @map("standard_max_g")
+  ageWeeks          Int                   @map("age_weeks")
+  direction         WeightAlertDirection
+  deviationG        Decimal               @map("deviation_g") @db.Decimal(8, 2)
+  deviationPct      Decimal               @map("deviation_pct") @db.Decimal(6, 2)
+  // Best-effort cross-reference snapshots, captured at flag time so the
+  // Director doesn't have to go re-pull feed/mortality history later to
+  // sanity-check the alert — see WeightAlertService for the shape written
+  // here (recent daily feed kg/bird vs. HyLine ration, recent mortality
+  // count/% vs. HyLine ceiling).
+  feedContext       Json?                 @map("feed_context")
+  mortalityContext  Json?                 @map("mortality_context")
+  // Free-text AI reasoning on the likely cause (underfeeding, disease
+  // outbreak, overfeeding, etc.) — null when ANTHROPIC_API_KEY isn't
+  // configured; the rule-based feed/mortality context above still stands
+  // on its own in that case.
+  aiAnalysis        String?               @map("ai_analysis")
+  status            WeightAlertStatus     @default(OPEN)
+  acknowledgedById  String?               @map("acknowledged_by_id")
+  acknowledgedAt    DateTime?             @map("acknowledged_at")
+  createdAt         DateTime              @default(now()) @map("created_at")
+
+  batch Batch @relation(fields: [batchId], references: [id])
+
+  @@index([batchId, sampleDate])
+  @@index([status])
+  @@map("production_weight_alerts")
+}
+
+/// One PM-uploaded "bird weight report" — a spreadsheet of individual bird
+/// weights (or per-sample summaries) taken outside the app (e.g. on a
+/// physical scale sheet) and uploaded so the Farm Events "Bird Weighing"
+/// form can be autofilled instead of the PM retyping every bird's weight.
+/// `rows` holds the parsed per-batch/per-date samples — see
+/// BirdWeightReportRow in bird-weight-report.dto.ts for the shape. Nothing
+/// here is applied automatically; a row is only turned into a real
+/// BirdWeightSample (and run through the same standard-band check as any
+/// other weight sample) when the PM opens the Farm Events form and accepts
+/// the autofill for a given batch + date.
+model BirdWeightReportUpload {
+  id           String   @id @default(uuid())
+  fileName     String   @map("file_name")
+  rows         Json     // BirdWeightReportRow[]
+  rowCount     Int      @map("row_count")
+  uploadedById String   @map("uploaded_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([uploadedById, createdAt])
+  @@map("bird_weight_report_uploads")
 }
 
 // ─── FEED MANAGEMENT ─────────────────────────────────────────────────────────
@@ -1944,6 +2048,10 @@ enum ProductionReportDiscrepancyType {
   ENVIRONMENTAL  // report temperature/humidity/lux for a session (morning/midday/evening) != what's already logged
                  // for that exact session — auto-filled only when nothing was logged yet for that session;
                  // a mismatch against an existing reading is always flagged, never silently overwritten
+  WEIGHT         // report average weight is outside the HyLine min/max band for the batch's age — never
+                 // "corrected" (there's nothing to autofill/overwrite), always surfaced as a Director-facing
+                 // flag via ProductionWeightAlert; recorded here too so it shows up in the report's own
+                 // discrepancy list alongside everything else Store/Director review together.
   OTHER
 }
 
