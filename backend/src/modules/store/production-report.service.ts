@@ -376,12 +376,9 @@ export class ProductionReportService {
         : { reviewedById: user.id, reviewedAt: new Date() },
     });
 
-    await this.notifications.notifyRole(
-      UserRole.STORE, NotificationType.PRODUCTION_REPORT_APPROVED,
-      'Production report approved',
-      `Your production report has been reviewed and approved.${stillUnresolved ? ` ${stillUnresolved} item(s) still need manual reconciliation with the Director.` : ''}`,
-      { entityId: reportId, entityType: 'StoreProductionReport' },
-    ).catch(() => {});
+    // No notification to STORE here — Store is the one who calls approve(),
+    // so notifying them of their own action is redundant (see reject()
+    // below, which still notifies STORE since a Director can also reject).
 
     return { report: updated, results };
   }
