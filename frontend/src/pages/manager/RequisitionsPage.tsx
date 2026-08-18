@@ -309,6 +309,20 @@ export function RequisitionsPage() {
     },
   });
 
+  // Full removal of an already-SENT ("past") requisition — not just its
+  // individual lines. Cascades to pull every line off whichever issuance
+  // plan draft(s) they were folded into. See
+  // PMRequisitionService.deleteRequisition for the details.
+  const deleteRequisition = useMutation({
+    mutationFn: (requisitionId: string) =>
+      api.delete(`/store/pm-requisitions/${requisitionId}`).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['pm-requisitions'] });
+      qc.invalidateQueries({ queryKey: ['issuance-plans'] });
+      refetch();
+    },
+  });
+
   const updateItem = (key: string, patch: Partial<DraftItem>) =>
     setItems(prev => prev.map(i => (i.key === key ? { ...i, ...patch } : i)));
 
@@ -351,9 +365,23 @@ export function RequisitionsPage() {
             <p className="text-sm font-bold text-gray-700 dark:text-gray-200">
               Sent — {req.requisitionRef}
             </p>
-            <span className="text-[11px] text-gray-400">
-              {dayjs(req.submittedAt).format('D MMM, h:mm A')}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-gray-400">
+                {dayjs(req.submittedAt).format('D MMM, h:mm A')}
+              </span>
+              <button
+                onClick={() => {
+                  if (window.confirm(`Remove requisition ${req.requisitionRef} entirely? This also removes its lines from any issuance plan draft they were folded into. This cannot be undone.`)) {
+                    deleteRequisition.mutate(req.id);
+                  }
+                }}
+                disabled={deleteRequisition.isPending}
+                className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500 disabled:opacity-50"
+                title="Remove this entire requisition"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
           {req.items.length === 0 ? (
             <p className="text-xs text-gray-400">All items on this list have been removed.</p>

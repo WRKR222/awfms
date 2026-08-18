@@ -213,16 +213,60 @@ export class PMRequisitionService {
   }
 
   /** DRAFT only — PM can withdraw a requisition they haven't sent yet. */
-  async deleteDraft(id: string, userId: string) {
-    const requisition = await this.prisma.pMItemRequisition.findUnique({ where: { id } });
+  /**
+   * Full removal of a requisition — DRAFT or already-SUBMITTED ("past").
+   * No longer restricted to the creating PM or to DRAFT status: any role
+   * that can manage requisitions (MANAGER, STORE — see
+   * PM_REQUISITION_ITEM_DELETE) can clear one out entirely, same
+   * broadening applied to single-item deletion in deleteItem() below.
+   *
+   * If any of the requisition's lines were already folded into an
+   * issuance plan draft (PMItemRequisitionItem.issuancePlanItemId), this
+   * cascades: every linked IssuancePlanItem is removed too, so the
+   * requisition actually disappears everywhere it was visible — Store's
+   * issuance plan view included — not just from the PM requisition list.
+   * Refused (leaving everything untouched) if ANY linked item already has
+   * stock issued against it, same guard as the single-item path.
+   *
+   * PMItemRequisitionItem.requisition has onDelete: Cascade, so deleting
+   * the PMItemRequisition row removes all its item rows automatically —
+   * which also clears their FK into IssuancePlanItem. That has to happen
+   * BEFORE the linked IssuancePlanItem rows are deleted (same FK-violation
+   * class fixed in deleteItem/removeInjectedItem above): delete the
+   * requisition first, THEN remove the now-unreferenced plan items.
+   */
+  async deleteRequisition(id: string) {
+    const requisition = await this.prisma.pMItemRequisition.findUnique({
+      where: { id },
+      include: { items: true },
+    });
     if (!requisition) throw new NotFoundException('Requisition not found');
-    if (requisition.createdById !== userId) {
-      throw new ForbiddenException('You can only delete your own requisition');
+
+    const linkedItems = requisition.items.filter((i) => i.issuancePlanItemId);
+    // Guard-check every linked plan item BEFORE deleting anything, so a
+    // failure here leaves the requisition (and every plan line) untouched
+    // rather than partially deleting.
+    for (const item of linkedItems) {
+      await this.issuancePlans.assertItemRemovable(item.issuancePlanItemId!);
     }
-    if (requisition.status !== ('DRAFT' as any)) {
-      throw new BadRequestException('Only a DRAFT requisition can be deleted — it has already been sent to Store');
-    }
+
     await this.prisma.pMItemRequisition.delete({ where: { id } });
+
+    for (const item of linkedItems) {
+      await this.issuancePlans.removeInjectedItem(item.issuancePlanItemId!);
+    }
+
+    if (requisition.status === ('SUBMITTED' as any)) {
+      await this.notifications.notifyRole(
+        UserRole.STORE,
+        NotificationType.PM_REQUISITION_ITEM_REMOVED as any,
+        'PM Requisition Removed',
+        `Requisition ${requisition.requisitionRef} (week of ${dayjs(requisition.weekStartDate).format('D MMM YYYY')}) ` +
+          `was removed entirely${linkedItems.length ? ' — its lines have also been pulled off the issuance plan draft(s) they were folded into.' : '.'}`,
+        { entityId: id, entityType: 'PMItemRequisition' },
+      );
+    }
+
     return { deleted: true };
   }
 

@@ -87,12 +87,12 @@ export enum Permission {
 
   // PM weekly item requisition — folded into the Issuance Plan
   PM_REQUISITION_CREATE        = 'pm_requisition:create',    // MANAGER only
-  PM_REQUISITION_VIEW          = 'pm_requisition:view',      // MANAGER, STORE, OWNER
-  // Delete a requisition line (or its cascaded issuance-plan line) —
-  // deliberately separate from PM_REQUISITION_CREATE so any role that can
-  // VIEW a requisition (MANAGER, STORE, OWNER) can also remove a line from
-  // it, not just the PM who originally created that requisition.
-  PM_REQUISITION_ITEM_DELETE   = 'pm_requisition:item_delete', // MANAGER, STORE, OWNER
+  PM_REQUISITION_VIEW          = 'pm_requisition:view',      // MANAGER, STORE — NOT the Director (blocked explicitly in PMRequisitionController regardless of OWNER's automatic all-permissions grant)
+  // Delete a requisition line (or its cascaded issuance-plan line), or a
+  // whole requisition — deliberately separate from PM_REQUISITION_CREATE
+  // so any role that can VIEW a requisition (MANAGER, STORE) can also
+  // remove it, not just the PM who originally created it.
+  PM_REQUISITION_ITEM_DELETE   = 'pm_requisition:item_delete', // MANAGER, STORE — NOT the Director (same explicit block as PM_REQUISITION_VIEW)
 
   HR_VIEW                      = 'hr:view',
   HR_MANAGE                    = 'hr:manage',

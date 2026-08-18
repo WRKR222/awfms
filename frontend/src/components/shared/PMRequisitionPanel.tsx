@@ -1,11 +1,13 @@
 // src/components/shared/PMRequisitionPanel.tsx
 //
-// Compact, read-only view of the Production Manager's item requisitions —
-// shown to Store (and the Director) so they can see what the PM asked for
-// even before it's been folded into an Issuance Plan. PM can raise a
-// requisition against the current week (top-up on a week in progress — may
-// land on an emergency plan if the week's weekly plan was already
-// submitted) or the coming week (the routine one, due by Thursday).
+// Compact view of the Production Manager's item requisitions — shown to
+// Store so they can see what the PM asked for even before it's been folded
+// into an Issuance Plan. The Director does NOT see this panel — PM
+// requisitions are Store/PM-only now (the backend also blocks the
+// underlying endpoints directly for OWNER, see PMRequisitionController).
+// PM can raise a requisition against the current week (top-up on a week in
+// progress — may land on an emergency plan if the week's weekly plan was
+// already submitted) or the coming week (the routine one, due by Thursday).
 //
 // A week is not limited to a single requisition — the PM can send several
 // separate lists across the week, so every one for the week is shown here,
@@ -13,7 +15,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
-import { ClipboardList, Clock, CheckCircle, X } from 'lucide-react';
+import { ClipboardList, Clock, CheckCircle, X, Trash2 } from 'lucide-react';
 
 function nextMondayDate() {
   const today = dayjs();
@@ -28,11 +30,13 @@ function thisMondayDate() {
 }
 
 function RequisitionCard({
-  requisition, weekStart, label, onDeleteItem, deletingItemId,
+  requisition, weekStart, label, onDeleteItem, deletingItemId, onDeleteRequisition, deletingRequisition,
 }: {
   requisition: any; weekStart: any; label: string;
   onDeleteItem: (requisitionId: string, itemId: string) => void;
   deletingItemId: string | null;
+  onDeleteRequisition: (requisitionId: string) => void;
+  deletingRequisition: boolean;
 }) {
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-4">
@@ -46,14 +50,28 @@ function RequisitionCard({
             <p className="text-[11px] text-gray-400">{weekStart.format('D MMM')} – {weekStart.add(6, 'day').format('D MMM YYYY')}</p>
           </div>
         </div>
-        <span className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-semibold flex-shrink-0 ${
-          requisition.status === 'SUBMITTED'
-            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-            : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
-        }`}>
-          {requisition.status === 'SUBMITTED' ? <CheckCircle className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
-          {requisition.status === 'SUBMITTED' ? 'Sent' : 'Still drafting'}
-        </span>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <span className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-semibold ${
+            requisition.status === 'SUBMITTED'
+              ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+              : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+          }`}>
+            {requisition.status === 'SUBMITTED' ? <CheckCircle className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+            {requisition.status === 'SUBMITTED' ? 'Sent' : 'Still drafting'}
+          </span>
+          <button
+            onClick={() => {
+              if (window.confirm(`Remove requisition ${requisition.requisitionRef} entirely? This also removes its lines from any issuance plan draft they were folded into. This cannot be undone.`)) {
+                onDeleteRequisition(requisition.id);
+              }
+            }}
+            disabled={deletingRequisition}
+            className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500 disabled:opacity-50"
+            title="Remove this entire requisition — draft or already-sent"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
       {requisition.status === 'DRAFT' ? (
@@ -121,11 +139,11 @@ export function PMRequisitionPanel() {
     queryFn: () => api.get('/store/pm-requisitions', { params: { weekStartDate: nextWeekStr } }).then(r => r.data),
   });
 
-  // Lets Store/Director remove a line straight from this panel too — not
-  // just the PM who originally sent it. Backed by
-  // PM_REQUISITION_ITEM_DELETE (granted to MANAGER, STORE, and OWNER), and
-  // cascades to whichever issuance plan draft the line was folded into,
-  // same as the PM's own delete on RequisitionsPage.
+  // Lets Store remove a single line straight from this panel too — not
+  // just the PM who originally sent it. Backed by PM_REQUISITION_ITEM_DELETE
+  // (granted to MANAGER and STORE), and cascades to whichever issuance plan
+  // draft the line was folded into, same as the PM's own delete on
+  // RequisitionsPage.
   const deleteItem = useMutation({
     mutationFn: ({ requisitionId, itemId }: { requisitionId: string; itemId: string }) =>
       api.delete(`/store/pm-requisitions/${requisitionId}/items/${itemId}`).then(r => r.data),
@@ -137,8 +155,22 @@ export function PMRequisitionPanel() {
     deleteItem.mutate({ requisitionId, itemId });
   const deletingItemId = deleteItem.isPending ? deleteItem.variables?.itemId ?? null : null;
 
-  // A week isn't limited to one requisition — show every one Store/Director
-  // can see for each week, not just the first.
+  // Full removal of a whole requisition — DRAFT or already-SUBMITTED
+  // ("past") alike. See PMRequisitionService.deleteRequisition for the
+  // cascade behaviour (also pulls its lines off any issuance plan draft).
+  const deleteRequisition = useMutation({
+    mutationFn: (requisitionId: string) =>
+      api.delete(`/store/pm-requisitions/${requisitionId}`).then(r => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['pm-requisitions'] });
+      qc.invalidateQueries({ queryKey: ['issuance-plans'] });
+    },
+  });
+  const handleDeleteRequisition = (requisitionId: string) => deleteRequisition.mutate(requisitionId);
+  const deletingRequisitionId = deleteRequisition.isPending ? deleteRequisition.variables ?? null : null;
+
+  // A week isn't limited to one requisition — show every one Store can see
+  // for each week, not just the first.
   const dow = dayjs().day();
   const pastPmDeadline = dow === 5 || dow === 6; // Fri / Sat — past the PM's own Thursday deadline for next week
 
@@ -158,10 +190,18 @@ export function PMRequisitionPanel() {
   return (
     <div className="space-y-3">
       {thisWeekReqs.map((req: any) => (
-        <RequisitionCard key={req.id} requisition={req} weekStart={thisWeek} label="This Week" onDeleteItem={handleDeleteItem} deletingItemId={deletingItemId} />
+        <RequisitionCard
+          key={req.id} requisition={req} weekStart={thisWeek} label="This Week"
+          onDeleteItem={handleDeleteItem} deletingItemId={deletingItemId}
+          onDeleteRequisition={handleDeleteRequisition} deletingRequisition={deletingRequisitionId === req.id}
+        />
       ))}
       {nextWeekReqs.map((req: any) => (
-        <RequisitionCard key={req.id} requisition={req} weekStart={nextWeek} label="Next Week" onDeleteItem={handleDeleteItem} deletingItemId={deletingItemId} />
+        <RequisitionCard
+          key={req.id} requisition={req} weekStart={nextWeek} label="Next Week"
+          onDeleteItem={handleDeleteItem} deletingItemId={deletingItemId}
+          onDeleteRequisition={handleDeleteRequisition} deletingRequisition={deletingRequisitionId === req.id}
+        />
       ))}
     </div>
   );

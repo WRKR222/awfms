@@ -1,6 +1,6 @@
 // src/modules/store/pm-requisition.controller.ts
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards,
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards, ForbiddenException,
 } from '@nestjs/common';
 import { PMRequisitionService } from './pm-requisition.service';
 import { SavePMRequisitionDraftDto } from './pm-requisition.dto';
@@ -15,16 +15,36 @@ import { Permission } from '../../common/enums/permissions.enum';
 export class PMRequisitionController {
   constructor(private readonly svc: PMRequisitionService) {}
 
-  // Viewable by PM (their own), Store, and Director.
+  // PM requisitions are no longer visible to the Director at all — only
+  // MANAGER (the PM) and STORE. This can't be expressed through
+  // PM_REQUISITION_VIEW alone: OWNER is granted every Permission value
+  // automatically (see ROLE_PERMISSIONS[OWNER] = Object.values(Permission)
+  // in role-permissions.map.ts), so the permissions guard would always let
+  // a Director through regardless of what's (or isn't) granted to that
+  // role explicitly. Blocking it here, before the guard's permission check
+  // even matters, is the only way to actually exclude OWNER.
+  private assertNotDirector(user: any) {
+    if (user?.role === 'OWNER') {
+      throw new ForbiddenException('PM requisitions are not visible to the Director.');
+    }
+  }
+
+  // Viewable by PM (their own) and Store — NOT the Director.
   @Get()
   @RequirePermission(Permission.PM_REQUISITION_VIEW)
-  list(@Query('weekStartDate') weekStartDate?: string, @Query('status') status?: string) {
+  list(
+    @Query('weekStartDate') weekStartDate?: string,
+    @Query('status') status?: string,
+    @CurrentUser() user?: any,
+  ) {
+    this.assertNotDirector(user);
     return this.svc.list({ weekStartDate, status });
   }
 
   @Get(':id')
   @RequirePermission(Permission.PM_REQUISITION_VIEW)
-  get(@Param('id') id: string) {
+  get(@Param('id') id: string, @CurrentUser() user: any) {
+    this.assertNotDirector(user);
     return this.svc.getById(id);
   }
 
@@ -42,19 +62,23 @@ export class PMRequisitionController {
     return this.svc.submit(id, user.id);
   }
 
+  // Full removal — DRAFT or already-SUBMITTED ("past") requisitions alike.
+  // See PMRequisitionService.deleteRequisition for the cascade behaviour.
   @Delete(':id')
-  @RequirePermission(Permission.PM_REQUISITION_CREATE)
+  @RequirePermission(Permission.PM_REQUISITION_ITEM_DELETE)
   remove(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.svc.deleteDraft(id, user.id);
+    this.assertNotDirector(user);
+    return this.svc.deleteRequisition(id);
   }
 
   // Delete a single line — works on a DRAFT or an already-SUBMITTED
   // requisition. If the line was already folded into an issuance plan draft,
-  // that plan line is cascade-deleted too, so the change is visible to Store,
-  // the Director, and anyone else with plan-view access, not just the PM.
+  // that plan line is cascade-deleted too, so the change is visible to Store
+  // and anyone else with plan-view access, not just the PM.
   @Delete(':id/items/:itemId')
   @RequirePermission(Permission.PM_REQUISITION_ITEM_DELETE)
   removeItem(@Param('id') id: string, @Param('itemId') itemId: string, @CurrentUser() user: any) {
+    this.assertNotDirector(user);
     return this.svc.deleteItem(id, itemId, user.id);
   }
 }

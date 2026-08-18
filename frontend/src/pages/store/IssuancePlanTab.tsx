@@ -977,15 +977,21 @@ export function IssuancePlanTab() {
 
   const phaseOptions = [
     { label: 'All', value: '' },
-    { label: 'Draft', value: 'DRAFT' },
+    // Director never sees DRAFT plans (backend excludes them entirely for
+    // OWNER — see IssuancePlanService.listPlans), so this filter option
+    // would only ever return an empty list for them; hide it rather than
+    // offer a dead end.
+    ...(userRole === 'OWNER' ? [] : [{ label: 'Draft', value: 'DRAFT' }]),
     { label: 'Awaiting Director', value: 'PENDING_DIRECTOR' },
     { label: 'Decided', value: 'DECIDED' },
   ];
 
   return (
     <div className="space-y-4">
-      {/* PM's weekly item list — read-only, so Store sees it before/while drafting */}
-      {['STORE', 'OWNER'].includes(userRole) && <PMRequisitionPanel />}
+      {/* PM's weekly item list — read-only, Store-only. The Director no
+          longer sees PM requisitions at all (backend also blocks the
+          endpoints directly for OWNER — see PMRequisitionController). */}
+      {userRole === 'STORE' && <PMRequisitionPanel />}
 
       {/* Actions row */}
       <div className="flex items-center justify-end gap-2 flex-wrap">
