@@ -347,7 +347,7 @@ export class AiService {
       const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
       return Number.isFinite(n) ? n : null;
     };
-    const sum = (vals: Array<number | null>) => vals.reduce((s: number, v) => s + (v ?? 0), 0);
+    const sum = (vals: Array<number | null>): number => vals.reduce<number>((s, v) => s + (v ?? 0), 0);
     const avgOfNonNull = (vals: Array<number | null>) => {
       const present = vals.filter((v): v is number => v != null);
       return present.length ? this.avgOf(present) : null;
