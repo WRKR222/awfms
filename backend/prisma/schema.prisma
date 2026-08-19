@@ -582,7 +582,14 @@ model ProductionWeightAlert {
 
   batch Batch @relation(fields: [batchId], references: [id])
 
-  @@index([batchId, sampleDate])
+  // One flag per batch per calendar day, full stop. Re-uploading the same
+  // report, or uploading an updated report whose date range overlaps a
+  // previously-flagged day, must land on the SAME row here (see
+  // WeightAlertService.evaluateWeightSample, which upserts on this key)
+  // instead of minting a fresh alert every time — otherwise a Director
+  // sees the same week's flag duplicate on every re-upload even after
+  // acknowledging/resolving it.
+  @@unique([batchId, sampleDate], map: "production_weight_alerts_batch_id_sample_date_key")
   @@index([status])
   @@map("production_weight_alerts")
 }

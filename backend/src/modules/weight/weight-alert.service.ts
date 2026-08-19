@@ -44,9 +44,26 @@ export class WeightAlertService {
    * Checks one recorded average weight against the HyLine standard band for
    * the batch's age at `sampleDate`. No-ops (returns null) when the weight
    * is within band — nothing to flag. When it's outside band, gathers
-   * cross-reference context, asks the AI for a short analysis, persists a
-   * ProductionWeightAlert, and notifies the Director. Returns the created
-   * alert (or null if within band / batch not found).
+   * cross-reference context, asks the AI for a short analysis, and
+   * upserts a ProductionWeightAlert keyed on (batchId, sampleDate).
+   *
+   * IMPORTANT — this is called on every reconcile pass over a production
+   * report, which means the SAME row (same batch, same day) can flow
+   * through here many times: the report gets re-uploaded, or a later
+   * report's date range simply happens to include a day that was already
+   * flagged. Without de-duplication that reproduces the exact bug this
+   * upsert exists to prevent: the Director sees the same week's flag
+   * duplicated on every re-upload, even after they've already
+   * acknowledged or resolved it (both in-app and in their notification
+   * feed). So:
+   *   - First occurrence for a (batch, day) → create + notify, as before.
+   *   - Later occurrence for the same (batch, day) → update the
+   *     measurement/context fields in place (in case the report brought a
+   *     corrected figure) but NEVER touch status/acknowledgedById/
+   *     acknowledgedAt, and NEVER send another notification. A flag the
+   *     Director already dealt with stays dealt with.
+   * Returns the created/updated alert (or null if within band / batch not
+   * found).
    */
   async evaluateWeightSample(params: {
     batchId: string;
@@ -76,6 +93,15 @@ export class WeightAlertService {
     const deviationG = Math.round((params.averageWeightG - boundaryG) * 100) / 100;
     const deviationPct = boundaryG > 0 ? Math.round((deviationG / boundaryG) * 10000) / 100 : 0;
 
+    // Already flagged this batch on this exact day? Don't re-flag it — see
+    // the doc-comment above. We still refresh the measurement/context
+    // fields below (a re-upload may carry a corrected figure), but we
+    // never create a second row, never touch the Director's
+    // acknowledgment, and never send a second notification.
+    const existing = await this.prisma.productionWeightAlert.findUnique({
+      where: { batchId_sampleDate: { batchId: params.batchId, sampleDate: params.sampleDate } },
+    });
+
     const [feedContext, mortalityContext] = await Promise.all([
       this.buildFeedContext(params.batchId, params.sampleDate, ageWeeks).catch(err => {
         this.logger.warn(`Feed context lookup failed for weight alert (batch ${params.batchId}): ${err?.message}`);
@@ -87,57 +113,81 @@ export class WeightAlertService {
       }),
     ]);
 
-    const aiAnalysis = await this.getAiAnalysis({
-      batchCode: batch.batchCode,
-      houseName: batch.house?.name ?? null,
-      ageWeeks,
-      direction,
+    // Same figure as what's already on file for this day? Nothing to do —
+    // skip the AI call entirely (no point paying for/waiting on a fresh
+    // read when nothing changed) and hand back the existing alert as-is.
+    const unchanged = existing != null && Math.abs(Number(existing.averageWeightG) - params.averageWeightG) < 0.005;
+    if (unchanged) return existing;
+
+    const aiAnalysis = existing
+      ? existing.aiAnalysis // keep the prior read rather than re-spending an API call on a duplicate pass
+      : await this.getAiAnalysis({
+          batchCode: batch.batchCode,
+          houseName: batch.house?.name ?? null,
+          ageWeeks,
+          direction,
+          averageWeightG: params.averageWeightG,
+          standardMinG: check.standard.weightMinG,
+          standardMaxG: check.standard.weightMaxG,
+          deviationG,
+          deviationPct,
+          feedContext,
+          mortalityContext,
+        }).catch(err => {
+          this.logger.warn(`AI weight-deviation analysis failed (batch ${params.batchId}): ${err?.message}`);
+          return null;
+        });
+
+    const alertData = {
+      source: params.source,
+      sourceId: params.sourceId ?? null,
+      sampleCount: params.sampleCount ?? null,
       averageWeightG: params.averageWeightG,
       standardMinG: check.standard.weightMinG,
       standardMaxG: check.standard.weightMaxG,
+      ageWeeks,
+      direction,
       deviationG,
       deviationPct,
-      feedContext,
-      mortalityContext,
-    }).catch(err => {
-      this.logger.warn(`AI weight-deviation analysis failed (batch ${params.batchId}): ${err?.message}`);
-      return null;
+      feedContext: feedContext as any,
+      mortalityContext: mortalityContext as any,
+      aiAnalysis,
+    };
+
+    // Upsert on (batchId, sampleDate) rather than a plain create — this is
+    // the crux of the duplicate-flag fix. A second/third/Nth pass over the
+    // same batch+day updates the existing row's measurement/context in
+    // place instead of minting a sibling row, and — critically — leaves
+    // status/acknowledgedById/acknowledgedAt untouched, so a flag the
+    // Director already acknowledged or resolved does not pop back up.
+    const alert = await this.prisma.productionWeightAlert.upsert({
+      where: { batchId_sampleDate: { batchId: params.batchId, sampleDate: params.sampleDate } },
+      create: { batchId: params.batchId, sampleDate: params.sampleDate, ...alertData },
+      update: alertData,
     });
 
-    const alert = await this.prisma.productionWeightAlert.create({
-      data: {
-        batchId: params.batchId,
-        source: params.source,
-        sourceId: params.sourceId ?? null,
-        sampleDate: params.sampleDate,
-        sampleCount: params.sampleCount ?? null,
-        averageWeightG: params.averageWeightG,
-        standardMinG: check.standard.weightMinG,
-        standardMaxG: check.standard.weightMaxG,
-        ageWeeks,
-        direction,
-        deviationG,
-        deviationPct,
-        feedContext: feedContext as any,
-        mortalityContext: mortalityContext as any,
-        aiAnalysis,
-      },
-    });
+    // Only the very first time this (batch, day) is flagged does the
+    // Director get notified — re-notifying on every re-upload of an
+    // already-seen flag is exactly the duplication being fixed here.
+    if (!existing) {
+      const directionLabel = direction === 'BELOW_MIN' ? 'below' : 'above';
+      const boundaryLabel = direction === 'BELOW_MIN' ? 'minimum' : 'maximum';
+      const title = direction === 'BELOW_MIN' ? 'Bird Weight Below Standard' : 'Bird Weight Above Standard';
+      const message = `${batch.batchCode} (Week ${ageWeeks}, ${check.standard.phase}): average weight ${params.averageWeightG.toFixed(0)}g is ${Math.abs(deviationG).toFixed(0)}g (${Math.abs(deviationPct).toFixed(1)}%) ${directionLabel} the HyLine ${boundaryLabel} of ${boundaryG}g, recorded ${dayjs(params.sampleDate).format('D MMM YYYY')}.`;
 
-    const directionLabel = direction === 'BELOW_MIN' ? 'below' : 'above';
-    const boundaryLabel = direction === 'BELOW_MIN' ? 'minimum' : 'maximum';
-    const title = direction === 'BELOW_MIN' ? 'Bird Weight Below Standard' : 'Bird Weight Above Standard';
-    const message = `${batch.batchCode} (Week ${ageWeeks}, ${check.standard.phase}): average weight ${params.averageWeightG.toFixed(0)}g is ${Math.abs(deviationG).toFixed(0)}g (${Math.abs(deviationPct).toFixed(1)}%) ${directionLabel} the HyLine ${boundaryLabel} of ${boundaryG}g, recorded ${dayjs(params.sampleDate).format('D MMM YYYY')}.`;
+      await this.notifications.notifyRole(
+        UserRole.OWNER,
+        direction === 'BELOW_MIN' ? NotificationType.WEIGHT_BELOW_STANDARD : NotificationType.WEIGHT_ABOVE_STANDARD,
+        title,
+        message,
+        { entityId: alert.id, entityType: 'ProductionWeightAlert' },
+      ).catch(() => { /* best-effort */ });
 
-    await this.notifications.notifyRole(
-      UserRole.OWNER,
-      direction === 'BELOW_MIN' ? NotificationType.WEIGHT_BELOW_STANDARD : NotificationType.WEIGHT_ABOVE_STANDARD,
-      title,
-      message,
-      { entityId: alert.id, entityType: 'ProductionWeightAlert' },
-    ).catch(() => { /* best-effort */ });
+      this.logger.warn(`Weight alert raised for batch ${batch.batchCode}: ${message}`);
+    } else {
+      this.logger.log(`Weight alert refreshed (no re-notify) for batch ${batch.batchCode}, ${dayjs(params.sampleDate).format('D MMM YYYY')}: alert ${alert.id}`);
+    }
 
-    this.logger.warn(`Weight alert raised for batch ${batch.batchCode}: ${message}`);
     return alert;
   }
 
