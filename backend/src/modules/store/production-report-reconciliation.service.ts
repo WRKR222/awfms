@@ -230,6 +230,35 @@ function extractQuantity(raw: string | undefined): { qty: number; unit?: string 
   return { qty, unit: m[2] || undefined };
 }
 
+/** Runs `fn` over `items` with at most `limit` in flight at once — plain
+ *  `Promise.all(items.map(fn))` would fire every row's DB work at the same
+ *  instant, which for a multi-week report can spike well past the Postgres
+ *  connection pool size and start failing with connection-timeout errors
+ *  instead of actually going faster. This keeps a steady `limit`-wide window
+ *  of work in flight, refilling as each item finishes, without pulling in an
+ *  external dependency (p-limit) for one function. Order of results doesn't
+ *  matter here — every caller only cares about side effects, not a return
+ *  value — so this only needs to await completion, not collect outputs. */
+async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+}
+
+// How many rows' worth of (mortality/weight/feed/water/health-usage/
+// environmental/item-usage) reconciliation run concurrently during a single
+// submit. Tuned well under Prisma's default connection pool size (num_cpus*2+1)
+// since each in-flight row can itself issue several queries at once — pushing
+// this too high trades one bottleneck (serial awaits) for another (pool
+// exhaustion). Revisit alongside DATABASE_URL's connection_limit if this ever
+// needs to go higher.
+const RECONCILE_CONCURRENCY = 6;
+
 @Injectable()
 export class ProductionReportReconciliationService {
   private readonly logger = new Logger(ProductionReportReconciliationService.name);
@@ -292,7 +321,75 @@ export class ProductionReportReconciliationService {
     const aliasRows = await this.prisma.storeItemAlias.findMany({ include: { storeItem: true } });
     const aliasMap: Map<string, StoreItem> = new Map(aliasRows.map(a => [a.normalisedAlias, a.storeItem] as [string, StoreItem]));
 
-    for (const row of rows) {
+    // ── Stock-count timeline (BROODING only) — reconcileStockCount's
+    // "expected opening stock" is the most recent PRIOR count's closing
+    // figure, which used to mean one `findFirst` DB round-trip PER ROW,
+    // and forced every OTHER field below to wait its turn in the same
+    // sequential loop even though nothing else depends on row order.
+    // Preloading the batch's full history once and walking report rows in
+    // date order purely in memory removes both problems at once. ─────────
+    let stockTimeline: { logDate: Date; closingStock: number }[] = [];
+    if (stageBucket === 'BROODING') {
+      stockTimeline = await this.prisma.brooderStockCount.findMany({
+        where: { batchId },
+        select: { logDate: true, closingStock: true },
+        orderBy: { logDate: 'asc' },
+      });
+    }
+
+    // Rows are normally already in date order (sheet order), but the
+    // timeline walk below REQUIRES it, so don't assume — sort explicitly.
+    const orderedRows = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+
+    // ── Phase 1 — stock count, sequential but DB-free. This is the ONLY
+    // part of reconciliation with a genuine cross-row dependency (each
+    // day's "expected opening stock" is the previous day's own outcome),
+    // so it stays a plain for-loop — but it no longer awaits the database
+    // inside that loop: outcomes are computed purely against the in-memory
+    // timeline, which is fed back into itself as each row is processed, and
+    // the actual DB writes are queued for the concurrent flush below. ─────
+    const stockWrites: (() => Promise<void>)[] = [];
+    let latestClosingStockRow: { logDate: Date; closingStock: number } | null = null;
+
+    for (const row of orderedRows) {
+      const logDate = new Date(row.date);
+      const isCageRow = stageBucket === 'BROODING' && row.cageNumber != null;
+      if (stageBucket === 'BROODING' && !isCageRow && row.openingStock !== undefined && row.closingStock !== undefined) {
+        const outcome = this.computeStockCountOutcome(row, logDate, stockTimeline);
+        // Feed this row's own result back into the timeline immediately —
+        // in memory — so the NEXT row (later date) sees it as "prior",
+        // exactly as a fresh DB query would have, minus the round-trip.
+        stockTimeline.push({ logDate, closingStock: row.closingStock! });
+        stockWrites.push(() => this.applyStockCountOutcome(
+          row, batchId, logDate, uploaderId, noteSuffix, outcome, discrepancies, appliedChanges,
+          () => { autofillCount++; }, () => { matchedCount++; },
+        ));
+        latestClosingStockRow = { logDate, closingStock: row.closingStock! };
+      }
+    }
+
+    await mapWithConcurrency(stockWrites, RECONCILE_CONCURRENCY, w => w());
+
+    // Batch.currentBirdCount only ever needs to reflect the SINGLE most
+    // recent closing-stock figure in the whole report, not be recomputed
+    // once per stock-count row — collapses what used to be up to N
+    // triple-queries (one set per row) into at most one.
+    if (latestClosingStockRow) {
+      await this.syncGeneralPopulationFromClosingStock(
+        batchId, latestClosingStockRow.logDate, latestClosingStockRow.closingStock,
+        dayjs(latestClosingStockRow.logDate).format('YYYY-MM-DD'), appliedChanges,
+      );
+    }
+
+    // ── Phase 2 — every other field, per row. Confirmed independent: each
+    // of these reads/writes only records for its OWN row's date (mortality,
+    // weight, feed, cage assignment, water, health usages, environmental,
+    // item usage never look at another date's data), so — unlike stock
+    // count above — they can run concurrently instead of one row waiting
+    // on the last. Bounded concurrency (RECONCILE_CONCURRENCY) keeps a
+    // large report from firing every row's queries at once and exhausting
+    // the DB connection pool. ─────────────────────────────────────────────
+    await mapWithConcurrency(orderedRows, RECONCILE_CONCURRENCY, async (row) => {
       const logDate = new Date(row.date);
       const isCageRow = stageBucket === 'BROODING' && row.cageNumber != null;
 
@@ -315,13 +412,6 @@ export class ProductionReportReconciliationService {
       // ── Feed ─────────────────────────────────────────────────────────────
       if (row.feedKg !== undefined) {
         await this.reconcileFeed(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, aliasMap, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
-      }
-
-      // ── Opening/closing stock — whole-batch rows only. Per-cage rows with
-      // opening/closing counts are cage-map data (below), not a whole-brooder
-      // BrooderStockCount entry (which is one row per DAY, not per cage). ──
-      if (stageBucket === 'BROODING' && !isCageRow && row.openingStock !== undefined && row.closingStock !== undefined) {
-        await this.reconcileStockCount(row, batchId, logDate, uploaderId, noteSuffix, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
       }
 
       // ── Cage reassignment / recount — per-cage rows only ────────────────
@@ -357,7 +447,7 @@ export class ProductionReportReconciliationService {
         await this.reconcileItemUsage(row, item, usage.quantity, usage.unit, usage.rawText, batchId, logDate, discrepancies, appliedChanges,
           (res) => { usage.resolution = res; if (res === 'AUTOFILLED') autofillCount++; else if (res === 'MATCHED') matchedCount++; });
       }
-    }
+    });
 
     return { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage: stageBucket };
   }
@@ -991,26 +1081,34 @@ export class ProductionReportReconciliationService {
   // See syncGeneralPopulationFromClosingStock below for how that correction
   // is applied, and why it's gated on this being the MOST RECENT stock
   // count/mortality data point the system has for the batch.
-  private async reconcileStockCount(
-    row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
-    discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
+  /** Finds the most recent entry in an in-memory stock-count timeline with a
+   *  date strictly before `logDate`. Replaces what used to be a `findFirst`
+   *  DB round-trip per row — see the timeline setup in reconcile() — with a
+   *  plain scan over a list that's small even across a batch's whole life
+   *  (one entry per day it's been in the brooder). */
+  private findPriorStockEntry(
+    timeline: { logDate: Date; closingStock: number }[], logDate: Date,
+  ): { logDate: Date; closingStock: number } | null {
+    let best: { logDate: Date; closingStock: number } | null = null;
+    for (const entry of timeline) {
+      if (entry.logDate.getTime() < logDate.getTime() && (!best || entry.logDate.getTime() > best.logDate.getTime())) {
+        best = entry;
+      }
+    }
+    return best;
+  }
+
+  /** Pure computation half of stock-count reconciliation — no DB access, so
+   *  it's safe (and cheap) to run for every row in the sequential timeline
+   *  pass in reconcile(). Everything that used to live inline in
+   *  reconcileStockCount before the DB writes now lives here instead. */
+  private computeStockCountOutcome(
+    row: ParsedReportRow, logDate: Date, timeline: { logDate: Date; closingStock: number }[],
   ) {
-    // ── Expected opening stock: the most recent PRIOR stock count's closing
-    // figure. Not assumed to be exactly "yesterday" — reports can have gaps
-    // between upload dates, so this looks back to whatever the last known
-    // count actually was, however many days ago that fell. ──────────────────
-    const priorCount = await this.prisma.brooderStockCount.findFirst({
-      where: { batchId, logDate: { lt: logDate } },
-      orderBy: { logDate: 'desc' },
-      select: { closingStock: true, logDate: true },
-    });
-    const expectedOpeningStock = priorCount?.closingStock ?? null;
+    const priorEntry = this.findPriorStockEntry(timeline, logDate);
+    const expectedOpeningStock = priorEntry?.closingStock ?? null;
     const openingVariance = expectedOpeningStock != null ? row.openingStock! - expectedOpeningStock : 0;
 
-    // ── Same-day arithmetic check: this row's OWN closing stock should equal
-    // its own opening stock minus its own recorded mortality/culling —
-    // independent of any cross-day variance above. A row can have a correct
-    // opening figure yet still not add up internally (sheet math error). ──
     const dayLosses = (row.mortality ?? 0) + (row.culling ?? 0);
     const expectedClosingFromRow = Math.max(0, row.openingStock! - dayLosses);
     const arithmeticMismatch = row.closingStock! !== expectedClosingFromRow;
@@ -1018,6 +1116,20 @@ export class ProductionReportReconciliationService {
     const varianceReason = openingVariance !== 0
       ? `Opening stock (${row.openingStock}) differs from the previous count's closing stock (${expectedOpeningStock}) by ${Math.abs(openingVariance)} bird(s).`
       : null;
+
+    return { priorEntry, expectedOpeningStock, openingVariance, dayLosses, expectedClosingFromRow, arithmeticMismatch, varianceReason };
+  }
+
+  /** DB-writing half of stock-count reconciliation, given an outcome already
+   *  computed by computeStockCountOutcome(). Queued and run concurrently
+   *  (see reconcile()'s stockWrites flush) since, unlike the compute step,
+   *  nothing here depends on another row's write having landed first. */
+  private async applyStockCountOutcome(
+    row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
+    outcome: ReturnType<ProductionReportReconciliationService['computeStockCountOutcome']>,
+    discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
+  ) {
+    const { priorEntry, expectedOpeningStock, openingVariance, dayLosses, expectedClosingFromRow, arithmeticMismatch, varianceReason } = outcome;
 
     const existing = await this.prisma.brooderStockCount.findUnique({ where: { batchId_logDate: { batchId, logDate } } });
     if (!existing) {
@@ -1068,7 +1180,7 @@ export class ProductionReportReconciliationService {
         batchId,
         `Stock Count Mismatch — Batch`,
         `The opening stock reported for ${row.date} is ${row.openingStock!.toLocaleString()}, but the previous count ` +
-        `(${dayjs(priorCount!.logDate).format('YYYY-MM-DD')}) closed at ${expectedOpeningStock.toLocaleString()} — ` +
+        `(${dayjs(priorEntry!.logDate).format('YYYY-MM-DD')}) closed at ${expectedOpeningStock.toLocaleString()} — ` +
         `the count has ${direction} by ${Math.abs(openingVariance).toLocaleString()} bird(s) with no recorded reason.`,
       );
     }
@@ -1084,8 +1196,9 @@ export class ProductionReportReconciliationService {
         `a ${Math.abs(row.closingStock! - expectedClosingFromRow)}-bird discrepancy in how the sheet's own figures were calculated.`,
       );
     }
-
-    await this.syncGeneralPopulationFromClosingStock(batchId, logDate, row.closingStock!, row.date, appliedChanges);
+    // NOTE: syncGeneralPopulationFromClosingStock is now called ONCE from
+    // reconcile() itself, for the report's single latest-dated row — not
+    // here per row — see the Phase 1 comment above for why.
   }
 
   // ── BROODER_STOCK_MISMATCH — Manager + Owner facing, best-effort ────────
