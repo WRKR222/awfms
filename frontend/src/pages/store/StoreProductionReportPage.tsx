@@ -36,6 +36,48 @@ interface Discrepancy {
 
 interface StoreItemOption { id: string; name: string; category: string; unit: string; }
 
+/** True for a client-side timeout/abort/dropped-connection — cases where
+ *  axios never got a response at all, as opposed to the server actually
+ *  answering with a 4xx/5xx. `err.response` is only ever set once a real
+ *  HTTP response came back, so its absence is the reliable signal here
+ *  (checking `err.code` alone misses plain network drops, which axios
+ *  doesn't always tag with ECONNABORTED/ERR_CANCELED). */
+function isTimeoutOrDroppedConnection(err: any): boolean {
+  return !err?.response;
+}
+
+/** After a submit request times out/cancels client-side, the backend may
+ *  well have kept running and finished the write anyway — /submit's
+ *  reconciliation is slow (see its own timeout comment) but not fragile,
+ *  so "the browser gave up waiting" and "the report didn't apply" are two
+ *  different things. Poll the report's actual persisted state for a bit
+ *  before telling Store it failed, so a slow-but-successful submit doesn't
+ *  get reported as a failure (and doesn't invite a duplicate resubmit).
+ *  Matches on fileName + a resubmissionCount bump (and a recent uploadedAt)
+ *  so a report that was already sitting there from an EARLIER, unrelated
+ *  upload doesn't get mistaken for evidence that this timed-out attempt
+ *  actually landed. */
+async function pollForAppliedReport(
+  batchId: string, fileName: string, priorResubmissionCount: number,
+): Promise<any | null> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const { data } = await api.get(`/store/production-reports/${batchId}`);
+      if (
+        data && data.fileName === fileName &&
+        (data.resubmissionCount ?? 0) >= priorResubmissionCount &&
+        data.uploadedAt && Date.now() - new Date(data.uploadedAt).getTime() < 10 * 60 * 1000
+      ) {
+        return data;
+      }
+    } catch {
+      // 404 (no report yet) or a transient error while polling — keep trying.
+    }
+  }
+  return null;
+}
+
 function useStoreItems() {
   return useQuery<StoreItemOption[]>({
     queryKey: ['store-items-active'],
@@ -55,7 +97,10 @@ function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
   const [storeItemId, setStoreItemId] = useState('');
 
   const match = useMutation({
-    mutationFn: async () => (await api.post(`/store/production-reports/${batchId}/match-item`, { rawLabel: d.reportValue, storeItemId, discrepancyId: d.id })).data as { matchedItem: { id: string; name: string } },
+    // Re-reconciles the WHOLE report server-side (same per-row DB cost as
+    // /submit — see that mutation's comment), so it needs the same longer
+    // timeout rather than the default 30s.
+    mutationFn: async () => (await api.post(`/store/production-reports/${batchId}/match-item`, { rawLabel: d.reportValue, storeItemId, discrepancyId: d.id }, { timeout: 120_000 })).data as { matchedItem: { id: string; name: string } },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['production-report', batchId] }),
   });
 
@@ -436,6 +481,9 @@ const FIELD_OPTIONS: { key: string; label: string }[] = [
 
 
 function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: () => void }) {
+  // Only needed here for its resubmissionCount snapshot, taken right before
+  // a submit — see pollForAppliedReport's use of it below.
+  const { data: currentReport } = useCurrentReport(batchId);
   const fileRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [headers, setHeaders] = useState<string[]>([]);
@@ -475,15 +523,55 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
     onSuccess: () => resetAll(),
   });
 
+  const [confirmingAfterTimeout, setConfirmingAfterTimeout] = useState(false);
+
   const submit = useMutation({
     mutationFn: async () => {
       if (!file) throw new Error('No file selected');
+      const priorResubmissionCount = currentReport?.resubmissionCount ?? 0;
       const form = new FormData();
       form.append('file', file);
       form.append('mapping', JSON.stringify(mapping));
-      return (await api.post(`/store/production-reports/${batchId}/submit`, form, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })).data;
+      try {
+        return (await api.post(`/store/production-reports/${batchId}/submit`, form, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          // Reconciliation runs several sequential DB round-trips per report
+          // row (mortality, weight, feed, water, health usages, environmental,
+          // item usage) — a multi-week report can take well past the client's
+          // default 30s timeout even though the backend is still working
+          // correctly. Give this specific request more room; the default
+          // 30s stays in place for every other (fast) endpoint.
+          timeout: 120_000,
+        })).data;
+      } catch (err: any) {
+        if (!isTimeoutOrDroppedConnection(err)) throw err;
+        // The browser gave up waiting, but the backend may have finished
+        // the write anyway — check the report's actual persisted state
+        // before telling Store this failed, instead of guessing from a
+        // dropped connection alone.
+        setConfirmingAfterTimeout(true);
+        const applied = await pollForAppliedReport(batchId, file.name, priorResubmissionCount).finally(
+          () => setConfirmingAfterTimeout(false),
+        );
+        if (applied) {
+          return {
+            reportId: applied.id,
+            status: applied.status,
+            totalRows: previewData?.totalRows ?? 0,
+            matchedCount: applied.matchedCount,
+            autofillCount: applied.autofillCount,
+            discrepancyCount: applied.discrepancyCount,
+            stage: applied.stage,
+            confirmedAfterTimeout: true,
+          };
+        }
+        // Genuinely couldn't confirm either way after polling — surface a
+        // clearer message than the generic fallback so Store knows to check
+        // the status panel (now freshly refetched below) rather than assume
+        // outright failure and immediately resubmit.
+        err.message = 'Connection dropped and we could not confirm whether this went through. Check the report status above before resubmitting — resubmitting an already-applied report is safe but will show as a duplicate resubmission.';
+        throw err;
+      }
     },
     onSuccess: () => {
       onSubmitted();
@@ -491,6 +579,10 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
       // resetAll() but preserve the success message by not clearing submit's data.
       setFile(null); setHeaders([]); setMapping({ fields: {}, items: {} }); setStep('mapping'); setPreviewData(null);
     },
+    // Even on failure, refresh the real on-page status — if the write DID
+    // land (just not confirmed within the poll window above), Store sees
+    // the true state right below the error instead of only a scary banner.
+    onSettled: () => { onSubmitted(); },
   });
 
   const handleFile = async (f: File) => {
@@ -641,23 +733,33 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
               className="ml-auto bg-brand-green text-white px-5 py-2 rounded-xl text-sm font-semibold hover:bg-brand-green/90 disabled:opacity-50 transition-colors flex items-center gap-1.5"
             >
               {submit.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
-              Approve & Submit
+              {confirmingAfterTimeout ? 'Confirming…' : 'Approve & Submit'}
             </button>
           </div>
         </div>
       )}
 
+      {confirmingAfterTimeout && (
+        <div className="bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/30 rounded-xl p-3 text-sm text-amber-700 dark:text-amber-400 flex items-center gap-2">
+          <RefreshCw className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+          Connection is slow — checking whether this already went through before showing an error. This can take up to about 30 seconds; please don't resubmit yet.
+        </div>
+      )}
+
       {submit.isSuccess && (
         <div className="bg-green-50 dark:bg-green-900/20 border border-green-100 dark:border-green-900/30 rounded-xl p-3 text-sm text-green-700 dark:text-green-400">
-          Submitted — {submit.data.matchedCount} matched, {submit.data.autofillCount} auto-filled
+          {(submit.data as any).confirmedAfterTimeout
+            ? 'Your connection dropped, but this DID go through — '
+            : 'Submitted — '}
+          {submit.data.matchedCount} matched, {submit.data.autofillCount} auto-filled
           {submit.data.discrepancyCount > 0
             ? `, ${submit.data.discrepancyCount} discrepanc${submit.data.discrepancyCount === 1 ? 'y' : 'ies'} to resolve below.`
             : ' — applied with no discrepancies.'}
         </div>
       )}
-      {submit.isError && (
+      {submit.isError && !confirmingAfterTimeout && (
         <div className="bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/30 rounded-xl p-3 text-sm text-red-700 dark:text-red-400">
-          {(submit.error as any)?.response?.data?.message ?? 'Submission failed'}
+          {(submit.error as any)?.response?.data?.message ?? (submit.error as any)?.message ?? 'Submission failed'}
         </div>
       )}
       {discard.isSuccess && !file && (
