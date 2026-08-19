@@ -180,8 +180,8 @@ interface WeightAlert {
   direction: 'BELOW_MIN' | 'ABOVE_MAX';
   deviationG: string | number;
   deviationPct: string | number;
-  feedContext: { note: string; totalDispensedKg: number; recommendedKg: number | null; pctOfRecommended: number | null; windowDays: number } | null;
-  mortalityContext: { note: string; totalDeaths: number; cumulativePct: number | null; standardCeilingPct: number | null; overCeiling: boolean; windowDays: number } | null;
+  feedContext: { note: string; totalDispensedKg: number; recommendedKg: number | null; pctOfRecommended: number | null; windowDays: number; source: 'report' | 'system' } | null;
+  mortalityContext: { note: string; totalDeaths: number; cumulativePct: number | null; standardCeilingPct: number | null; overCeiling: boolean; windowDays: number; source: 'report' | 'system' } | null;
   aiAnalysis: string | null;
   status: 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
   createdAt: string;
@@ -259,9 +259,14 @@ function WeightAlertsPanel({ batchId }: { batchId: string }) {
                 <div className="p-3 space-y-3 border-t border-red-100 dark:border-red-900/30">
                   {a.feedContext && (
                     <div className="bg-gray-50 dark:bg-dark-bg rounded-lg p-3">
-                      <p className="text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1">
-                        Feed intake, last {a.feedContext.windowDays} days
-                      </p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                          Feed intake, last {a.feedContext.windowDays} days
+                        </p>
+                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${a.feedContext.source === 'report' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'}`}>
+                          {a.feedContext.source === 'report' ? 'Production report' : 'System log (no report data)'}
+                        </span>
+                      </div>
                       <p className="text-xs text-gray-500">
                         {a.feedContext.totalDispensedKg}kg dispensed
                         {a.feedContext.recommendedKg != null && ` vs. ${a.feedContext.recommendedKg}kg recommended`}
@@ -272,9 +277,14 @@ function WeightAlertsPanel({ batchId }: { batchId: string }) {
                   )}
                   {a.mortalityContext && (
                     <div className={`rounded-lg p-3 ${a.mortalityContext.overCeiling ? 'bg-red-50 dark:bg-red-900/10' : 'bg-gray-50 dark:bg-dark-bg'}`}>
-                      <p className="text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1">
-                        Mortality, last {a.mortalityContext.windowDays} days
-                      </p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">
+                          Mortality, last {a.mortalityContext.windowDays} days
+                        </p>
+                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${a.mortalityContext.source === 'report' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'}`}>
+                          {a.mortalityContext.source === 'report' ? 'Production report' : 'System log (no report data)'}
+                        </span>
+                      </div>
                       <p className="text-xs text-gray-500">
                         {a.mortalityContext.totalDeaths} death(s)
                         {a.mortalityContext.cumulativePct != null && ` · Cumulative ${a.mortalityContext.cumulativePct}%`}

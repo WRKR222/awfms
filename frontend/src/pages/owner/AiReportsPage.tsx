@@ -4,7 +4,7 @@ import { api } from '../../lib/api/client';
 import { useBatches } from '../../hooks/useFlock';
 import {
   Brain, ChevronDown, ChevronUp, RefreshCw, Loader2,
-  TrendingUp, AlertTriangle, BarChart2, Lightbulb, Clipboard, Bird,
+  TrendingUp, AlertTriangle, BarChart2, Lightbulb, Clipboard, Bird, FileSpreadsheet,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 
@@ -51,6 +51,50 @@ function ReportIcon({ type, size = 'sm' }: { type: string; size?: 'sm' | 'md' })
   const Icon = meta?.icon ?? Clipboard;
   const sz = size === 'sm' ? 'w-4 h-4' : 'w-5 h-5';
   return <Icon className={`${sz} ${meta?.color ?? 'text-gray-500'}`} />;
+}
+
+// ── Production-report data-provenance badge ────────────────────────────────
+// Uploaded, Store-verified production reports are a more reliable source
+// than the day-to-day system entry tables (which only ever count APPROVED
+// rows) — the AI service now prefers them for feed/mortality/weight
+// wherever one is available (see AiService.getProductionReportMetrics on
+// the backend). This surfaces that so the Director knows, at a glance,
+// whether a given report leaned on an uploaded file or fell back to system
+// records.
+function productionReportBadge(report: AiReport): { label: string; detail?: string } | null {
+  const raw = report.rawData ?? {};
+
+  // Batch-specific report: rawData.productionReport is set when one was used.
+  if (report.reportType === 'BATCH_CLOSURE_FORECAST') {
+    if (raw.productionReport) {
+      const pr = raw.productionReport;
+      const openDisc = Number(pr.openDiscrepancies ?? 0);
+      return {
+        label: 'From uploaded production report',
+        detail: `${pr.fileName ?? 'report'} · ${pr.rowCount ?? 0} day(s)${openDisc > 0 ? ` · ${openDisc} discrepancy(ies) open` : ''}`,
+      };
+    }
+    if (raw.dataSources) {
+      return { label: 'From system records', detail: 'No production report uploaded for this batch yet' };
+    }
+    return null;
+  }
+
+  // Weekly farm-wide report: rawData.productionReportCoverage summarises
+  // how many of the active batches were covered by a report this week.
+  if (report.reportType === 'WEEKLY_PERFORMANCE' && raw.productionReportCoverage) {
+    const c = raw.productionReportCoverage;
+    if (Number(c.batchesCovered) > 0) {
+      const openDisc = Number(c.openDiscrepancies ?? 0);
+      return {
+        label: `Production reports used for ${c.batchesCovered}/${c.totalActiveBatches} batches`,
+        detail: openDisc > 0 ? `${openDisc} discrepancy(ies) still awaiting review` : undefined,
+      };
+    }
+    return { label: 'From system records', detail: 'No production reports covered this week' };
+  }
+
+  return null;
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -212,6 +256,7 @@ export function AiReportsPage() {
           {data.reports.map(report => {
             const meta = REPORT_META[report.reportType];
             const isExpanded = expandedId === report.id;
+            const provenance = productionReportBadge(report);
 
             return (
               <div
@@ -264,6 +309,22 @@ export function AiReportsPage() {
                 {/* Expanded content */}
                 {isExpanded && (
                   <div className="border-t border-gray-100 dark:border-gray-800 p-4 space-y-3">
+                    {/* Data provenance — which source (uploaded production
+                        report vs. system entries) fed this report's numbers */}
+                    {provenance && (
+                      <div className={`flex items-start gap-2 text-xs rounded-lg px-3 py-2 ${
+                        provenance.label.startsWith('From uploaded') || provenance.label.startsWith('Production reports used')
+                          ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400'
+                          : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'
+                      }`}>
+                        <FileSpreadsheet className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                        <span>
+                          <strong>{provenance.label}</strong>
+                          {provenance.detail && <> — {provenance.detail}</>}
+                        </span>
+                      </div>
+                    )}
+
                     {/* Full report text — formatted as plain paragraphs */}
                     <div className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-line">
                       {report.content}

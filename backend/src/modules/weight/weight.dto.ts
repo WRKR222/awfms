@@ -14,6 +14,14 @@ export interface FeedContextSnapshot {
   recommendedKg: number | null;
   pctOfRecommended: number | null; // null when recommendedKg is null/0
   entryCount: number;
+  // Where totalDispensedKg came from. 'report' = summed straight off the
+  // batch's uploaded Store production report rows for this window — the
+  // preferred, in-person-recorded figure. 'system' = fell back to
+  // FeedIntakeLog because no production report (or no rows of it inside
+  // this window) was on file; system logs can under/over-count in areas
+  // where dispensed feed isn't being logged 1:1, so this is a best-effort
+  // stand-in, not the authoritative figure.
+  source: 'report' | 'system';
   note: string;
 }
 
@@ -23,6 +31,9 @@ export interface MortalityContextSnapshot {
   cumulativePct: number | null;
   standardCeilingPct: number | null;
   overCeiling: boolean;
+  // See FeedContextSnapshot.source — same meaning, applied to totalDeaths
+  // and the cumulative-mortality figure below.
+  source: 'report' | 'system';
   note: string;
 }
 

@@ -260,6 +260,118 @@ export class AiService {
     };
   }
 
+  // ── Helper: derive reliable production metrics from the uploaded Store
+  // production report, instead of the operational entry tables ────────────
+  // StoreProductionReport is the report Store uploads and the Director signs
+  // off on (see ProductionReportReconciliationService) — it is treated as
+  // the authoritative record of what actually happened on the farm. The
+  // operational tables it reconciles against (FeedIntakeLog, FlockDailyEntry,
+  // BrooderLevelMortalityLog, etc.) are attendant-entered day-to-day and can
+  // undercount or lag: aggregates elsewhere in this file only ever summed
+  // APPROVED rows, silently excluding anything still PENDING/RETURNED, and
+  // production-stage mortality in particular was never queried by the batch
+  // report at all. Once a report has been uploaded for a batch, its numbers
+  // should be what the AI reasons over — not a reconstruction from whichever
+  // system tables happen to be populated and approved.
+  //
+  // `range`, when given, restricts the rows summed to that window (calendar,
+  // by row.date) — used by the weekly report to fold a batch's report data
+  // into a specific week. Omitted entirely, every row on the report counts
+  // — used by the on-demand per-batch report, which covers the batch's
+  // whole lifecycle.
+  //
+  // Returns null when there is no report for the batch, the report was
+  // REJECTED by the Director (nothing on it should be trusted), or (with a
+  // range given) the report simply has no rows in that window — all of
+  // which mean "fall back to system data" to the caller.
+  private async getProductionReportMetrics(
+    batchId: string,
+    range?: { start: Date; end: Date },
+  ): Promise<{
+    fileName: string;
+    uploadedAt: Date;
+    status: string;
+    rowCount: number;
+    dateRange: { from: string; to: string } | null;
+    totalFeedKg: number;
+    totalMortality: number;
+    totalCulling: number;
+    avgWaterLts: number | null;
+    avgTemperature: number | null;
+    avgHumidity: number | null;
+    latestAvgWeightG: number | null;
+    latestWeightDate: string | null;
+    openDiscrepancies: number;
+    totalDiscrepancies: number;
+  } | null> {
+    const report = await this.prisma.storeProductionReport.findUnique({
+      where: { batchId },
+      select: {
+        fileName: true, uploadedAt: true, status: true, rawRows: true, discrepancyCount: true,
+        discrepancies: { select: { resolved: true } },
+      },
+    });
+    // REJECTED = Director threw the whole upload out; nothing on it was
+    // ever applied, so it must not be treated as a source of truth either.
+    if (!report || report.status === 'REJECTED') return null;
+
+    let rows = ((report.rawRows as any[]) ?? []).filter(r => r && typeof r.date === 'string');
+    if (range) {
+      const startStr = dayjs(range.start).format('YYYY-MM-DD');
+      const endStr = dayjs(range.end).format('YYYY-MM-DD');
+      rows = rows.filter(r => r.date >= startStr && r.date <= endStr);
+    }
+
+    const openDiscrepancies = report.discrepancies.filter(d => !d.resolved).length;
+    const base = {
+      fileName: report.fileName,
+      uploadedAt: report.uploadedAt,
+      status: report.status as string,
+      openDiscrepancies,
+      totalDiscrepancies: report.discrepancyCount,
+    };
+
+    if (rows.length === 0) {
+      return {
+        ...base, rowCount: 0, dateRange: null,
+        totalFeedKg: 0, totalMortality: 0, totalCulling: 0,
+        avgWaterLts: null, avgTemperature: null, avgHumidity: null,
+        latestAvgWeightG: null, latestWeightDate: null,
+      };
+    }
+
+    // Report cells can carry numbers as text (e.g. "612", "612 g") — parse
+    // defensively rather than assuming a clean numeric type out of jsonb.
+    const num = (v: unknown): number | null => {
+      if (v == null || v === '') return null;
+      const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+      return Number.isFinite(n) ? n : null;
+    };
+    const sum = (vals: Array<number | null>) => vals.reduce((s: number, v) => s + (v ?? 0), 0);
+    const avgOfNonNull = (vals: Array<number | null>) => {
+      const present = vals.filter((v): v is number => v != null);
+      return present.length ? this.avgOf(present) : null;
+    };
+
+    const sorted = [...rows].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    const withWeight = sorted.filter(r => num(r.avgWeight) != null);
+    const latestWeightRow = withWeight[withWeight.length - 1];
+
+    return {
+      ...base,
+      rowCount: rows.length,
+      dateRange: { from: sorted[0].date, to: sorted[sorted.length - 1].date },
+      totalFeedKg: sum(rows.map(r => num(r.feedKg))),
+      totalMortality: sum(rows.map(r => num(r.mortality))),
+      totalCulling: sum(rows.map(r => num(r.culling))),
+      avgWaterLts: avgOfNonNull(rows.map(r => num(r.waterLts))),
+      avgTemperature: avgOfNonNull(rows.map(r => num(r.temperature))),
+      avgHumidity: avgOfNonNull(rows.map(r => num(r.humidity))),
+      latestAvgWeightG: latestWeightRow ? num(latestWeightRow.avgWeight) : null,
+      latestWeightDate: latestWeightRow ? latestWeightRow.date : null,
+    };
+  }
+
   // ────────────────────────────────────────────────────────────────────────────
   // AI-01 — Weekly Performance Report  (Monday 06:00)
   // ────────────────────────────────────────────────────────────────────────────
@@ -271,7 +383,34 @@ export class AiService {
     const startDate = weekStart.toDate();
     const endDate = weekEnd.toDate();
 
+    // ── Production reports first ─────────────────────────────────────────────
+    // For every active batch, check whether Store has an uploaded production
+    // report with rows falling in this week — if so, that batch's feed &
+    // mortality figures for the week come from the report (Store-verified,
+    // Director-reviewed) rather than from FeedIntakeLog/FlockDailyEntry,
+    // which only ever counted APPROVED rows and could quietly under-report a
+    // week where entries were still pending. Batches without report coverage
+    // for this week still fall back to the system tables below.
+    const activeBatches = await this.prisma.batch.findMany({
+      where: { isActive: true, deletedAt: null },
+      select: { id: true, currentBirdCount: true },
+    });
+    const prMetricsByBatch = await Promise.all(
+      activeBatches.map(async b => ({
+        batchId: b.id,
+        metrics: await this.getProductionReportMetrics(b.id, { start: startDate, end: endDate }),
+      })),
+    );
+    const reportCovered = prMetricsByBatch.filter(m => m.metrics && m.metrics.rowCount > 0);
+    const reportCoveredBatchIds = reportCovered.map(m => m.batchId);
+    const feedKgFromReports = reportCovered.reduce((s, m) => s + m.metrics!.totalFeedKg, 0);
+    const mortFromReports   = reportCovered.reduce((s, m) => s + m.metrics!.totalMortality, 0);
+    const openDiscrepanciesThisWeek = reportCovered.reduce((s, m) => s + m.metrics!.openDiscrepancies, 0);
+
     // ── Gather data ───────────────────────────────────────────────────────────
+    // Feed/mortality here are scoped to batches NOT already covered by a
+    // production report this week, so the two sources are additive rather
+    // than double-counted.
     const [eggSessions, flockEntries, feedLogs, expenses, healthEvents, sales, breakages, feedDeliveries, completeness] =
       await Promise.all([
         this.prisma.eggCollectionSession.findMany({
@@ -282,11 +421,17 @@ export class AiService {
           },
         }),
         (this.prisma as any).flockDailyEntry.findMany({
-          where: { entryDate: { gte: startDate, lte: endDate }, status: EntryStatus.APPROVED },
+          where: {
+            entryDate: { gte: startDate, lte: endDate }, status: EntryStatus.APPROVED,
+            ...(reportCoveredBatchIds.length ? { batchId: { notIn: reportCoveredBatchIds } } : {}),
+          },
           select: { mortalityCount: true, mortalityCause: true },
         }),
         this.prisma.feedIntakeLog.findMany({
-          where: { entryDate: { gte: startDate, lte: endDate }, status: EntryStatus.APPROVED },
+          where: {
+            entryDate: { gte: startDate, lte: endDate }, status: EntryStatus.APPROVED,
+            ...(reportCoveredBatchIds.length ? { batchId: { notIn: reportCoveredBatchIds } } : {}),
+          },
           select: { quantityDispensedKg: true, feedType: true },
         }),
         this.prisma.expenseLog.findMany({
@@ -313,18 +458,19 @@ export class AiService {
     const dailyHdp = this.aggregateDailyHdp(eggSessions);
     const avgHdp = this.avgOf(dailyHdp.map(d => d.hdp));
 
-    const totalMort     = flockEntries.reduce((s: number, e: any) => s + e.mortalityCount, 0);
-    const totalFeedKg   = feedLogs.reduce((s, f) => s + Number(f.quantityDispensedKg), 0);
+    // Blend: production-report figures (reliable, for covered batches) +
+    // system figures (fallback, for batches with no report covering this
+    // week). Neither source is queried for both, so this is a plain sum.
+    const mortFromSystem   = flockEntries.reduce((s: number, e: any) => s + e.mortalityCount, 0);
+    const feedKgFromSystem = feedLogs.reduce((s, f) => s + Number(f.quantityDispensedKg), 0);
+    const totalMort   = mortFromReports + mortFromSystem;
+    const totalFeedKg = feedKgFromReports + feedKgFromSystem;
     const totalExpenses = expenses.reduce((s, e) => s + Number(e.amount), 0);
     // "Revenue" kept as cash actually collected (matches the existing frontend
     // chip), but the prompt below now also shows sales placed and invoiced.
     const totalRevenue = sales.cashCollected;
     const netIncome    = totalRevenue - totalExpenses;
 
-    const activeBatches = await this.prisma.batch.findMany({
-      where: { isActive: true, deletedAt: null },
-      select: { currentBirdCount: true },
-    });
     const totalBirds = activeBatches.reduce((s, b) => s + b.currentBirdCount, 0);
     const fcr = totalEggs > 0 ? (totalFeedKg / totalEggs).toFixed(3) : 'N/A';
 
@@ -338,12 +484,27 @@ export class AiService {
       netIncome, totalBirds, healthEvents: healthEvents.length,
       brokenEggPct: totalEggs > 0 ? ((totalBroken / (totalEggs + totalBroken)) * 100).toFixed(1) : '0',
       sales, breakages, feedDeliveries, completeness,
+      // Data provenance for feed & mortality — see getProductionReportMetrics.
+      productionReportCoverage: {
+        batchesCovered: reportCoveredBatchIds.length,
+        totalActiveBatches: activeBatches.length,
+        feedKgFromReports: feedKgFromReports.toFixed(1),
+        feedKgFromSystem: feedKgFromSystem.toFixed(1),
+        mortFromReports,
+        mortFromSystem,
+        openDiscrepancies: openDiscrepanciesThisWeek,
+      },
     };
 
     // ── Build prompt ──────────────────────────────────────────────────────────
+    const prSourceNote = reportCoveredBatchIds.length
+      ? `Feed and mortality figures below are drawn from the uploaded, Store-verified production report for ${reportCoveredBatchIds.length} of ${activeBatches.length} active batch(es) this week (the more reliable source), and from system entry logs for the remaining batch(es) that had no report covering this week.${openDiscrepanciesThisWeek > 0 ? ` Note: ${openDiscrepanciesThisWeek} open discrepancy(ies) on those production reports are still awaiting your review.` : ''}`
+      : `No active batch had an uploaded production report covering this week, so feed and mortality figures below come from system entry logs.`;
+
     const prompt = `You are an expert poultry farm advisor. Write a concise weekly performance report for Anza Whole Foods farm in Kenya. Use plain English — no jargon. Address the Director directly. Be specific with numbers. End with 2-3 actionable recommendations.
 
 WEEK: ${rawData.week}
+DATA SOURCE NOTE: ${prSourceNote}
 PRODUCTION: ${totalEggs.toLocaleString()} eggs · ${totalTrays} trays · Avg daily HDP ${avgHdp.toFixed(1)}% (AM+PM combined, based on ${dailyHdp.length} fully-recorded day(s)) · Broken egg rate ${rawData.brokenEggPct}%
 FLOCK: ${totalBirds.toLocaleString()} birds · ${totalMort} mortalities this week
 FEED CONSUMED: ${totalFeedKg.toFixed(1)} kg · FCR ${fcr} kg feed per egg
@@ -1048,7 +1209,20 @@ Provide 3-5 improvement suggestions. Each should be: (a) specific to the data ab
     const dailyHdp = this.aggregateDailyHdp(approvedSessions);
     const avgHdp = dailyHdp.length ? this.avgOf(dailyHdp.map(d => d.hdp)) : null;
 
-    const totalFeedKg = approvedFeed.reduce((s, f) => s + Number(f.quantityDispensedKg), 0);
+    // ── Prefer the uploaded, Store-verified production report over system
+    // tables wherever it covers the same ground — see getProductionReportMetrics
+    // for why. Covers the batch's ENTIRE lifecycle (no date range given), since
+    // this on-demand report is a full-batch review, not a period snapshot.
+    const prMetrics = await this.getProductionReportMetrics(batch.id);
+    const hasProductionReport = !!prMetrics && prMetrics.rowCount > 0;
+
+    // FEED: the production report's total covers brooder + production-house
+    // feed together and every day Store recorded, not just APPROVED
+    // FeedIntakeLog rows — use it as the single feed figure when available.
+    const systemProductionHouseFeedKg = approvedFeed.reduce((s, f) => s + Number(f.quantityDispensedKg), 0);
+    const totalFeedKg = hasProductionReport ? prMetrics!.totalFeedKg : systemProductionHouseFeedKg;
+    const feedDataSource: 'production_report' | 'system' = hasProductionReport ? 'production_report' : 'system';
+
     const totalEggs = approvedSessions.reduce((s, e) => s + e.totalGoodEggs, 0);
     const fcr = totalEggs > 0 ? (totalFeedKg / totalEggs).toFixed(3) : null;
     const survivalRate = batch.quantityReceived > 0
@@ -1078,30 +1252,64 @@ Provide 3-5 improvement suggestions. Each should be: (a) specific to the data ab
     // arrays for a batch that never had brooder data logged.
     const bd = await this.getBrooderDeepDive(batch);
 
+    // MORTALITY/CULLING: the production report's totals cover the batch's
+    // FULL lifecycle (brooder AND production stage) — bd.mortality only ever
+    // covers the brooder-stage tables and has no source at all for
+    // production-stage mortality, so once a report exists it is materially
+    // more complete, not merely a duplicate of the same numbers.
+    const totalMortality = hasProductionReport ? prMetrics!.totalMortality : bd.mortality.total;
+    const totalCulling = hasProductionReport ? prMetrics!.totalCulling : bd.mortality.culling;
+    const cumulativeMortalityPct = batch.quantityReceived > 0 ? (totalMortality / batch.quantityReceived) * 100 : 0;
+    // The ceiling itself is a fixed HyLine control-standard constant for the
+    // batch's current age, independent of which data source fed totalMortality.
+    const mortalityCeilingPct = bd.mortality.ceilingPct;
+    const mortalityOverCeiling = mortalityCeilingPct != null && cumulativeMortalityPct > mortalityCeilingPct;
+    const mortalityDataSource: 'production_report' | 'system' = hasProductionReport ? 'production_report' : 'system';
+
+    // BIRD WEIGHT: prefer the report's most recent reading (Store-verified,
+    // logged more consistently) over the system's BirdWeightSample. The
+    // report doesn't record an age at time of sampling, so an expected-band
+    // comparison is only shown when the reading actually came from a system
+    // sample that carries one — the report's raw figure is still reported,
+    // just without inventing a band comparison it can't support.
+    const weightSource: 'production_report' | 'system' | 'none' =
+      hasProductionReport && prMetrics!.latestAvgWeightG != null ? 'production_report'
+      : bd.weight ? 'system' : 'none';
+    const weightValueG = weightSource === 'production_report' ? prMetrics!.latestAvgWeightG : bd.weight?.averageWeightG ?? null;
+    const weightDateLabel = weightSource === 'production_report'
+      ? dayjs(prMetrics!.latestWeightDate).format('D MMM YYYY')
+      : bd.weight ? dayjs(bd.weight.sampleDate).format('D MMM YYYY') : null;
+
     const brooderSection = `
 BROODER ENVIRONMENT: ${bd.environment.logCount} log(s) recorded out of a rough expected ${bd.environment.expectedLogCount} (up to 3x/day) — ${bd.environment.completenessPct}% logging completeness.${bd.environment.logCount > 0
       ? ` Avg temperature ${bd.environment.avgTemp.toFixed(1)}°C (range ${bd.environment.minTemp}–${bd.environment.maxTemp}°C), avg humidity ${bd.environment.avgHumidity.toFixed(1)}%, ${bd.environment.lightingIssues} log(s) flagged a lighting problem.`
-      : ' No environmental readings recorded at all — this is a significant gap for a brooding batch.'}
-BROODER FEED: ${bd.feed.entryCount > 0 ? `${bd.feed.totalDispensedKg.toFixed(1)} kg dispensed across ${bd.feed.entryCount} logged feeding(s) (level + general-population logs combined).` : 'no brooder-level feed logs recorded.'}
-BROODER MORTALITY/CULLING: ${bd.mortality.total} death(s), ${bd.mortality.culling} culled. Cumulative mortality ${bd.mortality.cumulativePct.toFixed(2)}%${bd.mortality.ceilingPct != null ? ` vs the HyLine control-standard ceiling of ${bd.mortality.ceilingPct.toFixed(2)}% for week ${ageWeeks} — ${bd.mortality.overCeiling ? 'THIS BATCH IS OVER THE CEILING, flag it clearly' : 'within the expected ceiling'}.` : ' (no matching control-standard week found to compare against).'}${bd.mortality.byCause.length ? ` Causes recorded: ${bd.mortality.byCause.map(c => `${c.cause} (${c.count})`).join(', ')}.` : ''}
-BIRD WEIGHT: ${bd.weight ? `latest sample ${dayjs(bd.weight.sampleDate).format('D MMM YYYY')} at ${bd.weight.ageWeeks} week(s): average ${bd.weight.averageWeightG}g from ${bd.weight.sampleCount} bird(s) sampled.${bd.weight.expectedMinG != null ? ` Expected band for that age: ${bd.weight.expectedMinG}–${bd.weight.expectedMaxG}g — this batch is ${bd.weight.status.replace('_', ' ')}.` : ''}` : 'no weight samples recorded for this batch.'}
+      : ' No environmental readings recorded at all — this is a significant gap for a brooding batch.'}${hasProductionReport && (prMetrics!.avgTemperature != null || prMetrics!.avgHumidity != null)
+      ? ` Cross-check from the uploaded production report: avg temperature ${prMetrics!.avgTemperature != null ? `${prMetrics!.avgTemperature.toFixed(1)}°C` : 'not recorded'}, avg humidity ${prMetrics!.avgHumidity != null ? `${prMetrics!.avgHumidity.toFixed(1)}%` : 'not recorded'} across ${prMetrics!.rowCount} report day(s) — note any material difference from the system logs above.`
+      : ''}
+FEED (source: ${feedDataSource === 'production_report' ? 'uploaded production report, whole-batch lifecycle' : 'system FeedIntakeLog, production-house only'}): ${totalFeedKg > 0 ? `${totalFeedKg.toFixed(1)} kg total dispensed${feedDataSource === 'production_report' ? ` across ${prMetrics!.rowCount} report day(s)` : ''}.` : 'no feed data recorded for this batch.'}${feedDataSource === 'system' && bd.feed.entryCount > 0 ? ` (Brooder-stage feed alone, from system logs: ${bd.feed.totalDispensedKg.toFixed(1)} kg across ${bd.feed.entryCount} logged feeding(s), already excluded from the production-house figure above.)` : ''}${hasProductionReport && prMetrics!.avgWaterLts != null ? ` Water: avg ${prMetrics!.avgWaterLts.toFixed(1)} L/day from the production report.` : ''}
+MORTALITY/CULLING (source: ${mortalityDataSource === 'production_report' ? 'uploaded production report, whole-batch lifecycle' : 'system brooder logs only — no production-stage mortality source exists for this batch'}): ${totalMortality} death(s), ${totalCulling} culled. Cumulative mortality ${cumulativeMortalityPct.toFixed(2)}%${mortalityCeilingPct != null ? ` vs the HyLine control-standard ceiling of ${mortalityCeilingPct.toFixed(2)}% for week ${ageWeeks} — ${mortalityOverCeiling ? 'THIS BATCH IS OVER THE CEILING, flag it clearly' : 'within the expected ceiling'}.` : ' (no matching control-standard week found to compare against).'}${bd.mortality.byCause.length ? ` Causes recorded in system logs (brooder-stage only, may be incomplete relative to the total above): ${bd.mortality.byCause.map(c => `${c.cause} (${c.count})`).join(', ')}.` : ''}
+BIRD WEIGHT (source: ${weightSource === 'production_report' ? 'uploaded production report' : weightSource === 'system' ? 'system weight sample' : 'none'}): ${weightValueG != null ? `latest reading ${weightDateLabel}: average ${weightValueG}g${weightSource === 'system' && bd.weight ? ` from ${bd.weight.sampleCount} bird(s) sampled` : ''}.${weightSource === 'system' && bd.weight?.expectedMinG != null ? ` Expected band for that age: ${bd.weight.expectedMinG}–${bd.weight.expectedMaxG}g — this batch is ${bd.weight!.status.replace('_', ' ')}.` : weightSource === 'production_report' ? ' (No age-matched HyLine band comparison shown — this reading came from the production report rather than a dated system weight sample.)' : ''}` : 'no weight samples recorded for this batch.'}
 VACCINATION: ${bd.vaccination.given.length} record(s) administered${bd.vaccination.given.length ? ` (${bd.vaccination.given.map(v => v.name).join(', ')})` : ''}.${bd.vaccination.missed.length ? ` GAP: ${bd.vaccination.missed.length} vaccine(s) due by this age were not found in the records — ${bd.vaccination.missed.map(m => `${m.name} (due wk ${m.dueAtWeek})`).join(', ')}. Flag this clearly.` : ' No overdue vaccines found against the active schedule.'}
 HEALTH EVENTS: ${bd.health.totalEvents} total logged, ${bd.health.unresolved.length} UNRESOLVED.${bd.health.unresolved.length ? ` Unresolved: ${bd.health.unresolved.map(e => `${e.type} on ${dayjs(e.date).format('D MMM')} affecting ${e.affected} bird(s)${e.symptoms ? ` (symptoms: ${e.symptoms})` : ''}`).join('; ')}.` : ''}
 TREATMENTS ADMINISTERED: ${bd.treatments.length ? bd.treatments.map(t => `${t.drug} ${t.dose} via ${t.route} on ${dayjs(t.date).format('D MMM')}${t.durationDays ? ` for ${t.durationDays}d` : ''}`).join('; ') : 'none recorded.'}
 BROODER LOCATION: ${bd.levelsOccupied.length ? bd.levelsOccupied.join(', ') : 'no brooder row/level assignment on record.'}`;
 
+    const prMetricsNote = hasProductionReport
+      ? `An uploaded production report ("${prMetrics!.fileName}", ${prMetrics!.status.toLowerCase()}, ${prMetrics!.rowCount} day(s) covering ${dayjs(prMetrics!.dateRange!.from).format('D MMM YYYY')}–${dayjs(prMetrics!.dateRange!.to).format('D MMM YYYY')}) exists for this batch. Wherever a figure below is marked "source: uploaded production report", treat it as the reliable, Store-verified number — it is more trustworthy than a reconstruction from day-to-day system entries.${prMetrics!.openDiscrepancies > 0 ? ` ${prMetrics!.openDiscrepancies} discrepancy(ies) between the report and system entries are still open and awaiting your review — mention this as a data gap.` : ''}`
+      : 'No production report has been uploaded for this batch — every figure below comes from system entry logs, which only count APPROVED entries and can therefore understate the true picture.';
+
     const prompt = `You are a commercial poultry expert producing a FULL-SCALE, detailed report for the Director of Anza Whole Foods farm in Kenya, reviewing every data point collected for one specific batch. Plain English, specific numbers, no jargon — but do not shorten this into a summary. Go through EVERY section below individually. If a figure has no data, say so plainly and treat that itself as a gap worth flagging, rather than skipping it.
 
 BATCH: ${batch.batchCode} (${batch.birdType}, ${batch.strain}) in ${batch.house.name}
 ${statusNote}
+DATA SOURCE NOTE: ${prMetricsNote}
 AGE: ${ageWeeks} week(s) since arrival (hatched ${dayjs(batch.dateOfHatch).format('D MMM YYYY')}, received ${dayjs(batch.dateReceived).format('D MMM YYYY')})
 BIRDS: started with ${batch.quantityReceived.toLocaleString()}, currently ${batch.currentBirdCount.toLocaleString()}${survivalRate ? ` (${survivalRate}% survival)` : ''}
-EGG PRODUCTION: ${totalEggs > 0 ? `${totalEggs.toLocaleString()} eggs across ${dailyHdp.length} fully-recorded day(s)` : 'no egg collection data recorded for this batch'}${avgHdp != null ? `, average daily HDP (AM+PM combined) ${avgHdp.toFixed(1)}%` : ''}
-PRODUCTION-HOUSE FEED: ${totalFeedKg > 0 ? `${totalFeedKg.toFixed(1)} kg consumed${fcr ? `, FCR ${fcr} kg feed per egg` : ''}` : 'no production-house feed intake data recorded for this batch'}
+EGG PRODUCTION (source: system — production reports do not carry egg-count data): ${totalEggs > 0 ? `${totalEggs.toLocaleString()} eggs across ${dailyHdp.length} fully-recorded day(s)` : 'no egg collection data recorded for this batch'}${avgHdp != null ? `, average daily HDP (AM+PM combined) ${avgHdp.toFixed(1)}%` : ''}${fcr ? `. FCR ${fcr} kg feed per egg (using the feed figure below).` : ''}
 ${brooderSection}
 DATA COMPLETENESS (egg/feed/flock approval workflow): ${completenessFlags
       ? `${eggPending} egg session(s) pending approval, ${eggReturned} returned for correction; ${feedPending} feed log(s) pending, ${feedReturned} returned; ${flockPending} flock entry pending, ${flockReturned} returned; ${storeDiscrepancies} store-intake discrepancy flag(s) raised.`
-      : 'all egg, feed and flock entries for this batch are fully approved with no outstanding store discrepancies.'}
+      : 'all egg, feed and flock entries for this batch are fully approved with no outstanding store discrepancies.'}${hasProductionReport && prMetrics!.openDiscrepancies > 0 ? ` Additionally, the uploaded production report has ${prMetrics!.openDiscrepancies} open discrepancy(ies) awaiting Director review.` : ''}
 
 Write a full-scale report with these named sections, covering every data point above — do not skip the brooder data even if the batch has moved past brooding stage, since gaps there are still relevant history:
 1. **Overall Assessment** — how this batch has performed given its age/stage
@@ -1143,6 +1351,17 @@ This is meant to be read carefully by the Director, not skimmed — be thorough 
             eggPending, eggReturned, feedPending, feedReturned, flockPending, flockReturned, storeDiscrepancies,
           },
           brooder: bd,
+          // Data provenance — drives the "derived from production report"
+          // indicator on the Director's AI Reports page.
+          dataSources: { feed: feedDataSource, mortality: mortalityDataSource, weight: weightSource },
+          productionReport: hasProductionReport ? {
+            fileName: prMetrics!.fileName,
+            status: prMetrics!.status,
+            uploadedAt: prMetrics!.uploadedAt,
+            rowCount: prMetrics!.rowCount,
+            dateRange: prMetrics!.dateRange,
+            openDiscrepancies: prMetrics!.openDiscrepancies,
+          } : null,
         },
       },
     });

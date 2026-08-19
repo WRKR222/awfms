@@ -28,6 +28,7 @@ import { NotificationType, UserRole, WeightAlertDirection, WeightAlertSource } f
 import { batchAgeWeeks, checkWeightViolation, hylineGramsPerBirdPerDay, hylineStandard } from '../../common/feed/feed-standard.util';
 import dayjs from 'dayjs';
 import type { FeedContextSnapshot, MortalityContextSnapshot } from './weight.dto';
+import type { ParsedReportRow } from '../store/production-report.dto';
 
 const CONTEXT_WINDOW_DAYS = 7;
 
@@ -191,20 +192,69 @@ export class WeightAlertService {
     return alert;
   }
 
+  /** Pulls the batch's current Store production report rows, straight from
+   *  StoreProductionReport.rawRows — the sheet Store/PM actually filled in
+   *  by hand from what they counted/dispensed on the ground. This is the
+   *  preferred source for feed-intake and mortality context on a weight
+   *  alert (see buildFeedContext/buildMortalityContext below): system
+   *  tables like FeedIntakeLog/FlockDailyEntry are only as good as what
+   *  got logged through the app in real time, and in practice some areas
+   *  don't log every dispense/death that way, so those tables can under-
+   *  report — occasionally right down to a flat 0 — even when the report
+   *  itself, filled in on paper first, shows otherwise. Returns null when
+   *  the batch has no production report on file yet (e.g. a Farm Events
+   *  weighing logged before Store's first upload); callers fall back to
+   *  system tables in that case. */
+  private async getReportRows(batchId: string): Promise<ParsedReportRow[] | null> {
+    const report = await this.prisma.storeProductionReport.findUnique({
+      where: { batchId },
+      select: { rawRows: true },
+    });
+    if (!report) return null;
+    const rows = report.rawRows as unknown as ParsedReportRow[];
+    return Array.isArray(rows) ? rows : null;
+  }
+
   /** Recent feed intake vs. the HyLine daily ration for this age — lets the
    *  Director see at a glance whether a below-standard weight lines up
    *  with underfeeding (feed well under ration) or looks unrelated (feed
    *  on/over ration, so something else — disease, stress, genetics — is
-   *  the likelier driver). Reads FeedIntakeLog, which is the batch-generic
-   *  feed table used across stages (see AGENTS.md decimal-handling note —
-   *  values are wrapped with Number() once per row here). */
+   *  the likelier driver).
+   *
+   *  Sourced from the batch's production report rows (row.feedKg summed
+   *  across whatever rows — including per-cage rows — fall inside the
+   *  window) whenever the report has any; that's the in-person figure
+   *  Store/PM actually recorded, and is preferred over FeedIntakeLog for
+   *  exactly the reason described on getReportRows(). Falls back to
+   *  FeedIntakeLog only when there's no report on file, or none of its
+   *  rows land inside this window. */
   private async buildFeedContext(batchId: string, sampleDate: Date, ageWeeks: number): Promise<FeedContextSnapshot> {
-    const windowStart = dayjs(sampleDate).subtract(CONTEXT_WINDOW_DAYS - 1, 'day').toDate();
-    const logs = await this.prisma.feedIntakeLog.findMany({
-      where: { batchId, entryDate: { gte: windowStart, lte: sampleDate } },
-      select: { quantityDispensedKg: true },
-    });
-    const totalDispensedKg = Math.round(logs.reduce((s, l) => s + Number(l.quantityDispensedKg), 0) * 100) / 100;
+    const windowStartStr = dayjs(sampleDate).subtract(CONTEXT_WINDOW_DAYS - 1, 'day').format('YYYY-MM-DD');
+    const sampleDateStr = dayjs(sampleDate).format('YYYY-MM-DD');
+
+    const reportRows = await this.getReportRows(batchId);
+    const windowFeedRows = reportRows?.filter(
+      r => r.date >= windowStartStr && r.date <= sampleDateStr && r.feedKg != null,
+    ) ?? [];
+
+    let totalDispensedKg: number;
+    let entryCount: number;
+    let source: 'report' | 'system';
+
+    if (windowFeedRows.length > 0) {
+      totalDispensedKg = Math.round(windowFeedRows.reduce((s, r) => s + (r.feedKg ?? 0), 0) * 100) / 100;
+      entryCount = windowFeedRows.length;
+      source = 'report';
+    } else {
+      const windowStart = dayjs(sampleDate).subtract(CONTEXT_WINDOW_DAYS - 1, 'day').toDate();
+      const logs = await this.prisma.feedIntakeLog.findMany({
+        where: { batchId, entryDate: { gte: windowStart, lte: sampleDate } },
+        select: { quantityDispensedKg: true },
+      });
+      totalDispensedKg = Math.round(logs.reduce((s, l) => s + Number(l.quantityDispensedKg), 0) * 100) / 100;
+      entryCount = logs.length;
+      source = 'system';
+    }
 
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId }, select: { currentBirdCount: true } });
     const gramsPerBirdPerDay = hylineGramsPerBirdPerDay(ageWeeks);
@@ -215,15 +265,17 @@ export class WeightAlertService {
       ? Math.round((totalDispensedKg / recommendedKg) * 10000) / 100
       : null;
 
+    const sourceLabel = source === 'report' ? 'per the production report' : 'per system feed logs — no production report data for this window';
+
     let note: string;
-    if (logs.length === 0) {
-      note = `No feed intake logged in the last ${CONTEXT_WINDOW_DAYS} days — feed records can't confirm or rule out underfeeding here; check with the attendant/PM directly.`;
+    if (entryCount === 0) {
+      note = `No feed intake recorded in the last ${CONTEXT_WINDOW_DAYS} days (checked both the production report and system logs) — feed records can't confirm or rule out underfeeding here; check with the attendant/PM directly.`;
     } else if (pctOfRecommended != null && pctOfRecommended < 85) {
-      note = `Feed dispensed is only ${pctOfRecommended.toFixed(0)}% of the HyLine-recommended ration for this period — underfeeding is a plausible contributor.`;
+      note = `Feed dispensed (${sourceLabel}) is only ${pctOfRecommended.toFixed(0)}% of the HyLine-recommended ration for this period — underfeeding is a plausible contributor.`;
     } else if (pctOfRecommended != null && pctOfRecommended > 115) {
-      note = `Feed dispensed is ${pctOfRecommended.toFixed(0)}% of the HyLine-recommended ration — feed intake looks adequate or high, so the weight deviation is likely NOT feed-driven.`;
+      note = `Feed dispensed (${sourceLabel}) is ${pctOfRecommended.toFixed(0)}% of the HyLine-recommended ration — feed intake looks adequate or high, so the weight deviation is likely NOT feed-driven.`;
     } else {
-      note = `Feed dispensed is within a normal range of the HyLine-recommended ration (${pctOfRecommended?.toFixed(0) ?? '—'}%) — feed intake alone doesn't explain the weight deviation.`;
+      note = `Feed dispensed (${sourceLabel}) is within a normal range of the HyLine-recommended ration (${pctOfRecommended?.toFixed(0) ?? '—'}%) — feed intake alone doesn't explain the weight deviation.`;
     }
 
     return {
@@ -231,7 +283,8 @@ export class WeightAlertService {
       totalDispensedKg,
       recommendedKg,
       pctOfRecommended,
-      entryCount: logs.length,
+      entryCount,
+      source,
       note,
     };
   }
@@ -240,34 +293,67 @@ export class WeightAlertService {
    *  lets the Director see whether a below-standard weight coincides with
    *  elevated deaths (disease outbreak suspicion) or normal mortality
    *  (weight issue likely isolated, not part of a wider health event).
-   *  Reads FlockDailyEntry, the batch-generic daily mortality/production
-   *  table used across stages. */
+   *
+   *  Sourced from the production report's row.mortality figures whenever
+   *  the report has any recorded — both the 7-day window total and the
+   *  cumulative-since-report figure, so a batch where deaths are being
+   *  written on the report but not consistently logged through the app
+   *  (the exact gap that produces "0 deaths logged" here while the report
+   *  clearly shows otherwise) still gets an accurate read. Falls back to
+   *  FlockDailyEntry + the batch's tracked currentBirdCount only when the
+   *  report has no mortality figures at all. */
   private async buildMortalityContext(
     batchId: string, sampleDate: Date, ageWeeks: number,
     batch: { quantityReceived: number; mortalityOnArrival: number; currentBirdCount: number },
   ): Promise<MortalityContextSnapshot> {
-    const windowStart = dayjs(sampleDate).subtract(CONTEXT_WINDOW_DAYS - 1, 'day').toDate();
-    const entries = await this.prisma.flockDailyEntry.findMany({
-      where: { batchId, entryDate: { gte: windowStart, lte: sampleDate } },
-      select: { mortalityCount: true },
-    });
-    const totalDeaths = entries.reduce((s, e) => s + e.mortalityCount, 0);
+    const windowStartStr = dayjs(sampleDate).subtract(CONTEXT_WINDOW_DAYS - 1, 'day').format('YYYY-MM-DD');
+    const sampleDateStr = dayjs(sampleDate).format('YYYY-MM-DD');
+
+    const reportRows = await this.getReportRows(batchId);
+    const reportMortalityRowsToDate = reportRows?.filter(r => r.date <= sampleDateStr && r.mortality != null) ?? [];
 
     const effectiveReceived = batch.quantityReceived - batch.mortalityOnArrival;
-    const farmDeaths = Math.max(0, effectiveReceived - batch.currentBirdCount);
     const std = hylineStandard(ageWeeks);
+
+    let totalDeaths: number;
+    let farmDeaths: number;
+    let source: 'report' | 'system';
+
+    if (reportMortalityRowsToDate.length > 0) {
+      totalDeaths = reportMortalityRowsToDate
+        .filter(r => r.date >= windowStartStr)
+        .reduce((s, r) => s + (r.mortality ?? 0), 0);
+      // Cumulative since the report's own earliest row — the most
+      // accurate figure available when Store's sheet covers the batch's
+      // full history to date (the normal case for a re-uploaded/growing
+      // report); see reconcileWeight's caller comment for why reports are
+      // expected to be cumulative, not delta-only.
+      farmDeaths = reportMortalityRowsToDate.reduce((s, r) => s + (r.mortality ?? 0), 0);
+      source = 'report';
+    } else {
+      const windowStart = dayjs(sampleDate).subtract(CONTEXT_WINDOW_DAYS - 1, 'day').toDate();
+      const entries = await this.prisma.flockDailyEntry.findMany({
+        where: { batchId, entryDate: { gte: windowStart, lte: sampleDate } },
+        select: { mortalityCount: true },
+      });
+      totalDeaths = entries.reduce((s, e) => s + e.mortalityCount, 0);
+      farmDeaths = Math.max(0, effectiveReceived - batch.currentBirdCount);
+      source = 'system';
+    }
+
     const cumulativePct = effectiveReceived > 0
       ? Math.round(((farmDeaths / effectiveReceived) * 100) * 100) / 100
       : null;
     const overCeiling = cumulativePct != null && cumulativePct > std.cumulativeMortalityPct;
+    const sourceLabel = source === 'report' ? 'per the production report' : 'per system logs — no production report mortality data on file';
 
     let note: string;
     if (totalDeaths > 0 && overCeiling) {
-      note = `${totalDeaths} death(s) in the last ${CONTEXT_WINDOW_DAYS} days AND cumulative mortality (${cumulativePct}%) exceeds the HyLine week-${std.week} ceiling (${std.cumulativeMortalityPct}%) — an outbreak or other flock-wide health event is a real possibility and should be investigated alongside the weight flag.`;
+      note = `${totalDeaths} death(s) in the last ${CONTEXT_WINDOW_DAYS} days (${sourceLabel}) AND cumulative mortality (${cumulativePct}%) exceeds the HyLine week-${std.week} ceiling (${std.cumulativeMortalityPct}%) — an outbreak or other flock-wide health event is a real possibility and should be investigated alongside the weight flag.`;
     } else if (totalDeaths > 0) {
-      note = `${totalDeaths} death(s) in the last ${CONTEXT_WINDOW_DAYS} days, but cumulative mortality (${cumulativePct ?? '—'}%) is still within the HyLine ceiling (${std.cumulativeMortalityPct}%) — mortality alone doesn't obviously explain the weight deviation, though it's worth a closer look.`;
+      note = `${totalDeaths} death(s) in the last ${CONTEXT_WINDOW_DAYS} days (${sourceLabel}), but cumulative mortality (${cumulativePct ?? '—'}%) is still within the HyLine ceiling (${std.cumulativeMortalityPct}%) — mortality alone doesn't obviously explain the weight deviation, though it's worth a closer look.`;
     } else {
-      note = `No deaths logged in the last ${CONTEXT_WINDOW_DAYS} days — the weight deviation does not appear to coincide with a mortality event.`;
+      note = `No deaths recorded in the last ${CONTEXT_WINDOW_DAYS} days (${sourceLabel}) — the weight deviation does not appear to coincide with a mortality event.`;
     }
 
     return {
@@ -276,6 +362,7 @@ export class WeightAlertService {
       cumulativePct,
       standardCeilingPct: std.cumulativeMortalityPct,
       overCeiling,
+      source,
       note,
     };
   }
@@ -303,17 +390,28 @@ export class WeightAlertService {
     const anthropic = new Anthropic({ apiKey });
     const model = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
 
+    const feedSourceNote = ctx.feedContext?.source === 'report'
+      ? '(sourced from the Store production report — the in-person recorded figure, treat as authoritative)'
+      : ctx.feedContext?.source === 'system'
+        ? '(no production report data for this window — this is a system-log fallback and may under/over-count; flag that uncertainty rather than treating it as solid ground)'
+        : '';
+    const mortalitySourceNote = ctx.mortalityContext?.source === 'report'
+      ? '(sourced from the Store production report — the in-person recorded figure, treat as authoritative)'
+      : ctx.mortalityContext?.source === 'system'
+        ? '(no production report mortality data on file — this is a system-log fallback and may under-count; flag that uncertainty rather than treating it as solid ground)'
+        : '';
+
     const prompt = `You are analysing a poultry farm weight-monitoring flag for a Director. Be concise (3-5 sentences, plain prose, no headers/bullets).
 
 Batch ${ctx.batchCode}${ctx.houseName ? ` (${ctx.houseName})` : ''}, Week ${ctx.ageWeeks}.
 Recorded average weight: ${ctx.averageWeightG.toFixed(0)}g. HyLine standard band for this week: ${ctx.standardMinG}-${ctx.standardMaxG}g.
 This is ${ctx.direction === 'BELOW_MIN' ? 'BELOW the minimum' : 'ABOVE the maximum'} by ${Math.abs(ctx.deviationG).toFixed(0)}g (${Math.abs(ctx.deviationPct).toFixed(1)}%).
 
-Feed context (last ${ctx.feedContext?.windowDays ?? 7} days): ${ctx.feedContext?.note ?? 'no feed data available'}. Total dispensed: ${ctx.feedContext?.totalDispensedKg ?? '—'}kg vs. recommended ${ctx.feedContext?.recommendedKg ?? '—'}kg.
+Feed context ${feedSourceNote} (last ${ctx.feedContext?.windowDays ?? 7} days): ${ctx.feedContext?.note ?? 'no feed data available'}. Total dispensed: ${ctx.feedContext?.totalDispensedKg ?? '—'}kg vs. recommended ${ctx.feedContext?.recommendedKg ?? '—'}kg.
 
-Mortality context (last ${ctx.mortalityContext?.windowDays ?? 7} days): ${ctx.mortalityContext?.note ?? 'no mortality data available'}. Cumulative mortality: ${ctx.mortalityContext?.cumulativePct ?? '—'}% vs. HyLine ceiling ${ctx.mortalityContext?.standardCeilingPct ?? '—'}%.
+Mortality context ${mortalitySourceNote} (last ${ctx.mortalityContext?.windowDays ?? 7} days): ${ctx.mortalityContext?.note ?? 'no mortality data available'}. Cumulative mortality: ${ctx.mortalityContext?.cumulativePct ?? '—'}% vs. HyLine ceiling ${ctx.mortalityContext?.standardCeilingPct ?? '—'}%.
 
-Give the Director your best read on the likeliest explanation(s) for this weight deviation — e.g. underfeeding, overfeeding, a possible disease outbreak, sampling error, genetics/strain variance, environmental stress — grounded in the feed and mortality context above. If the context doesn't clearly point anywhere, say so plainly and suggest what to check next (e.g. a vet visit, re-weighing a larger sample, reviewing recent brooder/production logs). Do not invent data you weren't given.`;
+The production report is Store/PM's in-person, hand-recorded account of what actually happened on the ground each day — prefer it over any system-log fallback noted above when weighing how confident to be. Give the Director your best read on the likeliest explanation(s) for this weight deviation — e.g. underfeeding, overfeeding, a possible disease outbreak, sampling error, genetics/strain variance, environmental stress — grounded in the feed and mortality context above. If a context value is a system-log fallback rather than report-sourced, note that it's less certain before leaning on it. If the context doesn't clearly point anywhere, say so plainly and suggest what to check next (e.g. a vet visit, re-weighing a larger sample, reviewing recent brooder/production logs). Do not invent data you weren't given.`;
 
     try {
       const msg = await anthropic.messages.create({ model, max_tokens: 400, messages: [{ role: 'user', content: prompt }] });
