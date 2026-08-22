@@ -137,13 +137,8 @@ export class IssuancePlanService {
       return { ...item, quantityPlanned: qtyPlanned };
     });
 
-    const count = await this.prisma.issuancePlan.count();
-    const prefix = dto.type === 'EMERGENCY' ? 'EIP' : 'IP';
-    const planRef = `${prefix}-${dayjs().format('YYYY')}-${String(count + 1).padStart(4, '0')}`;
-
-    const plan = await this.prisma.issuancePlan.create({
-      data: {
-        planRef,
+    const plan = await this.createPlanRecord(
+      {
         type: dto.type as any,
         weekStartDate: monday,
         weekEndDate: sunday,
@@ -152,7 +147,8 @@ export class IssuancePlanService {
         emergencyReason: dto.type === 'EMERGENCY' ? dto.emergencyReason : null,
         createdById: userId,
       },
-    });
+      dto.type,
+    );
 
     if (enrichedItems.length > 0) {
       await this.prisma.issuancePlanItem.createMany({
@@ -321,11 +317,8 @@ export class IssuancePlanService {
     notes: string,
     emergencyReason?: string,
   ) {
-    const count = await this.prisma.issuancePlan.count();
-    const prefix = type === 'EMERGENCY' ? 'EIP' : 'IP';
-    return this.prisma.issuancePlan.create({
-      data: {
-        planRef: `${prefix}-${dayjs().format('YYYY')}-${String(count + 1).padStart(4, '0')}`,
+    return this.createPlanRecord(
+      {
         type: type as any,
         weekStartDate: monday,
         weekEndDate: sundayOf(monday),
@@ -334,7 +327,62 @@ export class IssuancePlanService {
         emergencyReason: type === 'EMERGENCY' ? (emergencyReason ?? null) : null,
         createdById,
       },
-    });
+      type,
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Shared plan-ref generation + creation.
+  //
+  // planRef is derived from `issuancePlan.count()` at read time, then used to
+  // create() the row a moment later. Those two steps aren't atomic, so two
+  // requests racing each other (two Store users submitting around the same
+  // time, a frontend double-click/retry, createPlan() and
+  // createAutoDraftPlan() firing close together) can read the same count,
+  // compute the same planRef, and the second create() blows up on the
+  // `plan_ref` unique constraint (P2002).
+  //
+  // Rather than lock or add a DB sequence, we retry: on a plan_ref conflict,
+  // recompute the ref (the count has moved on now that the other create()
+  // landed) and try again, with a small random backoff to de-correlate
+  // near-simultaneous callers. A handful of attempts is enough for the
+  // request volume this app sees; if it's still colliding after that, treat
+  // it as a genuine failure rather than retry forever.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  private async generatePlanRef(type: 'WEEKLY' | 'EMERGENCY'): Promise<string> {
+    const count = await this.prisma.issuancePlan.count();
+    const prefix = type === 'EMERGENCY' ? 'EIP' : 'IP';
+    return `${prefix}-${dayjs().format('YYYY')}-${String(count + 1).padStart(4, '0')}`;
+  }
+
+  private isPlanRefConflict(err: unknown): boolean {
+    return (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2002' &&
+      Boolean((err.meta?.target as string[] | string | undefined)?.includes?.('plan_ref'))
+    );
+  }
+
+  private async createPlanRecord(
+    data: Omit<Prisma.IssuancePlanUncheckedCreateInput, 'planRef'>,
+    type: 'WEEKLY' | 'EMERGENCY',
+    maxAttempts = 5,
+  ) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const planRef = await this.generatePlanRef(type);
+      try {
+        return await this.prisma.issuancePlan.create({ data: { ...data, planRef } });
+      } catch (err) {
+        if (!this.isPlanRefConflict(err) || attempt === maxAttempts) throw err;
+        this.logger.warn(
+          `issuancePlan.create() collided on planRef "${planRef}" (attempt ${attempt}/${maxAttempts}) — regenerating and retrying`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 25 + Math.random() * 75));
+      }
+    }
+    // Unreachable — loop always returns or throws — but keeps TS satisfied.
+    throw new Error('Failed to generate a unique issuance plan reference after multiple attempts');
   }
 
   /**
