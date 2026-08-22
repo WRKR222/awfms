@@ -2646,3 +2646,18 @@ model HistoricalSalesRecord {
   @@index([invoiceDate])
   @@map("historical_sales_records")
 }
+
+/// Named, atomically-incrementing counters used to hand out human-readable
+/// reference numbers (issuance plan refs, invoice numbers, etc) without a
+/// read-then-write race. A row's `value` is only ever touched via
+/// INSERT ... ON CONFLICT (key) DO UPDATE SET value = value + 1 RETURNING value
+/// (see IssuancePlanService.nextSequence) — that statement is atomic under
+/// Postgres, so two concurrent callers can never be handed the same number,
+/// unlike the old `issuancePlan.count() + 1` approach it replaces.
+model RefCounter {
+  /// e.g. "issuance_plan" — one row per independent numbering series.
+  key   String @id
+  value Int    @default(0)
+
+  @@map("ref_counters")
+}

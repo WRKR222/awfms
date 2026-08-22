@@ -334,55 +334,51 @@ export class IssuancePlanService {
   // ─────────────────────────────────────────────────────────────────────────────
   // Shared plan-ref generation + creation.
   //
-  // planRef is derived from `issuancePlan.count()` at read time, then used to
-  // create() the row a moment later. Those two steps aren't atomic, so two
-  // requests racing each other (two Store users submitting around the same
-  // time, a frontend double-click/retry, createPlan() and
-  // createAutoDraftPlan() firing close together) can read the same count,
-  // compute the same planRef, and the second create() blows up on the
-  // `plan_ref` unique constraint (P2002).
+  // planRef used to be derived from `issuancePlan.count()` at read time,
+  // then used to create() the row a moment later. Those two steps weren't
+  // atomic, so concurrent callers (two Store users submitting around the
+  // same time, an auto-draft firing alongside a manual create, a burst of
+  // requests) could read the same count, compute the same planRef, and the
+  // second create() would blow up on the `plan_ref` unique constraint
+  // (P2002). A retry-on-conflict loop was tried next, but under real
+  // concurrency it still lost occasionally — retrying a racy read narrows
+  // the window, it doesn't remove the race.
   //
-  // Rather than lock or add a DB sequence, we retry: on a plan_ref conflict,
-  // recompute the ref (the count has moved on now that the other create()
-  // landed) and try again, with a small random backoff to de-correlate
-  // near-simultaneous callers. A handful of attempts is enough for the
-  // request volume this app sees; if it's still colliding after that, treat
-  // it as a genuine failure rather than retry forever.
+  // Fixed properly now via `ref_counters`: a tiny table with one row per
+  // series (see prisma/schema.prisma), bumped with a single atomic
+  // `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` statement. Postgres
+  // guarantees that statement serializes concurrent callers itself, so two
+  // requests can never be handed the same sequence number — no retry loop
+  // needed.
   // ─────────────────────────────────────────────────────────────────────────────
 
-  private async generatePlanRef(type: 'WEEKLY' | 'EMERGENCY'): Promise<string> {
-    const count = await this.prisma.issuancePlan.count();
-    const prefix = type === 'EMERGENCY' ? 'EIP' : 'IP';
-    return `${prefix}-${dayjs().format('YYYY')}-${String(count + 1).padStart(4, '0')}`;
+  private async nextSequence(counterKey: string): Promise<number> {
+    const rows = await this.prisma.$queryRaw<{ value: number }[]>(
+      Prisma.sql`
+        INSERT INTO "ref_counters" ("key", "value")
+        VALUES (${counterKey}, 1)
+        ON CONFLICT ("key") DO UPDATE SET "value" = "ref_counters"."value" + 1
+        RETURNING "value"
+      `,
+    );
+    return rows[0].value;
   }
 
-  private isPlanRefConflict(err: unknown): boolean {
-    return (
-      err instanceof Prisma.PrismaClientKnownRequestError &&
-      err.code === 'P2002' &&
-      Boolean((err.meta?.target as string[] | string | undefined)?.includes?.('plan_ref'))
-    );
+  private async generatePlanRef(type: 'WEEKLY' | 'EMERGENCY'): Promise<string> {
+    // Both WEEKLY and EMERGENCY plans share one sequence (matching the old
+    // count()-based numbering, which counted all issuancePlan rows
+    // regardless of type) — only the prefix differs.
+    const seq = await this.nextSequence('issuance_plan');
+    const prefix = type === 'EMERGENCY' ? 'EIP' : 'IP';
+    return `${prefix}-${dayjs().format('YYYY')}-${String(seq).padStart(4, '0')}`;
   }
 
   private async createPlanRecord(
     data: Omit<Prisma.IssuancePlanUncheckedCreateInput, 'planRef'>,
     type: 'WEEKLY' | 'EMERGENCY',
-    maxAttempts = 5,
   ) {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const planRef = await this.generatePlanRef(type);
-      try {
-        return await this.prisma.issuancePlan.create({ data: { ...data, planRef } });
-      } catch (err) {
-        if (!this.isPlanRefConflict(err) || attempt === maxAttempts) throw err;
-        this.logger.warn(
-          `issuancePlan.create() collided on planRef "${planRef}" (attempt ${attempt}/${maxAttempts}) — regenerating and retrying`,
-        );
-        await new Promise((resolve) => setTimeout(resolve, 25 + Math.random() * 75));
-      }
-    }
-    // Unreachable — loop always returns or throws — but keeps TS satisfied.
-    throw new Error('Failed to generate a unique issuance plan reference after multiple attempts');
+    const planRef = await this.generatePlanRef(type);
+    return this.prisma.issuancePlan.create({ data: { ...data, planRef } });
   }
 
   /**
