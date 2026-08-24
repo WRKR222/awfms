@@ -33,6 +33,7 @@ import { splitMultiValueCell } from './production-report-parser.service';
 import {
   CanonicalField, CANONICAL_FIELD_LABELS, ProductionReportColumnMapping, ParsedReportRow,
 } from './production-report.dto';
+import { ProductionReportDiscrepancyType } from '@prisma/client';
 
 export interface TemplateAnalysis {
   learnedFromBatchCode: string | null;
@@ -173,6 +174,48 @@ export class ProductionReportTemplateService {
         `Added one column per item actually used on batch ${source.batch.batchCode} ` +
         `(${[...itemColumns.values()].map(c => c.name).join(', ')}) — enter the quantity used that day, and ` +
         `leave the cell blank on days it wasn't used.`,
+      );
+    }
+
+    // ── Recurring stock-count mismatches ───────────────────────────────────
+    // Same root-cause logic as computeStockVarianceStreak() in
+    // ProductionReportReconciliationService, but looking across the WHOLE
+    // source batch rather than day-to-day within one — this is what turns a
+    // pattern that recurred on the previous batch into a concrete column
+    // change on the NEXT one, instead of it just quietly recurring again.
+    const stockDiscrepancies = await this.prisma.productionReportDiscrepancy.findMany({
+      where: { reportId: source.id, discrepancyType: ProductionReportDiscrepancyType.STOCK_COUNT },
+      select: { field: true, notes: true },
+    });
+    const openingMismatches = stockDiscrepancies.filter(d => d.field === 'openingStock').length;
+    const arithmeticMismatches = stockDiscrepancies.filter(d => d.field === 'closingStock').length;
+
+    if (openingMismatches > 0) {
+      recommendations.push(
+        `Batch ${source.batch.batchCode}'s opening stock disagreed with the previous day's closing count on ` +
+        `${openingMismatches} day${openingMismatches === 1 ? '' : 's'}. If a physical recount is ever done mid-batch, ` +
+        `note the reason in Remarks that day — that turns an unexplained drift into a documented one instead of a ` +
+        `repeat mismatch every time.`,
+      );
+    }
+    // A same-day "opening minus mortality/culling ≠ closing" mismatch is
+    // extremely often just a missing/blended Culling column — the system
+    // only knows to subtract culling if the sheet had a distinct column for
+    // it. If the source report never mapped one AND had arithmetic
+    // mismatches, Culling gets forced onto the template even if it wasn't
+    // in the DEFAULT_FIELD_ORDER carry-over above, since that's the
+    // concrete fix rather than just a note to "be more careful".
+    if (arithmeticMismatches > 0) {
+      const cullingLabel = CANONICAL_FIELD_LABELS.culling;
+      if (!columns.includes(cullingLabel)) {
+        columns.splice(columns.indexOf(CANONICAL_FIELD_LABELS.mortality) + 1 || columns.length, 0, cullingLabel);
+      }
+      recommendations.push(
+        `Batch ${source.batch.batchCode}'s own opening/closing stock figures didn't add up against its recorded ` +
+        `mortality on ${arithmeticMismatches} day${arithmeticMismatches === 1 ? '' : 's'} — most often because culled ` +
+        `birds were removed from the count but not written down anywhere separate from mortality. A dedicated ` +
+        `${cullingLabel.toLowerCase()} column is included below; if it's zero most days, leave it blank rather than ` +
+        `folding it into mortality.`,
       );
     }
 

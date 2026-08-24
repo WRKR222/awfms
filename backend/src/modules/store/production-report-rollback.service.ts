@@ -11,6 +11,12 @@
 //   UPDATE       -> write beforeState's fields back onto the row.
 //   JSON_APPEND  -> remove the exact appended entry from the JSON array it
 //                    was appended to (by deep equality), on the parent row.
+//   DELETE       -> recreate the row from beforeState (its full pre-delete
+//                    state, id included) — the reverse of reconcile()'s
+//                    "report replaces, never duplicates" write path, which
+//                    deletes whatever was already recorded before writing
+//                    its own replacement row (see deleteAndLog() in
+//                    production-report-reconciliation.service.ts).
 //
 // SCOPE: only reverses what reconcile() itself auto-applied while parsing
 // an upload. It deliberately does NOT touch anything a Director applied via
@@ -97,10 +103,25 @@ export class ProductionReportRollbackService {
     switch (entityType) {
       case 'BrooderGeneralMortalityLog':
         if (action === 'CREATE') { await this.deleteIfUnchanged(tx.brooderGeneralMortalityLog, entityId, afterState); return; }
+        // DELETE — same "report replaces, never duplicates" pattern as
+        // BrooderGeneralFeedLog above; see that case's comment.
+        if (action === 'DELETE') { await this.recreateIfAbsent(tx.brooderGeneralMortalityLog, entityId, beforeState); return; }
         break;
 
       case 'BrooderGeneralFeedLog':
         if (action === 'CREATE') { await this.deleteIfUnchanged(tx.brooderGeneralFeedLog, entityId, afterState); return; }
+        // DELETE — reconcile()'s "report replaces, never duplicates" write
+        // path (see production-report-reconciliation.service.ts) deletes
+        // whatever was already recorded for that (batch, date[, item])
+        // before writing its own replacement row, logging a DELETE entry
+        // (beforeState = the full deleted row) for each one removed.
+        // Undoing that means putting the row back exactly as it was, by
+        // its original id. rollback() walks the ledger newest-first, so
+        // the paired CREATE entry for this report's replacement row (which
+        // happened chronologically AFTER these deletes) is always reverted
+        // — and the replacement row removed — before we get here, so
+        // there's never a conflicting row already sitting at this id.
+        if (action === 'DELETE') { await this.recreateIfAbsent(tx.brooderGeneralFeedLog, entityId, beforeState); return; }
         break;
 
       case 'BrooderStockCount':
@@ -120,6 +141,22 @@ export class ProductionReportRollbackService {
 
       case 'BrooderTreatmentLog':
         if (action === 'CREATE') { await this.deleteIfUnchanged(tx.brooderTreatmentLog, entityId, afterState); return; }
+        break;
+
+      case 'BrooderFeedWastageLog':
+        // A Director-facing "over-issued" record derived from a
+        // BrooderGeneralFeedLog write this report made (see
+        // FeedWastageService.recordIfOverIssued/recordProductionOverIssuance/
+        // backfillDayIfOverIssued). Purely informational — nothing else reads
+        // it — so unwinding it is just a delete, same guard as any other
+        // CREATE-only entity.
+        if (action === 'CREATE') { await this.deleteIfUnchanged(tx.brooderFeedWastageLog, entityId, afterState); return; }
+        // DELETE — the "report replaces" feed-log write path (see
+        // BrooderGeneralFeedLog above) also deletes any wastage entry that
+        // pointed at the feed row it just removed, so the wastage view
+        // never keeps showing excess for a feed row that no longer exists.
+        // Undoing that puts the wastage row back by its original id.
+        if (action === 'DELETE') { await this.recreateIfAbsent(tx.brooderFeedWastageLog, entityId, beforeState); return; }
         break;
 
       case 'BrooderLog':
@@ -209,6 +246,19 @@ export class ProductionReportRollbackService {
       throw new Error('Row has been edited since the report created it — leaving as-is for manual review.');
     }
     await delegate.delete({ where: { id } });
+  }
+
+  /** Recreates a row from its full pre-delete state (id and all), used to
+   *  undo a DELETE ledger entry written by reconcile()'s "report replaces"
+   *  write path. A no-op if a row already sits at that id (belt-and-braces
+   *  — see the DELETE case comments above for why that shouldn't happen
+   *  given the newest-first walk order, but recreating on top of an
+   *  existing row would be worse than skipping, so this checks first). */
+  private async recreateIfAbsent(delegate: any, id: string | null, savedState: any) {
+    if (!id || !savedState) return;
+    const existing = await delegate.findUnique({ where: { id } });
+    if (existing) return; // something already occupies this id — leave it alone
+    await delegate.create({ data: savedState });
   }
 
   /** Mirrors ProductionReportReconciliationService.recomputeLevelRollup —

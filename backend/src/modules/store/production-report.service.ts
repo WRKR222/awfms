@@ -1,5 +1,5 @@
 // src/modules/store/production-report.service.ts
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import * as XLSX from 'xlsx';
 import { UserRole, NotificationType } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -14,6 +14,13 @@ import {
   CANONICAL_FIELD_LABELS, CanonicalField, ProductionReportColumnMapping, SubmitReportResult, PreviewReportResult,
 } from './production-report.dto';
 
+// A reconcile pass over a big multi-week report can legitimately run for a
+// couple of minutes (see the frontend's 120s submit timeout). A lock older
+// than this is assumed to belong to a crashed/killed request, not a slow
+// one — treated as stale and silently reclaimed rather than wedging the
+// batch forever behind a lock nothing will ever release.
+const PROCESSING_LOCK_STALE_AFTER_MS = 5 * 60 * 1000;
+
 @Injectable()
 export class ProductionReportService {
   constructor(
@@ -25,6 +32,41 @@ export class ProductionReportService {
     private readonly templateService: ProductionReportTemplateService,
     private readonly ai: AiService,
   ) {}
+
+  /** Atomic per-batch mutex around a reconcile() pass — see
+   *  ProductionReportProcessingLock in schema.prisma for the bug this
+   *  closes. Throws 409 if another pass is genuinely in flight; silently
+   *  reclaims a stale lock (crashed process) instead of blocking forever.
+   *  Always pair with releaseProcessingLock() in a try/finally. */
+  private async acquireProcessingLock(batchId: string): Promise<void> {
+    const staleBefore = new Date(Date.now() - PROCESSING_LOCK_STALE_AFTER_MS);
+    // Single atomic statement: claim the lock if it's unclaimed, doesn't
+    // exist yet, or is stale — all in one round-trip, so two concurrent
+    // callers can't both pass a separate "is it free?" check before either
+    // writes (the exact race this whole mechanism exists to close).
+    const rows = await this.prisma.$queryRaw<{ batch_id: string }[]>`
+      INSERT INTO "production_report_processing_locks" ("batch_id", "processing_started_at", "updated_at")
+      VALUES (${batchId}, now(), now())
+      ON CONFLICT ("batch_id") DO UPDATE
+        SET "processing_started_at" = now(), "updated_at" = now()
+        WHERE "production_report_processing_locks"."processing_started_at" IS NULL
+           OR "production_report_processing_locks"."processing_started_at" < ${staleBefore}
+      RETURNING "batch_id"
+    `;
+    if (rows.length === 0) {
+      throw new ConflictException(
+        'Another upload for this batch is still being processed — please wait for it to finish before submitting again.',
+      );
+    }
+  }
+
+  private async releaseProcessingLock(batchId: string): Promise<void> {
+    await this.prisma.$executeRaw`
+      UPDATE "production_report_processing_locks"
+      SET "processing_started_at" = NULL, "updated_at" = now()
+      WHERE "batch_id" = ${batchId}
+    `;
+  }
 
   async detectHeaders(buffer: Buffer) {
     return this.parser.detectHeaders(buffer);
@@ -102,8 +144,17 @@ export class ProductionReportService {
     // itself (see StoreProductionReport.rawHeaders in schema.prisma).
     const rawHeaders = this.parser.getHeaders(buffer);
 
-    const { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage } =
-      await this.reconciler.reconcile(batchId, parsedRows, user.id, fileName);
+    // See acquireProcessingLock's doc comment — closes the double-autofill
+    // race where an overlapping submit (double-click, timeout retry) reads
+    // the same pre-write totals and both write a full correction.
+    await this.acquireProcessingLock(batchId);
+    let reconciled: Awaited<ReturnType<ProductionReportReconciliationService['reconcile']>>;
+    try {
+      reconciled = await this.reconciler.reconcile(batchId, parsedRows, user.id, fileName);
+    } finally {
+      await this.releaseProcessingLock(batchId);
+    }
+    const { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage } = reconciled;
 
     const status = discrepancies.length > 0 ? 'PENDING' : 'APPROVED';
     const existing = await this.prisma.storeProductionReport.findUnique({ where: { batchId } });
@@ -273,8 +324,14 @@ export class ProductionReportService {
     });
 
     const rows = report.rawRows as any;
-    const { rows: reconciledRows, discrepancies, appliedChanges, autofillCount, matchedCount } =
-      await this.reconciler.reconcile(batchId, rows, user.id, report.fileName);
+    await this.acquireProcessingLock(batchId);
+    let reconciled: Awaited<ReturnType<ProductionReportReconciliationService['reconcile']>>;
+    try {
+      reconciled = await this.reconciler.reconcile(batchId, rows, user.id, report.fileName);
+    } finally {
+      await this.releaseProcessingLock(batchId);
+    }
+    const { rows: reconciledRows, discrepancies, appliedChanges, autofillCount, matchedCount } = reconciled;
 
     const status = discrepancies.length > 0 ? 'PENDING' : 'APPROVED';
     const now = new Date();

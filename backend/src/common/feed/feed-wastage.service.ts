@@ -104,7 +104,7 @@ export class FeedWastageService {
 
     // No valid ration to compare against (e.g. batch has 0 live birds) —
     // nothing meaningful to flag.
-    if (!dailyRationKg || dailyRationKg <= 0) return;
+    if (!dailyRationKg || dailyRationKg <= 0) return null;
 
     const dayStr        = dayjs(entryDate).format('YYYY-MM-DD');
     const entryDateStart = new Date(`${dayStr}T00:00:00.000Z`);
@@ -123,7 +123,7 @@ export class FeedWastageService {
 
     // Rounding-noise tolerance — mirrors the 0.05kg tolerance the
     // under-issuance (missed-feed) check uses, applied here symmetrically.
-    if (excessKg <= 0.05) return;
+    if (excessKg <= 0.05) return null;
 
     let unitCostKes: number | null = null;
     let storeItemName: string | null = null;
@@ -141,7 +141,7 @@ export class FeedWastageService {
       ? Math.round(excessKg * unitCostKes * 100) / 100
       : null;
 
-    await this.prisma.brooderFeedWastageLog.create({
+    const created = await this.prisma.brooderFeedWastageLog.create({
       data: {
         batchId:          batch.id,
         batchCode:        batch.batchCode,
@@ -177,6 +177,14 @@ export class FeedWastageService {
       costLine,
       { entityId: batch.id, entityType: 'Brooder' },
     );
+
+    // Returned so report-driven callers (ProductionReportReconciliationService)
+    // can record this write in the ProductionReportAppliedChange ledger —
+    // without it, ProductionReportRollbackService has no way to remove a
+    // wastage entry that a since-rolled-back report created, and it's left
+    // behind showing a stale/wrong excess figure forever. See
+    // ProductionReportRollbackService's 'BrooderFeedWastageLog' case.
+    return created;
   }
 
   // ── Feed wastage: PRODUCTION stage, population = report's opening stock ──
@@ -200,11 +208,11 @@ export class FeedWastageService {
       sourceEntityId, feedType, storeItemId, loggedById,
     } = params;
 
-    if (!requiredKg || requiredKg <= 0) return;
+    if (!requiredKg || requiredKg <= 0) return null;
 
     const excessKg = Math.round((actualKg - requiredKg) * 100) / 100;
     // Same rounding-noise tolerance as the brooder check.
-    if (excessKg <= 0.05) return;
+    if (excessKg <= 0.05) return null;
 
     const dayStr         = dayjs(entryDate).format('YYYY-MM-DD');
     const entryDateStart = new Date(`${dayStr}T00:00:00.000Z`);
@@ -225,7 +233,7 @@ export class FeedWastageService {
       ? Math.round(excessKg * unitCostKes * 100) / 100
       : null;
 
-    await this.prisma.brooderFeedWastageLog.create({
+    const created = await this.prisma.brooderFeedWastageLog.create({
       data: {
         batchId:          batch.id,
         batchCode:        batch.batchCode,
@@ -259,6 +267,8 @@ export class FeedWastageService {
       costLine,
       { entityId: batch.id, entityType: 'Brooder' },
     );
+
+    return created; // see recordIfOverIssued's matching comment above
   }
 
   // ── One-time catch-up for feed logged BEFORE this check existed ─────────

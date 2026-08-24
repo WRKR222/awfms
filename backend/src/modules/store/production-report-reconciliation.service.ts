@@ -77,7 +77,11 @@ export interface AppliedChangeInput {
   rowDate: string;
   entityType: string;
   entityId: string | null;
-  action: 'CREATE' | 'UPDATE' | 'JSON_APPEND';
+  // DELETE: a row that existed before this report ran was removed as part
+  // of the "report replaces, never duplicates" write path (see
+  // deleteAndLog()) — beforeState is the row's full state, afterState is
+  // null. Rollback undoes this by recreating the row from beforeState.
+  action: 'CREATE' | 'UPDATE' | 'JSON_APPEND' | 'DELETE';
   beforeState: unknown;
   afterState: unknown;
 }
@@ -382,75 +386,136 @@ export class ProductionReportReconciliationService {
       );
     }
 
-    // ── Phase 2 — every other field, per row. Confirmed independent: each
-    // of these reads/writes only records for its OWN row's date (mortality,
-    // weight, feed, cage assignment, water, health usages, environmental,
-    // item usage never look at another date's data), so — unlike stock
-    // count above — they can run concurrently instead of one row waiting
-    // on the last. Bounded concurrency (RECONCILE_CONCURRENCY) keeps a
-    // large report from firing every row's queries at once and exhausting
-    // the DB connection pool. ─────────────────────────────────────────────
-    await mapWithConcurrency(orderedRows, RECONCILE_CONCURRENCY, async (row) => {
-      const logDate = new Date(row.date);
-      const isCageRow = stageBucket === 'BROODING' && row.cageNumber != null;
+    // ── Phase 2 — every other field, per row. ───────────────────────────────
+    // IMPORTANT — read-then-write races on same-day rows:
+    // Every reconciler below (mortality, feed, water, health usages, item
+    // usage) follows the same "report is authoritative" pattern: read the
+    // CURRENT total already recorded for (batchId, this row's date), diff it
+    // against the report's figure, and CREATE a correction row for the
+    // delta. That read-then-write is only safe if nothing else touches the
+    // same (batchId, date) aggregate in between the read and the write.
+    //
+    // A report frequently has MORE THAN ONE ROW for the same calendar date
+    // — e.g. one row per cage/level within a BROODING house on a given day.
+    // Those rows previously ran here with unrestricted concurrency
+    // (RECONCILE_CONCURRENCY workers pulling straight from a flat
+    // orderedRows list), so two same-date rows could both read the SAME
+    // "existing total so far" before either had committed its own write,
+    // then both create a full delta on top of that stale snapshot —
+    // silently double-booking that day's feed/mortality/water instead of
+    // the second row correcting against the first. This is what was behind
+    // batches showing feed logged twice for a single backdated day (and the
+    // resulting doubled entries in the Director's feed-wastage view), even
+    // though each row individually reported "autofilled" correctly.
+    //
+    // Fix: group rows by date first. Rows that share a date are processed
+    // SEQUENTIALLY (one row's write fully commits, including its DB round
+    // trip, before the next same-date row reads), so each row's "existing
+    // total" read is always up to date. Different dates have no shared
+    // aggregate, so date-groups themselves still run with bounded
+    // concurrency, preserving the original performance characteristics for
+    // the common case (one row per date). ─────────────────────────────────
+    const rowsByDate = new Map<string, ParsedReportRow[]>();
+    for (const row of orderedRows) {
+      const bucket = rowsByDate.get(row.date);
+      if (bucket) bucket.push(row);
+      else rowsByDate.set(row.date, [row]);
+    }
+    const dateGroups = [...rowsByDate.values()];
 
-      // ── Mortality ────────────────────────────────────────────────────────
-      if (row.mortality !== undefined) {
-        await this.reconcileMortality(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch.houseId, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
-      }
+    await mapWithConcurrency(dateGroups, RECONCILE_CONCURRENCY, async (group) => {
+      for (const row of group) {
+        const logDate = new Date(row.date);
+        const isCageRow = stageBucket === 'BROODING' && row.cageNumber != null;
 
-      // ── Bird weight vs. HyLine standard band (§ ProductionWeightAlert) ──
-      // Unlike every other field here, this is never "corrected" — there's
-      // nothing in the report to autofill or overwrite; it's purely a
-      // cross-check against the standard table, with a Director-facing
-      // flag (+ cross-referenced feed/mortality context + AI read) raised
-      // when the sampled average falls outside the band for the batch's
-      // age at this row's date. See WeightAlertService.
-      if (row.avgWeight !== undefined) {
-        await this.reconcileWeight(row, batchId, logDate, batch.dateOfHatch, discrepancies, () => { matchedCount++; });
-      }
+        // ── Mortality ──────────────────────────────────────────────────────
+        if (row.mortality !== undefined) {
+          await this.reconcileMortality(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch.houseId, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
+        }
 
-      // ── Feed ─────────────────────────────────────────────────────────────
-      if (row.feedKg !== undefined) {
-        await this.reconcileFeed(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, aliasMap, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
-      }
+        // ── Bird weight vs. HyLine standard band (§ ProductionWeightAlert) ──
+        // Unlike every other field here, this is never "corrected" — there's
+        // nothing in the report to autofill or overwrite; it's purely a
+        // cross-check against the standard table, with a Director-facing
+        // flag (+ cross-referenced feed/mortality context + AI read) raised
+        // when the sampled average falls outside the band for the batch's
+        // age at this row's date. See WeightAlertService.
+        if (row.avgWeight !== undefined) {
+          await this.reconcileWeight(row, batchId, logDate, batch.dateOfHatch, discrepancies, () => { matchedCount++; });
+        }
 
-      // ── Cage reassignment / recount — per-cage rows only ────────────────
-      if (isCageRow && (row.closingStock !== undefined || row.openingStock !== undefined)) {
-        await this.reconcileCageAssignment(row, batchId, batch, logDate, uploaderId, noteSuffix, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
-      }
+        // ── Feed ───────────────────────────────────────────────────────────
+        if (row.feedKg !== undefined) {
+          await this.reconcileFeed(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, aliasMap, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
+        }
 
-      // ── Water consumption ────────────────────────────────────────────────
-      if (row.waterLts !== undefined) {
-        await this.reconcileWater(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch.houseId, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
-      }
+        // ── Cage reassignment / recount — per-cage rows only ────────────────
+        if (isCageRow && (row.closingStock !== undefined || row.openingStock !== undefined)) {
+          await this.reconcileCageAssignment(row, batchId, batch, logDate, uploaderId, noteSuffix, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
+        }
 
-      // ── Vaccines / supplements / treatments (§3) ────────────────────────
-      await this.reconcileHealthUsages(
-        row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch,
-        vaccineItems, supplementItems, treatmentItems, aliasMap, discrepancies, appliedChanges,
-        () => { autofillCount++; }, () => { matchedCount++; },
-      );
+        // ── Water consumption ─────────────────────────────────────────────
+        if (row.waterLts !== undefined) {
+          await this.reconcileWater(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch.houseId, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
+        }
 
-      // ── Temperature / humidity / lux, per session (morning/midday/
-      // evening) — brooder stage only; EggCollectionSession (production
-      // stage) has no humidity/lux fields and only one temperature value
-      // per shift, so there's nothing session-shaped to reconcile there. ──
-      if (stageBucket === 'BROODING') {
-        await this.reconcileEnvironmental(row, batchId, logDate, uploaderId, noteSuffix, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
-      }
+        // ── Vaccines / supplements / treatments (§3) ──────────────────────
+        await this.reconcileHealthUsages(
+          row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch,
+          vaccineItems, supplementItems, treatmentItems, aliasMap, discrepancies, appliedChanges,
+          () => { autofillCount++; }, () => { matchedCount++; },
+        );
 
-      // ── Generic items issued (e.g. charcoal bags used) ──────────────────
-      for (const usage of row.itemsIssued) {
-        const item = storeItemMap.get(usage.storeItemId);
-        if (!item) continue;
-        usage.storeItemName = item.name;
-        await this.reconcileItemUsage(row, item, usage.quantity, usage.unit, usage.rawText, batchId, logDate, discrepancies, appliedChanges,
-          (res) => { usage.resolution = res; if (res === 'AUTOFILLED') autofillCount++; else if (res === 'MATCHED') matchedCount++; });
+        // ── Temperature / humidity / lux, per session (morning/midday/
+        // evening) — brooder stage only; EggCollectionSession (production
+        // stage) has no humidity/lux fields and only one temperature value
+        // per shift, so there's nothing session-shaped to reconcile there. ──
+        if (stageBucket === 'BROODING') {
+          await this.reconcileEnvironmental(row, batchId, logDate, uploaderId, noteSuffix, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
+        }
+
+        // ── Generic items issued (e.g. charcoal bags used) ────────────────
+        for (const usage of row.itemsIssued) {
+          const item = storeItemMap.get(usage.storeItemId);
+          if (!item) continue;
+          usage.storeItemName = item.name;
+          await this.reconcileItemUsage(row, item, usage.quantity, usage.unit, usage.rawText, batchId, logDate, discrepancies, appliedChanges,
+            (res) => { usage.resolution = res; if (res === 'AUTOFILLED') autofillCount++; else if (res === 'MATCHED') matchedCount++; });
+        }
       }
     });
 
     return { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage: stageBucket };
+  }
+
+  /** Deletes every row in `rows` and logs a DELETE ledger entry (full
+   *  beforeState, no afterState) for each one, so ProductionReportRollbackService
+   *  can recreate them exactly if this report is later undone. Used by the
+   *  "report replaces, never duplicates" write path (feed, mortality) —
+   *  see reconcileFeed/reconcileFeedSplit/reconcileMortality — instead of
+   *  the old "write a delta correction on top" approach. Any
+   *  BrooderFeedWastageLog row pointing at a doomed BrooderGeneralFeedLog
+   *  id is deleted first (and logged) so a stale wastage entry never
+   *  outlives the feed row that triggered it. */
+  private async deleteAndLog(
+    delegate: any, rows: { id: string }[], entityType: string, batchId: string, rowDate: string,
+    appliedChanges: AppliedChangeInput[],
+  ) {
+    for (const row of rows) {
+      if (entityType === 'BrooderGeneralFeedLog') {
+        const wastageRows = await this.prisma.brooderFeedWastageLog.findMany({ where: { generalFeedLogId: row.id } });
+        for (const w of wastageRows) {
+          this.logChange(appliedChanges, batchId, rowDate, 'BrooderFeedWastageLog', w.id, 'DELETE', w, null);
+        }
+        if (wastageRows.length) {
+          await this.prisma.brooderFeedWastageLog.deleteMany({ where: { generalFeedLogId: row.id } });
+        }
+      }
+      this.logChange(appliedChanges, batchId, rowDate, entityType, row.id, 'DELETE', row, null);
+    }
+    if (rows.length) {
+      await delegate.deleteMany({ where: { id: { in: rows.map(r => r.id) } } });
+    }
   }
 
   /** Records one ledger entry describing a write the reconciliation engine
@@ -505,18 +570,30 @@ export class ProductionReportReconciliationService {
       return;
     }
 
+    // "Report replaces, never duplicates" — same policy as feed above.
+    // reconcileMortality never touches Batch.currentBirdCount itself (that's
+    // synced separately, from the report's own closing-stock column, via
+    // syncGeneralPopulationFromClosingStock) — so deleting and recreating
+    // this log row has no side effect on the batch's live bird count.
     const existing = await this.prisma.brooderGeneralMortalityLog.findMany({ where: { batchId, logDate } });
     const systemTotal = existing.reduce((s, e) => s + e.mortalityCount, 0);
-    const outcome = resolveReportCorrection(systemTotal, row.mortality!, 'bird(s)');
-    if (outcome.resolution === 'MATCHED') {
+    if (Math.abs(systemTotal - row.mortality!) < 0.001) {
       row.resolution.mortality = 'MATCHED';
       onMatch();
       return;
     }
+    // Culling wasn't part of the mortality diff above — preserve whatever
+    // was already recorded for it if this report row doesn't carry its own
+    // culling figure, so replacing the mortality count doesn't silently
+    // zero out real culling data from an earlier entry.
+    const priorCullingTotal = existing.reduce((s, e) => s + (e.cullingCount ?? 0), 0);
+
+    await this.deleteAndLog(this.prisma.brooderGeneralMortalityLog, existing, 'BrooderGeneralMortalityLog', batchId, row.date, appliedChanges);
+
     const created = await this.prisma.brooderGeneralMortalityLog.create({
       data: {
-        batchId, logDate, mortalityCount: outcome.deltaToApply, cullingCount: existing.length === 0 ? (row.culling ?? 0) : 0,
-        notes: existing.length === 0 ? `Auto-filled ${noteSuffix}` : `Correction: ${outcome.note} ${noteSuffix}`,
+        batchId, logDate, mortalityCount: row.mortality!, cullingCount: row.culling ?? priorCullingTotal,
+        notes: existing.length === 0 ? `Auto-filled ${noteSuffix}` : `Replaced ${systemTotal} bird(s) (was previously recorded) with the report's ${row.mortality} bird(s) ${noteSuffix}`,
         loggedById: uploaderId,
       },
     });
@@ -688,7 +765,7 @@ export class ProductionReportReconciliationService {
       if (Math.abs(systemFeed - row.feedKg!) < 0.01) {
         row.resolution.feedKg = 'MATCHED';
         onMatch();
-        await this.checkProductionFeedWastage(row, batchId, batch, logDate, existing.id, systemFeed, matchedFeedItem, uploaderId);
+        await this.checkProductionFeedWastage(row, batchId, batch, logDate, existing.id, systemFeed, matchedFeedItem, uploaderId, appliedChanges);
         return;
       }
       // Report is authoritative — correct to match it, whether higher or
@@ -702,11 +779,18 @@ export class ProductionReportReconciliationService {
       this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.feedKg', existing.id, 'UPDATE', { feedKg: systemFeed }, { feedKg: row.feedKg! });
       row.resolution.feedKg = 'AUTOFILLED';
       onAutofill();
-      await this.checkProductionFeedWastage(row, batchId, batch, logDate, existing.id, row.feedKg!, matchedFeedItem, uploaderId);
+      await this.checkProductionFeedWastage(row, batchId, batch, logDate, existing.id, row.feedKg!, matchedFeedItem, uploaderId, appliedChanges);
       return;
     }
 
     // ── Brooder/grower stage ────────────────────────────────────────────
+    // "Report replaces, never duplicates": every BrooderGeneralFeedLog row
+    // already sitting on this (batchId, entryDate) is deleted and a SINGLE
+    // fresh row is written with the report's own figure — never a delta
+    // correction stacked on top. See deleteAndLog() for how the deletion is
+    // captured in the ledger (so undoing this report restores exactly what
+    // was there before, and any BrooderFeedWastageLog row that pointed at a
+    // deleted feed row is cleaned up with it rather than left dangling).
     const existing = await this.prisma.brooderGeneralFeedLog.findMany({ where: { batchId, entryDate: logDate } });
     const systemTotal = existing.reduce((s, e) => s + e.quantityDispensedKg, 0);
 
@@ -739,25 +823,24 @@ export class ProductionReportReconciliationService {
     const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
     const dailyRationKg = brooderRequiredFeedKg(wastagePopulation, ageWeeks, 1);
 
-    const outcome = resolveReportCorrection(systemTotal, row.feedKg!, 'kg');
-    if (outcome.resolution === 'MATCHED') {
+    if (Math.abs(systemTotal - row.feedKg!) < 0.001) {
       row.resolution.feedKg = 'MATCHED';
       onMatch();
-      // Nothing new is being written this call (the report already agrees
-      // with what's logged), so recordIfOverIssued's incremental-delta math
-      // has nothing to work with — but the day itself may still be over
+      // Nothing changed this call, so there's no new entry for
+      // recordIfOverIssued to price — but the day itself may still be over
       // ration (e.g. an attendant logged it directly). backfillDayIfOverIssued
-      // is the day-total, idempotent check built for exactly this case: it
-      // no-ops if this day was already flagged, and otherwise sums the
-      // day's existing entries against the correct per-day ration.
+      // is the day-total, idempotent check built for exactly this case.
       try {
-        await this.feedWastage.backfillDayIfOverIssued({
+        const backfilled = await this.feedWastage.backfillDayIfOverIssued({
           batch: { id: batchId, batchCode: batch.batchCode },
           entryDate: logDate,
           dailyRationKg,
           loggedById: uploaderId,
           notify: true,
         });
+        if (backfilled) {
+          this.logChange(appliedChanges, batchId, row.date, 'BrooderFeedWastageLog', backfilled.id, 'CREATE', null, backfilled);
+        }
       } catch (wastageErr: any) {
         this.logger.warn(
           `[ProductionReportReconciliation] Feed-wastage backfill check failed for batch ${batchId} ` +
@@ -766,13 +849,16 @@ export class ProductionReportReconciliationService {
       }
       return;
     }
+
+    await this.deleteAndLog(this.prisma.brooderGeneralFeedLog, existing, 'BrooderGeneralFeedLog', batchId, row.date, appliedChanges);
+
     const created = await this.prisma.brooderGeneralFeedLog.create({
       data: {
         batchId, entryDate: logDate,
         feedType: mapFeedType(matchedFeedItem.name, row.feedType),
         storeItemId: matchedFeedItem.id, unit: matchedFeedItem.unit,
-        quantityDispensedKg: outcome.deltaToApply,
-        notes: [existing.length === 0 ? `Auto-filled ${noteSuffix}` : `Correction: ${outcome.note} ${noteSuffix}`, row.feedType ? `sheet feed type: "${row.feedType}"` : null].filter(Boolean).join(' — '),
+        quantityDispensedKg: row.feedKg!,
+        notes: [existing.length === 0 ? `Auto-filled ${noteSuffix}` : `Replaced ${systemTotal} kg (was previously recorded) with the report's ${row.feedKg} kg ${noteSuffix}`, row.feedType ? `sheet feed type: "${row.feedType}"` : null].filter(Boolean).join(' — '),
         loggedById: uploaderId,
       },
     });
@@ -786,20 +872,26 @@ export class ProductionReportReconciliationService {
     // population sheet" path writes into — so it needs the exact same
     // over-issuance check that path runs (see FeedWastageService), or a
     // batch over-fed entirely via an auto-reconciled report would never
-    // show up in the Director's feed-wastage summary. Best-effort — a
-    // failure here must never surface as a reconciliation error; the feed
-    // log itself has already been saved by this point.
+    // show up in the Director's feed-wastage summary. thisEntryKg is the
+    // full report figure (not a delta) — `created` is now the ONLY
+    // BrooderGeneralFeedLog row for this date, so "this entry" and "the
+    // day's total" are the same number. Best-effort — a failure here must
+    // never surface as a reconciliation error; the feed log itself has
+    // already been saved by this point.
     try {
-      await this.feedWastage.recordIfOverIssued({
+      const wastageLog = await this.feedWastage.recordIfOverIssued({
         batch: { id: batchId, batchCode: batch.batchCode },
         entryDate: logDate,
         dailyRationKg,
         generalFeedLogId: created.id,
         feedType: created.feedType,
         storeItemId: matchedFeedItem.id,
-        thisEntryKg: outcome.deltaToApply,
+        thisEntryKg: row.feedKg!,
         loggedById: uploaderId,
       });
+      if (wastageLog) {
+        this.logChange(appliedChanges, batchId, row.date, 'BrooderFeedWastageLog', wastageLog.id, 'CREATE', null, wastageLog);
+      }
     } catch (wastageErr: any) {
       this.logger.warn(
         `[ProductionReportReconciliation] Feed-wastage check failed for batch ${batchId} ` +
@@ -831,6 +923,7 @@ export class ProductionReportReconciliationService {
     batch: { batchCode: string; dateReceived: Date },
     logDate: Date, sessionId: string, actualFeedKg: number,
     matchedFeedItem: StoreItem | null, uploaderId: string,
+    appliedChanges: AppliedChangeInput[],
   ) {
     if (row.openingStock == null || row.openingStock <= 0) return;
     try {
@@ -867,7 +960,7 @@ export class ProductionReportReconciliationService {
         row.openingStock, FeedType.LAYER_MASH, ageWeeks, 1,
         (_feedType, aw) => hylineGramsPerBirdPerDay(aw),
       );
-      await this.feedWastage.recordProductionOverIssuance({
+      const wastageLog = await this.feedWastage.recordProductionOverIssuance({
         batch: { id: batchId, batchCode: batch.batchCode },
         entryDate: logDate,
         populationOpeningStock: row.openingStock,
@@ -878,6 +971,9 @@ export class ProductionReportReconciliationService {
         storeItemId: matchedFeedItem?.id ?? null,
         loggedById: uploaderId,
       });
+      if (wastageLog) {
+        this.logChange(appliedChanges, batchId, row.date, 'BrooderFeedWastageLog', wastageLog.id, 'CREATE', null, wastageLog);
+      }
     } catch (wastageErr: any) {
       this.logger.warn(
         `[ProductionReportReconciliation] Production feed-wastage check failed for batch ${batchId} ` +
@@ -975,23 +1071,27 @@ export class ProductionReportReconciliationService {
         continue;
       }
 
-      const systemQtyForItem = existing
-        .filter(e => e.storeItemId === matchedItem.id)
-        .reduce((s, e) => s + e.quantityDispensedKg, 0);
-      const outcome = resolveReportCorrection(systemQtyForItem, portion.kg, 'kg');
+      // "Report replaces, never duplicates" — same policy as the
+      // single-item feed path, scoped to just THIS portion's item so a
+      // split day's other portions/items are left alone.
+      const existingForItem = existing.filter(e => e.storeItemId === matchedItem.id);
+      const systemQtyForItem = existingForItem.reduce((s, e) => s + e.quantityDispensedKg, 0);
 
-      if (outcome.resolution === 'MATCHED') {
+      if (Math.abs(systemQtyForItem - portion.kg) < 0.001) {
         anyMatched = true;
         continue;
+      }
+      if (existingForItem.length) {
+        await this.deleteAndLog(this.prisma.brooderGeneralFeedLog, existingForItem, 'BrooderGeneralFeedLog', batchId, row.date, appliedChanges);
       }
       const created = await this.prisma.brooderGeneralFeedLog.create({
         data: {
           batchId, entryDate: logDate,
           feedType: mapFeedType(matchedItem.name, portion.label),
           storeItemId: matchedItem.id, unit: matchedItem.unit,
-          quantityDispensedKg: outcome.deltaToApply,
+          quantityDispensedKg: portion.kg,
           notes: [
-            systemQtyForItem === 0 ? `Auto-filled ${noteSuffix}` : `Correction: ${outcome.note} ${noteSuffix}`,
+            existingForItem.length === 0 ? `Auto-filled ${noteSuffix}` : `Replaced ${systemQtyForItem} kg (was previously recorded) with the report's ${portion.kg} kg ${noteSuffix}`,
             `split portion: "${portion.label}" — ${portion.percent}% of sheet total "${row.feedType}"`,
           ].filter(Boolean).join(' — '),
           loggedById: uploaderId,
@@ -1013,16 +1113,19 @@ export class ProductionReportReconciliationService {
         // to shadow the outer one and silently re-introduce the "priced
         // against today's live count instead of the report day's opening
         // stock" bug for every split-feed row).
-        await this.feedWastage.recordIfOverIssued({
+        const wastageLog = await this.feedWastage.recordIfOverIssued({
           batch: { id: batchId, batchCode: batch.batchCode },
           entryDate: logDate,
           dailyRationKg,
           generalFeedLogId: created.id,
           feedType: created.feedType,
           storeItemId: matchedItem.id,
-          thisEntryKg: outcome.deltaToApply,
+          thisEntryKg: portion.kg,
           loggedById: uploaderId,
         });
+        if (wastageLog) {
+          this.logChange(appliedChanges, batchId, row.date, 'BrooderFeedWastageLog', wastageLog.id, 'CREATE', null, wastageLog);
+        }
       } catch (wastageErr: any) {
         this.logger.warn(
           `[ProductionReportReconciliation] Feed-wastage check failed for batch ${batchId} ` +
@@ -1043,13 +1146,16 @@ export class ProductionReportReconciliationService {
       // is idempotent per (batch, day) — safe to call even though the
       // single-item path may also call it for a different day's row.
       try {
-        await this.feedWastage.backfillDayIfOverIssued({
+        const backfilled = await this.feedWastage.backfillDayIfOverIssued({
           batch: { id: batchId, batchCode: batch.batchCode },
           entryDate: logDate,
           dailyRationKg,
           loggedById: uploaderId,
           notify: true,
         });
+        if (backfilled) {
+          this.logChange(appliedChanges, batchId, row.date, 'BrooderFeedWastageLog', backfilled.id, 'CREATE', null, backfilled);
+        }
       } catch (wastageErr: any) {
         this.logger.warn(
           `[ProductionReportReconciliation] Feed-wastage backfill check failed for batch ${batchId} ` +
@@ -1097,6 +1203,27 @@ export class ProductionReportReconciliationService {
       }
     }
     return best;
+  }
+
+  /** How many consecutive days immediately BEFORE logDate already have a
+   *  non-zero recorded stock-count variance — i.e. how long this mismatch
+   *  has already been recurring. Purely used to escalate wording (a 4th
+   *  consecutive day is a very different problem than a one-off recount),
+   *  never to change what gets written. Capped at 14 days back so a very
+   *  old, long-since-fixed batch can't make every new report pay for an
+   *  unbounded walk. */
+  private async computeStockVarianceStreak(batchId: string, logDate: Date): Promise<number> {
+    let streak = 0;
+    let cursor = logDate;
+    for (let i = 0; i < 14; i++) {
+      cursor = new Date(cursor.getTime() - 24 * 60 * 60 * 1000);
+      const entry = await this.prisma.brooderStockCount.findUnique({
+        where: { batchId_logDate: { batchId, logDate: cursor } }, select: { variance: true },
+      });
+      if (!entry || !entry.variance) break;
+      streak++;
+    }
+    return streak;
   }
 
   /** Pure computation half of stock-count reconciliation — no DB access, so
@@ -1174,27 +1301,66 @@ export class ProductionReportReconciliationService {
     }
 
     // ── Flag 1: opening count doesn't match the previous count's closing
-    // figure — a physical recount found more/fewer birds than expected. ────
+    // figure — a physical recount found more/fewer birds than expected.
+    //
+    // Previously this only ever fired a notification — it never became a
+    // ProductionReportDiscrepancy, so it never showed up in Store's own
+    // report-review screen, never entered the audit trail, and (since
+    // reconciliation "corrects to match the report" unconditionally either
+    // way — see the write above) nothing stopped the exact same mismatch
+    // from recurring silently on every single future upload. It's now
+    // recorded as a real (pre-resolved, since the correction above already
+    // applied it) discrepancy — same pattern as WEIGHT — specifically so it
+    // has a queryable history: computeStockVarianceStreak() below turns
+    // that history into an escalating warning the moment it starts
+    // repeating, instead of treating day 7 of the same drift exactly like
+    // day 1. ──────────────────────────────────────────────────────────────
     if (openingVariance !== 0 && expectedOpeningStock != null) {
       const direction = openingVariance > 0 ? 'increased' : 'decreased';
+      const streak = await this.computeStockVarianceStreak(batchId, logDate);
+      const streakNote = streak > 0
+        ? ` This is day ${streak + 1} in a row this has happened — worth checking WHY the physical count keeps drifting (a systematic counting habit, a cage move that isn't being logged, chicks moved between cages same-day) rather than re-accepting a new figure each time.`
+        : '';
+      discrepancies.push({
+        rowDate: row.date, field: 'openingStock', discrepancyType: ProductionReportDiscrepancyType.STOCK_COUNT,
+        locationRef: row.locationRef, systemValue: `O:${expectedOpeningStock}/C:${Math.max(0, expectedOpeningStock - dayLosses)}`,
+        reportValue: `O:${row.openingStock}/C:${row.closingStock}`, preResolved: true,
+        notes: `Opening stock (${row.openingStock}) differs from the previous count's closing stock ` +
+          `(${expectedOpeningStock}) by ${Math.abs(openingVariance)} bird(s) — the count has ${direction} with ` +
+          `no recorded reason.${streakNote}`,
+      });
       await this.alertStockMismatch(
         batchId,
-        `Stock Count Mismatch — Batch`,
+        streak >= 2 ? `Recurring Stock Count Mismatch (${streak + 1} days running) — Batch` : `Stock Count Mismatch — Batch`,
         `The opening stock reported for ${row.date} is ${row.openingStock!.toLocaleString()}, but the previous count ` +
         `(${dayjs(priorEntry!.logDate).format('YYYY-MM-DD')}) closed at ${expectedOpeningStock.toLocaleString()} — ` +
-        `the count has ${direction} by ${Math.abs(openingVariance).toLocaleString()} bird(s) with no recorded reason.`,
+        `the count has ${direction} by ${Math.abs(openingVariance).toLocaleString()} bird(s) with no recorded reason.${streakNote}`,
+        streak >= 2,
       );
     }
 
     // ── Flag 2: this row's own closing stock doesn't reconcile against its
-    // own opening stock minus its own recorded mortality/culling. ──────────
+    // own opening stock minus its own recorded mortality/culling. Same
+    // "now a real discrepancy, not just a notification" treatment as Flag 1
+    // above — this is very often a report simply not carrying a separate
+    // culling column (see ProductionReportTemplateService, which now checks
+    // for exactly this pattern when recommending the NEXT batch's columns).
     if (arithmeticMismatch) {
+      const gap = row.closingStock! - expectedClosingFromRow;
+      discrepancies.push({
+        rowDate: row.date, field: 'closingStock', discrepancyType: ProductionReportDiscrepancyType.STOCK_COUNT,
+        locationRef: row.locationRef, systemValue: `O:${row.openingStock}/C:${expectedClosingFromRow}`,
+        reportValue: `O:${row.openingStock}/C:${row.closingStock}`, preResolved: true,
+        notes: `On ${row.date}, the report shows opening stock ${row.openingStock} minus ${dayLosses} mortality/culling, ` +
+          `which should leave ${expectedClosingFromRow}, but the reported closing stock is ${row.closingStock} instead — ` +
+          `a ${Math.abs(gap)}-bird discrepancy in how the sheet's own figures were calculated.`,
+      });
       await this.alertStockMismatch(
         batchId,
         `Stock Count Doesn't Add Up — Batch`,
         `On ${row.date}, the report shows opening stock ${row.openingStock} minus ${dayLosses} mortality/culling, ` +
         `which should leave ${expectedClosingFromRow}, but the reported closing stock is ${row.closingStock} instead — ` +
-        `a ${Math.abs(row.closingStock! - expectedClosingFromRow)}-bird discrepancy in how the sheet's own figures were calculated.`,
+        `a ${Math.abs(gap)}-bird discrepancy in how the sheet's own figures were calculated.`,
       );
     }
     // NOTE: syncGeneralPopulationFromClosingStock is now called ONCE from
@@ -1211,14 +1377,14 @@ export class ProductionReportReconciliationService {
   // visibility-only — never blocks the report's auto-fill — since the farm
   // still needs the raw sheet figures captured even when they don't add up;
   // this just makes sure a human looks at it.
-  private async alertStockMismatch(batchId: string, title: string, message: string) {
+  private async alertStockMismatch(batchId: string, title: string, message: string, escalate = false) {
     try {
       const batch = await this.prisma.batch.findUnique({ where: { id: batchId }, select: { batchCode: true } });
       const fullTitle = `${title} ${batch?.batchCode ?? ''}`.trim();
-      await Promise.all([
-        this.notifications.notifyRole(UserRole.MANAGER, 'BROODER_STOCK_MISMATCH', fullTitle, message, { entityId: batchId, entityType: 'Brooder' }),
-        this.notifications.notifyRole(UserRole.OWNER, 'BROODER_STOCK_MISMATCH', fullTitle, message, { entityId: batchId, entityType: 'Brooder' }),
-      ]);
+      const roles = escalate ? [UserRole.MANAGER, UserRole.OWNER, UserRole.STORE] : [UserRole.MANAGER, UserRole.OWNER];
+      await Promise.all(
+        roles.map(role => this.notifications.notifyRole(role, 'BROODER_STOCK_MISMATCH', fullTitle, message, { entityId: batchId, entityType: 'Brooder' })),
+      );
     } catch (err: any) {
       this.logger.warn(`[ProductionReportReconciliation] Stock-mismatch alert failed for batch ${batchId} (${err?.message}).`);
     }

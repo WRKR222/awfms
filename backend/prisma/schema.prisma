@@ -2119,6 +2119,28 @@ model StoreProductionReport {
   @@map("store_production_reports")
 }
 
+/// Per-batch mutex for StoreProductionReport reconciliation passes
+/// (submit() and matchItem() in production-report.service.ts). One row per
+/// batch that has ever had a report submitted or matched; batchId itself is
+/// the lock key rather than living on StoreProductionReport, since the very
+/// first submit() for a batch runs before that report row exists.
+///
+/// Prevents the double-autofill bug where two overlapping requests
+/// (double-click, a network-timeout retry racing the original request) each
+/// read the same "already recorded" totals in
+/// ProductionReportReconciliationService before either had written its
+/// correction, and both then wrote a full duplicate — see
+/// production-report.service.ts's acquireProcessingLock/releaseProcessingLock
+/// and the PROCESSING_LOCK_STALE_AFTER_MS constant there for how a lock left
+/// behind by a crashed request gets reclaimed instead of wedging the batch.
+model ProductionReportProcessingLock {
+  batchId             String    @id @map("batch_id")
+  processingStartedAt DateTime? @map("processing_started_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  @@map("production_report_processing_locks")
+}
+
 /// A single flagged mismatch between a report row/field and existing
 /// system-recorded data. Recomputed from scratch (deleted + recreated) every
 /// time the report is reprocessed, so this always reflects the CURRENT
@@ -2184,7 +2206,7 @@ model ProductionReportAppliedChange {
   rowDate      DateTime? @map("row_date") @db.Date
   entityType   String   @map("entity_type")   // e.g. "BrooderGeneralFeedLog", "BrooderLog.vaccinesJson", "BrooderCageAssignment"
   entityId     String?  @map("entity_id")
-  action       String                          // "CREATE" | "UPDATE" | "JSON_APPEND"
+  action       String                          // "CREATE" | "UPDATE" | "JSON_APPEND" | "DELETE"
   beforeState  Json?    @map("before_state")
   afterState   Json?    @map("after_state")
   rolledBack   Boolean  @default(false) @map("rolled_back")
