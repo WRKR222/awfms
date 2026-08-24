@@ -136,6 +136,41 @@ export class ProductionReportController {
     res.send(buffer);
   }
 
+  /** GET /store/production-reports/:batchId/template-info — what the recommended
+   *  next-batch template will contain and why, learned from the previous batch's
+   *  report (blended columns, unmatched item names, multi-item cells). Read-only,
+   *  shown to Store before they decide to download the actual spreadsheet. */
+  @Get(':batchId/template-info')
+  @RequirePermission(Permission.PRODUCTION_REPORT_UPLOAD)
+  getTemplateInfo(@Param('batchId') batchId: string) {
+    return this.service.getTemplateInfo(batchId);
+  }
+
+  /** GET /store/production-reports/:batchId/template — the recommended next-batch
+   *  report template as a downloadable .xlsx (one column per canonical field the
+   *  previous report used, plus one column per drug/vaccine/supplement/item
+   *  actually issued last batch, instead of one blended free-text column). */
+  @Get(':batchId/template')
+  @RequirePermission(Permission.PRODUCTION_REPORT_UPLOAD)
+  async getTemplate(@Param('batchId') batchId: string, @Res() res: Response) {
+    const { buffer, fileName } = await this.service.generateTemplate(batchId);
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="${fileName}"`,
+    });
+    res.send(buffer);
+  }
+
+  /** POST /store/production-reports/suggest-item-match — best-effort AI guess at
+   *  which store item an unmatched report cell means (see UnmatchedItemRow on the
+   *  frontend). Never applies anything itself — only pre-selects a suggestion for
+   *  Store to confirm or reject. Returns null when AI isn't configured/confident. */
+  @Post('suggest-item-match')
+  @RequirePermission(Permission.PRODUCTION_REPORT_UPLOAD)
+  suggestItemMatch(@Body('rawLabel') rawLabel: string, @Body('kind') kind: 'vaccine' | 'supplement' | 'treatment') {
+    return this.service.suggestItemMatch(rawLabel, kind);
+  }
+
   /** POST /store/production-reports/:reportId/approve — trust the report for every still-open
    *  discrepancy on it. Store closes out its own reports here — no separate Director sign-off. */
   @Post(':reportId/approve')

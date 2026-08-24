@@ -14,10 +14,83 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import {
   Upload, FileSpreadsheet, CheckCircle, AlertTriangle, ArrowLeft,
-  RefreshCw, Clock, XCircle, Download, Eye, X,
+  RefreshCw, Clock, XCircle, Download, Eye, X, Sparkles, FileDown,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import { ProductionReportTable } from '../../components/production-report/ReportTable';
+
+interface TemplateAnalysis {
+  learnedFromBatchCode: string | null;
+  recommendations: string[];
+  columns: string[];
+}
+
+function useTemplateInfo(batchId: string) {
+  return useQuery<TemplateAnalysis>({
+    queryKey: ['production-report-template-info', batchId],
+    queryFn: async () => (await api.get(`/store/production-reports/${batchId}/template-info`)).data,
+    enabled: !!batchId,
+    staleTime: 60_000,
+  });
+}
+
+/** "Improvement mechanism" panel — before Store fills in the NEXT batch's
+ *  sheet, shows what the previous batch's report got wrong (a blended
+ *  drugs/vaccines column, item names that couldn't be matched, cells that
+ *  packed more than one item into one box) and offers a ready-made
+ *  spreadsheet template that avoids all of it — one column per item,
+ *  labelled exactly as the store item, so next report's auto-detector maps
+ *  everything with zero ambiguity. Purely advisory: downloading it doesn't
+ *  change anything about the upload flow below. */
+function TemplatePanel({ batchId }: { batchId: string }) {
+  const { data, isLoading, isError } = useTemplateInfo(batchId);
+  const [open, setOpen] = useState(false);
+
+  if (isLoading || isError || !data) return null;
+
+  return (
+    <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-5 space-y-3">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between gap-2 text-left"
+      >
+        <span className="flex items-center gap-2 text-sm font-semibold text-gray-800 dark:text-gray-100">
+          <Sparkles className="w-4 h-4 text-brand-green" />
+          Recommended template for this batch
+        </span>
+        <span className="text-xs text-gray-400">{open ? 'Hide' : 'Show'}</span>
+      </button>
+
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        {data.learnedFromBatchCode
+          ? <>Built from what caused mismatches on <span className="font-semibold">{data.learnedFromBatchCode}</span>'s report — one column per item, so nothing needs to be decoded or split.</>
+          : 'No earlier report to learn from yet — a generic starting template, tailored automatically once one exists.'}
+      </p>
+
+      {open && (
+        <div className="space-y-2 pt-1">
+          <ul className="space-y-1.5">
+            {data.recommendations.map((r, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300">
+                <span className="w-1 h-1 rounded-full bg-brand-green mt-1.5 flex-shrink-0" />
+                {r}
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-gray-400">Columns: {data.columns.join(' · ')}</p>
+        </div>
+      )}
+
+      <a
+        href={`${api.defaults.baseURL}/store/production-reports/${batchId}/template`}
+        target="_blank" rel="noreferrer"
+        className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-green hover:underline"
+      >
+        <FileDown className="w-3.5 h-3.5" /> Download recommended template (.xlsx)
+      </a>
+    </div>
+  );
+}
 
 interface Batch { id: string; batchCode: string; }
 
@@ -104,6 +177,20 @@ function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['production-report', batchId] }),
   });
 
+  // Best-effort AI guess at which store item this cell means — never
+  // applied on its own, just pre-selects the dropdown above so Store has
+  // less to search through. Only offered for vaccine/supplement/treatment
+  // cells (the ones AiService.suggestStoreItemMatch actually understands);
+  // silently unavailable (button never appears) once AI isn't configured
+  // on the server, since the endpoint just returns null in that case.
+  const suggest = useMutation({
+    mutationFn: async () => (await api.post('/store/production-reports/suggest-item-match', { rawLabel: d.reportValue, kind: d.field })).data as {
+      storeItemId: string; storeItemName: string; confidence: 'high' | 'medium' | 'low';
+    } | null,
+    onSuccess: (result) => { if (result) setStoreItemId(result.storeItemId); },
+  });
+  const canSuggest = ['vaccine', 'supplement', 'treatment'].includes(d.field) && !!d.reportValue?.trim();
+
   if (match.isSuccess) {
     return (
       <div className="flex items-center gap-2 bg-green-50 dark:bg-green-900/10 border border-green-100 dark:border-green-900/30 rounded-xl p-3 text-sm text-green-700 dark:text-green-400">
@@ -149,6 +236,16 @@ function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
           <option value="">Select the matching store item…</option>
           {items.map(i => <option key={i.id} value={i.id}>{i.name} ({i.category.replace(/_/g, ' ').toLowerCase()})</option>)}
         </select>
+        {canSuggest && !suggest.isSuccess && (
+          <button
+            disabled={suggest.isPending}
+            onClick={() => suggest.mutate()}
+            title="Ask AI to suggest which item this is"
+            className="flex-shrink-0 flex items-center gap-1 text-xs font-semibold text-brand-green border border-brand-green/30 px-2 py-1.5 rounded-lg hover:bg-brand-green/5 disabled:opacity-50"
+          >
+            <Sparkles className="w-3.5 h-3.5" /> {suggest.isPending ? 'Asking…' : 'Suggest'}
+          </button>
+        )}
         <button
           disabled={!storeItemId || match.isPending}
           onClick={() => match.mutate()}
@@ -157,6 +254,14 @@ function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
           {match.isPending ? 'Matching…' : 'Match'}
         </button>
       </div>
+      {suggest.isSuccess && suggest.data && (
+        <p className="text-[11px] text-brand-green pl-6">
+          AI suggests "{suggest.data.storeItemName}" ({suggest.data.confidence} confidence) — pre-selected above, please confirm.
+        </p>
+      )}
+      {suggest.isSuccess && !suggest.data && (
+        <p className="text-[11px] text-gray-400 pl-6">AI couldn't confidently guess this one — pick manually below.</p>
+      )}
       {match.isError && <p className="text-xs text-red-500 pl-6">{(match.error as any)?.response?.data?.message ?? 'Match failed'}</p>}
     </div>
   );
@@ -805,6 +910,7 @@ export function StoreProductionReportPage() {
       {batchId && (
         <>
           <CurrentReportPanel batchId={batchId} />
+          <TemplatePanel batchId={batchId} />
           <UploadPanel batchId={batchId} onSubmitted={() => qc.invalidateQueries({ queryKey: ['production-report', batchId] })} />
         </>
       )}

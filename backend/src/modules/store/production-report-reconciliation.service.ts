@@ -37,6 +37,7 @@ import {
   FeedType, ProductionReportDiscrepancyType, StoreItem, BatchStage, BrooderLogSession, UserRole,
 } from '@prisma/client';
 import { ParsedReportRow, ParsedHealthUsage, EnvReading } from './production-report.dto';
+import { splitMultiValueCell } from './production-report-parser.service';
 import { convertToUnit } from '../../common/units/unit-conversion.util';
 import { FeedWastageService } from '../../common/feed/feed-wastage.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
@@ -1538,37 +1539,68 @@ export class ProductionReportReconciliationService {
     // the row instead of replacing it.
     row.healthUsages = [];
 
-    type Candidate = { kind: ParsedHealthUsage['kind']; text: string | undefined; pool: StoreItem[] };
+    // A single cell can legitimately carry more than one item — e.g. a
+    // "Drugs/Vaccine/Supplement" column reading "Amprolium, Vitalyte" or a
+    // Vaccine column reading "ND vaccine/Gumboro vaccine". Matching the
+    // WHOLE cell as one item name silently lost every item after the first
+    // (the combined string never equals any single store item's name, so it
+    // just fell straight to "could not match" and Store could only pick
+    // ONE replacement — the rest of the cell's content was never recorded
+    // at all). Splitting on comma/semicolon/slash first — the same
+    // separators splitMultiValueCell() already uses for multi-reading
+    // Temp/Humidity/Lux cells — and resolving each piece independently
+    // means every item on the cell gets its own match attempt, its own
+    // quantity, and (if unmatched) its own specific discrepancy, while a
+    // cell with only one item behaves exactly as before (splitting text
+    // with no separator returns a single-element array unchanged).
+    type Candidate = { kind: ParsedHealthUsage['kind']; text: string; pool: StoreItem[]; sourceCell?: string };
     const candidates: Candidate[] = [];
-    if (row.vaccineText) candidates.push({ kind: 'vaccine', text: row.vaccineText, pool: vaccineItems });
-    if (row.supplementText) candidates.push({ kind: 'supplement', text: row.supplementText, pool: supplementItems });
-    if (row.treatmentText) candidates.push({ kind: 'treatment', text: row.treatmentText, pool: treatmentItems });
-    // Blended fallback column: try it against all three pools and keep
-    // whichever kind actually matches, per §3's "let matching sort out which
-    // items to try".
+
+    const pushSplitCandidates = (cellText: string | undefined, kind: ParsedHealthUsage['kind'], pool: StoreItem[]) => {
+      if (!cellText) return;
+      const tokens = splitMultiValueCell(cellText);
+      for (const token of tokens) {
+        candidates.push({ kind, text: token, pool, sourceCell: tokens.length > 1 ? cellText : undefined });
+      }
+    };
+
+    pushSplitCandidates(row.vaccineText, 'vaccine', vaccineItems);
+    pushSplitCandidates(row.supplementText, 'supplement', supplementItems);
+    pushSplitCandidates(row.treatmentText, 'treatment', treatmentItems);
+    // Blended fallback column: try each split-out piece against all three
+    // pools independently and keep whichever kind actually matches it, per
+    // §3's "let matching sort out which items to try" — a blended cell can
+    // mix kinds within itself (e.g. "ND vaccine, Amprolium"), so the kind is
+    // resolved per piece, not once for the whole cell.
     if (row.drugsVaccines && !row.vaccineText && !row.supplementText && !row.treatmentText) {
       const allPools: [ParsedHealthUsage['kind'], StoreItem[]][] = [
         ['vaccine', vaccineItems], ['supplement', supplementItems], ['treatment', treatmentItems],
       ];
-      let bestKind: ParsedHealthUsage['kind'] = 'treatment';
-      let bestItem: StoreItem | null = null;
-      for (const [kind, pool] of allPools) {
-        const m = resolveItemMatch(row.drugsVaccines, pool, aliasMap);
-        if (m) { bestItem = m; bestKind = kind; break; }
+      const tokens = splitMultiValueCell(row.drugsVaccines);
+      for (const token of tokens) {
+        let bestKind: ParsedHealthUsage['kind'] = 'treatment';
+        let bestItem: StoreItem | null = null;
+        for (const [kind, pool] of allPools) {
+          const m = resolveItemMatch(token, pool, aliasMap);
+          if (m) { bestItem = m; bestKind = kind; break; }
+        }
+        candidates.push({
+          kind: bestKind, text: token, sourceCell: tokens.length > 1 ? row.drugsVaccines : undefined,
+          pool: bestItem ? [bestItem] : [...vaccineItems, ...supplementItems, ...treatmentItems],
+        });
       }
-      candidates.push({ kind: bestKind, text: row.drugsVaccines, pool: bestItem ? [bestItem] : [...vaccineItems, ...supplementItems, ...treatmentItems] });
     }
 
     for (const c of candidates) {
-      // Defensive: a blank/whitespace-only cell should never reach here (the
-      // parser already trims and drops those to `undefined` before a row is
-      // built), but skip it outright rather than raising a discrepancy for
-      // text nobody can act on if one ever slips through.
+      // Defensive: a blank/whitespace-only token should never reach here
+      // (splitMultiValueCell() already trims and drops empty tokens), but
+      // skip it outright rather than raising a discrepancy for text nobody
+      // can act on if one ever slips through.
       if (!c.text || !c.text.trim()) continue;
       const matched = resolveItemMatch(c.text, c.pool, aliasMap);
       const qty = extractQuantity(c.text);
       const usage: ParsedHealthUsage = {
-        kind: c.kind, rawText: c.text!, storeItemId: matched?.id ?? null, storeItemName: matched?.name ?? null,
+        kind: c.kind, rawText: c.text, storeItemId: matched?.id ?? null, storeItemName: matched?.name ?? null,
         quantity: qty?.qty, unit: qty?.unit, resolution: 'MATCHED',
       };
       row.healthUsages.push(usage);
@@ -1586,7 +1618,8 @@ export class ProductionReportReconciliationService {
           rowDate: row.date, field: c.kind, discrepancyType: ProductionReportDiscrepancyType.ITEM_ISSUANCE,
           locationRef: row.locationRef, systemValue: null, reportValue: c.text ?? null,
           notes: `Could not match this ${c.kind} — the report says "${c.text}" — to any store item. `
-            + `Add a store item with that name, add it as an alias for an existing item, or fix the wording on the sheet.`,
+            + `Add a store item with that name, add it as an alias for an existing item, or fix the wording on the sheet.`
+            + (c.sourceCell ? ` (This was one of several items packed into a single cell: "${c.sourceCell}" — matched items from that cell were still recorded normally.)` : ''),
         });
         continue;
       }

@@ -81,6 +81,42 @@ export class AiService {
     }
   }
 
+  // ── Helper: guess which store item a report's free-text cell means ─────────
+  // Used by the Production Report upload flow when the plain fuzzy-name
+  // matcher couldn't place a report cell (e.g. "ND drops") against any
+  // active store item. This NEVER auto-applies anything on its own — it only
+  // returns a suggestion so Store can confirm (or reject) it in one click
+  // instead of typing/scrolling through the full item list. Best-effort by
+  // design: returns null (never throws) whenever the API key isn't
+  // configured, the call fails, or Claude isn't confident there's a real
+  // match — a missing suggestion just means Store picks manually, same as
+  // before this existed.
+  async suggestStoreItemMatch(
+    rawText: string, kind: 'vaccine' | 'supplement' | 'treatment', candidates: { id: string; name: string }[],
+  ): Promise<{ storeItemId: string; storeItemName: string; confidence: 'high' | 'medium' | 'low' } | null> {
+    if (!this.anthropic || !rawText.trim() || candidates.length === 0) return null;
+    const list = candidates.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+    const prompt =
+      `A poultry farm's daily report has a "${kind}" cell reading exactly: "${rawText.trim()}"\n\n` +
+      `Here is the farm's list of active store items this could plausibly refer to (misspellings, ` +
+      `abbreviations, brand names, or partial names are common on paper sheets):\n${list}\n\n` +
+      `If — and only if — you are reasonably confident the cell refers to ONE specific item on this list, ` +
+      `respond with ONLY a JSON object: {"index": <1-based number from the list>, "confidence": "high"|"medium"|"low"}. ` +
+      `If nothing on the list plausibly matches, respond with ONLY {"index": null}. No other text.`;
+    const text = await this.callClaude(prompt, 150);
+    if (!text) return null;
+    try {
+      const cleaned = text.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(cleaned) as { index: number | null; confidence?: 'high' | 'medium' | 'low' };
+      if (!parsed.index || parsed.index < 1 || parsed.index > candidates.length) return null;
+      const match = candidates[parsed.index - 1];
+      return { storeItemId: match.id, storeItemName: match.name, confidence: parsed.confidence ?? 'medium' };
+    } catch {
+      this.logger.warn(`suggestStoreItemMatch: could not parse Claude's response as JSON: ${text.slice(0, 200)}`);
+      return null;
+    }
+  }
+
   // ── Helper: combine AM + PM sessions into TRUE daily HDP figures ────────────
   // EggCollectionSession.henDayPercent is stored per SHIFT (good eggs in that
   // one AM-or-PM session ÷ that shift's own closing stock). Every report below

@@ -8,6 +8,8 @@ import { RequestUser } from '../../auth/types/request-user.type';
 import { ProductionReportParserService } from './production-report-parser.service';
 import { ProductionReportReconciliationService, normaliseText } from './production-report-reconciliation.service';
 import { ProductionReportRollbackService, RollbackResult } from './production-report-rollback.service';
+import { ProductionReportTemplateService, TemplateAnalysis } from './production-report-template.service';
+import { AiService } from '../ai/ai.service';
 import {
   CANONICAL_FIELD_LABELS, CanonicalField, ProductionReportColumnMapping, SubmitReportResult, PreviewReportResult,
 } from './production-report.dto';
@@ -20,6 +22,8 @@ export class ProductionReportService {
     private readonly reconciler: ProductionReportReconciliationService,
     private readonly rollbackService: ProductionReportRollbackService,
     private readonly notifications: NotificationsService,
+    private readonly templateService: ProductionReportTemplateService,
+    private readonly ai: AiService,
   ) {}
 
   async detectHeaders(buffer: Buffer) {
@@ -491,5 +495,45 @@ export class ProductionReportService {
 
     const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
     return { buffer, fileName: `${(report as any).batch.batchCode}-production-report.xlsx` };
+  }
+
+  /** JSON-only version of the recommended next-batch template — the
+   *  "here's what changed and why" panel Store sees before deciding to
+   *  download the actual spreadsheet. See ProductionReportTemplateService
+   *  for how the previous batch's report is picked and analysed. */
+  async getTemplateInfo(batchId: string): Promise<TemplateAnalysis> {
+    return this.templateService.buildAnalysis(batchId);
+  }
+
+  /** The recommended next-batch template as a downloadable .xlsx — one
+   *  column per canonical field the previous report actually used, plus one
+   *  column per drug/vaccine/supplement/item actually issued last batch
+   *  (instead of one blended free-text column), so filling it in next time
+   *  can't reproduce the same mismatches. */
+  async generateTemplate(batchId: string): Promise<{ buffer: Buffer; fileName: string }> {
+    const { buffer, fileName } = await this.templateService.generateWorkbook(batchId);
+    return { buffer, fileName };
+  }
+
+  /** Best-effort AI guess at which store item an unmatched report cell
+   *  means, for the "could not match" discrepancy panel — Store still picks
+   *  and confirms the final answer; this only pre-selects a suggestion so
+   *  there's less to search through. Returns null (never throws) whenever
+   *  AI isn't configured or isn't confident, in which case Store just picks
+   *  manually as before this existed. */
+  async suggestItemMatch(rawLabel: string, kind: 'vaccine' | 'supplement' | 'treatment') {
+    if (!rawLabel?.trim()) return null;
+    // Mirrors the pools built in ProductionReportReconciliationService's
+    // reconcile() — MEDICATION covers both vaccine and treatment (the two
+    // aren't distinguished by store category, only by which report column
+    // the text came from), SUPPLEMENT/FEED_SUPPLEMENT cover supplements.
+    const candidates = await this.prisma.storeItem.findMany({
+      where: kind === 'supplement'
+        ? { isActive: true, category: { in: ['SUPPLEMENT', 'FEED_SUPPLEMENT'] } }
+        : { isActive: true, category: 'MEDICATION' },
+      select: { id: true, name: true },
+      take: 50,
+    });
+    return this.ai.suggestStoreItemMatch(rawLabel, kind, candidates);
   }
 }

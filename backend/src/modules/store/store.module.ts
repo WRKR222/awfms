@@ -23,11 +23,13 @@ import { ProductionReportParserService } from './production-report-parser.servic
 import { ProductionReportReconciliationService } from './production-report-reconciliation.service';
 import { ProductionReportRollbackService } from './production-report-rollback.service';
 import { ProductionReportService } from './production-report.service';
+import { ProductionReportTemplateService } from './production-report-template.service';
 import { ProductionReportController } from './production-report.controller';
 import { WeightModule } from '../weight/weight.module';
+import { AiModule } from '../ai/ai.module';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule, FeedWastageModule, WeightModule],
+  imports: [PrismaModule, NotificationsModule, FeedWastageModule, WeightModule, AiModule],
   providers: [
     StoreService,
     StoreInventoryService,
@@ -41,6 +43,7 @@ import { WeightModule } from '../weight/weight.module';
     ProductionReportParserService,
     ProductionReportReconciliationService,
     ProductionReportRollbackService,
+    ProductionReportTemplateService,
     ProductionReportService,
   ],
   controllers: [
