@@ -1,6 +1,6 @@
 // src/modules/brooder/brooder.controller.ts
 import {
-  Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards,
+  BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -299,6 +299,35 @@ export class BrooderController {
   @RequirePermission(Permission.FLOCK_VIEW)
   getPopulationRecordSheet(@Param('batchId') batchId: string, @Query('days') days?: string) {
     return this.svc.getPopulationRecordSheet(batchId, days ? Number(days) : 30);
+  }
+
+  /** GET /brooder/batches/:batchId/backfill-report?days=60
+   *  Read-only: what Store has issued to this batch but nobody has logged
+   *  as used yet (feed/vaccines/supplements/treatments), plus which dates
+   *  have no environmental reading at all. Nothing is written — this is
+   *  the gap report to review before running a backfill. */
+  @Get('batches/:batchId/backfill-report')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getBackfillReport(@Param('batchId') batchId: string, @Query('days') days?: string) {
+    return this.svc.getBackfillReport(batchId, days ? Number(days) : 60);
+  }
+
+  /** POST /brooder/batches/:batchId/backfill-apply
+   *  Applies a chosen subset of gaps from getBackfillReport. Body:
+   *  { items: [{ date, storeItemId, kind: 'feed'|'supplement'|'vaccine'|'treatment' }] }
+   *  Requires manager-level write access — this creates real feed/vaccine/
+   *  supplement/treatment log rows, not just a preview. */
+  @Post('batches/:batchId/backfill-apply')
+  @RequirePermission(Permission.FEED_INTAKE_LOG)
+  applyBackfill(
+    @Param('batchId') batchId: string,
+    @Body() body: { items?: Array<{ date: string; storeItemId: string; kind: 'feed' | 'supplement' | 'vaccine' | 'treatment' }> },
+    @CurrentUser() user: any,
+  ) {
+    if (!Array.isArray(body?.items) || body.items.length === 0) {
+      throw new BadRequestException('items is required and must be a non-empty array');
+    }
+    return this.svc.applyBackfill(batchId, body.items, user.id);
   }
 
   // ── Bird weight samples (Req 6 + Req 7) ─────────────────────────────────

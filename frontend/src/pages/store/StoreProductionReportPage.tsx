@@ -45,8 +45,36 @@ function useTemplateInfo(batchId: string) {
 function TemplatePanel({ batchId }: { batchId: string }) {
   const { data, isLoading, isError } = useTemplateInfo(batchId);
   const [open, setOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   if (isLoading || isError || !data) return null;
+
+  // Was a plain `<a href={apiUrl}>` opened in a new tab — the browser
+  // navigation carries no Authorization header (the JWT is only ever
+  // attached by the axios interceptor in lib/api/client.ts), so the
+  // protected /template endpoint's JwtAuthGuard rejected it with 401
+  // Unauthorized. Fetching the file through `api` (which does attach the
+  // header) and saving the response as a blob — same pattern already used
+  // for issuance-plan PDFs in IssuancePlanTab — fixes it.
+  const downloadTemplate = async () => {
+    setDownloading(true); setDownloadError(null);
+    try {
+      const res = await api.get(`/store/production-reports/${batchId}/template`, { responseType: 'blob' });
+      const disposition: string = res.headers?.['content-disposition'] ?? '';
+      const fileNameMatch = disposition.match(/filename="?([^"]+)"?/);
+      const fileName = fileNameMatch?.[1] ?? `production-report-template-${batchId}.xlsx`;
+      const url = URL.createObjectURL(new Blob([res.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }));
+      const a = document.createElement('a');
+      a.href = url; a.download = fileName; a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setDownloadError('Could not download the template. Please try again.');
+    }
+    setDownloading(false);
+  };
 
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-5 space-y-3">
@@ -81,13 +109,14 @@ function TemplatePanel({ batchId }: { batchId: string }) {
         </div>
       )}
 
-      <a
-        href={`${api.defaults.baseURL}/store/production-reports/${batchId}/template`}
-        target="_blank" rel="noreferrer"
-        className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-green hover:underline"
+      <button
+        onClick={downloadTemplate}
+        disabled={downloading}
+        className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-green hover:underline disabled:opacity-60"
       >
-        <FileDown className="w-3.5 h-3.5" /> Download recommended template (.xlsx)
-      </a>
+        <FileDown className="w-3.5 h-3.5" /> {downloading ? 'Downloading…' : 'Download recommended template (.xlsx)'}
+      </button>
+      {downloadError && <p className="text-[11px] text-red-500">{downloadError}</p>}
     </div>
   );
 }

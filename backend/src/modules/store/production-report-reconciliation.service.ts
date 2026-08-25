@@ -488,6 +488,31 @@ export class ProductionReportReconciliationService {
     return { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage: stageBucket };
   }
 
+  /** Mirrors BrooderService.assertNoLevelSpecificFeedLog — the write path
+   *  here (reconcileFeed/reconcileFeedSplit) writes BrooderGeneralFeedLog
+   *  directly via Prisma rather than through BrooderService's guarded
+   *  createGeneralFeedLog(), so it never went through that clash check.
+   *  Root cause of the "feed recorded twice" bug: when a batch is being
+   *  tracked at row/level detail for a date and a production report is
+   *  then reconciled for that SAME date, this path used to create a
+   *  general-record row anyway — the two are meant to be mutually
+   *  exclusive per (batch, date) (see assertNoLevelSpecificFeedLog's
+   *  comment), but nothing enforced that here, so
+   *  getPopulationRecordSheet's rollup silently added both totals
+   *  together, doubling the figure shown in history. Called before every
+   *  BrooderGeneralFeedLog write in this file; when it returns true the
+   *  caller must hold the row back as a discrepancy instead of writing. */
+  private async hasLevelSpecificFeedLog(batchId: string, entryDate: Date): Promise<boolean> {
+    const levelIds = await this.prisma.brooderLevelAssignment.findMany({
+      where: { batchId }, select: { levelId: true },
+    });
+    if (levelIds.length === 0) return false;
+    const existing = await this.prisma.brooderLevelFeedLog.findFirst({
+      where: { levelId: { in: levelIds.map(l => l.levelId) }, entryDate },
+    });
+    return !!existing;
+  }
+
   /** Deletes every row in `rows` and logs a DELETE ledger entry (full
    *  beforeState, no afterState) for each one, so ProductionReportRollbackService
    *  can recreate them exactly if this report is later undone. Used by the
@@ -791,6 +816,18 @@ export class ProductionReportReconciliationService {
     // captured in the ledger (so undoing this report restores exactly what
     // was there before, and any BrooderFeedWastageLog row that pointed at a
     // deleted feed row is cleaned up with it rather than left dangling).
+    if (await this.hasLevelSpecificFeedLog(batchId, logDate)) {
+      row.resolution.feedKg = 'DISCREPANCY';
+      discrepancies.push({
+        rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
+        locationRef: row.locationRef, systemValue: null, reportValue: `${row.feedKg} kg`,
+        notes: 'Feed is already logged at row/level detail for this batch on this date — writing a whole-batch ' +
+          'general entry too would double-count it. Resolve manually at row/level, or edit/delete the ' +
+          'row/level entries first if the general figure should replace them.',
+      });
+      return;
+    }
+
     const existing = await this.prisma.brooderGeneralFeedLog.findMany({ where: { batchId, entryDate: logDate } });
     const systemTotal = existing.reduce((s, e) => s + e.quantityDispensedKg, 0);
 
@@ -1039,6 +1076,18 @@ export class ProductionReportReconciliationService {
     }
 
     // ── Brooder/grower stage — each portion is its own item, corrected independently ──
+    if (await this.hasLevelSpecificFeedLog(batchId, logDate)) {
+      row.resolution.feedKg = 'DISCREPANCY';
+      discrepancies.push({
+        rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
+        locationRef: row.locationRef, systemValue: null, reportValue: `${row.feedKg} kg (${splitSummary})`,
+        notes: 'Feed is already logged at row/level detail for this batch on this date — writing a whole-batch ' +
+          'general entry too would double-count it. Resolve manually at row/level, or edit/delete the ' +
+          'row/level entries first if the general figure should replace them.',
+      });
+      return;
+    }
+
     const existing = await this.prisma.brooderGeneralFeedLog.findMany({ where: { batchId, entryDate: logDate } });
 
     if (existing.length === 0 && (row.feedKg ?? 0) <= 0) {

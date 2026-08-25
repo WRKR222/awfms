@@ -43,6 +43,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { FeedWastageService } from '../../common/feed/feed-wastage.service';
 import { StoreInventoryService } from '../store/store-inventory.service';
+import { FlockService } from '../flock/flock.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DASHBOARD_REFRESH_EVENT } from '../../common/events/app-event-bus';
 import { HeatSourceType, UserRole } from '@prisma/client';
@@ -95,6 +96,21 @@ function parseOrThrow<T>(schema: { parse: (v: unknown) => T }, value: unknown): 
   }
 }
 
+/** Mirrors the identically-named helper in ProductionReportReconciliationService
+ *  (that one is module-private, so it isn't imported here) — infers a
+ *  FeedType from a store item's name for backfilled entries, where there's
+ *  no user picking the type from a dropdown the way createGeneralFeedLog's
+ *  normal callers do. */
+function mapFeedTypeFromName(storeItemName: string): 'CHICK_MASH' | 'GROWER_MASH' | 'LAYER_MASH' | 'KIENYEJI_STARTER' | 'KIENYEJI_GROWER' | 'KIENYEJI_FINISHER' {
+  const t = storeItemName.toLowerCase();
+  if (t.includes('grower')) return 'GROWER_MASH';
+  if (t.includes('layer')) return 'LAYER_MASH';
+  if (t.includes('kienyeji') && t.includes('grow')) return 'KIENYEJI_GROWER';
+  if (t.includes('kienyeji') && t.includes('finish')) return 'KIENYEJI_FINISHER';
+  if (t.includes('kienyeji')) return 'KIENYEJI_STARTER';
+  return 'CHICK_MASH';
+}
+
 @Injectable()
 export class BrooderService {
   private readonly logger = new Logger(BrooderService.name);
@@ -105,6 +121,7 @@ export class BrooderService {
     private readonly eventEmitter:  EventEmitter2,
     private readonly storeInventory: StoreInventoryService,
     private readonly feedWastage:   FeedWastageService,
+    private readonly flock:         FlockService,
   ) {}
 
   private refresh() {
@@ -2100,10 +2117,18 @@ export class BrooderService {
 
     const byDate = new Map<string, {
       date: string;
-      source: 'GENERAL' | 'ROW_LEVEL' | null;
+      source: 'GENERAL' | 'ROW_LEVEL' | 'CONFLICT' | null;
       feedKg: number;
       mortalityCount: number;
       cullingCount: number;
+      // Only set when both a general AND a row/level feed entry exist for
+      // the same date — meant to be mutually exclusive (see
+      // BrooderService.assertNoLevelSpecificFeedLog), so this is always a
+      // data problem, not a legitimate double ration. feedKg above is set
+      // to the ROW_LEVEL figure (the more granular, trustworthy source)
+      // rather than the sum of both, so History stops showing an inflated
+      // total while the conflict is surfaced for cleanup.
+      feedConflict?: { generalKg: number; levelKg: number };
     }>();
 
     const ensure = (date: string) => {
@@ -2113,34 +2138,352 @@ export class BrooderService {
       return byDate.get(date)!;
     };
 
+    const generalFeedByDate = new Map<string, number>();
     for (const f of generalFeed) {
       const key = dayjs(f.entryDate).format('YYYY-MM-DD');
-      const row = ensure(key);
-      row.source = 'GENERAL';
-      row.feedKg += f.quantityDispensedKg;
+      generalFeedByDate.set(key, (generalFeedByDate.get(key) ?? 0) + f.quantityDispensedKg);
     }
+    const levelFeedByDate = new Map<string, number>();
     for (const f of levelFeed) {
       const key = dayjs(f.entryDate).format('YYYY-MM-DD');
+      levelFeedByDate.set(key, (levelFeedByDate.get(key) ?? 0) + f.quantityDispensedKg);
+    }
+    const feedDates = new Set([...generalFeedByDate.keys(), ...levelFeedByDate.keys()]);
+    for (const key of feedDates) {
+      const generalKg = generalFeedByDate.get(key) ?? 0;
+      const levelKg = levelFeedByDate.get(key) ?? 0;
       const row = ensure(key);
-      row.source = 'ROW_LEVEL';
-      row.feedKg += f.quantityDispensedKg;
+      if (generalKg > 0 && levelKg > 0) {
+        row.source = 'CONFLICT';
+        row.feedKg = levelKg;
+        row.feedConflict = { generalKg, levelKg };
+      } else if (levelKg > 0) {
+        row.source = 'ROW_LEVEL';
+        row.feedKg = levelKg;
+      } else {
+        row.source = 'GENERAL';
+        row.feedKg = generalKg;
+      }
     }
     for (const m of generalMortality) {
       const key = dayjs(m.logDate).format('YYYY-MM-DD');
       const row = ensure(key);
-      row.source = 'GENERAL';
+      // Don't clobber a feed-driven CONFLICT marker — mortality tracks are
+      // independent of feed by design (see Req 1 note above), but the
+      // feed conflict is the more important thing to surface for the day.
+      if (row.source !== 'CONFLICT') row.source = 'GENERAL';
       row.mortalityCount += m.mortalityCount;
       row.cullingCount   += m.cullingCount;
     }
     for (const m of levelMortality) {
       const key = dayjs(m.logDate).format('YYYY-MM-DD');
       const row = ensure(key);
-      row.source = 'ROW_LEVEL';
+      if (row.source !== 'CONFLICT') row.source = 'ROW_LEVEL';
       row.mortalityCount += m.mortalityCount;
       row.cullingCount   += m.cullingCount;
     }
 
     return Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date));
+  }
+
+  // ── Backfill gap report (Piece A) ────────────────────────────────────────
+  /** Read-only. Cross-references what Store has actually ISSUED to this
+   *  batch (StoreStockOut.issuedToBatchId) against what's been LOGGED
+   *  (BrooderGeneralFeedLog/BrooderLevelFeedLog for feed; BrooderLog's
+   *  vaccinesJson/supplementsJson for vaccines/supplements;
+   *  BrooderTreatmentLog for treatments) to find dates where something was
+   *  issued but never recorded as used — and dates with no environmental
+   *  reading at all. Writes nothing; this is the report to review before
+   *  anything gets auto-filled (that's Piece B). MEDICATION-category items
+   *  cover both vaccines and treatments (the schema doesn't split them),
+   *  so a gap on a MEDICATION item is reported as "medication" and counts
+   *  as covered by either a vaccine-shaped or treatment-shaped log entry —
+   *  Store/PM decide which it actually was when they backfill it. */
+  async getBackfillReport(batchId: string, days = 60) {
+    const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const dateReceived = dayjs(batch.dateReceived).startOf('day');
+    const lookback = dayjs().subtract(days, 'day').startOf('day');
+    const since = (dateReceived.isAfter(lookback) ? dateReceived : lookback).toDate();
+    const until = dayjs().endOf('day').toDate();
+
+    const [issuances, generalFeed, levelFeed, envLogs, treatmentLogs] = await Promise.all([
+      this.prisma.storeStockOut.findMany({
+        where: { issuedToBatchId: batchId, issuedDate: { gte: since, lte: until } },
+        include: { storeItem: { select: { id: true, name: true, category: true, unit: true } } },
+      }),
+      this.prisma.brooderGeneralFeedLog.findMany({ where: { batchId, entryDate: { gte: since, lte: until } } }),
+      (async () => {
+        const levelIds = await this.getBatchLevelIds(batchId);
+        return levelIds.length
+          ? this.prisma.brooderLevelFeedLog.findMany({ where: { levelId: { in: levelIds }, entryDate: { gte: since, lte: until } } })
+          : [];
+      })(),
+      this.prisma.brooderLog.findMany({ where: { batchId, logDate: { gte: since, lte: until } } }),
+      this.prisma.brooderTreatmentLog.findMany({ where: { batchId, treatmentDate: { gte: since, lte: until } } }),
+    ]);
+
+    // ── Logged-quantity lookups, keyed by "date|storeItemId" ──────────────
+    const loggedFeedKg = new Map<string, number>();
+    for (const f of [...generalFeed, ...levelFeed]) {
+      if (!f.storeItemId) continue;
+      const key = `${dayjs(f.entryDate).format('YYYY-MM-DD')}|${f.storeItemId}`;
+      loggedFeedKg.set(key, (loggedFeedKg.get(key) ?? 0) + f.quantityDispensedKg);
+    }
+
+    const loggedMedicationQty = new Map<string, number>(); // vaccines + supplements + treatments, same key shape
+    for (const log of envLogs) {
+      const key = dayjs(log.logDate).format('YYYY-MM-DD');
+      const entries = [
+        ...(Array.isArray(log.vaccinesJson) ? (log.vaccinesJson as any[]) : []),
+        ...(Array.isArray(log.supplementsJson) ? (log.supplementsJson as any[]) : []),
+      ];
+      for (const e of entries) {
+        if (!e?.storeItemId) continue;
+        const k = `${key}|${e.storeItemId}`;
+        loggedMedicationQty.set(k, (loggedMedicationQty.get(k) ?? 0) + (Number(e.quantityUsed) || 0));
+      }
+    }
+    for (const t of treatmentLogs) {
+      if (!t.storeItemId) continue;
+      const key = `${dayjs(t.treatmentDate).format('YYYY-MM-DD')}|${t.storeItemId}`;
+      loggedMedicationQty.set(key, (loggedMedicationQty.get(key) ?? 0) + (Number(t.quantityUsed) || 0));
+    }
+
+    // ── Issued-vs-logged gap per (date, item) ──────────────────────────────
+    type Gap = {
+      date: string; storeItemId: string; itemName: string; unit: string;
+      kind: 'feed' | 'medication'; issuedQty: number; loggedQty: number; gapQty: number;
+    };
+    const issuedTotals = new Map<string, { issuedQty: number; itemName: string; unit: string; kind: 'feed' | 'medication' }>();
+    for (const s of issuances) {
+      const kind: 'feed' | 'medication' | null =
+        s.storeItem.category === 'FEED' ? 'feed'
+        : (s.storeItem.category === 'MEDICATION' || s.storeItem.category === 'SUPPLEMENT' || s.storeItem.category === 'FEED_SUPPLEMENT') ? 'medication'
+        : null;
+      if (!kind) continue; // e.g. EQUIPMENT/PACKAGING/CLEANING/SAFETY/OTHER — not a "logged usage" concept
+      const key = `${dayjs(s.issuedDate).format('YYYY-MM-DD')}|${s.storeItemId}`;
+      const prev = issuedTotals.get(key);
+      issuedTotals.set(key, {
+        issuedQty: (prev?.issuedQty ?? 0) + Number(s.quantityOut),
+        itemName: s.storeItem.name, unit: s.storeItem.unit, kind,
+      });
+    }
+
+    const gaps: Gap[] = [];
+    for (const [key, v] of issuedTotals) {
+      const [date, storeItemId] = key.split('|');
+      const loggedQty = v.kind === 'feed' ? (loggedFeedKg.get(key) ?? 0) : (loggedMedicationQty.get(key) ?? 0);
+      const gapQty = Math.round((v.issuedQty - loggedQty) * 1000) / 1000;
+      if (gapQty > 0.001) {
+        gaps.push({ date, storeItemId, itemName: v.itemName, unit: v.unit, kind: v.kind, issuedQty: v.issuedQty, loggedQty, gapQty });
+      }
+    }
+    gaps.sort((a, b) => b.date.localeCompare(a.date));
+
+    // ── Dates with no environmental reading at all ─────────────────────────
+    const envLoggedDates = new Set(
+      envLogs.filter(l => l.temperature != null || l.humidityPercent != null || l.lightIntensityLux != null)
+        .map(l => dayjs(l.logDate).format('YYYY-MM-DD')),
+    );
+    const missingEnvironmentalDates: string[] = [];
+    for (let d = dayjs(since); !d.isAfter(dayjs(until)); d = d.add(1, 'day')) {
+      const key = d.format('YYYY-MM-DD');
+      if (!envLoggedDates.has(key)) missingEnvironmentalDates.push(key);
+    }
+
+    return {
+      batchId, batchCode: batch.batchCode,
+      rangeStart: dayjs(since).format('YYYY-MM-DD'), rangeEnd: dayjs(until).format('YYYY-MM-DD'),
+      issuedButNotLogged: gaps,
+      missingEnvironmentalDates,
+      summary: {
+        totalGaps: gaps.length,
+        feedGaps: gaps.filter(g => g.kind === 'feed').length,
+        medicationGaps: gaps.filter(g => g.kind === 'medication').length,
+        missingEnvironmentalDays: missingEnvironmentalDates.length,
+      },
+    };
+  }
+
+  /** Recomputes the live gap for exactly one (date, storeItem) pair —
+   *  narrow re-query used by applyBackfill() right before writing, so a
+   *  gap computed a few minutes ago (in a getBackfillReport response the
+   *  PM is looking at) can't be double-applied if something else logged
+   *  usage in the meantime. Mirrors the aggregation in getBackfillReport
+   *  but scoped to one item/date instead of the whole batch history. */
+  private async recomputeGap(batchId: string, dateStr: string, storeItemId: string) {
+    const dayStart = dayjs(dateStr).startOf('day').toDate();
+    const dayEnd   = dayjs(dateStr).endOf('day').toDate();
+
+    const item = await this.prisma.storeItem.findUnique({
+      where: { id: storeItemId }, select: { name: true, category: true, unit: true },
+    });
+    if (!item) return null;
+    const kind: 'feed' | 'medication' | null =
+      item.category === 'FEED' ? 'feed'
+      : (item.category === 'MEDICATION' || item.category === 'SUPPLEMENT' || item.category === 'FEED_SUPPLEMENT') ? 'medication'
+      : null;
+    if (!kind) return null;
+
+    const issued = await this.prisma.storeStockOut.aggregate({
+      where: { issuedToBatchId: batchId, storeItemId, issuedDate: { gte: dayStart, lte: dayEnd } },
+      _sum: { quantityOut: true },
+    });
+    const issuedQty = Number(issued._sum.quantityOut ?? 0);
+
+    let loggedQty = 0;
+    if (kind === 'feed') {
+      const levelIds = await this.getBatchLevelIds(batchId);
+      const [general, level] = await Promise.all([
+        this.prisma.brooderGeneralFeedLog.aggregate({
+          where: { batchId, storeItemId, entryDate: { gte: dayStart, lte: dayEnd } },
+          _sum: { quantityDispensedKg: true },
+        }),
+        levelIds.length
+          ? this.prisma.brooderLevelFeedLog.aggregate({
+              where: { levelId: { in: levelIds }, storeItemId, entryDate: { gte: dayStart, lte: dayEnd } },
+              _sum: { quantityDispensedKg: true },
+            })
+          : Promise.resolve({ _sum: { quantityDispensedKg: 0 } } as any),
+      ]);
+      loggedQty = Number(general._sum.quantityDispensedKg ?? 0) + Number(level._sum.quantityDispensedKg ?? 0);
+    } else {
+      const [dailyLog, treatments] = await Promise.all([
+        this.prisma.brooderLog.findFirst({ where: { batchId, logDate: { gte: dayStart, lte: dayEnd }, logSession: null } }),
+        this.prisma.brooderTreatmentLog.aggregate({
+          where: { batchId, storeItemId, treatmentDate: { gte: dayStart, lte: dayEnd } },
+          _sum: { quantityUsed: true },
+        }),
+      ]);
+      const entries = [
+        ...(Array.isArray(dailyLog?.vaccinesJson) ? (dailyLog!.vaccinesJson as any[]) : []),
+        ...(Array.isArray(dailyLog?.supplementsJson) ? (dailyLog!.supplementsJson as any[]) : []),
+      ];
+      loggedQty = entries.filter(e => e?.storeItemId === storeItemId)
+        .reduce((sum, e) => sum + (Number(e.quantityUsed) || 0), 0);
+      loggedQty += Number(treatments._sum.quantityUsed ?? 0);
+    }
+
+    const gapQty = Math.round((issuedQty - loggedQty) * 1000) / 1000;
+    return { itemName: item.name, unit: item.unit, kind, issuedQty, loggedQty, gapQty };
+  }
+
+  /** Applies a set of gaps found by getBackfillReport (Piece B). The
+   *  caller must say what each MEDICATION-category item actually was
+   *  (`vaccine` or `treatment`) since the schema doesn't distinguish —
+   *  FEED and SUPPLEMENT/FEED_SUPPLEMENT items are unambiguous. Every
+   *  write reuses the same guarded, validated creation paths a person
+   *  would go through logging it by hand (createGeneralFeedLog,
+   *  FlockService.createBrooderLog/createBrooderTreatmentLog) rather than
+   *  writing Prisma rows directly, so the same residual/clash checks
+   *  apply. Each requested item is re-verified against live data right
+   *  before writing (see recomputeGap) rather than trusting the caller's
+   *  numbers, in case something changed since the report was generated. */
+  async applyBackfill(
+    batchId: string,
+    items: Array<{ date: string; storeItemId: string; kind: 'feed' | 'supplement' | 'vaccine' | 'treatment' }>,
+    userId: string,
+  ) {
+    const applied: Array<{ date: string; storeItemId: string; itemName: string; kind: string; quantity: number }> = [];
+    const skipped: Array<{ date: string; storeItemId: string; kind: string; reason: string }> = [];
+
+    const feedItems       = items.filter(i => i.kind === 'feed');
+    const treatmentItems  = items.filter(i => i.kind === 'treatment');
+    const dailyLogItems   = items.filter(i => i.kind === 'vaccine' || i.kind === 'supplement');
+
+    for (const req of feedItems) {
+      const gap = await this.recomputeGap(batchId, req.date, req.storeItemId);
+      if (!gap || gap.kind !== 'feed' || gap.gapQty <= 0.001) {
+        skipped.push({ ...req, reason: 'No remaining gap — already logged, or nothing was issued for this date.' });
+        continue;
+      }
+      try {
+        await this.createGeneralFeedLog({
+          batchId, storeItemId: req.storeItemId, entryDate: req.date,
+          feedType: mapFeedTypeFromName(gap.itemName),
+          quantityDispensedKg: gap.gapQty,
+          notes: `Backfilled: Store issued ${gap.gapQty}${gap.unit} of ${gap.itemName} on ${req.date} that had not been logged as used.`,
+        }, userId);
+        applied.push({ date: req.date, storeItemId: req.storeItemId, itemName: gap.itemName, kind: 'feed', quantity: gap.gapQty });
+      } catch (err: any) {
+        skipped.push({ ...req, reason: err?.message ?? 'Could not log this feed entry.' });
+      }
+    }
+
+    for (const req of treatmentItems) {
+      const gap = await this.recomputeGap(batchId, req.date, req.storeItemId);
+      if (!gap || gap.kind !== 'medication' || gap.gapQty <= 0.001) {
+        skipped.push({ ...req, reason: 'No remaining gap — already logged, or nothing was issued for this date.' });
+        continue;
+      }
+      try {
+        await this.flock.createBrooderTreatmentLog({
+          batchId, storeItemId: req.storeItemId, treatmentDate: req.date,
+          drugName: gap.itemName, dose: 'As issued', doseUnit: gap.unit, quantityUsed: gap.gapQty,
+          notes: `Backfilled: Store issued ${gap.gapQty}${gap.unit} of ${gap.itemName} on ${req.date} that had not been logged as used.`,
+        }, userId);
+        applied.push({ date: req.date, storeItemId: req.storeItemId, itemName: gap.itemName, kind: 'treatment', quantity: gap.gapQty });
+      } catch (err: any) {
+        skipped.push({ ...req, reason: err?.message ?? 'Could not log this treatment entry.' });
+      }
+    }
+
+    // Vaccines/supplements share ONE once-daily BrooderLog row per date, so
+    // every request for the same date must be bundled into a single
+    // createBrooderLog call — calling it twice for the same date throws
+    // ("A daily entry has already been recorded"). If a daily entry already
+    // exists (even one with no vaccines/supplements on it, e.g. just water),
+    // there's no safe update path here — createBrooderLog only creates —
+    // so the whole date's group is skipped with a reason pointing at manual
+    // edit rather than risking an inconsistent partial write.
+    const byDate = new Map<string, typeof dailyLogItems>();
+    for (const req of dailyLogItems) {
+      if (!byDate.has(req.date)) byDate.set(req.date, []);
+      byDate.get(req.date)!.push(req);
+    }
+    for (const [date, reqs] of byDate) {
+      const existingDaily = await this.prisma.brooderLog.findFirst({
+        where: { batchId, logDate: { gte: dayjs(date).startOf('day').toDate(), lte: dayjs(date).endOf('day').toDate() }, logSession: null },
+      });
+      if (existingDaily) {
+        for (const req of reqs) {
+          skipped.push({ ...req, reason: `A daily entry already exists for ${date} — add missing vaccines/supplements by editing that record.` });
+        }
+        continue;
+      }
+
+      const vaccines: any[] = [];
+      const supplements: any[] = [];
+      const resolvedGaps = new Map<string, Awaited<ReturnType<typeof this.recomputeGap>>>();
+      for (const req of reqs) {
+        const gap = await this.recomputeGap(batchId, req.date, req.storeItemId);
+        resolvedGaps.set(req.storeItemId, gap);
+        if (!gap || gap.kind !== 'medication' || gap.gapQty <= 0.001) {
+          skipped.push({ ...req, reason: 'No remaining gap — already logged, or nothing was issued for this date.' });
+          continue;
+        }
+        const entry = { name: gap.itemName, dose: 'As issued', storeItemId: req.storeItemId, quantityUsed: gap.gapQty };
+        if (req.kind === 'vaccine') vaccines.push(entry); else supplements.push(entry);
+      }
+      if (vaccines.length === 0 && supplements.length === 0) continue;
+
+      try {
+        await this.flock.createBrooderLog({
+          batchId, logDate: date, vaccines, supplements,
+          notes: `Backfilled from store issuance for ${date} — Store had issued these but nothing was logged as used.`,
+        }, userId);
+        for (const e of [...vaccines, ...supplements]) {
+          const gap = resolvedGaps.get(e.storeItemId);
+          applied.push({ date, storeItemId: e.storeItemId, itemName: e.name, kind: vaccines.includes(e) ? 'vaccine' : 'supplement', quantity: gap?.gapQty ?? e.quantityUsed });
+        }
+      } catch (err: any) {
+        for (const req of reqs) skipped.push({ ...req, reason: err?.message ?? 'Could not log this entry.' });
+      }
+    }
+
+    return { applied, skipped };
   }
 
   // ── Bird weight — check against HyLine standard (Req 6 + Req 7) ─────────

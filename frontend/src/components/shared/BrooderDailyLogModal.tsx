@@ -958,7 +958,7 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                 )}
                 <div>
                   <label className={lCls}>Quantity dispensed (kg)</label>
-                  <input value={feedQuantityKg} onChange={e => setFeedQuantityKg(e.target.value)} type="number" step="0.01" min="0"
+                  <input value={feedQuantityKg} onChange={e => setFeedQuantityKg(e.target.value)} type="number" step="any" min="0"
                     className={`${iCls} text-center font-bold text-amber-600 dark:text-amber-400`} placeholder="0.00" />
                 </div>
                 <textarea value={feedNotes} onChange={e => setFeedNotes(e.target.value)} rows={2}
