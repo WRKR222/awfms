@@ -164,7 +164,7 @@ function DailyBreakdownGrid({
               </div>
             ) : (
               <input
-                type="number" step="0.01" min="0" inputMode="decimal"
+                type="number" step="any" min="0" inputMode="decimal"
                 value={value[d] || ''}
                 onChange={(e) => onChange?.({ ...value, [d]: parseFloat(e.target.value) || 0 })}
                 className="w-full border border-gray-200 dark:border-dark-border rounded-lg px-1 py-1.5 text-xs text-center bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-brand-green"
@@ -508,7 +508,7 @@ export function RequisitionsPage() {
                       <div>
                         <label className={lCls}>Quantity Needed</label>
                         <input
-                          type="number" step="0.01" min="0" inputMode="decimal"
+                          type="number" step="any" min="0" inputMode="decimal"
                           value={item.quantityNeeded}
                           onChange={e => updateItem(item.key, { quantityNeeded: e.target.value })}
                           className={iCls}
@@ -571,7 +571,7 @@ export function RequisitionsPage() {
                     <div>
                       <label className={lCls}>Quantity Needed {storeItem ? `(${storeItem.unit})` : ''}</label>
                       <input
-                        type="number" step="0.01" min="0" inputMode="decimal"
+                        type="number" step="any" min="0" inputMode="decimal"
                         value={item.quantityNeeded}
                         onChange={e => updateItem(item.key, { quantityNeeded: e.target.value })}
                         className={iCls}

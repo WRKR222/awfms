@@ -194,7 +194,7 @@ function ItemRow({
               Approved qty {item.storeItem?.unit ? `(${item.storeItem.unit.toLowerCase()})` : ''}
             </label>
             <input
-              type="number" step="0.001" min="0" max={Number(item.quantityPlanned)}
+              type="number" step="any" min="0" max={Number(item.quantityPlanned)}
               value={approvedQty}
               onChange={e => setApprovedQty(e.target.value)}
               className="w-full border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1 text-xs bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-brand-green"
@@ -856,7 +856,7 @@ function CreatePlanForm({
                     <div>
                       <label className={lCls}>Unit Price (KES)</label>
                       <input
-                        type="number" step="0.01" min="0"
+                        type="number" step="any" min="0"
                         value={it.unitPriceKes}
                         onChange={e => updateItem(idx, 'unitPriceKes', parseFloat(e.target.value) || 0)}
                         className={iCls}
@@ -880,7 +880,7 @@ function CreatePlanForm({
                           <div key={d} className="text-center">
                             <p className="text-[10px] text-gray-400 mb-0.5">{d}</p>
                             <input
-                              type="number" step="0.01" min="0"
+                              type="number" step="any" min="0"
                               value={it.dailyBreakdown[d] || ''}
                               onChange={e => updateDay(idx, d, e.target.value)}
                               className="w-full border border-gray-200 dark:border-dark-border rounded-lg px-1 py-1.5 text-xs text-center bg-white dark:bg-dark-card text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-brand-green"
@@ -899,7 +899,7 @@ function CreatePlanForm({
                     <div>
                       <label className={lCls}>Total Quantity ({si?.unit ?? 'units'})</label>
                       <input
-                        type="number" step="0.001" min="0"
+                        type="number" step="any" min="0"
                         value={it.emergencyQty || ''}
                         onChange={e => updateItem(idx, 'emergencyQty', parseFloat(e.target.value) || 0)}
                         className={iCls}

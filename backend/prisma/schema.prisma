@@ -1914,9 +1914,9 @@ model StoreItem {
   category    StoreItemCategory
   unit        String
   description String?
-  reorderLevel Decimal           @default(0) @map("reorder_level") @db.Decimal(10, 3)
-  currentStock Decimal           @default(0) @map("current_stock") @db.Decimal(10, 3)
-  unitCostKes  Decimal           @default(0) @map("unit_cost_kes") @db.Decimal(10, 2)
+  reorderLevel Decimal           @default(0) @map("reorder_level") @db.Decimal
+  currentStock Decimal           @default(0) @map("current_stock") @db.Decimal
+  unitCostKes  Decimal           @default(0) @map("unit_cost_kes") @db.Decimal
   supplierId   String?           @map("supplier_id")
   isActive     Boolean           @default(true) @map("is_active")
   createdById  String            @map("created_by_id")
@@ -1967,9 +1967,9 @@ model StoreStockIn {
   id            String   @id @default(uuid())
   storeItemId   String   @map("store_item_id")
   receivedDate  DateTime @map("received_date") @db.Date
-  quantityIn    Decimal  @map("quantity_in") @db.Decimal(10, 3)
-  unitCostKes   Decimal  @map("unit_cost_kes") @db.Decimal(10, 2)
-  totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
+  quantityIn    Decimal  @map("quantity_in") @db.Decimal
+  unitCostKes   Decimal  @map("unit_cost_kes") @db.Decimal
+  totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal
   supplierName  String?  @map("supplier_name")
   invoiceRef    String?  @map("invoice_ref")
   notes         String?
@@ -1990,9 +1990,9 @@ model StoreStockOut {
   id            String   @id @default(uuid())
   storeItemId   String   @map("store_item_id")
   issuedDate    DateTime @map("issued_date") @db.Date
-  quantityOut   Decimal  @map("quantity_out") @db.Decimal(10, 3)
-  unitCostKes   Decimal  @map("unit_cost_kes") @db.Decimal(10, 2)
-  totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal(12, 2)
+  quantityOut   Decimal  @map("quantity_out") @db.Decimal
+  unitCostKes   Decimal  @map("unit_cost_kes") @db.Decimal
+  totalCostKes  Decimal  @map("total_cost_kes") @db.Decimal
   issuedToName    String? @map("issued_to_name")
   issuedToHouseId String? @map("issued_to_house_id")
   issuedToBatchId String? @map("issued_to_batch_id")
@@ -2260,19 +2260,19 @@ model IssuancePlanItem {
   planId          String  @map("plan_id")
   storeItemId     String  @map("store_item_id")
   /// Total quantity requested for the week (or for the emergency event)
-  quantityPlanned Decimal @map("quantity_planned") @db.Decimal(10, 3)
-  unitPriceKes    Decimal @map("unit_price_kes") @db.Decimal(10, 2)
+  quantityPlanned Decimal @map("quantity_planned") @db.Decimal
+  unitPriceKes    Decimal @map("unit_price_kes") @db.Decimal
   /// JSON: { MON, TUE, WED, THU, FRI, SAT, SUN } — daily kg requested; null for EMERGENCY items
   dailyBreakdown  Json?   @map("daily_breakdown")
   /// Running total issued against this plan line (incremented by each stock-out).
   /// Only items with status = APPROVED can ever have stock issued against them.
-  quantityIssued  Decimal @default(0) @map("quantity_issued") @db.Decimal(10, 3)
+  quantityIssued  Decimal @default(0) @map("quantity_issued") @db.Decimal
   /// The quantity the Director actually approved — set at approval time, and may be
   /// less than quantityPlanned (e.g. store requested 1200kg of feed but only 1000kg
   /// was approved). Null until the item is approved. This, not quantityPlanned, is
   /// the cap the stock-out gate enforces once an item is APPROVED — dailyBreakdown
   /// is rescaled proportionally to it at approval time for WEEKLY items.
-  quantityApproved Decimal? @map("quantity_approved") @db.Decimal(10, 3)
+  quantityApproved Decimal? @map("quantity_approved") @db.Decimal
   /// MANUAL | PM_FEED_PLAN — auto-generated feed lines carry PM_FEED_PLAN
   source          String  @default("MANUAL") @map("source")
   notes           String?
@@ -2375,7 +2375,7 @@ model PMItemRequisitionItem {
   /// Total quantity needed for the week. When dailyBreakdown is supplied this
   /// is derived (summed) from it, mirroring how IssuancePlanItem.quantityPlanned
   /// relates to its own dailyBreakdown.
-  quantityNeeded  Decimal @map("quantity_needed") @db.Decimal(10, 3)
+  quantityNeeded  Decimal @map("quantity_needed") @db.Decimal
   /// Optional JSON: { MON, TUE, WED, THU, FRI, SAT, SUN } — the day-specific
   /// amount the PM needs from Store, straight off the weekly plan. Carried
   /// through verbatim onto the injected IssuancePlanItem for catalog lines
@@ -2585,8 +2585,8 @@ model SimpleStockRequestItem {
   id                String   @id @default(uuid())
   requestId         String   @map("request_id")
   storeItemId       String   @map("store_item_id")
-  quantityRequested Decimal  @map("quantity_requested") @db.Decimal(10, 3)
-  quantityIssued    Decimal? @map("quantity_issued") @db.Decimal(10, 3)
+  quantityRequested Decimal  @map("quantity_requested") @db.Decimal
+  quantityIssued    Decimal? @map("quantity_issued") @db.Decimal
   stockOutId        String?  @unique @map("stock_out_id")
   notes             String?
 

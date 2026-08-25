@@ -770,7 +770,7 @@ export class IssuancePlanService {
       const factor = approvedQty / qtyPlanned;
       newBreakdown = {};
       for (const [day, kg] of Object.entries(breakdown)) {
-        newBreakdown[day] = Math.round(Number(kg ?? 0) * factor * 1000) / 1000;
+        newBreakdown[day] = Number(kg ?? 0) * factor;
       }
     }
 
