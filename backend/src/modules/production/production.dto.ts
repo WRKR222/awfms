@@ -2,10 +2,14 @@
 //
 // Lead Attendant egg-collection submission shape.
 // Aligned with frontend EggCollectionPage and Anza Whole Foods System Summary:
-//   • rowData uses brokenUnsellable / brokenSellable (renamed from emptyBroken /
-//     fullBroken) and includes starterEggs.
-//   • Session-level: feedKg + feedTypeName (production-house feed only),
-//     waterLiters + houseTempC, optional vaccines/supplements list.
+//   • rowData now records a single unclassified `broken` count plus a
+//     `damaged` count (replaces the old brokenUnsellable / brokenSellable
+//     split — that sellable/unsellable classification happens later, at
+//     three-party tally sign-off, entered by Sales) and includes starterEggs.
+//   • Session-level: feedStoreItemId + feedKg (feed is now drawn against a
+//     Store-issued item, same residual-ledger gating as the brooder module;
+//     feedKg allows any number of decimal places), waterLiters + houseTempC,
+//     optional vaccines/supplements list (each also store-item-linked).
 import { z } from 'zod';
 
 const RowDataEntrySchema = z.object({
@@ -13,8 +17,8 @@ const RowDataEntrySchema = z.object({
   totalBirds: z.number().int().min(0),
   totalEggs: z.number().int().min(0),
   starterEggs: z.number().int().min(0).default(0),
-  brokenUnsellable: z.number().int().min(0).default(0), // contents intact, contaminated
-  brokenSellable:   z.number().int().min(0).default(0), // sellable as broken eggs
+  broken:  z.number().int().min(0).default(0), // unclassified broken eggs — Sales splits sellable/unsellable at tally sign-off
+  damaged: z.number().int().min(0).default(0), // e.g. dented/stained but not broken
   softShell: z.number().int().min(0).default(0),
   deformed:  z.number().int().min(0).default(0),
   weightKg:  z.number().min(0).default(0),
@@ -23,7 +27,7 @@ const RowDataEntrySchema = z.object({
 
 const SessionFeedSchema = z.object({
   feedKg: z.number().positive('Feed kg must be greater than zero'),
-  feedTypeName: z.string().min(1, 'Feed type is required'),
+  feedStoreItemId: z.string().uuid('Feed type (store item) is required'),
 });
 
 const EnvironmentSchema = z.object({
@@ -33,8 +37,10 @@ const EnvironmentSchema = z.object({
 
 const VaccineGivenSchema = z.object({
   kind: z.enum(['VACCINE', 'SUPPLEMENT']),
+  storeItemId: z.string().uuid('Vaccine/supplement must be selected from issued store items'),
   name: z.string().min(1),
   dosage: z.string().min(1),
+  quantityUsed: z.number().positive().optional(), // allows any number of decimal places
 });
 
 export const CreateEggCollectionSessionSchema = z.object({

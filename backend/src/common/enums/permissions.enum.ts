@@ -33,6 +33,11 @@ export enum Permission {
   WEIGHT_ALERT_MANAGE          = 'weight:alert:manage',           // OWNER only — acknowledge/resolve
   BIRD_WEIGHT_REPORT_UPLOAD    = 'weight:report:upload',          // MANAGER (PM) only
 
+  // PM uploads the target HDP% control curve (PDF/Excel/Word) used to
+  // compare actual hen-day production against the breed/standard target.
+  HDP_CONTROL_UPLOAD           = 'hdp_control:upload',            // MANAGER (PM), OWNER
+  HDP_CONTROL_VIEW             = 'hdp_control:view',               // MANAGER, OWNER, ACCOUNTANT
+
   PRODUCTION_VIEW              = 'production:view',
   PRODUCTION_ENTRY_CREATE      = 'production:entry:create',  // Lead Attendant
   PRODUCTION_ENTRY_APPROVE     = 'production:entry:approve', // Manager (same-evening verify + tally edit)

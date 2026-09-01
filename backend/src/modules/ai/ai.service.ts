@@ -220,10 +220,11 @@ export class AiService {
   }
 
   // ── Helper: post-collection breakage adjustments for a period ───────────────
-  // EggCollectionSession already captures breakage AT collection time
-  // (totalBrokenSellable / totalBrokenUnsellable). EggBreakageAdjustment is a
-  // SEPARATE record Sales raises later (storage/handling breakage, recounts),
-  // and it was never queried by any report.
+  // EggCollectionSession captures raw breakage at collection time (totalBrokenEggs,
+  // totalDamaged); the sellable/unsellable split (totalBrokenSellable /
+  // totalBrokenUnsellable) is entered later by Sales at tally sign-off.
+  // EggBreakageAdjustment is a SEPARATE record Sales raises later (storage/handling
+  // breakage, recounts), and it was never queried by any report.
   private async getBreakageSummary(start: Date, end: Date) {
     const adjustments = await this.prisma.eggBreakageAdjustment.findMany({
       where: { adjustmentDate: { gte: start, lte: end } },

@@ -134,8 +134,8 @@ export class DashboardController {
     // Primary source: DailyEggAggregate (written when both AM+PM tallies lock).
     // Fallback: raw EggCollectionSession rows for dates with no aggregate yet.
     // DailyEggAggregate only carries std, starter, brokenSellable, brokenUnsellable.
-    // totalSoftShell and totalDeformed are NOT on the aggregate model — they only
-    // exist on EggCollectionSession, so we always read those from sessions directly.
+    // totalSoftShell, totalDeformed, and totalDamaged are NOT on the aggregate model —
+    // they only exist on EggCollectionSession, so we always read those from sessions directly.
     const aggCumulativeResult = await this.prisma.dailyEggAggregate.aggregate({
       _sum: {
         totalStdEggs:          true,
@@ -155,8 +155,8 @@ export class DashboardController {
       aggregatedDates.map(a => new Date(a.aggregateDate).toISOString().slice(0, 10)),
     );
 
-    // Read ALL approved sessions to pick up soft-shell + deformed (not on aggregate)
-    // and to cover dates not yet aggregated.
+    // Read ALL approved sessions to pick up soft-shell + deformed + damaged (not on
+    // aggregate) and to cover dates not yet aggregated.
     const allSessions = await this.prisma.eggCollectionSession.findMany({
       where: { status: EntryStatus.APPROVED },
       select: {
@@ -167,21 +167,25 @@ export class DashboardController {
         totalBrokenUnsellable: true,
         totalSoftShell:        true,
         totalDeformed:         true,
+        totalDamaged:          true,
       },
     });
 
-    // softShellTotal + deformedTotal come 100% from sessions (not stored in aggregate).
-    // unaggregatedTotal covers the std/starter/broken fields for days with no aggregate.
+    // softShellTotal + deformedTotal + damagedTotal come 100% from sessions (not stored
+    // in aggregate). unaggregatedTotal covers the std/starter/broken fields for days
+    // with no aggregate.
     let unaggregatedTotal = 0;
     let softShellTotal    = 0;
     let deformedTotal     = 0;
+    let damagedTotal      = 0;
 
     for (const s of allSessions) {
       const d = s.sessionDate.toISOString().slice(0, 10);
 
-      // soft-shell and deformed: always from sessions regardless of aggregate
+      // soft-shell, deformed, damaged: always from sessions regardless of aggregate
       softShellTotal += (s.totalSoftShell ?? 0);
       deformedTotal  += (s.totalDeformed  ?? 0);
+      damagedTotal   += (s.totalDamaged   ?? 0);
 
       // std/starter/broken: only add from sessions for days not yet aggregated
       if (!aggregatedDateSet.has(d)) {
@@ -205,6 +209,7 @@ export class DashboardController {
       Number(aggSum.totalBrokenUnsellable ?? 0) +
       softShellTotal +
       deformedTotal  +
+      damagedTotal   +
       unaggregatedTotal
     ) + historicalOffset;
 

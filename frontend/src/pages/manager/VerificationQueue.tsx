@@ -395,23 +395,23 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
 
       {/* Session totals */}
       <div>
-        {/* allStarterOnly: totalEggs === starterEggs + brokenSell + brokenUnsell + softShell + deformed
+        {/* allStarterOnly: totalEggs === starterEggs + broken + damaged + softShell + deformed
              meaning every non-broken egg is a starter — no standard good eggs collected */}
         {(() => {
           const _s = session.totalStarterEggs ?? 0;
-          const _nonStd = _s + (session.totalBrokenSellable ?? 0) + (session.totalBrokenUnsellable ?? session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0);
-          const allStarterOnly = _s > 0 && (session.totalEggs ?? (session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0))) === _nonStd;
+          const _nonStd = _s + (session.totalBrokenEggs ?? 0) + (session.totalDamaged ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0);
+          const allStarterOnly = _s > 0 && (session.totalEggs ?? (session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalDamaged ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0))) === _nonStd;
           return (
         <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Egg Collection Totals</p>
           );
         })()}
         {(() => {
           const _s = session.totalStarterEggs ?? 0;
-          const _nonStd = _s + (session.totalBrokenSellable ?? 0) + (session.totalBrokenUnsellable ?? session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0);
-          const allStarterOnly = _s > 0 && (session.totalEggs ?? (session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0))) === _nonStd;
+          const _nonStd = _s + (session.totalBrokenEggs ?? 0) + (session.totalDamaged ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0);
+          const allStarterOnly = _s > 0 && (session.totalEggs ?? (session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalDamaged ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0))) === _nonStd;
           return (
         <div className="grid grid-cols-3 md:grid-cols-4 gap-2">
-          <StatPill label="Total Eggs" value={(session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0)).toLocaleString()} accent="green" />
+          <StatPill label="Total Eggs" value={(session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalDamaged ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0)).toLocaleString()} accent="green" />
           {allStarterOnly
             ? <StatPill label="All Starter Eggs" value={(session.totalStarterEggs ?? 0).toLocaleString()} accent="blue"
                 tip="Only starter eggs were collected this session — these are the total good eggs" />
@@ -420,8 +420,9 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
           <StatPill label="Full Trays" value={session.totalFullTrays} accent="green" />
           <StatPill label="Loose Eggs" value={session.totalLooseEggs} accent="gray" />
           <StatPill label="Starter Eggs" value={session.totalStarterEggs ?? 0} accent="blue" />
-          <StatPill label="Broken (Sellable)" value={session.totalBrokenSellable ?? 0} accent="amber" />
-          <StatPill label="Broken (Unsellable)" value={session.totalBrokenUnsellable ?? (session.totalBrokenEggs ?? 0)} alert={(session.totalBrokenUnsellable ?? session.totalBrokenEggs ?? 0) > 10} accent="red" />
+          <StatPill label="Broken" value={session.totalBrokenEggs ?? 0} alert={(session.totalBrokenEggs ?? 0) > 10}
+            tip="Sales classifies sellable vs. unsellable at tally sign-off" accent="red" />
+          <StatPill label="Damaged" value={session.totalDamaged ?? 0} accent="amber" />
           <StatPill label="Soft Shell" value={session.totalSoftShell ?? 0} accent="amber" />
           <StatPill label="Deformed" value={session.totalDeformed ?? 0} accent="amber" />
           <StatPill label="Weight (kg)" value={Number(session.totalWeightKg).toFixed(1)} accent="blue" />
@@ -459,8 +460,8 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
                   <th className="text-left py-1.5 pr-3 font-medium">Row</th>
                   <th className="text-right py-1.5 px-2 font-medium">Total Eggs</th>
                   <th className="text-right py-1.5 px-2 font-medium">Starter</th>
-                  <th className="text-right py-1.5 px-2 font-medium">Broken (S)</th>
-                  <th className="text-right py-1.5 px-2 font-medium">Broken (U)</th>
+                  <th className="text-right py-1.5 px-2 font-medium">Broken</th>
+                  <th className="text-right py-1.5 px-2 font-medium">Damaged</th>
                   <th className="text-right py-1.5 px-2 font-medium">Soft Shell</th>
                   <th className="text-right py-1.5 px-2 font-medium">Deformed</th>
                   <th className="text-right py-1.5 px-2 font-medium">Weight(kg)</th>
@@ -477,8 +478,8 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
                       </td>
                       <td className="text-right px-2 font-semibold text-gray-700 dark:text-gray-200">{rowEggs}</td>
                       <td className="text-right px-2 text-blue-500">{row.starterEggs ?? 0}</td>
-                      <td className="text-right px-2 text-amber-500">{row.brokenSellable ?? 0}</td>
-                      <td className={`text-right px-2 ${(row.brokenUnsellable ?? row.brokenEggs ?? 0) > 3 ? 'text-red-500 font-semibold' : 'text-gray-500'}`}>{row.brokenUnsellable ?? row.brokenEggs ?? 0}</td>
+                      <td className={`text-right px-2 ${(row.broken ?? 0) > 3 ? 'text-red-500 font-semibold' : 'text-gray-500'}`}>{row.broken ?? 0}</td>
+                      <td className={`text-right px-2 ${(row.damaged ?? 0) > 3 ? 'text-orange-500 font-semibold' : 'text-gray-500'}`}>{row.damaged ?? 0}</td>
                       <td className={`text-right px-2 ${(row.softShell ?? 0) > 3 ? 'text-amber-500 font-semibold' : 'text-gray-500'}`}>{row.softShell ?? 0}</td>
                       <td className="text-right px-2 text-gray-500">{row.deformed ?? 0}</td>
                       <td className="text-right px-2 text-gray-500">{Number(row.weightKg ?? 0).toFixed(1)}</td>
@@ -716,8 +717,8 @@ function EggSessionRow({ session, allSessions, isExpanded, onToggle, onApprove, 
             <Egg className="w-3.5 h-3.5 text-amber-500" />
             {(() => {
               const _s2 = session.totalStarterEggs ?? 0;
-              const _nonStd2 = _s2 + (session.totalBrokenSellable ?? 0) + (session.totalBrokenUnsellable ?? session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0);
-              const _totalEggs2 = session.totalEggs ?? (session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0));
+              const _nonStd2 = _s2 + (session.totalBrokenEggs ?? 0) + (session.totalDamaged ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0);
+              const _totalEggs2 = session.totalEggs ?? (session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalDamaged ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0));
               return _s2 > 0 && _totalEggs2 === _nonStd2;
             })()
               ? <span className="font-semibold text-blue-600 dark:text-blue-400">

@@ -557,6 +557,30 @@ export class StoreInventoryService {
       }
     }
 
+    // Dispensed — production-house feed logged via egg collection sessions
+    // (FeedIntakeLog.storeItemId), all-time.
+    const eggFeedGroups = await this.prisma.feedIntakeLog.groupBy({
+      by: ['storeItemId'],
+      where: { storeItemId: { in: itemIds } },
+      _sum: { quantityDispensedKg: true },
+    });
+    for (const g of eggFeedGroups) {
+      if (!g.storeItemId) continue;
+      dispensedMap.set(g.storeItemId, (dispensedMap.get(g.storeItemId) ?? 0) + Number(g._sum.quantityDispensedKg ?? 0));
+    }
+
+    // Dispensed — vaccines/supplements logged via egg collection sessions
+    // (VaccinationRecord.storeItemId/quantityUsed), all-time.
+    const eggVaccineGroups = await (this.prisma as any).vaccinationRecord.groupBy({
+      by: ['storeItemId'],
+      where: { storeItemId: { in: itemIds } },
+      _sum: { quantityUsed: true },
+    });
+    for (const g of eggVaccineGroups) {
+      if (!g.storeItemId) continue;
+      dispensedMap.set(g.storeItemId, (dispensedMap.get(g.storeItemId) ?? 0) + Number(g._sum.quantityUsed ?? 0));
+    }
+
     return items
       .map(item => {
         // NOTE: field names kept as `issuedThisWeek`/`dispensedThisWeek` for

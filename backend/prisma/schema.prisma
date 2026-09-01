@@ -640,8 +640,12 @@ model FeedIntakeLog {
   batchId             String      @map("batch_id")
   houseId             String      @map("house_id")
   feedType            FeedType    @map("feed_type")
+  // Store item the feed was issued against (residual-ledger gated, same as
+  // brooder feed logging). Nullable for legacy rows and the AI/data-upload
+  // paths that don't have a store item to link.
+  storeItemId         String?     @map("store_item_id")
   entryDate           DateTime    @map("entry_date") @db.Date
-  quantityDispensedKg Decimal     @map("quantity_dispensed_kg") @db.Decimal(8, 2)
+  quantityDispensedKg Decimal     @map("quantity_dispensed_kg") @db.Decimal
   wastageKg           Decimal     @default(0) @map("wastage_kg") @db.Decimal(8, 2)
   recommendedMinKg    Decimal?    @map("recommended_min_kg") @db.Decimal(8, 2)
   recommendedMaxKg    Decimal?    @map("recommended_max_kg") @db.Decimal(8, 2)
@@ -704,6 +708,11 @@ model VaccinationRecord {
   route            VaccinationRoute
   batchSize        Int              @map("batch_size")
   dosageUnits      String?          @map("dosage_units")
+  // Store item this vaccine/supplement was issued against, and the actual
+  // quantity dispensed (unconstrained decimal — same residual-ledger
+  // gating pattern used by brooder vaccine/supplement logging).
+  storeItemId      String?          @map("store_item_id")
+  quantityUsed     Decimal?         @map("quantity_used") @db.Decimal
   vetName          String?          @map("vet_name")
   notes            String?
   recordedById     String           @map("recorded_by_id")
@@ -840,16 +849,30 @@ model EggCollectionSession {
 
   totalFullTrays  Int       @map("total_full_trays")
   totalLooseEggs  Int       @map("total_loose_eggs")
+  // totalBrokenEggs = raw "Broken" count entered by the attendant (unsplit).
+  // Split into totalBrokenSellable / totalBrokenUnsellable by Sales during
+  // the three-party tally sign-off (see TallyVerificationService.sign).
   totalBrokenEggs Int       @default(0) @map("total_broken_eggs")
+  // totalDamaged = raw "Damaged" count entered by the attendant (replaces
+  // the old per-row Broken-Sellable/Broken-Unsellable split at collection
+  // time — that classification now happens later, at tally sign-off).
+  totalDamaged    Int       @default(0) @map("total_damaged")
   totalSoftShell  Int       @default(0) @map("total_soft_shell")
   totalDeformed   Int       @default(0) @map("total_deformed")
   totalWeightKg   Decimal   @map("total_weight_kg") @db.Decimal(8, 2)
   totalGoodEggs   Int       @map("total_good_eggs")
   totalStarterEggs   Int       @default(0) @map("total_starter_eggs")
+  // Populated with a conservative default at submission (all of
+  // totalBrokenEggs treated as unsellable) and corrected by Sales's actual
+  // sellable/unsellable split when they sign the tally.
   totalBrokenSellable Int      @default(0) @map("total_broken_sellable")
   totalBrokenUnsellable Int    @default(0) @map("total_broken_unsellable")
-  feedKg              Decimal?  @map("feed_kg") @db.Decimal(8, 2)
+  feedKg              Decimal?  @map("feed_kg") @db.Decimal
   feedTypeName        String?   @map("feed_type_name")
+  // Store item the session feed was issued against — same pattern as the
+  // brooder module's storeItemId-gated feed logging. Nullable for legacy
+  // sessions recorded before this was required.
+  feedStoreItemId     String?   @map("feed_store_item_id")
   waterLiters         Decimal?  @map("water_liters") @db.Decimal(8, 2)
   houseTempC          Decimal?  @map("house_temp_c") @db.Decimal(5, 1)
   editedAt           DateTime? @map("edited_at")
@@ -858,7 +881,7 @@ model EggCollectionSession {
   henDayPercent   Decimal?  @map("hen_day_percent") @db.Decimal(5, 2)
 
   vaccineGiven  String?     @map("vaccine_given")
-  dailyFeedKg   Decimal?    @map("daily_feed_kg") @db.Decimal(8, 2)
+  dailyFeedKg   Decimal?    @map("daily_feed_kg") @db.Decimal
   remarks       String?
 
   status         EntryStatus @default(PENDING)
@@ -1322,6 +1345,14 @@ model EggTallyVerification {
   storeSignedAt    DateTime? @map("store_signed_at")
   storeRowData     Json?     @map("store_row_data")
 
+  // Sales's actual broken-egg classification, entered when Sales signs.
+  // Must sum to the session's totalBrokenEggs. Once entered, the session's
+  // totalBrokenSellable / totalBrokenUnsellable are corrected to match.
+  brokenSellableQty   Int?      @map("broken_sellable_qty")
+  brokenUnsellableQty Int?      @map("broken_unsellable_qty")
+  brokenSplitSetById  String?   @map("broken_split_set_by_id")
+  brokenSplitSetAt    DateTime? @map("broken_split_set_at")
+
   isLocked       Boolean   @default(false) @map("is_locked")
   lockedAt       DateTime? @map("locked_at")
   finalGoodEggs  Int?      @map("final_good_eggs")
@@ -1369,6 +1400,55 @@ model DailyEggAggregate {
   @@index([aggregateDate])
   @@index([batchId])
   @@map("daily_egg_aggregates")
+}
+
+// ─── HDP% CONTROLS (PM-uploaded target curve) ───────────────────────────────
+// The Production Manager uploads a target Hen-Day Production % curve (a
+// standard/breed control sheet) as PDF, Excel, or Word. The system parses it
+// into (period, target %) points — period is either a day number or a week
+// number of production, per `granularity` — and uses it to compare actual
+// recorded HDP against the target. Only one upload is "active" at a time;
+// a new upload deactivates the previous one (history is kept, not deleted).
+
+enum HdpControlGranularity {
+  DAILY
+  WEEKLY
+}
+
+enum HdpControlSourceFormat {
+  PDF
+  XLSX
+  DOCX
+}
+
+model HdpControlUpload {
+  id           String                 @id @default(uuid())
+  fileName     String                 @map("file_name")
+  sourceFormat HdpControlSourceFormat @map("source_format")
+  granularity  HdpControlGranularity  @map("granularity")
+  notes        String?
+  isActive     Boolean                @default(true) @map("is_active")
+  uploadedById String                 @map("uploaded_by_id")
+  createdAt    DateTime               @default(now()) @map("created_at")
+
+  points HdpControlPoint[]
+
+  @@index([isActive])
+  @@map("hdp_control_uploads")
+}
+
+model HdpControlPoint {
+  id               String   @id @default(uuid())
+  uploadId         String   @map("upload_id")
+  // 1-based day number (granularity = DAILY) or week number
+  // (granularity = WEEKLY) of production/lay.
+  periodIndex      Int      @map("period_index")
+  targetHdpPercent Decimal  @map("target_hdp_percent") @db.Decimal(5, 2)
+
+  upload HdpControlUpload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@unique([uploadId, periodIndex])
+  @@map("hdp_control_points")
 }
 
 // ─── PHASE 5: HEALTH CHECKLISTS ──────────────────────────────────────────────

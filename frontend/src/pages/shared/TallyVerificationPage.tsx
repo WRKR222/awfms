@@ -22,8 +22,8 @@ interface RowData {
   rowCode: string;
   totalEggs: number;
   starterEggs: number;
-  brokenSellable: number;
-  brokenUnsellable: number;
+  broken: number;
+  damaged: number;
   softShell: number;
   deformed: number;
   weightKg: number;
@@ -43,6 +43,11 @@ interface TallySession {
   salesSignedAt?: string;
   storeSignedById?: string;
   storeSignedAt?: string;
+  // Sales's actual broken-egg classification, entered at sign-off — see
+  // TallyVerificationService.sign(). Null until Sales signs.
+  brokenSellableQty?: number | null;
+  brokenUnsellableQty?: number | null;
+  brokenSplitSetAt?: string | null;
   isLocked: boolean;
   lockedAt?: string;
   finalGoodEggs?: number;
@@ -61,6 +66,7 @@ interface TallySession {
     totalBrokenSellable?: number;
     totalBrokenUnsellable?: number;
     totalBrokenEggs?: number;
+    totalDamaged?: number;
     totalSoftShell?: number;
     totalDeformed?: number;
     totalWeightKg?: number;
@@ -124,7 +130,21 @@ function TallyCard({ tally }: { tally: TallySession }) {
     isStore && !tally.salesSignedById ? 'Waiting for Sales to sign first' :
     null;
 
-  const canSign = !!myField && !iAlreadySigned && !tally.isLocked && prerequisitesMet;
+  const canSignPrereqs = !!myField && !iAlreadySigned && !tally.isLocked && prerequisitesMet;
+
+  // Sales must classify the session's raw broken-egg count into
+  // sellable/unsellable before their sign-off is accepted (the old
+  // attendant-time Broken Sellable/Unsellable columns moved here — see
+  // production.dto.ts / TallyVerificationService.sign).
+  const brokenRaw = session?.totalBrokenEggs ?? 0;
+  const damagedCt = session?.totalDamaged ?? 0;
+  const needsBrokenSplit = isSales && brokenRaw > 0 && !tally.brokenSellableQty && !tally.brokenUnsellableQty;
+  const [splitSellable, setSplitSellable] = useState('');
+  const [splitUnsellable, setSplitUnsellable] = useState('');
+  const splitSum = (Number(splitSellable) || 0) + (Number(splitUnsellable) || 0);
+  const splitValid = !needsBrokenSplit || (splitSellable !== '' && splitUnsellable !== '' && splitSum === brokenRaw);
+
+  const canSign = canSignPrereqs && splitValid;
 
   const [isEditing, setIsEditing] = useState(false);
   const session = tally.session;
@@ -149,7 +169,12 @@ function TallyCard({ tally }: { tally: TallySession }) {
 
   const signoff = useMutation({
     mutationFn: () => {
-      return api.post(`/tally-verifications/${tally.sessionId}/sign`, {});
+      const body: any = {};
+      if (needsBrokenSplit) {
+        body.brokenSellableQty = Number(splitSellable);
+        body.brokenUnsellableQty = Number(splitUnsellable);
+      }
+      return api.post(`/tally-verifications/${tally.sessionId}/sign`, body);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tally-pending'] }),
   });
@@ -197,10 +222,10 @@ function TallyCard({ tally }: { tally: TallySession }) {
   // Per-row aggregates are still needed for the display table and the
   // all-starter special-case detection (starter only, no standard eggs).
   const starterEggs  = session?.totalStarterEggs    ?? 0;
-  const brokenSell   = session?.totalBrokenSellable  ?? 0;
-  const brokenUnsell = session?.totalBrokenUnsellable ?? 0;
   const softShellCt  = session?.totalSoftShell        ?? 0;
   const deformedCt   = session?.totalDeformed         ?? 0;
+  // brokenRaw / damagedCt are declared above (needed earlier for the Sales
+  // split-gating logic).
 
   // All-starter special case: every collected egg is a starter (no standard good eggs).
   const isAllStarterLive = starterEggs > 0 && originalGood === 0;
@@ -211,8 +236,8 @@ function TallyCard({ tally }: { tally: TallySession }) {
       rowCode: r.rowCode,
       totalEggs: String(r.totalEggs ?? 0),
       starterEggs: String(r.starterEggs ?? 0),
-      brokenSellable: String(r.brokenSellable ?? 0),
-      brokenUnsellable: String(r.brokenUnsellable ?? 0),
+      broken: String(r.broken ?? 0),
+      damaged: String(r.damaged ?? 0),
       softShell: String(r.softShell ?? 0),
       deformed: String(r.deformed ?? 0),
       weightKg: String(r.weightKg ?? 0),
@@ -231,8 +256,8 @@ function TallyCard({ tally }: { tally: TallySession }) {
       rowCode: r.rowCode as string,
       totalEggs: Number(r.totalEggs) || 0,
       starterEggs: Number(r.starterEggs) || 0,
-      brokenSellable: Number(r.brokenSellable) || 0,
-      brokenUnsellable: Number(r.brokenUnsellable) || 0,
+      broken: Number(r.broken) || 0,
+      damaged: Number(r.damaged) || 0,
       softShell: Number(r.softShell) || 0,
       deformed: Number(r.deformed) || 0,
       weightKg: Number(r.weightKg) || 0,
@@ -290,21 +315,29 @@ function TallyCard({ tally }: { tally: TallySession }) {
           const loose     = tally.isLocked
             ? Math.max(0, (tally.finalGoodEggs ?? 0) - (tally.finalFullTrays ?? 0) * 30)
             : originalLoose;
-          const rawTotal  = goodEggs + starterEggs + brokenSell + brokenUnsell + softShellCt + deformedCt;
+          const rawTotal  = goodEggs + starterEggs + brokenRaw + damagedCt + softShellCt + deformedCt;
           const attdTrays = Math.floor(rawTotal / 30);
           const attdLoose = rawTotal % 30;
 
-          type LedgerRow = { label: string; value: number; isDeduction?: boolean; isResult?: boolean; isSeparator?: boolean };
+          type LedgerRow = { label: string; value: number; isDeduction?: boolean; isResult?: boolean; isSeparator?: boolean; isSubline?: boolean };
           const rows: LedgerRow[] = [
             { label: `Attd. Full Trays (${attdTrays} × 30)`, value: attdTrays * 30 },
             { label: 'Loose Eggs',                            value: attdLoose },
             { label: '───',                                   value: 0, isSeparator: true },
           ];
-          if (starterEggs   > 0) rows.push({ label: '− Starter Eggs',        value: starterEggs,   isDeduction: true });
-          if (brokenSell    > 0) rows.push({ label: '− Broken (Sellable)',    value: brokenSell,    isDeduction: true });
-          if (brokenUnsell  > 0) rows.push({ label: '− Broken (Unsellable)',  value: brokenUnsell,  isDeduction: true });
-          if (softShellCt   > 0) rows.push({ label: '− Soft-Shell',           value: softShellCt,   isDeduction: true });
-          if (deformedCt    > 0) rows.push({ label: '− Deformed',             value: deformedCt,    isDeduction: true });
+          if (starterEggs > 0) rows.push({ label: '− Starter Eggs', value: starterEggs, isDeduction: true });
+          if (brokenRaw   > 0) {
+            rows.push({ label: '− Broken', value: brokenRaw, isDeduction: true });
+            if (tally.brokenSplitSetAt) {
+              rows.push({ label: `Sellable: ${tally.brokenSellableQty ?? 0}`, value: 0, isSubline: true });
+              rows.push({ label: `Unsellable: ${tally.brokenUnsellableQty ?? 0}`, value: 0, isSubline: true });
+            } else {
+              rows.push({ label: 'Sales to classify sellable/unsellable at sign-off', value: 0, isSubline: true });
+            }
+          }
+          if (damagedCt   > 0) rows.push({ label: '− Damaged',     value: damagedCt,   isDeduction: true });
+          if (softShellCt > 0) rows.push({ label: '− Soft-Shell',  value: softShellCt, isDeduction: true });
+          if (deformedCt  > 0) rows.push({ label: '− Deformed',    value: deformedCt,  isDeduction: true });
           rows.push({ label: '───', value: 0, isSeparator: true });
           rows.push({ label: tally.isLocked ? 'Final Good Eggs' : 'Total Good Eggs', value: goodEggs, isResult: true });
 
@@ -313,6 +346,11 @@ function TallyCard({ tally }: { tally: TallySession }) {
               {rows.map((r, i) => {
                 if (r.isSeparator) {
                   return <div key={i} className="border-t border-gray-100 dark:border-dark-border my-1.5" />;
+                }
+                if (r.isSubline) {
+                  return (
+                    <div key={i} className="px-2 pl-4 text-[10px] text-gray-400 italic">{r.label}</div>
+                  );
                 }
                 return (
                   <div key={i} className={`flex items-center justify-between px-2 py-1 rounded-lg text-sm ${
@@ -390,8 +428,8 @@ function TallyCard({ tally }: { tally: TallySession }) {
                     <th className="text-left py-1.5 pr-2 font-medium">Row</th>
                     <th className="text-right py-1.5 px-1 font-medium">Total Eggs</th>
                     <th className="text-right py-1.5 px-1 font-medium">Starter</th>
-                    <th className="text-right py-1.5 px-1 font-medium">Broken (S)</th>
-                    <th className="text-right py-1.5 px-1 font-medium">Broken (U)</th>
+                    <th className="text-right py-1.5 px-1 font-medium">Broken</th>
+                    <th className="text-right py-1.5 px-1 font-medium">Damaged</th>
                     <th className="text-right py-1.5 px-1 font-medium">Soft Shell</th>
                     <th className="text-right py-1.5 px-1 font-medium">Deformed</th>
                     <th className="text-right py-1.5 px-1 font-medium">Weight(kg)</th>
@@ -403,7 +441,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
                       <td className="py-1.5 pr-2">
                         <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5">{row.rowCode as string}</span>
                       </td>
-                      {(['totalEggs', 'starterEggs', 'brokenSellable', 'brokenUnsellable', 'softShell', 'deformed'] as const).map(field => (
+                      {(['totalEggs', 'starterEggs', 'broken', 'damaged', 'softShell', 'deformed'] as const).map(field => (
                         <td key={field} className="px-1 py-1">
                           <input
                             type="number"
@@ -447,8 +485,8 @@ function TallyCard({ tally }: { tally: TallySession }) {
                     <th className="text-left py-1.5 pr-3 font-medium">Row</th>
                     <th className="text-right py-1.5 px-2 font-medium">Total Eggs</th>
                     <th className="text-right py-1.5 px-2 font-medium">Starter</th>
-                    <th className="text-right py-1.5 px-2 font-medium">Broken (S)</th>
-                    <th className="text-right py-1.5 px-2 font-medium">Broken (U)</th>
+                    <th className="text-right py-1.5 px-2 font-medium">Broken</th>
+                    <th className="text-right py-1.5 px-2 font-medium">Damaged</th>
                     <th className="text-right py-1.5 px-2 font-medium">Soft Shell</th>
                     <th className="text-right py-1.5 px-2 font-medium">Deformed</th>
                     <th className="text-right py-1.5 px-2 font-medium">Weight(kg)</th>
@@ -463,8 +501,8 @@ function TallyCard({ tally }: { tally: TallySession }) {
                       </td>
                       <td className="text-right px-2 font-semibold text-gray-700 dark:text-gray-200">{row.totalEggs}</td>
                       <td className="text-right px-2 text-blue-500">{row.starterEggs ?? 0}</td>
-                      <td className="text-right px-2 text-amber-500">{row.brokenSellable ?? 0}</td>
-                      <td className={`text-right px-2 ${(row.brokenUnsellable ?? 0) > 3 ? 'text-red-500 font-semibold' : 'text-gray-500'}`}>{row.brokenUnsellable ?? 0}</td>
+                      <td className={`text-right px-2 ${(row.broken ?? 0) > 3 ? 'text-red-500 font-semibold' : 'text-gray-500'}`}>{row.broken ?? 0}</td>
+                      <td className={`text-right px-2 ${(row.damaged ?? 0) > 3 ? 'text-orange-500 font-semibold' : 'text-gray-500'}`}>{row.damaged ?? 0}</td>
                       <td className={`text-right px-2 ${(row.softShell ?? 0) > 3 ? 'text-amber-500 font-semibold' : 'text-gray-500'}`}>{row.softShell ?? 0}</td>
                       <td className="text-right px-2 text-gray-500">{row.deformed ?? 0}</td>
                       <td className="text-right px-2 text-gray-500">{Number(row.weightKg ?? 0).toFixed(1)}</td>
@@ -518,12 +556,48 @@ function TallyCard({ tally }: { tally: TallySession }) {
         </div>
       )}
 
+      {/* Sales: broken-egg sellable/unsellable classification, required before signing */}
+      {isSales && needsBrokenSplit && !tally.isLocked && prerequisitesMet && (
+        <div className="px-4 pb-3">
+          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">
+            Classify {brokenRaw} Broken Egg{brokenRaw === 1 ? '' : 's'}
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-[10px] text-gray-500 mb-1">Sellable (as broken)</label>
+              <input
+                type="number" min="0" max={brokenRaw} inputMode="numeric"
+                value={splitSellable}
+                onChange={e => setSplitSellable(e.target.value)}
+                placeholder="0"
+                className="w-full rounded-lg border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-sm px-2 py-1.5 text-right focus:outline-none focus:ring-1 focus:ring-brand-green"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] text-gray-500 mb-1">Unsellable (total loss)</label>
+              <input
+                type="number" min="0" max={brokenRaw} inputMode="numeric"
+                value={splitUnsellable}
+                onChange={e => setSplitUnsellable(e.target.value)}
+                placeholder="0"
+                className="w-full rounded-lg border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 text-sm px-2 py-1.5 text-right focus:outline-none focus:ring-1 focus:ring-brand-green"
+              />
+            </div>
+          </div>
+          {!splitValid && (splitSellable !== '' || splitUnsellable !== '') && (
+            <p className="text-[10px] text-red-500 mt-1">
+              Sellable + Unsellable must add up to {brokenRaw} (currently {splitSum}).
+            </p>
+          )}
+        </div>
+      )}
+
       {/* My sign-off action */}
-      {canSign && (
+      {canSignPrereqs && (
         <div className="px-4 pb-4 space-y-3">
             <button
             onClick={() => signoff.mutate()}
-            disabled={signoff.isPending}
+            disabled={signoff.isPending || !splitValid}
             className="w-full bg-brand-green text-white py-2.5 rounded-xl text-sm font-bold disabled:opacity-50"
           >
             {signoff.isPending ? 'Confirming…' : '✓ Confirm & Sign Off'}

@@ -41,6 +41,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.PRODUCTION_REPORT_VIEW,  // Manager can see the store production report for their batches
     Permission.WEIGHT_ALERT_VIEW,       // PM can see weight-standard flags for their batches
     Permission.BIRD_WEIGHT_REPORT_UPLOAD, // PM uploads bird weight reports to autofill Farm Events
+    Permission.HDP_CONTROL_UPLOAD, Permission.HDP_CONTROL_VIEW, // PM uploads/reviews HDP% target curve
   ],
   [UserRole.ACCOUNTANT]: [
     Permission.FLOCK_VIEW, Permission.FEED_VIEW, Permission.FEED_STOCK_VIEW,
@@ -56,6 +57,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     // Phase 3: Accountant reviews breakage adjustments (credit notes)
     Permission.BREAKAGE_REVIEW,
     Permission.BREAKAGE_VIEW,
+    Permission.HDP_CONTROL_VIEW, // Accountant can view the HDP target-vs-actual comparison
   ],
   [UserRole.OWNER]: Object.values(Permission),
   [UserRole.SALES]: [

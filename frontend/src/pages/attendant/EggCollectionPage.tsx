@@ -21,32 +21,13 @@ import {
 import { api } from '../../lib/api/client';
 import { useOfflineMutation } from '../../hooks/useOfflineSync';
 import { useOfflineStore } from '../../stores/offline.store';
+import { useIssuableStoreItems, FEED_CATEGORIES, MEDICATION_CATEGORIES } from '../../hooks/useIssuableStoreItems';
 import dayjs from '../../lib/dayjs';
 
 const inputCls  = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-base bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
 const numInput  = 'w-full text-center border border-gray-200 dark:border-dark-border rounded-lg px-1 py-2 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
 const cardCls   = 'bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-dark-border';
 const sectionLbl = 'text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3';
-
-const FEED_TYPE_OPTIONS = [
-  { value: 'CHICK_MASH',  label: "Chick & Duckling Mash" },
-  { value: 'GROWER_MASH', label: "Grower's Mash" },
-  { value: 'LAYER_MASH',  label: "Layer's Mash" },
-] as const;
-
-function FeedTypeDropdown({ register, fieldName }: { register: any; fieldName: string }) {
-  return (
-    <select
-      {...register(fieldName)}
-      className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green"
-    >
-      <option value="">Select feed type...</option>
-      {FEED_TYPE_OPTIONS.map(o => (
-        <option key={o.value} value={o.value}>{o.label}</option>
-      ))}
-    </select>
-  );
-}
 
 function eggsToTrays(eggs: number): string {
   const trays = Math.floor(eggs / 30);
@@ -64,8 +45,8 @@ interface RowEntry {
   totalBirds: number;
   totalEggs: number;
   starterEggs: number;
-  brokenUnsellable: number;
-  brokenSellable: number;
+  broken: number;
+  damaged: number;
   softShell: number;
   deformed: number;
   weightKg: number;
@@ -74,8 +55,10 @@ interface RowEntry {
 
 interface VaccineEntry {
   kind: 'VACCINE' | 'SUPPLEMENT';
+  storeItemId: string;
   name: string;
   dosage: string;
+  quantityUsed: string; // string in form state — allows any number of decimal places, parsed on submit
 }
 
 type BlockKey = 'BLOCK1' | 'BLOCK2';
@@ -87,7 +70,7 @@ function buildDefaultBlock(): { rows: RowEntry[] } {
       rows.push({
         rowCode: `${letter}${rowNum}`,
         totalBirds: 0, totalEggs: 0, starterEggs: 0,
-        brokenUnsellable: 0, brokenSellable: 0,
+        broken: 0, damaged: 0,
         softShell: 0, deformed: 0,
         weightKg: 0, attendantName: '',
       });
@@ -235,13 +218,18 @@ export function EggCollectionPage() {
       remarks: '',
       batchId: '',
       feedKg: '' as string | number,
-      feedTypeName: '',
+      feedStoreItemId: '',
       waterLiters: '' as string | number,
       houseTempC: '' as string | number,
     },
   });
 
   const { isOnline } = useOfflineStore();
+
+  // Feed items Store has actually issued — production-house feed only.
+  const { data: feedItems = [] } = useIssuableStoreItems(FEED_CATEGORIES);
+  // Vaccine/supplement items Store has actually issued.
+  const { data: medicationItems = [] } = useIssuableStoreItems(MEDICATION_CATEGORIES);
 
   // Minimal in-flight flag — set true on mutate, cleared once server confirms
   const [localSubmitPending, setLocalSubmitPending] = useState(false);
@@ -283,7 +271,7 @@ export function EggCollectionPage() {
     if (returned.openingPop  != null) setValue('openingPop',  returned.openingPop);
     if (returned.mortalities  != null) setValue('mortalities',  returned.mortalities);
     if (returned.feedKg       != null) setValue('feedKg',       returned.feedKg);
-    if (returned.feedTypeName)          setValue('feedTypeName', returned.feedTypeName);
+    if (returned.feedStoreItemId)       setValue('feedStoreItemId', returned.feedStoreItemId);
     if (returned.waterLiters  != null) setValue('waterLiters',  returned.waterLiters);
     if (returned.houseTempC   != null) setValue('houseTempC',   returned.houseTempC);
     if (returned.remarks)               setValue('remarks',      returned.remarks);
@@ -309,8 +297,8 @@ export function EggCollectionPage() {
   const allRows = blockData.BLOCK1.rows;
   const grandTotalEggs       = allRows.reduce((s, r) => s + Number(r.totalEggs ?? 0), 0);
   const grandStarterEggs     = allRows.reduce((s, r) => s + Number(r.starterEggs ?? 0), 0);
-  const grandBrokenUnsellable = allRows.reduce((s, r) => s + Number(r.brokenUnsellable ?? 0), 0);
-  const grandBrokenSellable  = allRows.reduce((s, r) => s + Number(r.brokenSellable ?? 0), 0);
+  const grandBroken          = allRows.reduce((s, r) => s + Number(r.broken ?? 0), 0);
+  const grandDamaged         = allRows.reduce((s, r) => s + Number(r.damaged ?? 0), 0);
   const grandSoftShell       = allRows.reduce((s, r) => s + Number(r.softShell ?? 0), 0);
   const grandDeformed        = allRows.reduce((s, r) => s + Number(r.deformed ?? 0), 0);
   const grandWeightKg        = allRows.reduce((s, r) => s + Number(r.weightKg ?? 0), 0);
@@ -331,8 +319,8 @@ export function EggCollectionPage() {
     const feedKg = Number(data.feedKg);
     const waterL = Number(data.waterLiters);
     const tempC  = Number(data.houseTempC);
-    if (!data.feedTypeName?.trim() || !(feedKg > 0)) {
-      setSubmitError('Session feed consumption is required (feed type and kg dispensed).');
+    if (!data.feedStoreItemId || !(feedKg > 0)) {
+      setSubmitError('Session feed consumption is required (feed type and kg dispensed, from what Store has issued).');
       return;
     }
     if (!(waterL > 0) || !(tempC > 0)) {
@@ -344,10 +332,16 @@ export function EggCollectionPage() {
       return;
     }
     const cleanedVaccines = vaccines
-      .map(v => ({ kind: v.kind, name: v.name.trim(), dosage: v.dosage.trim() }))
-      .filter(v => v.name || v.dosage);
-    if (cleanedVaccines.some(v => !v.name || !v.dosage)) {
-      setSubmitError('Each vaccine/supplement entry must have both a name and dosage.');
+      .map(v => ({
+        kind: v.kind,
+        storeItemId: v.storeItemId,
+        name: v.name.trim(),
+        dosage: v.dosage.trim(),
+        quantityUsed: v.quantityUsed?.trim() ? Number(v.quantityUsed) : undefined,
+      }))
+      .filter(v => v.storeItemId || v.name || v.dosage);
+    if (cleanedVaccines.some(v => !v.storeItemId || !v.name || !v.dosage)) {
+      setSubmitError('Each vaccine/supplement entry must have an item selected, a name, and a dosage.');
       return;
     }
 
@@ -366,14 +360,14 @@ export function EggCollectionPage() {
         totalBirds: Number(r.totalBirds),
         totalEggs: Number(r.totalEggs),
         starterEggs: Number(r.starterEggs),
-        brokenUnsellable: Number(r.brokenUnsellable),
-        brokenSellable: Number(r.brokenSellable),
+        broken: Number(r.broken),
+        damaged: Number(r.damaged),
         softShell: Number(r.softShell),
         deformed: Number(r.deformed),
         weightKg: Number(r.weightKg),
         attendantName: r.attendantName,
       })),
-      sessionFeed: { feedKg, feedTypeName: data.feedTypeName.trim() },
+      sessionFeed: { feedKg, feedStoreItemId: data.feedStoreItemId },
       environment: { waterLiters: waterL, houseTempC: tempC },
       vaccinesGiven: cleanedVaccines,
       remarks: data.remarks || undefined,
@@ -554,7 +548,7 @@ export function EggCollectionPage() {
                         <tr>
                           {[
                             'Row', 'Total Birds', 'Total Eggs', 'Starter Eggs',
-                            'Broken Unsellable', 'Broken Sellable',
+                            'Broken', 'Damaged',
                             'Soft Shell', 'Deformed', 'kg', 'Attendant',
                           ].map(h => (
                             <th key={h} className="text-center text-gray-400 font-medium pb-1.5 px-1">
@@ -579,8 +573,8 @@ export function EggCollectionPage() {
                               <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.totalBirds || ''} onChange={e => updateRow(rowIdx, 'totalBirds', e.target.value)} className={numInput} placeholder="0" /></td>
                               <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.totalEggs || ''} onChange={e => updateRow(rowIdx, 'totalEggs', e.target.value)} className={numInput} placeholder="0" /></td>
                               <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.starterEggs || ''} onChange={e => updateRow(rowIdx, 'starterEggs', e.target.value)} className={numInput} placeholder="0" /></td>
-                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.brokenUnsellable || ''} onChange={e => updateRow(rowIdx, 'brokenUnsellable', e.target.value)} className={numInput} placeholder="0" /></td>
-                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.brokenSellable || ''} onChange={e => updateRow(rowIdx, 'brokenSellable', e.target.value)} className={numInput} placeholder="0" /></td>
+                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.broken || ''} onChange={e => updateRow(rowIdx, 'broken', e.target.value)} className={numInput} placeholder="0" /></td>
+                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.damaged || ''} onChange={e => updateRow(rowIdx, 'damaged', e.target.value)} className={numInput} placeholder="0" /></td>
                               <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.softShell || ''} onChange={e => updateRow(rowIdx, 'softShell', e.target.value)} className={numInput} placeholder="0" /></td>
                               <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.deformed || ''} onChange={e => updateRow(rowIdx, 'deformed', e.target.value)} className={numInput} placeholder="0" /></td>
                               <td className="px-1 py-1"><input type="number" min="0" step="0.1" inputMode="decimal" value={row.weightKg || ''} onChange={e => updateRow(rowIdx, 'weightKg', e.target.value)} className={numInput} placeholder="0" /></td>
@@ -605,15 +599,26 @@ export function EggCollectionPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs text-gray-500 mb-1">Feed Dispensed (kg)</label>
-              <input {...register('feedKg')} type="number" min="0" step="0.1" inputMode="decimal" className={inputCls} placeholder="e.g. 45.5" />
+              <input {...register('feedKg')} type="number" min="0" step="any" inputMode="decimal" className={inputCls} placeholder="e.g. 45.532" />
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Feed Type Given</label>
-              <FeedTypeDropdown register={register} fieldName="feedTypeName" />
+              <select {...register('feedStoreItemId')} className={inputCls}>
+                <option value="">Select feed issued by Store...</option>
+                {feedItems.length === 0 && (
+                  <option value="" disabled>No feed has been issued from the store yet</option>
+                )}
+                {feedItems.map(item => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} — {item.residual.toFixed(2)} {item.unit} left
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
           <p className="text-[11px] text-gray-400 mt-2">
-            Production-house feed only. Brooder feed is logged by the Production Manager.
+            Production-house feed only, drawn against what Store has issued. Brooder feed is logged by the
+            Production Manager.
           </p>
         </div>
 
@@ -646,7 +651,7 @@ export function EggCollectionPage() {
             </p>
             <button
               type="button"
-              onClick={() => setVaccines(v => [...v, { kind: 'VACCINE', name: '', dosage: '' }])}
+              onClick={() => setVaccines(v => [...v, { kind: 'VACCINE', storeItemId: '', name: '', dosage: '', quantityUsed: '' }])}
               className="text-xs font-semibold text-brand-green hover:underline flex items-center gap-1"
             >
               <Plus className="w-3 h-3" /> Add entry
@@ -655,12 +660,13 @@ export function EggCollectionPage() {
           {vaccines.length === 0 && (
             <p className="text-xs text-gray-400 italic">
               No vaccines or supplements given this session. Entries here will appear in the
-              Production Manager's Health page as a historical vaccination log.
+              Production Manager's Health page as a historical vaccination log, and draw down what
+              Store has issued.
             </p>
           )}
           {vaccines.map((v, i) => (
             <div key={i} className="grid grid-cols-12 gap-2 items-end mb-2">
-              <div className="col-span-3">
+              <div className="col-span-2">
                 <label className="block text-[11px] text-gray-500 mb-1">Type</label>
                 <select
                   value={v.kind}
@@ -671,22 +677,46 @@ export function EggCollectionPage() {
                   <option value="SUPPLEMENT">Supplement</option>
                 </select>
               </div>
-              <div className="col-span-5">
-                <label className="block text-[11px] text-gray-500 mb-1">Name</label>
-                <input
-                  value={v.name}
-                  onChange={e => setVaccines(prev => prev.map((p, j) => j === i ? { ...p, name: e.target.value } : p))}
+              <div className="col-span-4">
+                <label className="block text-[11px] text-gray-500 mb-1">Item (issued by Store)</label>
+                <select
+                  value={v.storeItemId}
+                  onChange={e => {
+                    const item = medicationItems.find(m => m.id === e.target.value);
+                    setVaccines(prev => prev.map((p, j) => j === i
+                      ? { ...p, storeItemId: e.target.value, name: item ? item.name : p.name }
+                      : p));
+                  }}
                   className={inputCls + ' py-2 text-sm'}
-                  placeholder="e.g. Newcastle ND"
-                />
+                >
+                  <option value="">Select item...</option>
+                  {medicationItems.length === 0 && (
+                    <option value="" disabled>No vaccines/supplements issued yet</option>
+                  )}
+                  {medicationItems.map(item => (
+                    <option key={item.id} value={item.id}>
+                      {item.name} — {item.residual.toFixed(2)} {item.unit} left
+                    </option>
+                  ))}
+                </select>
               </div>
-              <div className="col-span-3">
+              <div className="col-span-2">
                 <label className="block text-[11px] text-gray-500 mb-1">Dosage</label>
                 <input
                   value={v.dosage}
                   onChange={e => setVaccines(prev => prev.map((p, j) => j === i ? { ...p, dosage: e.target.value } : p))}
                   className={inputCls + ' py-2 text-sm'}
                   placeholder="e.g. 0.5 ml/bird"
+                />
+              </div>
+              <div className="col-span-3">
+                <label className="block text-[11px] text-gray-500 mb-1">Qty used</label>
+                <input
+                  type="number" min="0" step="any" inputMode="decimal"
+                  value={v.quantityUsed}
+                  onChange={e => setVaccines(prev => prev.map((p, j) => j === i ? { ...p, quantityUsed: e.target.value } : p))}
+                  className={inputCls + ' py-2 text-sm'}
+                  placeholder="e.g. 0.532"
                 />
               </div>
               <div className="col-span-1 flex justify-end">
@@ -720,11 +750,17 @@ export function EggCollectionPage() {
           </div>
           <div className="mt-3 grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
             <div className="text-center"><span className="text-gray-500">Starter: </span><span className="text-amber-600 font-semibold">{grandStarterEggs}</span></div>
-            <div className="text-center"><span className="text-gray-500">Broken Unsellable: </span><span className="text-red-500 font-semibold">{grandBrokenUnsellable}</span></div>
-            <div className="text-center"><span className="text-gray-500">Broken Sellable: </span><span className="text-orange-500 font-semibold">{grandBrokenSellable}</span></div>
+            <div className="text-center"><span className="text-gray-500">Broken: </span><span className="text-red-500 font-semibold">{grandBroken}</span></div>
+            <div className="text-center"><span className="text-gray-500">Damaged: </span><span className="text-orange-500 font-semibold">{grandDamaged}</span></div>
             <div className="text-center"><span className="text-gray-500">Soft Shell: </span><span className="text-pink-500 font-semibold">{grandSoftShell}</span></div>
             <div className="text-center"><span className="text-gray-500">Deformed: </span><span className="text-rose-500 font-semibold">{grandDeformed}</span></div>
           </div>
+          {grandBroken > 0 && (
+            <p className="text-[11px] text-gray-400 mt-2">
+              Sellable vs. unsellable classification of the {grandBroken} broken egg{grandBroken === 1 ? '' : 's'} is
+              done by Sales during the three-party tally sign-off, not here.
+            </p>
+          )}
         </div>
 
         {/* ── Remarks ── */}

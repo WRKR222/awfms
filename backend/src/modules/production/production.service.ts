@@ -5,7 +5,9 @@
 //     readings and (optional) vaccines/supplements.
 //   • Block 1 only — units A, B, C with two rows each (Block 2 is under
 //     construction and rejected here as a guard).
-//   • Per-row counters renamed: brokenUnsellable / brokenSellable / starterEggs.
+//   • Per-row counters: broken / damaged / starterEggs. The old brokenUnsellable
+//     / brokenSellable split is no longer captured at collection time — Sales
+//     enters the actual sellable/unsellable classification at tally sign-off.
 //   • starterEggs roll up to a session field consumed by the Accountant for
 //     per-category pricing and by the Sales person's stock.
 //   • Vaccines / supplements are forwarded to VaccinationRecord so they appear
@@ -32,14 +34,15 @@ import { RequestUser } from '../../auth/types/request-user.type';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import type { CreateEggCollectionSessionDto } from './production.dto';
 import { TallyVerificationService } from '../store/tally-verification.service';
+import { StoreInventoryService } from '../store/store-inventory.service';
 
 interface RowDataEntry {
   rowCode: string;
   totalBirds: number;
   totalEggs: number;
   starterEggs: number;
-  brokenUnsellable: number;
-  brokenSellable: number;
+  broken: number;
+  damaged: number;
   softShell: number;
   deformed: number;
   weightKg: number;
@@ -47,33 +50,31 @@ interface RowDataEntry {
 }
 
 function rollupRows(rows: RowDataEntry[]) {
-  let totalEggs = 0, totalStarter = 0, totalBrokenUnsellable = 0, totalBrokenSellable = 0;
+  let totalEggs = 0, totalStarter = 0, totalBroken = 0, totalDamaged = 0;
   let totalSoftShell = 0, totalDeformed = 0, totalWeightKg = 0;
   for (const r of rows) {
-    totalEggs              += r.totalEggs          ?? 0;
-    totalStarter           += r.starterEggs        ?? 0;
-    totalBrokenUnsellable  += r.brokenUnsellable ?? 0;
-    totalBrokenSellable    += r.brokenSellable   ?? 0;
-    totalSoftShell         += r.softShell        ?? 0;
-    totalDeformed          += r.deformed         ?? 0;
-    totalWeightKg          += Number(r.weightKg ?? 0);
+    totalEggs      += r.totalEggs   ?? 0;
+    totalStarter    += r.starterEggs ?? 0;
+    totalBroken     += r.broken      ?? 0;
+    totalDamaged    += r.damaged     ?? 0;
+    totalSoftShell  += r.softShell   ?? 0;
+    totalDeformed   += r.deformed    ?? 0;
+    totalWeightKg   += Number(r.weightKg ?? 0);
   }
   // All-starter special case:
-  // totalEggs === starterEggs + brokenSell + brokenUnsell + softShell + deformed
+  // totalEggs === starterEggs + broken + damaged + softShell + deformed
   // → every non-broken egg is a starter; totalGoodEggs = 0 (starters tracked separately).
   // isAllStarter is returned so callers (HDP, notifications) can use it without
   // re-deriving the condition from the stored fields.
-  const nonStandardTotal = totalStarter + totalBrokenSellable + totalBrokenUnsellable + totalSoftShell + totalDeformed;
+  const nonStandardTotal = totalStarter + totalBroken + totalDamaged + totalSoftShell + totalDeformed;
   const isAllStarter     = totalStarter > 0 && totalEggs > 0 && totalEggs === nonStandardTotal;
   const totalGoodEggs    = Math.max(0, totalEggs - nonStandardTotal);
   const totalFullTrays   = Math.floor(totalGoodEggs / 30);
   const totalLooseEggs   = totalGoodEggs % 30;
   return {
-    totalEggs, totalStarter, totalBrokenUnsellable, totalBrokenSellable,
+    totalEggs, totalStarter, totalBroken, totalDamaged,
     totalSoftShell, totalDeformed, totalWeightKg,
     totalGoodEggs, totalFullTrays, totalLooseEggs, isAllStarter,
-    // legacy aggregate kept for downstream reads
-    totalBrokenEggs: totalBrokenUnsellable + totalBrokenSellable,
   };
 }
 
@@ -83,7 +84,66 @@ export class ProductionService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly tallyVerificationService: TallyVerificationService,
+    private readonly storeInventory: StoreInventoryService,
   ) {}
+
+  // A feed/vaccine/supplement can only be logged against a store item that
+  // Store has actually issued (stock-out) — mirrors
+  // FlockService.getIssuedStoreItemOrThrow so the attendant can't select
+  // something never physically handed to them, and the residual math
+  // (issued − dispensed) stays accurate across brooder AND production-house
+  // logging. All-time check (no calendar-week floor) — see FlockService for
+  // the full rationale.
+  private async getIssuedStoreItemOrThrow(storeItemId: string) {
+    const [issued, item] = await Promise.all([
+      this.prisma.storeStockOut.aggregate({
+        where: { storeItemId },
+        _sum: { quantityOut: true },
+      }),
+      this.prisma.storeItem.findUnique({ where: { id: storeItemId }, select: { unit: true, name: true, category: true } }),
+    ]);
+    if (!issued._sum.quantityOut || Number(issued._sum.quantityOut) <= 0) {
+      throw new BadRequestException(
+        'This item has never been issued from the store and cannot be logged. Ask Store to issue it first.',
+      );
+    }
+    if (!item) throw new BadRequestException('Store item not found.');
+    return item;
+  }
+
+  // Hard stock check — confirms there's actually residual LEFT of the item,
+  // not just that it was issued at some point. Mirrors
+  // FlockService.assertResidualOrThrow.
+  private async assertResidualOrThrow(
+    storeItemId: string,
+    quantityRequested: number,
+    unit: string | null,
+  ): Promise<void> {
+    const residualInfo = await this.storeInventory.getResidualForItem(storeItemId);
+    const residualBefore = residualInfo?.residual ?? 0;
+    if (quantityRequested > residualBefore) {
+      throw new BadRequestException(
+        `Not enough of this item left to log. Residual remaining: ${Math.max(0, residualBefore).toFixed(3)} ` +
+        `${unit ?? ''}, requested: ${quantityRequested}. Ask Store to issue more before logging further.`,
+      );
+    }
+  }
+
+  // Derives a FeedType enum value from the store item's SKU/name — mirrors
+  // BrooderDailyLogModal's deriveFeedType on the frontend, kept here too
+  // since FeedIntakeLog.feedType is a non-nullable enum column.
+  private deriveFeedTypeFromItem(item: { sku?: string | null; name: string }): string {
+    const haystack = `${item.sku ?? ''} ${item.name}`.toUpperCase();
+    if (haystack.includes('KIENYEJI')) {
+      if (haystack.includes('STARTER'))  return 'KIENYEJI_STARTER';
+      if (haystack.includes('GROWER'))   return 'KIENYEJI_GROWER';
+      if (haystack.includes('FINISHER')) return 'KIENYEJI_FINISHER';
+    }
+    if (haystack.includes('CHICK'))  return 'CHICK_MASH';
+    if (haystack.includes('GROWER')) return 'GROWER_MASH';
+    if (haystack.includes('LAYER'))  return 'LAYER_MASH';
+    return 'LAYER_MASH'; // production-house default — birds here are always layers
+  }
 
   async createEggCollection(dto: CreateEggCollectionSessionDto, user: RequestUser) {
     if (user.role !== 'ATTENDANT') {
@@ -136,6 +196,26 @@ export class ProductionService {
       throw new ConflictException('Tally for this session is locked. No further submissions accepted.');
     }
 
+    // ── Validate feed store item + residual BEFORE writing anything ────────
+    const feedItem = await this.getIssuedStoreItemOrThrow(dto.sessionFeed.feedStoreItemId);
+    await this.assertResidualOrThrow(dto.sessionFeed.feedStoreItemId, dto.sessionFeed.feedKg, feedItem.unit);
+
+    // ── Validate each vaccine/supplement store item + residual up front too,
+    // reserving quantities against each other within this same request (two
+    // vaccine entries drawing on the same bottle can't both pass residual
+    // checks independently and then overdraw once both are written).
+    const vaccinesGiven = dto.vaccinesGiven ?? [];
+    const reserved = new Map<string, number>();
+    for (const v of vaccinesGiven) {
+      const item = await this.getIssuedStoreItemOrThrow(v.storeItemId);
+      const qty = v.quantityUsed ?? 0;
+      if (qty > 0) {
+        const alreadyReserved = reserved.get(v.storeItemId) ?? 0;
+        await this.assertResidualOrThrow(v.storeItemId, alreadyReserved + qty, item.unit);
+        reserved.set(v.storeItemId, alreadyReserved + qty);
+      }
+    }
+
     const totals = rollupRows(dto.rowData as RowDataEntry[]);
     const closingStock = dto.openingPop - dto.mortalities;
     // When all eggs are starters, use totalStarter for HDP so production isn't
@@ -157,20 +237,24 @@ export class ProductionService {
       rowData: dto.rowData as any,
       totalFullTrays: totals.totalFullTrays,
       totalLooseEggs: totals.totalLooseEggs,
-      totalBrokenEggs: totals.totalBrokenEggs,
+      totalBrokenEggs: totals.totalBroken,
+      totalDamaged: totals.totalDamaged,
       totalSoftShell: totals.totalSoftShell,
       totalDeformed: totals.totalDeformed,
       totalWeightKg: totals.totalWeightKg,
       totalGoodEggs: totals.totalGoodEggs,
       totalStarterEggs: totals.totalStarter ?? 0,
-      totalBrokenSellable: totals.totalBrokenSellable ?? 0,
-      totalBrokenUnsellable: totals.totalBrokenUnsellable ?? 0,
-      feedKg: dto.sessionFeed?.feedKg ?? null,
-      feedTypeName: dto.sessionFeed?.feedTypeName ?? null,
+      // Conservative default — every broken egg counted as a loss until
+      // Sales enters the actual sellable/unsellable split at tally sign-off.
+      totalBrokenSellable: 0,
+      totalBrokenUnsellable: totals.totalBroken,
+      feedKg: dto.sessionFeed.feedKg,
+      feedTypeName: this.deriveFeedTypeFromItem(feedItem as any),
+      feedStoreItemId: dto.sessionFeed.feedStoreItemId,
       waterLiters: dto.environment?.waterLiters ?? null,
       houseTempC: dto.environment?.houseTempC ?? null,
-      dailyFeedKg: dto.sessionFeed?.feedKg ?? null,
-      vaccineGiven: (dto.vaccinesGiven ?? [])
+      dailyFeedKg: dto.sessionFeed.feedKg,
+      vaccineGiven: vaccinesGiven
         .map((v: any) => (v.kind === 'VACCINE' ? 'V: ' : 'S: ') + v.name + ' (' + v.dosage + ')')
         .join('; ') || null,
       henDayPercent,
@@ -185,30 +269,31 @@ export class ProductionService {
         })
       : await this.prisma.eggCollectionSession.create({ data });
 
-    // Deduct feed from stock if feed was recorded
-    if (data.feedKg && data.feedTypeName) {
-      try {
-        const feedType = data.feedTypeName as any;
-        await this.prisma.feedIntakeLog.create({
-          data: {
-            batchId: dto.batchId,
-            houseId: dto.houseId,
-            feedType: feedType,
-            entryDate: new Date(dto.sessionDate),
-            quantityDispensedKg: Number(data.feedKg),
-            wastageKg: 0,
-            recommendedMinKg: 0,
-            recommendedMaxKg: 0,
-            notes: 'Logged from ' + dto.shift + ' egg collection session',
-            recordedById: user.id,
-          },
-        });
-      } catch (_) { /* best-effort feed deduction */ }
-    }
+    // Deduct feed from stock — feed is now a required, store-item-linked
+    // field (validated above), so this always fires.
+    try {
+      await this.prisma.feedIntakeLog.create({
+        data: {
+          batchId: dto.batchId,
+          houseId: dto.houseId,
+          feedType: data.feedTypeName as any,
+          storeItemId: dto.sessionFeed.feedStoreItemId,
+          entryDate: new Date(dto.sessionDate),
+          quantityDispensedKg: dto.sessionFeed.feedKg,
+          wastageKg: 0,
+          recommendedMinKg: 0,
+          recommendedMaxKg: 0,
+          notes: 'Logged from ' + dto.shift + ' egg collection session',
+          recordedById: user.id,
+        },
+      });
+    } catch (_) { /* best-effort feed log — residual already validated above */ }
 
-    // Forward vaccines/supplements to VaccinationRecord so the Production
-    // Manager Health page surfaces them as a historical log.
-    for (const v of (dto.vaccinesGiven ?? [])) {
+    // Forward vaccines/supplements to VaccinationRecord (store-item-linked,
+    // residual already validated above) so the Production Manager Health
+    // page surfaces them as a historical log AND the store residual ledger
+    // (getIssuableStoreItems) reflects what was actually dispensed.
+    for (const v of vaccinesGiven) {
       await this.prisma.vaccinationRecord.create({
         data: {
           batchId: dto.batchId,
@@ -217,32 +302,39 @@ export class ProductionService {
           route: VaccinationRoute.OTHER,
           batchSize: closingStock,
           dosageUnits: v.dosage,
+          storeItemId: v.storeItemId,
+          quantityUsed: v.quantityUsed ?? null,
           notes: `Logged via Lead Attendant ${dto.shift} session`,
           recordedById: user.id,
         },
       });
     }
 
-    // Auto-log collection-time breakage expenses (soft shell, deformed, broken unsellable, broken sellable)
+    // Auto-log collection-time breakage expenses (soft shell, deformed,
+    // damaged, broken). The broken/sellable split isn't known yet at
+    // collection time — Sales enters it at tally sign-off — so broken is
+    // conservatively costed here as a full loss, same as damaged/soft
+    // shell/deformed. TallyVerificationService.sign() logs an adjusting
+    // entry once the actual split is known.
     try {
       const collDate = new Date(dto.sessionDate);
       collDate.setHours(0, 0, 0, 0);
       const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: collDate } });
       const costPerEgg        = pricing?.pricePerEgg       ? Number(pricing.pricePerEgg)       : 0;
-      const pricePerEggBroken = pricing?.pricePerEggBroken ? Number(pricing.pricePerEggBroken) : 0;
+      // pricePerEggBroken isn't used here — the broken bucket is conservatively
+      // costed as a full loss until Sales's split is known (see sign() adjustment).
 
-      const softShellQty     = totals.totalSoftShell         ?? 0;
-      const deformedQty      = totals.totalDeformed          ?? 0;
-      const brokenSellQty    = totals.totalBrokenSellable     ?? 0;
-      const brokenUnsellQty  = totals.totalBrokenUnsellable   ?? 0;
+      const softShellQty     = totals.totalSoftShell ?? 0;
+      const deformedQty      = totals.totalDeformed  ?? 0;
+      const damagedQty       = totals.totalDamaged   ?? 0;
+      const brokenQty        = totals.totalBroken    ?? 0; // unsplit at collection time — full loss until Sales classifies
 
-      // softShell + deformed: cost = costPerEgg × qty (not sold)
-      const softDeformedLoss   = (softShellQty + deformedQty) * costPerEgg;
-      // brokenSellable: cost = (costPerEgg − pricePerEggBroken) × qty
-      const brokenSellLoss     = brokenSellQty  * Math.max(0, costPerEgg - pricePerEggBroken);
-      // brokenUnsellable: cost = costPerEgg × qty (not sold)
-      const brokenUnsellLoss   = brokenUnsellQty * costPerEgg;
-      const totalCollLoss      = softDeformedLoss + brokenSellLoss + brokenUnsellLoss;
+      // softShell + deformed + damaged: cost = costPerEgg × qty (not sold)
+      const fullLossLoss    = (softShellQty + deformedQty + damagedQty) * costPerEgg;
+      // broken: conservatively costed as full loss (unsellable) at collection
+      // time — corrected by an adjusting entry once Sales splits it.
+      const brokenLoss      = brokenQty * costPerEgg;
+      const totalCollLoss   = fullLossLoss + brokenLoss;
 
       if (totalCollLoss > 0 && costPerEgg > 0) {
         let cat = await this.prisma.expenseCategory.findUnique({ where: { name: 'Egg Breakage' } });
@@ -252,10 +344,10 @@ export class ProductionService {
           });
         }
         const parts: string[] = [];
-        if (softShellQty  > 0) parts.push(`Soft shell: ${softShellQty}`);
-        if (deformedQty   > 0) parts.push(`Deformed: ${deformedQty}`);
-        if (brokenSellQty > 0) parts.push(`Broken sellable: ${brokenSellQty}`);
-        if (brokenUnsellQty > 0) parts.push(`Broken unsellable: ${brokenUnsellQty}`);
+        if (softShellQty > 0) parts.push(`Soft shell: ${softShellQty}`);
+        if (deformedQty  > 0) parts.push(`Deformed: ${deformedQty}`);
+        if (damagedQty   > 0) parts.push(`Damaged: ${damagedQty}`);
+        if (brokenQty    > 0) parts.push(`Broken (unclassified, provisional full loss): ${brokenQty}`);
 
         await this.prisma.expenseLog.create({
           data: {

@@ -25,6 +25,7 @@ import { BrooderPage } from './pages/attendant/BrooderPage';
 import { ManagerHome }      from './pages/manager/ManagerHome';
 import { ManagerBatches }   from './pages/manager/ManagerBatches';
 import { VerificationQueue } from './pages/manager/VerificationQueue';
+import { HdpControlsPage }  from './pages/manager/HdpControlsPage';
 
 // Accountant pages
 import { AccountantHome }   from './pages/accountant/AccountantHome';
@@ -204,6 +205,7 @@ function AppInner() {
           <Route index                    element={<ManagerHome />} />
           <Route path="batches"           element={<ManagerBatches />} />
           <Route path="verification"      element={<VerificationQueue />} />
+          <Route path="hdp-controls"      element={<HdpControlsPage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="visitors"          element={<VisitorManagementPage />} />
           <Route path="analytics"         element={<AnalyticsDashboard role="MANAGER" />} />

@@ -93,8 +93,8 @@ export class TallyVerificationService {
             houseId: true, totalGoodEggs: true,
             totalFullTrays: true, totalLooseEggs: true,
             totalStarterEggs: true, totalBrokenSellable: true,
-            totalBrokenUnsellable: true, totalSoftShell: true,
-            totalDeformed: true, totalWeightKg: true,
+            totalBrokenUnsellable: true, totalBrokenEggs: true, totalSoftShell: true,
+            totalDeformed: true, totalDamaged: true, totalWeightKg: true,
             rowData: true,
             batchId: true,
           },
@@ -137,36 +137,39 @@ export class TallyVerificationService {
     if (tally.isLocked) throw new BadRequestException('Tally already locked');
 
     // Row fields match what the frontend (EggCollectionPage) sends:
-    // totalEggs, starterEggs, brokenSellable, brokenUnsellable, softShell, deformed, weightKg
-    let totalEggs = 0, totalStarterEggs = 0, totalBrokenSellable = 0, totalBrokenUnsellable = 0;
+    // totalEggs, starterEggs, broken, damaged, softShell, deformed, weightKg
+    let totalEggs = 0, totalStarterEggs = 0, totalBroken = 0, totalDamaged = 0;
     let totalSoftShell = 0, totalDeformed = 0, totalWeightKg = 0;
     for (const r of rowData) {
-      totalEggs              += Number(r.totalEggs        ?? 0);
-      totalStarterEggs       += Number(r.starterEggs      ?? 0);
-      totalBrokenSellable    += Number(r.brokenSellable   ?? 0);
-      totalBrokenUnsellable  += Number(r.brokenUnsellable ?? 0);
-      totalSoftShell         += Number(r.softShell        ?? 0);
-      totalDeformed          += Number(r.deformed         ?? 0);
-      totalWeightKg          += Number(r.weightKg         ?? 0);
+      totalEggs              += Number(r.totalEggs   ?? 0);
+      totalStarterEggs       += Number(r.starterEggs ?? 0);
+      totalBroken             += Number(r.broken      ?? 0);
+      totalDamaged            += Number(r.damaged     ?? 0);
+      totalSoftShell          += Number(r.softShell   ?? 0);
+      totalDeformed           += Number(r.deformed    ?? 0);
+      totalWeightKg           += Number(r.weightKg    ?? 0);
     }
     // All-starter special case: totalEggs === nonStandardTotal means every
     // non-broken egg is a starter; totalGoodEggs = 0. HDP must use totalStarterEggs
     // as the effective egg count so hen-day is not falsely reported as 0%.
-    const nonStandardTotal = totalStarterEggs + totalBrokenSellable + totalBrokenUnsellable + totalSoftShell + totalDeformed;
+    const nonStandardTotal = totalStarterEggs + totalBroken + totalDamaged + totalSoftShell + totalDeformed;
     const isAllStarter     = totalStarterEggs > 0 && totalEggs > 0 && totalEggs === nonStandardTotal;
     const totalGoodEggs    = Math.max(0, totalEggs - nonStandardTotal);
     const totalFullTrays = Math.floor(totalGoodEggs / 30);
     const totalLooseEggs = totalGoodEggs % 30;
-    const totalBrokenEggs = totalBrokenSellable + totalBrokenUnsellable;
 
     return this.prisma.$transaction(async (tx) => {
       await tx.eggCollectionSession.update({
         where: { id: sessionId },
         data: {
           rowData: rowData as any,
-          totalFullTrays, totalLooseEggs, totalBrokenEggs,
-          totalSoftShell, totalDeformed, totalWeightKg, totalGoodEggs,
-          totalStarterEggs, totalBrokenSellable, totalBrokenUnsellable,
+          totalFullTrays, totalLooseEggs, totalBrokenEggs: totalBroken,
+          totalDamaged, totalSoftShell, totalDeformed, totalWeightKg, totalGoodEggs,
+          totalStarterEggs,
+          // Edits reset the broken split back to the conservative default —
+          // Sales must re-sign and re-classify against the new broken total.
+          totalBrokenSellable: 0,
+          totalBrokenUnsellable: totalBroken,
           editedAt: new Date(),
           editedById: user.id,
         },
@@ -178,6 +181,8 @@ export class TallyVerificationService {
           pmSignedById: null,    pmSignedAt: null,    pmRowData: Prisma.JsonNull,
           salesSignedById: null, salesSignedAt: null, salesRowData: Prisma.JsonNull,
           storeSignedById: null, storeSignedAt: null, storeRowData: Prisma.JsonNull,
+          brokenSellableQty: null, brokenUnsellableQty: null,
+          brokenSplitSetById: null, brokenSplitSetAt: null,
           editCount: { increment: 1 },
           lastEditedById: user.id,
           lastEditedAt: new Date(),
@@ -293,8 +298,21 @@ export class TallyVerificationService {
     });
   }
 
-  /** Sign for the calling user's role. When all 3 signed, locks. */
-  async sign(sessionId: string, user: RequestUser) {
+  /**
+   * Sign for the calling user's role. When all 3 signed, locks.
+   *
+   * Sales must additionally submit the actual broken-egg classification —
+   * how many of the session's (unsplit) broken eggs are sellable-as-broken
+   * vs. a total loss. This is the "three-person verification" step that
+   * replaces the old attendant-time Broken Sellable / Broken Unsellable
+   * columns: the split now happens here, from the person who actually
+   * handles and sells the eggs, instead of being guessed at collection time.
+   */
+  async sign(
+    sessionId: string,
+    user: RequestUser,
+    brokenSplit?: { brokenSellableQty: number; brokenUnsellableQty: number },
+  ) {
     const party = ROLE_TO_PARTY[user.role];
     if (!party) throw new ForbiddenException('Your role cannot sign the tally');
 
@@ -311,6 +329,8 @@ export class TallyVerificationService {
 
     const now = new Date();
     const data: any = {};
+    let brokenSplitToApply: { sellable: number; unsellable: number } | null = null;
+
     if (party === 'PM') {
       if (tally.pmSignedById) throw new BadRequestException('Already signed by Production Manager');
       data.pmSignedById = user.id; data.pmSignedAt = now;
@@ -321,8 +341,45 @@ export class TallyVerificationService {
         throw new BadRequestException('Production Manager must sign off before Sales can sign');
       }
       if (tally.salesSignedById) throw new BadRequestException('Already signed by Sales');
+
+      // Sales must classify the session's raw broken-egg count into
+      // sellable vs. unsellable — the two numbers must sum to exactly what
+      // the attendant recorded as "Broken" for this session.
+      const totalBroken = (tally.session as any).totalBrokenEggs ?? 0;
+      if (totalBroken > 0) {
+        if (!brokenSplit) {
+          throw new BadRequestException(
+            `This session has ${totalBroken} broken egg(s). Enter how many are sellable and how many are ` +
+            `unsellable before signing.`,
+          );
+        }
+        const { brokenSellableQty, brokenUnsellableQty } = brokenSplit;
+        if (
+          !Number.isInteger(brokenSellableQty) || brokenSellableQty < 0 ||
+          !Number.isInteger(brokenUnsellableQty) || brokenUnsellableQty < 0
+        ) {
+          throw new BadRequestException('Broken sellable/unsellable quantities must be non-negative whole numbers');
+        }
+        if (brokenSellableQty + brokenUnsellableQty !== totalBroken) {
+          throw new BadRequestException(
+            `Broken sellable (${brokenSellableQty}) + unsellable (${brokenUnsellableQty}) must sum to the ` +
+            `session's total broken eggs (${totalBroken}).`,
+          );
+        }
+        brokenSplitToApply = { sellable: brokenSellableQty, unsellable: brokenUnsellableQty };
+      } else if (brokenSplit) {
+        // Nothing to split — ignore any submitted split rather than erroring.
+        brokenSplitToApply = { sellable: 0, unsellable: 0 };
+      }
+
       data.salesSignedById = user.id; data.salesSignedAt = now;
       data.salesRowData = tally.session.rowData;
+      if (brokenSplitToApply) {
+        data.brokenSellableQty = brokenSplitToApply.sellable;
+        data.brokenUnsellableQty = brokenSplitToApply.unsellable;
+        data.brokenSplitSetById = user.id;
+        data.brokenSplitSetAt = now;
+      }
     } else {
       // FIX: Store must wait for both PM and Sales to sign first
       if (!tally.pmSignedById) {
@@ -337,6 +394,57 @@ export class TallyVerificationService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // Correct the session's broken sellable/unsellable split (was
+      // conservatively defaulted to 100% unsellable at collection time) and
+      // log an adjusting expense entry for the difference, now that the
+      // actual classification is known.
+      if (brokenSplitToApply) {
+        const session = tally.session as any;
+        await tx.eggCollectionSession.update({
+          where: { id: sessionId },
+          data: {
+            totalBrokenSellable: brokenSplitToApply.sellable,
+            totalBrokenUnsellable: brokenSplitToApply.unsellable,
+          },
+        });
+
+        try {
+          const collDate = new Date(session.sessionDate);
+          collDate.setHours(0, 0, 0, 0);
+          const pricing = await tx.dailyEggPrice.findUnique({ where: { priceDate: collDate } });
+          const costPerEgg        = pricing?.pricePerEgg       ? Number(pricing.pricePerEgg)       : 0;
+          const pricePerEggBroken = pricing?.pricePerEggBroken ? Number(pricing.pricePerEggBroken) : 0;
+          if (costPerEgg > 0) {
+            const provisionalLoss = (session.totalBrokenEggs ?? 0) * costPerEgg;
+            const actualLoss =
+              brokenSplitToApply.unsellable * costPerEgg +
+              brokenSplitToApply.sellable   * Math.max(0, costPerEgg - pricePerEggBroken);
+            const diff = Math.round((actualLoss - provisionalLoss) * 100) / 100;
+            if (diff !== 0) {
+              let cat = await tx.expenseCategory.findUnique({ where: { name: 'Egg Breakage' } });
+              if (!cat) {
+                cat = await tx.expenseCategory.create({
+                  data: { name: 'Egg Breakage', description: 'Auto-logged egg breakage losses', createdById: user.id },
+                });
+              }
+              await tx.expenseLog.create({
+                data: {
+                  categoryId:   cat.id,
+                  description:  `Broken-egg classification adjustment — Sales split ${session.shift} session ` +
+                    `${sessionId.slice(0, 8)} into ${brokenSplitToApply.sellable} sellable / ` +
+                    `${brokenSplitToApply.unsellable} unsellable (was provisionally all unsellable).`,
+                  amount:       diff,
+                  expenseDate:  collDate,
+                  vendorName:   null,
+                  receiptRef:   `COLL-ADJ-${sessionId.slice(0, 8)}`,
+                  recordedById: user.id,
+                },
+              });
+            }
+          }
+        } catch (_) { /* best-effort adjustment logging — split itself already saved above */ }
+      }
+
       const updated = await tx.eggTallyVerification.update({
         where: { sessionId }, data,
       });
@@ -568,6 +676,7 @@ export class TallyVerificationService {
             totalBrokenUnsellable:true,
             totalSoftShell:       true,
             totalDeformed:        true,
+            totalDamaged:         true,
             totalFullTrays:       true,
             totalLooseEggs:       true,
           },
@@ -580,6 +689,7 @@ export class TallyVerificationService {
     // Derive totalEggs per session (mirrors editAndResubmit formula):
     //   totalEggs = totalGoodEggs + totalStarterEggs + totalBrokenSellable
     //             + totalBrokenUnsellable + totalSoftShell + totalDeformed
+    //             + totalDamaged
     const totalCollectedEggs = tallies.reduce((sum, t) => {
       const s = t.session as any;
       if (!s) return sum;
@@ -589,7 +699,8 @@ export class TallyVerificationService {
         + (s.totalBrokenSellable   ?? 0)
         + (s.totalBrokenUnsellable ?? 0)
         + (s.totalSoftShell        ?? 0)
-        + (s.totalDeformed         ?? 0);
+        + (s.totalDeformed         ?? 0)
+        + (s.totalDamaged          ?? 0);
     }, 0);
 
     // FIX: Sum per-category counts across all locked sessions (was hardcoded to 0).

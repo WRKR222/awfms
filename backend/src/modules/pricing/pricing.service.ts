@@ -66,7 +66,7 @@ export class PricingService {
           select: {
             totalGoodEggs: true, totalStarterEggs: true,
             totalBrokenSellable: true, totalBrokenUnsellable: true,
-            totalSoftShell: true, totalDeformed: true,
+            totalSoftShell: true, totalDeformed: true, totalDamaged: true,
           },
         },
       },
@@ -82,7 +82,8 @@ export class PricingService {
         + (s.totalBrokenSellable   ?? 0)
         + (s.totalBrokenUnsellable ?? 0)
         + (s.totalSoftShell        ?? 0)
-        + (s.totalDeformed         ?? 0);
+        + (s.totalDeformed         ?? 0)
+        + (s.totalDamaged          ?? 0);
     }, 0);
 
     const dateLabel   = dayjs(dto.priceDate).format('D MMM YYYY');
