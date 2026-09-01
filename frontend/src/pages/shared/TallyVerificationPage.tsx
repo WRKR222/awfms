@@ -132,6 +132,8 @@ function TallyCard({ tally }: { tally: TallySession }) {
 
   const canSignPrereqs = !!myField && !iAlreadySigned && !tally.isLocked && prerequisitesMet;
 
+  const session = tally.session;
+
   // Sales must classify the session's raw broken-egg count into
   // sellable/unsellable before their sign-off is accepted (the old
   // attendant-time Broken Sellable/Unsellable columns moved here — see
@@ -147,7 +149,6 @@ function TallyCard({ tally }: { tally: TallySession }) {
   const canSign = canSignPrereqs && splitValid;
 
   const [isEditing, setIsEditing] = useState(false);
-  const session = tally.session;
   const originalRows: RowData[] = Array.isArray(session?.rowData) ? session!.rowData : [];
   // editRows stores string values during editing so the user can clear a zero
   // and type a fresh number (e.g. "0" → "" → "2") without the field forcing
