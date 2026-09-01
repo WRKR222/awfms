@@ -85,6 +85,25 @@ export const BulkReassignCagesSchema = z.object({
 });
 export type BulkReassignCagesDto = z.infer<typeof BulkReassignCagesSchema>;
 
+// ── Bulk reassignment described in plain text ──────────────────────────
+// Same destination as BulkReassignCagesSchema (a batch's whole new cage
+// layout), but instead of composing the `blocks` array by hand, the caller
+// writes a description like:
+//   Row F Level 4:
+//   1-33: 9 birds each
+//   34: 8 birds
+//   35-39: 9 birds each
+// which the service parses deterministically (see cage-layout-parser.util)
+// into that same block structure — this is what lets a mixed, uneven
+// layout (some cages with 9 birds, some with 8) be described in one go
+// instead of forcing every cage in a range to share one count.
+export const BulkReassignCagesTextSchema = z.object({
+  description: z.string().trim().min(1).max(8000),
+  placedDate:  z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  notes:       z.string().max(500).optional(),
+});
+export type BulkReassignCagesTextDto = z.infer<typeof BulkReassignCagesTextSchema>;
+
 // ── Heat logs ────────────────────────────────────────────────────────────
 export const CreateCharcoalHeatLogSchema = z.object({
   rowId:       z.string().uuid(),

@@ -69,6 +69,8 @@ import {
   AssignLevelSchema,
   AssignLevelEquallySchema,
   BulkReassignCagesSchema,
+  BulkReassignCagesTextSchema,
+  type BulkReassignCagesDto,
   CreateHeatLogSchema,
   StopBulbHeatLogSchema,
   CreateLevelFeedLogSchema,
@@ -81,6 +83,7 @@ import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
 dayjs.extend(isoWeek);
 import { ZodError } from 'zod';
+import { parseCageLayoutDescription, CageLayoutParseError, ParsedCageBlock } from './cage-layout-parser.util';
 
 function parseOrThrow<T>(schema: { parse: (v: unknown) => T }, value: unknown): T {
   try {
@@ -1150,12 +1153,11 @@ export class BrooderService {
    * injured, under observation — land in their destination cages already
    * marked as isolation, same as a manual per-cage isolation placement.
    */
-  async bulkReassignCages(batchId: string, input: unknown, userId: string) {
-    const dto = parseOrThrow(BulkReassignCagesSchema, input);
-
-    const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
-    if (!batch) throw new NotFoundException('Batch not found');
-
+  /** Shared by bulkReassignCages and the text-description entry point:
+   *  turns a validated `blocks` array (rowId/levelIds already resolved)
+   *  into the flat list of per-cage placements, checking that every
+   *  requested cage exists and that no two blocks target the same cage. */
+  private async resolveBlocksToPlacements(blocks: BulkReassignCagesDto['blocks']) {
     type Placement = {
       levelId: string; cageId: string; cageNumber: number; birdCount: number; label: string;
       isIsolation: boolean; isolationReason: string | null;
@@ -1163,7 +1165,7 @@ export class BrooderService {
     const placements: Placement[] = [];
     const seenCageIds = new Set<string>();
 
-    for (const block of dto.blocks) {
+    for (const block of blocks) {
       const row = await this.prisma.brooderRow.findUnique({
         where: { id: block.rowId },
         include: { levels: { include: { cages: { orderBy: { cageNumber: 'asc' } } } } },
@@ -1200,6 +1202,169 @@ export class BrooderService {
         }
       }
     }
+    return placements;
+  }
+
+  /** Matches a typed row/level label ("F", "Row F", "4", "Level 4 (Top)"…)
+   *  against the actual seeded rows/levels. Used by the text-description
+   *  entry point — the JSON API (bulkReassignCages) always takes real ids
+   *  and never goes through this. */
+  private matchRowByLabel<T extends { id: string; label: string; rowNumber: number }>(
+    rows: T[], raw: string,
+  ): T | undefined {
+    const norm = raw.trim().toLowerCase();
+    return rows.find(r =>
+      r.label.toLowerCase() === norm ||
+      r.label.toLowerCase() === `row ${norm}` ||
+      String(r.rowNumber) === norm,
+    );
+  }
+
+  private matchLevelByLabel<T extends { id: string; label: string; levelNumber: number }>(
+    levels: T[], raw: string,
+  ): T | undefined {
+    const norm = raw.trim().toLowerCase();
+    return levels.find(l =>
+      l.label.toLowerCase() === norm ||
+      l.label.toLowerCase() === `level ${norm}` ||
+      l.label.toLowerCase().startsWith(`level ${norm} `) ||
+      String(l.levelNumber) === norm,
+    );
+  }
+
+  /** Resolves a parsed (label-based) description into the same `blocks`
+   *  shape BulkReassignCagesSchema expects, failing loudly on any label
+   *  that can't be matched to a real row/level rather than guessing. */
+  private async resolveParsedBlocks(parsed: ParsedCageBlock[]): Promise<BulkReassignCagesDto['blocks']> {
+    const rows = await this.prisma.brooderRow.findMany({
+      include: { levels: true },
+      orderBy: { rowNumber: 'asc' },
+    });
+
+    return parsed.map((p) => {
+      const row = this.matchRowByLabel(rows, p.rowLabel);
+      if (!row) {
+        throw new BadRequestException(
+          `Line ${p.sourceLine}: no brooder row matches "${p.rowLabel}". ` +
+          `Known rows: ${rows.map(r => r.label).join(', ')}.`,
+        );
+      }
+      const levelIds = p.levelLabels.map((lvlLabel) => {
+        const level = this.matchLevelByLabel(row.levels, lvlLabel);
+        if (!level) {
+          throw new BadRequestException(
+            `Line ${p.sourceLine}: no level matches "${lvlLabel}" on ${row.label}. ` +
+            `Known levels: ${row.levels.map(l => l.label).join(', ')}.`,
+          );
+        }
+        return level.id;
+      });
+      return {
+        rowId: row.id,
+        levelIds,
+        startCageNumber: p.startCageNumber,
+        cageCount: p.cageCount,
+        birdsPerCage: p.birdsPerCage,
+        isIsolation: p.isIsolation,
+        isolationReason: p.isolationReason ?? undefined,
+      };
+    });
+  }
+
+  /** Parses a free-text cage layout description into the same `blocks`
+   *  shape the JSON API takes, WITHOUT writing anything — lets the UI show
+   *  a "here's what I understood, does this look right?" preview (row,
+   *  level, cage range, bird count, running totals) before the attendant
+   *  confirms. Throws (with a line number) on anything it can't parse or
+   *  resolve, same as the write path. */
+  async previewCageLayoutFromText(batchId: string, input: unknown) {
+    const dto = parseOrThrow(BulkReassignCagesTextSchema, input);
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    let parsed: ParsedCageBlock[];
+    try {
+      parsed = parseCageLayoutDescription(dto.description);
+    } catch (e) {
+      if (e instanceof CageLayoutParseError) throw new BadRequestException(e.message);
+      throw new BadRequestException((e as Error).message);
+    }
+
+    const resolvedBlocks = await this.resolveParsedBlocks(parsed);
+    // Run through the same Zod validation the write path uses (e.g. the
+    // isolation-reason-length rule) so preview errors match apply errors.
+    const { blocks } = parseOrThrow(BulkReassignCagesSchema, {
+      blocks: resolvedBlocks, placedDate: dto.placedDate, notes: dto.notes,
+    });
+    const placements = await this.resolveBlocksToPlacements(blocks);
+
+    const totalBirds = placements.reduce((s, p) => s + p.birdCount, 0);
+
+    // Group for a readable preview: row → level → cage/bird totals.
+    // Placements only carry levelId, so pull row/level labels for that set.
+    const levelMeta = await this.prisma.brooderLevel.findMany({
+      where: { id: { in: [...new Set(placements.map(p => p.levelId))] } },
+      include: { row: { select: { label: true } } },
+    });
+    const levelLabelById = new Map(levelMeta.map(l => [l.id, { rowLabel: l.row.label, levelLabel: l.label }]));
+    const byRowLevel = new Map<string, { rowLabel: string; levelLabel: string; cages: number; birds: number }>();
+    for (const p of placements) {
+      const meta = levelLabelById.get(p.levelId)!;
+      const key = p.levelId;
+      if (!byRowLevel.has(key)) {
+        byRowLevel.set(key, { rowLabel: meta.rowLabel, levelLabel: meta.levelLabel, cages: 0, birds: 0 });
+      }
+      const entry = byRowLevel.get(key)!;
+      entry.cages += 1;
+      entry.birds += p.birdCount;
+    }
+
+    return {
+      batchId,
+      batchCode: batch.batchCode,
+      liveBirdCount: batch.currentBirdCount,
+      cagesAssigned: placements.length,
+      isolationCages: placements.filter(p => p.isIsolation).length,
+      totalBirds,
+      overCapacityBy: Math.max(0, totalBirds - batch.currentBirdCount),
+      byLevel: [...byRowLevel.values()],
+      placements: placements
+        .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }))
+        .map(p => ({
+          cageLabel: p.label, cageNumber: p.cageNumber, birdCount: p.birdCount,
+          isIsolation: p.isIsolation, isolationReason: p.isolationReason,
+        })),
+    };
+  }
+
+  /** Same destination as bulkReassignCages, but the layout is described in
+   *  plain text (see cage-layout-parser.util) instead of a hand-built
+   *  `blocks` array — parses + resolves labels, then hands off to
+   *  bulkReassignCages so the write path (transaction, conflict checks,
+   *  over-capacity notification) is defined in exactly one place. */
+  async bulkReassignCagesFromText(batchId: string, input: unknown, userId: string) {
+    const dto = parseOrThrow(BulkReassignCagesTextSchema, input);
+
+    let parsed: ParsedCageBlock[];
+    try {
+      parsed = parseCageLayoutDescription(dto.description);
+    } catch (e) {
+      if (e instanceof CageLayoutParseError) throw new BadRequestException(e.message);
+      throw new BadRequestException((e as Error).message);
+    }
+
+    const blocks = await this.resolveParsedBlocks(parsed);
+    return this.bulkReassignCages(batchId, { blocks, placedDate: dto.placedDate, notes: dto.notes }, userId);
+  }
+
+  async bulkReassignCages(batchId: string, input: unknown, userId: string) {
+    const dto = parseOrThrow(BulkReassignCagesSchema, input);
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const placements = await this.resolveBlocksToPlacements(dto.blocks);
 
     const totalBirds = placements.reduce((s, p) => s + p.birdCount, 0);
     const overCapacityBy = totalBirds - batch.currentBirdCount;

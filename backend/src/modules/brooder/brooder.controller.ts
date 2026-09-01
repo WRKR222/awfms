@@ -168,6 +168,42 @@ export class BrooderController {
     return this.svc.bulkReassignCages(batchId, body, user.id);
   }
 
+  /** POST /brooder/batches/:batchId/reassign-bulk-text/preview
+   *  Same destination as reassign-bulk, but takes a plain-text description
+   *  of the layout instead of a hand-built `blocks` array, e.g.:
+   *    Row F Level 4:
+   *    1-33: 9 birds each
+   *    34: 8 birds
+   *    35-39: 9 birds each
+   *    40: 8 birds
+   *    41-44: 9 birds each
+   *  This handles mixed per-cage counts within a run without the caller
+   *  having to compute block boundaries by hand. Returns the parsed
+   *  placements + totals WITHOUT writing anything, so the UI can show a
+   *  "does this look right?" confirmation before the attendant applies it. */
+  @Post('batches/:batchId/reassign-bulk-text/preview')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  previewCageLayoutFromText(
+    @Param('batchId') batchId: string,
+    @Body() body: any,
+  ) {
+    return this.svc.previewCageLayoutFromText(batchId, body);
+  }
+
+  /** POST /brooder/batches/:batchId/reassign-bulk-text
+   *  Applies a plain-text layout description (see preview endpoint above).
+   *  Same validation and write path as reassign-bulk — this only adds the
+   *  text-parsing step in front of it. */
+  @Post('batches/:batchId/reassign-bulk-text')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  bulkReassignCagesFromText(
+    @Param('batchId') batchId: string,
+    @Body() body: any,
+    @CurrentUser() user: any,
+  ) {
+    return this.svc.bulkReassignCagesFromText(batchId, body, user.id);
+  }
+
   /** POST /brooder/levels/:levelId/assign-equally
    *  Places `birdCount` (the LEVEL total) for one batch, split evenly
    *  across every cage on that level, instead of assigning cages one at a
