@@ -81,6 +81,75 @@ export class AiService {
     }
   }
 
+  // ── HDP% Control image reader (vision) ──────────────────────────────────
+  // FIX: HDP% Controls could only be uploaded as PDF/Excel/Word, but PMs
+  // often only have a phone photo of a printed breed-standard table. This
+  // reads that photo with Claude's vision API and turns it into the same
+  // "Week N: X%" line format that extractPointsFromText() (already used for
+  // the PDF/DOCX upload paths in HdpControlService) knows how to parse —
+  // so the image path reuses that one regex parser instead of duplicating
+  // table-extraction logic for a third time. It also factors in any `notes`
+  // the PM typed alongside the upload (e.g. "this is the Lohmann Brown
+  // standard" or "ignore the shaded column") and returns a short plain-
+  // English interpretation of what it read and how the notes were used, so
+  // the PM can sanity-check an AI-read table on screen rather than trusting
+  // it blindly. Returns null (never throws) when the API key isn't
+  // configured or the call fails — the caller falls back to asking the PM
+  // to upload the standard as PDF/Excel/Word instead.
+  async transcribeHdpControlImage(
+    imageBuffer: Buffer,
+    mimeType: string,
+    notes?: string,
+  ): Promise<{ transcription: string; interpretation: string } | null> {
+    if (!this.anthropic) return null;
+
+    const supported = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
+    const media_type = (supported.includes(mimeType as any) ? mimeType : 'image/jpeg') as typeof supported[number];
+    const base64 = imageBuffer.toString('base64');
+
+    const notesLine = notes?.trim()
+      ? `The person uploading this also wrote this note about the sheet: "${notes.trim()}". Use it to help you read the image correctly (it may say which breed/standard this is, which column to use, or clarify something odd about the photo) and mention how you used it in your interpretation.`
+      : 'No additional notes were provided for this image.';
+
+    const prompt =
+      'This image is a photo or scan of a poultry "Standard Production %" (Hen-Day Production, HDP%) reference table used on an egg farm. ' +
+      'It has a column for week (or day) of production/age and a column for the target/standard percentage. ' +
+      `${notesLine}\n\n` +
+      'Reply in exactly two parts, in this exact format:\n' +
+      'TRANSCRIPTION:\n' +
+      '(one line per row you can read, formatted exactly like "Week 24: 92.5%" or "Day 168: 92.5%" — numbers only, no extra commentary mixed into these lines)\n\n' +
+      'INTERPRETATION:\n' +
+      '(1-3 short sentences: what the table appears to be, the period range you read, and how you used any notes provided)\n\n' +
+      'If you cannot read any rows at all, still include both headers — leave the transcription empty and explain why in the interpretation (e.g. blurry image, no table visible).';
+
+    try {
+      const msg = await this.anthropic.messages.create({
+        model: this.config.get<string>('ANTHROPIC_MODEL') ?? 'claude-sonnet-4-6',
+        max_tokens: 1500,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type, data: base64 } },
+            { type: 'text', text: prompt },
+          ],
+        }],
+      });
+      const block = msg.content[0];
+      const text = block?.type === 'text' ? block.text : null;
+      if (!text) return null;
+
+      const transcriptionMatch = /TRANSCRIPTION:([\s\S]*?)(?:INTERPRETATION:|$)/i.exec(text);
+      const interpretationMatch = /INTERPRETATION:([\s\S]*)$/i.exec(text);
+      const transcription = transcriptionMatch?.[1]?.trim() ?? '';
+      const interpretation = interpretationMatch?.[1]?.trim() || 'Claude could not summarise this image.';
+
+      return { transcription, interpretation };
+    } catch (err: any) {
+      this.logger.error(`Claude vision API error (HDP control image): ${err.message} (status: ${err.status ?? 'unknown'})`);
+      return null;
+    }
+  }
+
   // ── Helper: guess which store item a report's free-text cell means ─────────
   // Used by the Production Report upload flow when the plain fuzzy-name
   // matcher couldn't place a report cell (e.g. "ND drops") against any
@@ -464,9 +533,13 @@ export class AiService {
           },
           select: { mortalityCount: true, mortalityCause: true },
         }),
+        // FIX (FCR not reflecting recorded feed): FeedIntakeLog.status stays
+        // PENDING forever — there is no feed-approval workflow anywhere in
+        // the app that ever sets it to APPROVED — so this filter matched
+        // zero rows and silently zeroed out feedKgFromSystem below.
         this.prisma.feedIntakeLog.findMany({
           where: {
-            entryDate: { gte: startDate, lte: endDate }, status: EntryStatus.APPROVED,
+            entryDate: { gte: startDate, lte: endDate },
             ...(reportCoveredBatchIds.length ? { batchId: { notIn: reportCoveredBatchIds } } : {}),
           },
           select: { quantityDispensedKg: true, feedType: true },
@@ -727,8 +800,9 @@ Write 2-3 short paragraphs. If no concerning patterns exist, say so clearly. End
           orderBy: { sessionDate: 'desc' },
           take: 40,
         },
+        // FIX (FCR not reflecting recorded feed): see the other FeedIntakeLog
+        // fixes in this file — status never reaches APPROVED for this model.
         feedIntakeLogs: {
-          where: { status: EntryStatus.APPROVED },
           select: { quantityDispensedKg: true },
           orderBy: { entryDate: 'desc' },
           take: 30,
@@ -820,8 +894,10 @@ Based on this data, provide: (1) whether this batch should be closed now, in 4-8
           house: { select: { name: true } },
         },
       }),
+      // FIX (FCR not reflecting recorded feed): see the other FeedIntakeLog
+      // fixes in this file — status never reaches APPROVED for this model.
       this.prisma.feedIntakeLog.findMany({
-        where: { entryDate: { gte: since30 }, status: EntryStatus.APPROVED },
+        where: { entryDate: { gte: since30 } },
         select: { quantityDispensedKg: true, feedType: true, batchId: true },
       }),
       this.prisma.eggCollectionSession.findMany({
@@ -1211,8 +1287,10 @@ Provide 3-5 improvement suggestions. Each should be: (a) specific to the data ab
         where: { batchId },
         _count: { _all: true },
       }),
+      // FIX (FCR not reflecting recorded feed): see the other FeedIntakeLog
+      // fixes in this file — status never reaches APPROVED for this model.
       this.prisma.feedIntakeLog.findMany({
-        where: { batchId, status: EntryStatus.APPROVED },
+        where: { batchId },
         select: { quantityDispensedKg: true },
         orderBy: { entryDate: 'desc' },
         take: 60,

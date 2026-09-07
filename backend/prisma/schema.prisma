@@ -1458,6 +1458,10 @@ enum HdpControlSourceFormat {
   PDF
   XLSX
   DOCX
+  // FIX: photographed/scanned standard-production tables (e.g. a phone
+  // photo of a breed's HDP% chart) can now be uploaded and read by Claude's
+  // vision API — see HdpControlService.parseImage() / AiService.transcribeHdpControlImage().
+  IMAGE
 }
 
 model HdpControlUpload {
@@ -1466,6 +1470,11 @@ model HdpControlUpload {
   sourceFormat HdpControlSourceFormat @map("source_format")
   granularity  HdpControlGranularity  @map("granularity")
   notes        String?
+  // FIX: for IMAGE uploads, Claude's short plain-English summary of what it
+  // read from the photo and how any `notes` were factored in — shown to the
+  // PM so they can sanity-check an AI-read table instead of trusting it blindly.
+  // Null for PDF/XLSX/DOCX uploads, which are parsed deterministically.
+  aiInterpretation String?             @map("ai_interpretation")
   isActive     Boolean                @default(true) @map("is_active")
   uploadedById String                 @map("uploaded_by_id")
   createdAt    DateTime               @default(now()) @map("created_at")

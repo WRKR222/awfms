@@ -1,14 +1,15 @@
 // src/modules/production/hdp-control.service.ts
 //
 // PM uploads a target Hen-Day Production % curve (a breed/standard control
-// sheet) as PDF, Excel, or Word. This service parses it into (period,
-// target %) points — a day number or week number of production, per the
-// chosen granularity — stores it as the single "active" control set (a new
-// upload deactivates the previous one; history is kept, not deleted), and
-// compares actual recorded HDP against it for a given batch.
+// sheet) as PDF, Excel, Word, or — FIX — a photo/scan image. This service
+// parses it into (period, target %) points — a day number or week number of
+// production, per the chosen granularity — stores it as the single "active"
+// control set (a new upload deactivates the previous one; history is kept,
+// not deleted), and compares actual recorded HDP against it for a given batch.
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import * as XLSX from 'xlsx';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { AiService } from '../ai/ai.service';
 import { RequestUser } from '../../auth/types/request-user.type';
 import type { ParsedHdpControlPoint, UploadHdpControlsDto } from './hdp-control.dto';
 
@@ -19,7 +20,10 @@ const PERCENT_HEADER_WORDS = ['hdp', 'hen day', 'hen-day', 'production %', 'targ
 
 @Injectable()
 export class HdpControlService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly aiService: AiService,
+  ) {}
 
   // ── Upload ────────────────────────────────────────────────────────────
 
@@ -27,8 +31,12 @@ export class HdpControlService {
     if (!file) throw new BadRequestException('No file uploaded');
 
     const ext = (file.originalname.split('.').pop() ?? '').toLowerCase();
-    let sourceFormat: 'PDF' | 'XLSX' | 'DOCX';
+    let sourceFormat: 'PDF' | 'XLSX' | 'DOCX' | 'IMAGE';
     let points: ParsedHdpControlPoint[];
+    // FIX: only populated for IMAGE uploads — Claude's short summary of what
+    // it read from the photo and how `notes` were factored in. Saved on the
+    // record so the PM can sanity-check an AI-read table on screen.
+    let aiInterpretation: string | null = null;
 
     if (['xlsx', 'xls', 'csv'].includes(ext)) {
       sourceFormat = 'XLSX';
@@ -39,16 +47,27 @@ export class HdpControlService {
     } else if (ext === 'docx' || ext === 'doc') {
       sourceFormat = 'DOCX';
       points = await this.parseDocx(file.buffer);
+    } else if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
+      // FIX: PMs often only have a phone photo of a printed breed-standard
+      // table — read it with Claude's vision API instead of requiring a
+      // PDF/Excel/Word re-transcription.
+      sourceFormat = 'IMAGE';
+      const result = await this.parseImage(file.buffer, file.mimetype, dto.notes);
+      points = result.points;
+      aiInterpretation = result.interpretation;
     } else {
       throw new BadRequestException(
-        `Unsupported file type ".${ext}". Upload the HDP% control curve as .pdf, .xlsx/.xls/.csv, or .docx.`,
+        `Unsupported file type ".${ext}". Upload the HDP% control curve as .pdf, .xlsx/.xls/.csv, .docx, or an image (.png/.jpg/.jpeg/.webp/.gif).`,
       );
     }
 
     if (points.length === 0) {
       throw new BadRequestException(
-        'Could not find any (period, target %) values in this file. Make sure it has a column/row for ' +
-        'the day or week number and one for the target HDP%.',
+        sourceFormat === 'IMAGE'
+          ? `Could not find any (period, target %) values in this image. Claude's reading of it: ` +
+            `"${aiInterpretation ?? 'no readable rows'}". Try a clearer photo, or upload the standard as PDF, Excel, or Word instead.`
+          : 'Could not find any (period, target %) values in this file. Make sure it has a column/row for ' +
+            'the day or week number and one for the target HDP%.',
       );
     }
 
@@ -75,6 +94,7 @@ export class HdpControlService {
           sourceFormat,
           granularity: dto.granularity,
           notes: dto.notes ?? null,
+          aiInterpretation,
           isActive: true,
           uploadedById: user.id,
           points: { createMany: { data: dedupedPoints } },
@@ -99,7 +119,7 @@ export class HdpControlService {
       orderBy: { createdAt: 'desc' },
       select: {
         id: true, fileName: true, sourceFormat: true, granularity: true,
-        notes: true, isActive: true, createdAt: true, uploadedById: true,
+        notes: true, aiInterpretation: true, isActive: true, createdAt: true, uploadedById: true,
         _count: { select: { points: true } },
       },
     });
@@ -261,6 +281,28 @@ export class HdpControlService {
       throw new BadRequestException('Could not read text from this Word document. Try uploading it as Excel or PDF instead.');
     }
     return this.extractPointsFromText(text);
+  }
+
+  /**
+   * Image (png/jpg/jpeg/webp/gif) — FIX: hands the photo to
+   * AiService.transcribeHdpControlImage(), which reads the table with
+   * Claude's vision API and returns "Week N: X%" style lines plus a short
+   * interpretation. Those lines are then fed through the exact same
+   * extractPointsFromText() regex parser the PDF/DOCX paths already use,
+   * so there's no separate table-extraction logic to maintain for images.
+   */
+  private async parseImage(
+    buffer: Buffer, mimeType: string, notes: string | undefined,
+  ): Promise<{ points: ParsedHdpControlPoint[]; interpretation: string | null }> {
+    const result = await this.aiService.transcribeHdpControlImage(buffer, mimeType, notes);
+    if (!result) {
+      throw new BadRequestException(
+        'Could not read this image right now (the AI reader is unavailable or the request failed). ' +
+        'Try again in a moment, or upload the standard as PDF, Excel, or Word instead.',
+      );
+    }
+    const points = this.extractPointsFromText(result.transcription);
+    return { points, interpretation: result.interpretation };
   }
 
   /**

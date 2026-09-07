@@ -189,6 +189,58 @@ export class CageMapService {
     this.eventEmitter.emit(DASHBOARD_REFRESH_EVENT, { roles: ['MANAGER', 'OWNER'] });
     return result;
   }
+  /**
+   * Syncs each row's stored bird count from the attendant's per-row egg
+   * collection totals (RowEntry.totalBirds), so the cage map reflects
+   * whatever headcount was actually reported for that row instead of
+   * drifting (it previously only ever moved via mortality-event decrements
+   * off a `birdCount` that started at 0 and was never otherwise set to a
+   * known absolute headcount — see ProductionService.verifySession).
+   *
+   * `totalBirds` is an absolute count for that row as of the session (it
+   * already reflects that day's mortalities), so this SETS birdCount rather
+   * than decrementing it — matches the pattern used by
+   * ProductionReportReconciliationService when reconciling a row's headcount
+   * against an externally-reported figure. Called only when a PM approves a
+   * session (not on raw attendant submission), so unverified numbers never
+   * reach the cage map.
+   *
+   * Rows are matched by rowCode against the batch's OWN current assignments
+   * (rowCode isn't guaranteed globally unique — see getBlockWithMap), so a
+   * rowCode with no active assignment for this batch is skipped rather than
+   * guessed at.
+   */
+  async syncRowPopulations(batchId: string, rowData: Array<{ rowCode: string; totalBirds: number }>) {
+    if (!Array.isArray(rowData) || rowData.length === 0) return;
+
+    const assignments = await this.prisma.batchCageAssignment.findMany({
+      where: { batchId },
+      include: { row: { select: { rowCode: true } } },
+    });
+    if (assignments.length === 0) return;
+
+    const byRowCode = new Map(assignments.map(a => [(a as any).row?.rowCode, a]));
+
+    let changed = false;
+    for (const entry of rowData) {
+      const totalBirds = Number(entry?.totalBirds);
+      if (!entry?.rowCode || !Number.isFinite(totalBirds) || totalBirds < 0) continue;
+
+      const match = byRowCode.get(entry.rowCode.toUpperCase());
+      if (!match || match.birdCount === totalBirds) continue;
+
+      await this.prisma.batchCageAssignment.update({
+        where: { id: match.id },
+        data: { birdCount: totalBirds },
+      });
+      changed = true;
+    }
+
+    if (changed) {
+      this.eventEmitter.emit(DASHBOARD_REFRESH_EVENT, { roles: ['MANAGER', 'OWNER'] });
+    }
+  }
+
   // Returns all cage-row assignments for a given batch.
   // Used by the controller to power the batch-detail cage overlay.
   async getAssignmentsByBatch(batchId: string) {

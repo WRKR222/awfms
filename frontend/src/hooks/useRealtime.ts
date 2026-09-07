@@ -32,6 +32,12 @@ interface RealtimeCallbacks {
   onTallyUpdate?: (data: { tallyId: string; status: string }) => void;
   onProductionNew?: (data: { sessionId: string }) => void;
   onVerificationPending?: (data: { entryId: string; entryType: string }) => void;
+  // Fires for every 'notification:new' this user receives, in addition to
+  // the built-in fetchNotifications() call below. Lets a screen react to a
+  // specific notification (e.g. an attendant refetching their session state
+  // the instant a PM approves/returns it) without waiting for its own
+  // polling interval — see useAttendantRealtime.
+  onNotification?: (n: { id: string; type: string; title: string; message: string }) => void;
 }
 
 function isMobile() {
@@ -81,6 +87,7 @@ export function useRealtimeDashboard(callbacks: RealtimeCallbacks = {}) {
     (n: { id: string; type: string; title: string; message: string }) => {
       // Refresh notification store so badge count and list update instantly
       fetchNotifications();
+      callbacksRef.current.onNotification?.(n);
     },
     [fetchNotifications],
   );
@@ -135,6 +142,25 @@ export function useManagerRealtime() {
     onProductionNew:       () => {
       qc.invalidateQueries({ queryKey: ['production'] });
       qc.invalidateQueries({ queryKey: ['cage-map'] });
+    },
+  });
+}
+
+// ── Specialised hook for the Lead Attendant's egg-collection screens ─────────
+// Fixes: a PM approving/returning an AM or PM session used to only reach the
+// attendant's browser via polling — up to 2 minutes on AttendantHome's stale
+// cache, or 30s on EggCollectionPage's — which could show a freshly-approved
+// PM session as still locked ("account restricted"-looking) until a hard
+// refresh. The approve/return notifications now flow through
+// NotificationsService (see ProductionService.verifySession), so this
+// invalidates the shared today's-sessions query the instant that
+// notification arrives over the socket, on top of the existing polling.
+export function useAttendantRealtime() {
+  const qc = useQueryClient();
+  useRealtimeDashboard({
+    onNotification: () => {
+      qc.invalidateQueries({ queryKey: ['egg-sessions-today'] });
+      qc.invalidateQueries({ queryKey: ['attendant', 'pending-tallies'] });
     },
   });
 }

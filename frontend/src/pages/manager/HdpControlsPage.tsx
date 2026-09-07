@@ -1,8 +1,10 @@
 // src/pages/manager/HdpControlsPage.tsx
 //
 // Production Manager uploads the target Hen-Day Production % curve (a
-// breed/standard control sheet) as PDF, Excel, or Word, and compares actual
-// recorded HDP% against it, per batch.
+// breed/standard control sheet) as PDF, Excel, Word, or — FIX — a photo/scan
+// image (read with Claude's vision API on the backend, using any notes
+// typed in below as context), and compares actual recorded HDP% against it,
+// per batch.
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
@@ -89,10 +91,10 @@ export function HdpControlsPage() {
         </p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="md:col-span-2">
-            <label className="block text-xs text-gray-500 mb-1">File (PDF, Excel, or Word)</label>
+            <label className="block text-xs text-gray-500 mb-1">File (PDF, Excel, Word, or a photo/image)</label>
             <input
               type="file"
-              accept=".pdf,.xlsx,.xls,.csv,.docx,.doc"
+              accept=".pdf,.xlsx,.xls,.csv,.docx,.doc,.png,.jpg,.jpeg,.webp,.gif,image/*"
               onChange={e => setFile(e.target.files?.[0] ?? null)}
               className="w-full text-sm border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100"
             />
@@ -117,6 +119,10 @@ export function HdpControlsPage() {
             placeholder="e.g. HyLine Brown standard, 2026 revision"
             className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100"
           />
+          <p className="text-[11px] text-gray-400 mt-1">
+            For a photo/image upload, these notes are also given to the AI reader as context (e.g. which
+            breed/standard it is, or which column to use) and factored into how it reads the table.
+          </p>
         </div>
         {uploadError && (
           <div className="mt-3 flex items-center gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl p-3 text-red-700 dark:text-red-400 text-sm">
@@ -155,6 +161,11 @@ export function HdpControlsPage() {
                 {' '}{active.points?.length ?? 0} points · uploaded {dayjs(active.createdAt).format('D MMM YYYY')}
               </p>
               {active.notes && <p className="text-xs text-gray-400 mt-0.5">{active.notes}</p>}
+              {active.aiInterpretation && (
+                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1.5 italic">
+                  AI reading: {active.aiInterpretation}
+                </p>
+              )}
             </div>
           </div>
         )}

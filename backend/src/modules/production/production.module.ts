@@ -9,6 +9,7 @@ import { TallyVerificationService } from '../store/tally-verification.service';
 import { StoreModule } from '../store/store.module';
 import { HdpControlController } from './hdp-control.controller';
 import { HdpControlService } from './hdp-control.service';
+import { AiModule } from '../ai/ai.module';
 
 // FIX: Added missing import for TallyVerificationService (was listed as provider but never imported).
 // FIX: Removed EventEmitterModule.forRoot() — EventEmitter is already registered globally in
@@ -19,8 +20,11 @@ import { HdpControlService } from './hdp-control.service';
 //      (already exports StoreInventoryService) instead of duplicating its
 //      provider graph here.
 
+// FIX: imported AiModule so HdpControlService can inject AiService for the
+// image-upload HDP% control reader (Claude vision) — AiModule already
+// exports AiService for this exact cross-module pattern (FlockModule uses it too).
 @Module({
-  imports: [PrismaModule, NotificationsModule, StoreModule],
+  imports: [PrismaModule, NotificationsModule, StoreModule, AiModule],
   controllers: [ProductionController, CageMapController, CageMapUtilController, HdpControlController],
   providers: [ProductionService, CageMapService, TallyVerificationService, HdpControlService],
   exports: [ProductionService, CageMapService],

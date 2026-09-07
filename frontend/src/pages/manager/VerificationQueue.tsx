@@ -762,7 +762,9 @@ function EggSessionRow({ session, allSessions, isExpanded, onToggle, onApprove, 
   );
 }
 
-function useEggSessionsNeedingAttention() {
+// Exported so ManagerLayout can reuse the exact same query/cache entry for
+// the "Verification" nav badge — see the badge next to "Tally Sign-off".
+export function useEggSessionsNeedingAttention() {
   return useQuery({
     queryKey: ['production', 'sessions', 'attention'],
     queryFn: () => api.get('/production/sessions').then(r =>

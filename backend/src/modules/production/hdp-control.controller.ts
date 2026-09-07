@@ -18,7 +18,7 @@ import { UploadHdpControlsSchema } from './hdp-control.dto';
 export class HdpControlController {
   constructor(private readonly service: HdpControlService) {}
 
-  /** POST /production/hdp-controls/upload — PM uploads the target HDP% curve (PDF/Excel/Word). */
+  /** POST /production/hdp-controls/upload — PM uploads the target HDP% curve (PDF/Excel/Word/image — FIX: image uploads are read with Claude's vision API). */
   @Post('upload')
   @RequirePermission(Permission.HDP_CONTROL_UPLOAD)
   @UseInterceptors(FileInterceptor('file'))

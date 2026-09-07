@@ -17,6 +17,8 @@ import { useAuthStore } from '../../stores/auth.store';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
+import { useTodayEggSessions } from '../../hooks/useEggSessions';
+import { useAttendantRealtime } from '../../hooks/useRealtime';
 
 // ── Mirrors resolvePageMode in EggCollectionPage exactly ──────────────────────
 type PageMode =
@@ -43,16 +45,13 @@ export function AttendantHome() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
 
-  // Single source of truth — egg collection sessions for today
-  const { data: todaySessions = [] } = useQuery({
-    queryKey: ['attendant', 'today-sessions'],
-    queryFn: () =>
-      api
-        .get(`/production/sessions?sessionDate=${dayjs().format('YYYY-MM-DD')}`)
-        .then(r => r.data)
-        .catch(() => []),
-    refetchInterval: 30_000,
-  });
+  // Single source of truth — egg collection sessions for today. Shared with
+  // EggCollectionPage via the same hook/cache key (see useEggSessions.ts) so
+  // a PM approving/returning a session while the attendant is on either
+  // screen is reflected on both, instead of this page's own copy going
+  // stale for up to its old (uncapped) default staleTime.
+  const { data: todaySessions = [] } = useTodayEggSessions();
+  useAttendantRealtime();
 
   const amSession = (todaySessions as any[]).find((s: any) => s.shift === 'AM');
   const pmSession = (todaySessions as any[]).find((s: any) => s.shift === 'PM');

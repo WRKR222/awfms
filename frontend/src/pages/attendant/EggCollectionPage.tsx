@@ -21,6 +21,8 @@ import {
 import { api } from '../../lib/api/client';
 import { useOfflineMutation } from '../../hooks/useOfflineSync';
 import { useOfflineStore } from '../../stores/offline.store';
+import { useTodayEggSessions } from '../../hooks/useEggSessions';
+import { useAttendantRealtime } from '../../hooks/useRealtime';
 import {
   useIssuableStoreItems, FEED_CATEGORIES,
   VACCINE_CATEGORIES, SUPPLEMENT_CATEGORIES, TREATMENT_CATEGORIES,
@@ -216,16 +218,11 @@ export function EggCollectionPage() {
     queryFn: () => api.get('/flock/batches?isActive=true').then(r => r.data),
   });
 
-  // Include today's date in the query key so a new calendar day always gets a
-  // fresh fetch instead of reading stale data from the previous day's cache.
-  const today = dayjs().format('YYYY-MM-DD');
-  const { data: todaySessions = [], refetch: refetchSessions } = useQuery({
-    queryKey: ['egg-sessions-today', today],
-    queryFn: () =>
-      api.get(`/production/sessions?sessionDate=${today}`).then(r => r.data).catch(() => []),
-    refetchInterval: 30_000,
-    staleTime: 0,
-  });
+  const { data: todaySessions = [], refetch: refetchSessions } = useTodayEggSessions();
+  // Live-invalidates the query above the instant a PM approves/returns this
+  // attendant's session, instead of waiting on the 30s poll (see the FIX
+  // comment on useAttendantRealtime for the bug this closes).
+  useAttendantRealtime();
 
   const batches = (allBatches as any[]).filter((b: any) => b.stage === 'PRODUCTION');
 

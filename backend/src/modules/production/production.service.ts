@@ -35,6 +35,7 @@ import { NotificationsService } from '../../common/notifications/notifications.s
 import type { CreateEggCollectionSessionDto } from './production.dto';
 import { TallyVerificationService } from '../store/tally-verification.service';
 import { StoreInventoryService } from '../store/store-inventory.service';
+import { CageMapService } from './cage-map.service';
 
 interface RowDataEntry {
   rowCode: string;
@@ -85,6 +86,7 @@ export class ProductionService {
     private readonly notifications: NotificationsService,
     private readonly tallyVerificationService: TallyVerificationService,
     private readonly storeInventory: StoreInventoryService,
+    private readonly cageMapService: CageMapService,
   ) {}
 
   private readonly logger = new Logger(ProductionService.name);
@@ -550,7 +552,29 @@ export class ProductionService {
         data: { status: EntryStatus.APPROVED },
       });
 
+      // Sync the production cage map's per-row bird counts from what the
+      // attendant reported (rowData[i].totalBirds), now that a PM has
+      // verified it. Best-effort — a cage-map sync problem should never
+      // block the verification itself from going through.
+      try {
+        await this.cageMapService.syncRowPopulations(session.batchId, session.rowData as any);
+      } catch (err) {
+        this.logger.warn(`Cage map row-population sync failed for session ${id}: ${err}`);
+      }
+
       // FIX-1: Notify attendant that their session has been approved
+      // FIX (account-restricted / needs-hard-refresh bug): this used to call
+      // `this.prisma.notification.create(...)` directly, which only writes
+      // the row — it bypasses NotificationsService's event-bus emit, so the
+      // attendant's browser never received a live 'notification:new' push
+      // over the websocket. Their EggCollectionPage/AttendantHome session
+      // queries were then left to passive polling (up to their own staleTime)
+      // to notice the approval/return, which could take minutes and made a
+      // freshly-unlocked PM session look locked/"restricted" until a hard
+      // refresh forced an immediate refetch. Routing through
+      // `this.notifications` (already injected, previously unused here)
+      // fixes that — see useAttendantRealtime on the frontend, which
+      // invalidates the session query the moment this notification arrives.
       const attendant = await this.prisma.user.findUnique({
         where: { id: session.collectedById },
         select: { id: true },
@@ -558,28 +582,22 @@ export class ProductionService {
       if (attendant) {
         if (session.shift === 'AM') {
           // AM approved → tell attendant they can now submit PM session
-          await this.prisma.notification.create({
-            data: {
-              userId: attendant.id,
-              type: 'EGG_TALLY_TRIGGERED' as any,
-              title: `AM Session Approved — ${houseName}`,
-              message: `Your AM egg collection for ${houseName} (${(session as any).batch?.batchCode ?? ''}) has been approved. You may now submit the PM session.`,
-              entityId: session.id,
-              entityType: 'EggCollectionSession',
-            },
-          });
+          await this.notifications.notifyUser(
+            attendant.id,
+            'EGG_TALLY_TRIGGERED' as any,
+            `AM Session Approved — ${houseName}`,
+            `Your AM egg collection for ${houseName} (${(session as any).batch?.batchCode ?? ''}) has been approved. You may now submit the PM session.`,
+            { entityId: session.id, entityType: 'EggCollectionSession' },
+          );
         } else {
           // PM approved → notify attendant; day is now fully locked
-          await this.prisma.notification.create({
-            data: {
-              userId: attendant.id,
-              type: 'EGG_TALLY_TRIGGERED' as any,
-              title: `PM Session Approved — ${houseName}`,
-              message: `Your PM egg collection for ${houseName} (${(session as any).batch?.batchCode ?? ''}) has been approved. Both AM and PM sessions are now locked for today.`,
-              entityId: session.id,
-              entityType: 'EggCollectionSession',
-            },
-          });
+          await this.notifications.notifyUser(
+            attendant.id,
+            'EGG_TALLY_TRIGGERED' as any,
+            `PM Session Approved — ${houseName}`,
+            `Your PM egg collection for ${houseName} (${(session as any).batch?.batchCode ?? ''}) has been approved. Both AM and PM sessions are now locked for today.`,
+            { entityId: session.id, entityType: 'EggCollectionSession' },
+          );
         }
       }
 
@@ -645,21 +663,21 @@ export class ProductionService {
     });
 
     // FIX-3: Notify attendant of the return with the reason so they know to recount
+    // (routed through NotificationsService — see the FIX comment on the
+    // approve branch above for why the raw prisma.notification.create call
+    // this replaced caused the "restricted / needs hard refresh" bug.)
     const attendant = await this.prisma.user.findUnique({
       where: { id: session.collectedById },
       select: { id: true },
     });
     if (attendant) {
-      await this.prisma.notification.create({
-        data: {
-          userId: attendant.id,
-          type: 'EGG_TALLY_TRIGGERED' as any,
-          title: `${session.shift} Session Returned — Recount Required`,
-          message: `Your ${session.shift} egg collection for ${houseName} has been returned for a recount. Reason: ${returnReason}. Please review and resubmit.`,
-          entityId: session.id,
-          entityType: 'EggCollectionSession',
-        },
-      });
+      await this.notifications.notifyUser(
+        attendant.id,
+        'EGG_TALLY_TRIGGERED' as any,
+        `${session.shift} Session Returned — Recount Required`,
+        `Your ${session.shift} egg collection for ${houseName} has been returned for a recount. Reason: ${returnReason}. Please review and resubmit.`,
+        { entityId: session.id, entityType: 'EggCollectionSession' },
+      );
     }
 
     return returned;

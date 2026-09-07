@@ -14,6 +14,8 @@ import { MobileSidebar } from '../../components/shared/MobileSidebar';
 import { Sidebar, SidebarBody, SidebarLink, SidebarLinkItem } from '../../components/ui/sidebar';
 import { motion } from 'framer-motion';
 import { FlockIcon } from '../../components/ui/icons';
+import { usePendingEntries } from '../../hooks/useFlock';
+import { useEggSessionsNeedingAttention } from './VerificationQueue';
 
 function usePendingBadge() {
   return useQuery({
@@ -36,6 +38,13 @@ export function ManagerLayout() {
   const [open, setOpen] = useState(false);
 
   const { data: tallyBadge = 0 } = usePendingBadge();
+  // Same two queries VerificationQueue.tsx itself reads to populate its two
+  // tabs — reusing them here (same cache entries, no extra polling) so the
+  // "Verification" nav item gets the same red pending-count badge "Tally
+  // Sign-off" already has.
+  const { data: flockPendingForBadge = [] } = usePendingEntries();
+  const { data: eggSessionsForBadge = [] } = useEggSessionsNeedingAttention();
+  const verificationBadge = (flockPendingForBadge as any[]).length + (eggSessionsForBadge as any[]).length;
   const roleLabel = user?.role === 'OWNER' ? 'Director' : 'Production Manager';
 
   useEffect(() => {
@@ -50,7 +59,20 @@ export function ManagerLayout() {
     { to: '/manager',                  label: 'Home',          icon: <LayoutDashboard className="w-5 h-5" />, end: true },
     { to: '/manager/batches',          label: 'Batches',       icon: <Package className="w-5 h-5" /> },
     { to: '/manager/brooder-review',   label: 'Brooder Review', icon: <ClipboardList className="w-5 h-5" /> },
-    { to: '/manager/verification',     label: 'Verification',  icon: <ClipboardCheck className="w-5 h-5" /> },
+    {
+      to: '/manager/verification',
+      label: 'Verification',
+      icon: (
+        <span className="relative inline-flex w-5 h-5 items-center justify-center">
+          <ClipboardCheck className="w-5 h-5" />
+          {verificationBadge > 0 && (
+            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] rounded-full w-3.5 h-3.5 flex items-center justify-center font-bold">
+              {verificationBadge > 9 ? '9' : verificationBadge}
+            </span>
+          )}
+        </span>
+      ),
+    },
     {
       to: '/manager/tally',
       label: 'Tally Sign-off',

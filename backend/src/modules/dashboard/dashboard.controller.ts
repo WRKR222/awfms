@@ -702,10 +702,16 @@ export class DashboardController {
     }
     const mortalityCauses = Object.entries(causeMap).map(([cause, count]) => ({ cause, count }));
 
+    // FIX (FCR not reflecting recorded feed): FeedIntakeLog.status defaults
+    // to PENDING and nothing in the app ever transitions it to APPROVED —
+    // there is no feed-approval endpoint/workflow, unlike EggCollectionSession
+    // or FlockDailyEntry, which genuinely do move PENDING → APPROVED. Filtering
+    // on `status: EntryStatus.APPROVED` here therefore matched zero rows,
+    // always, silently zeroing out every feed total (and FCR = feed/eggs)
+    // this endpoint reports, however much feed was actually logged.
     const feedLogs = await this.prisma.feedIntakeLog.findMany({
       where: {
         entryDate: { gte: fromDate },
-        status: EntryStatus.APPROVED,
         ...batchFilter,
       },
       select: { entryDate: true, feedType: true, quantityDispensedKg: true },
@@ -732,8 +738,11 @@ export class DashboardController {
           where: { sessionDate: { gte: fromDate }, status: EntryStatus.APPROVED },
           select: { totalGoodEggs: true, totalFullTrays: true },
         },
+        // Same dead-filter fix as `feedLogs` above — FeedIntakeLog rows are
+        // never APPROVED, so this used to always compute totalFeedKg (and
+        // per-batch FCR) as 0 in `batchComparison` below.
         feedIntakeLogs: {
-          where: { entryDate: { gte: fromDate }, status: EntryStatus.APPROVED },
+          where: { entryDate: { gte: fromDate } },
           select: { quantityDispensedKg: true },
         },
       },
