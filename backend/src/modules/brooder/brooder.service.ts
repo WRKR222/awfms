@@ -3311,20 +3311,123 @@ export class BrooderService {
   ] as const;
 
   /** One day's review status for every section, defaulting any section with
-   *  no review row yet to PENDING (never surfaced as "missing"). */
+   *  no review row yet to PENDING (never surfaced as "missing"). Each
+   *  section also carries the actual attendant-recorded data for that
+   *  batch+day (`data`) — previously this only returned the review verdict,
+   *  so any day without an explicit PM sign-off (i.e. nearly every backdated
+   *  day, since a PM realistically only reviews as entries come in) rendered
+   *  as six content-less "PENDING" cards even though the attendant's real
+   *  entries existed. `data` is sourced live from BrooderLog / feed /
+   *  mortality / treatment tables, independent of review status. */
   async getDailyReview(batchId: string, logDate: Date) {
-    const rows = await this.prisma.brooderDailyReview.findMany({
-      where: { batchId, logDate },
-      include: { reviewedBy: { select: { id: true, username: true } } },
-    });
+    const [rows, sectionData] = await Promise.all([
+      this.prisma.brooderDailyReview.findMany({
+        where: { batchId, logDate },
+        include: { reviewedBy: { select: { id: true, username: true } } },
+      }),
+      this.getDailyReviewSectionData(batchId, logDate),
+    ]);
     const bySection = new Map(rows.map(r => [r.section, r]));
     return BrooderService.REVIEW_SECTIONS.map(section => {
       const existing = bySection.get(section as any);
-      return existing ?? {
+      const base = existing ?? {
         id: null, batchId, logDate, section, status: 'PENDING',
         reviewedById: null, reviewedBy: null, reviewedAt: null, returnReason: null,
       };
+      return { ...base, data: (sectionData as Record<string, unknown>)[section] };
     });
+  }
+
+  /** Pulls the real attendant-recorded data for one batch+day, grouped by
+   *  review section. Mirrors the general+row/level merge already used by
+   *  getPopulationRecordSheet (feed/mortality can be logged either at
+   *  whole-batch or per-row/level granularity) but for a single day. Level
+   *  membership is looked up via current assignment — same limitation the
+   *  rest of the cage-map code has (no historical-assignment table). */
+  private async getDailyReviewSectionData(batchId: string, logDate: Date) {
+    const levelIds = await this.getBatchLevelIds(batchId);
+
+    const [envLogs, generalFeed, levelFeed, generalMortality, levelMortality, treatments] =
+      await Promise.all([
+        this.prisma.brooderLog.findMany({
+          where: { batchId, logDate },
+          orderBy: [{ logSession: 'asc' }, { createdAt: 'asc' }],
+        }),
+        this.prisma.brooderGeneralFeedLog.findMany({ where: { batchId, entryDate: logDate } }),
+        levelIds.length
+          ? this.prisma.brooderLevelFeedLog.findMany({
+              where: { levelId: { in: levelIds }, entryDate: logDate },
+              include: { level: { include: { row: true } } },
+            })
+          : Promise.resolve([] as any[]),
+        this.prisma.brooderGeneralMortalityLog.findMany({ where: { batchId, logDate } }),
+        this.prisma.brooderLevelMortalityLog.findMany({
+          where: { batchId, logDate },
+          include: { level: { include: { row: true } } },
+        }),
+        this.prisma.brooderTreatmentLog.findMany({ where: { batchId, treatmentDate: logDate } }),
+      ]);
+
+    const levelLabel = (l: any) =>
+      [l?.level?.row?.label, l?.level?.label].filter(Boolean).join(' · ');
+
+    const ENVIRONMENT = envLogs.map(l => ({
+      logSession: l.logSession,
+      temperature: l.temperature,
+      humidityPercent: l.humidityPercent,
+      waterConsumptionL: l.waterConsumptionL,
+      lightIntensityLux: l.lightIntensityLux,
+      lightingOk: l.lightingOk,
+      notes: l.notes,
+    }));
+
+    const FEED = [
+      ...generalFeed.map(f => ({
+        source: 'GENERAL' as const, feedType: f.feedType, quantityDispensedKg: f.quantityDispensedKg,
+      })),
+      ...levelFeed.map((f: any) => ({
+        source: 'ROW_LEVEL' as const, feedType: f.feedType, quantityDispensedKg: f.quantityDispensedKg,
+        levelLabel: levelLabel(f),
+      })),
+    ];
+
+    const MORTALITY = [
+      ...generalMortality.map(m => ({
+        source: 'GENERAL' as const, mortalityCount: m.mortalityCount, cullingCount: m.cullingCount, cause: m.cause,
+      })),
+      ...levelMortality.map((m: any) => ({
+        source: 'ROW_LEVEL' as const, mortalityCount: m.mortalityCount, cullingCount: m.cullingCount, cause: m.cause,
+        levelLabel: levelLabel(m),
+      })),
+    ];
+
+    // Vaccines/supplements can be recorded either as the legacy single
+    // name/dose columns or the newer JSON array — surface whichever a given
+    // log row actually used.
+    const VACCINES: any[] = [];
+    const SUPPLEMENTS: any[] = [];
+    for (const l of envLogs) {
+      const vJson = l.vaccinesJson as any;
+      if (Array.isArray(vJson) && vJson.length > 0) {
+        for (const v of vJson) VACCINES.push({ ...v, logSession: l.logSession });
+      } else if (l.vaccineGiven) {
+        VACCINES.push({ name: l.vaccineGiven, dose: l.vaccineGivenDose, logSession: l.logSession });
+      }
+      const sJson = l.supplementsJson as any;
+      if (Array.isArray(sJson) && sJson.length > 0) {
+        for (const s of sJson) SUPPLEMENTS.push({ ...s, logSession: l.logSession });
+      } else if (l.supplement) {
+        SUPPLEMENTS.push({ name: l.supplement, dose: l.supplementDose, logSession: l.logSession });
+      }
+    }
+
+    const TREATMENTS = treatments.map(t => ({
+      drugName: t.drugName, dose: t.dose, doseUnit: t.doseUnit, route: t.route,
+      quantityUsed: t.quantityUsed, quantityUsedUnit: t.quantityUsedUnit,
+      durationDays: t.durationDays, notes: t.notes,
+    }));
+
+    return { ENVIRONMENT, FEED, MORTALITY, VACCINES, SUPPLEMENTS, TREATMENTS };
   }
 
   /** PM (or Director) sets one section's outcome for the day — APPROVED or

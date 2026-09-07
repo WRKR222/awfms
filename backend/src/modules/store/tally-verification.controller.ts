@@ -46,9 +46,10 @@ export class TallyVerificationController {
     @Body('brokenUnsellableQty') brokenUnsellableQty?: number,
   ) {
     // brokenSellableQty/brokenUnsellableQty are only meaningful (and only
-    // required) when the signer is Sales and the session has broken eggs —
-    // the service validates that; both are optional at the HTTP layer so PM
-    // and Store sign-off (which don't send them) aren't affected.
+    // required) when the signer is the Production Manager and the session
+    // has broken eggs — the service validates that; both are optional at
+    // the HTTP layer so Sales and Store sign-off (which don't send them)
+    // aren't affected.
     const brokenSplit = (brokenSellableQty !== undefined || brokenUnsellableQty !== undefined)
       ? { brokenSellableQty: Number(brokenSellableQty ?? 0), brokenUnsellableQty: Number(brokenUnsellableQty ?? 0) }
       : undefined;

@@ -357,10 +357,15 @@ export function EggCollectionPage() {
     endpoint: '/production/sessions',
     method: 'POST',
     type: 'production',
-    onSuccess: () => {
+    // NOTE: must await the refetch before clearing localSubmitPending — otherwise
+    // pageMode re-resolves from stale (pre-submit) session data for one render,
+    // which flashes the form back on screen before the PENDING banner reappears.
+    // (The useEffect below is a secondary safety net that also clears the flag
+    // once amSession/pmSession actually reflect PENDING.)
+    onSuccess: async () => {
       qc.invalidateQueries({ queryKey: ['production'] });
       qc.invalidateQueries({ queryKey: ['health'] });
-      refetchSessions();
+      await refetchSessions();
       setLocalSubmitPending(false);
     },
     onQueued: () => { setLocalSubmitPending(true); },

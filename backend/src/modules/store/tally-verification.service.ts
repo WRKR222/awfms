@@ -167,7 +167,7 @@ export class TallyVerificationService {
           totalDamaged, totalSoftShell, totalDeformed, totalWeightKg, totalGoodEggs,
           totalStarterEggs,
           // Edits reset the broken split back to the conservative default —
-          // Sales must re-sign and re-classify against the new broken total.
+          // PM must re-sign and re-classify against the new broken total.
           totalBrokenSellable: 0,
           totalBrokenUnsellable: totalBroken,
           editedAt: new Date(),
@@ -301,12 +301,13 @@ export class TallyVerificationService {
   /**
    * Sign for the calling user's role. When all 3 signed, locks.
    *
-   * Sales must additionally submit the actual broken-egg classification —
-   * how many of the session's (unsplit) broken eggs are sellable-as-broken
-   * vs. a total loss. This is the "three-person verification" step that
+   * PM must additionally submit the actual broken-egg classification — how
+   * many of the session's (unsplit) broken eggs are sellable-as-broken vs.
+   * a total loss. This is the "three-person verification" step that
    * replaces the old attendant-time Broken Sellable / Broken Unsellable
-   * columns: the split now happens here, from the person who actually
-   * handles and sells the eggs, instead of being guessed at collection time.
+   * columns: the split now happens here, at PM sign-off (the first
+   * sign-off in the PM → Sales → Store order), instead of being guessed at
+   * collection time. Sales and Store see the PM-entered split read-only.
    */
   async sign(
     sessionId: string,
@@ -333,18 +334,12 @@ export class TallyVerificationService {
 
     if (party === 'PM') {
       if (tally.pmSignedById) throw new BadRequestException('Already signed by Production Manager');
-      data.pmSignedById = user.id; data.pmSignedAt = now;
-      data.pmRowData = tally.session.rowData;
-    } else if (party === 'SALES') {
-      // FIX: Sales must wait for PM to sign first
-      if (!tally.pmSignedById) {
-        throw new BadRequestException('Production Manager must sign off before Sales can sign');
-      }
-      if (tally.salesSignedById) throw new BadRequestException('Already signed by Sales');
 
-      // Sales must classify the session's raw broken-egg count into
+      // PM must classify the session's raw broken-egg count into
       // sellable vs. unsellable — the two numbers must sum to exactly what
-      // the attendant recorded as "Broken" for this session.
+      // the attendant recorded as "Broken" for this session. Sales/Store
+      // only ever see this split read-only (it's already set by the time
+      // they can sign, since PM signs first).
       const totalBroken = (tally.session as any).totalBrokenEggs ?? 0;
       if (totalBroken > 0) {
         if (!brokenSplit) {
@@ -372,14 +367,23 @@ export class TallyVerificationService {
         brokenSplitToApply = { sellable: 0, unsellable: 0 };
       }
 
-      data.salesSignedById = user.id; data.salesSignedAt = now;
-      data.salesRowData = tally.session.rowData;
+      data.pmSignedById = user.id; data.pmSignedAt = now;
+      data.pmRowData = tally.session.rowData;
       if (brokenSplitToApply) {
         data.brokenSellableQty = brokenSplitToApply.sellable;
         data.brokenUnsellableQty = brokenSplitToApply.unsellable;
         data.brokenSplitSetById = user.id;
         data.brokenSplitSetAt = now;
       }
+    } else if (party === 'SALES') {
+      // FIX: Sales must wait for PM to sign first
+      if (!tally.pmSignedById) {
+        throw new BadRequestException('Production Manager must sign off before Sales can sign');
+      }
+      if (tally.salesSignedById) throw new BadRequestException('Already signed by Sales');
+
+      data.salesSignedById = user.id; data.salesSignedAt = now;
+      data.salesRowData = tally.session.rowData;
     } else {
       // FIX: Store must wait for both PM and Sales to sign first
       if (!tally.pmSignedById) {

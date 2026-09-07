@@ -22,8 +22,13 @@ import dayjs from '../../lib/dayjs';
 // ─── Shared helpers ────────────────────────────────────────────────────────────
 
 function Tooltip({ children, tip }: { children: React.ReactNode; tip: string }) {
+  // NOTE: must be block + w-full/h-full so this wrapper occupies its grid
+  // cell exactly like a bare sibling <div> would — an inline-flex span here
+  // sized to its own content (rather than stretching to fill the grid
+  // track), leaving a gap after it and making the card it wraps look
+  // narrower/uneven versus StatPills that don't have a `tip`.
   return (
-    <span className="relative group inline-flex items-center">
+    <span className="relative group block w-full h-full">
       {children}
       <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50
         bg-gray-900 dark:bg-gray-700 text-white text-xs rounded-lg px-2.5 py-1.5
@@ -332,7 +337,14 @@ function useVerifyEggSession() {
       return api.patch(`/production/sessions/${id}/return`, { returnReason }).then(r => r.data);
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['production', 'sessions', 'pending'] });
+      // FIX: was invalidating ['production','sessions','pending'] — a key no
+      // active query subscribes to (EggSessionsTab reads the 'attention' key
+      // below). That meant an approve/return only "took" once the passive
+      // refetchInterval (60s) happened to fire, which read as the approval
+      // "taking too long to reflect." Invalidate the ['production','sessions']
+      // prefix so it matches both the 'attention' query used here and the
+      // (currently unused) 'pending' query, and refetches immediately.
+      qc.invalidateQueries({ queryKey: ['production', 'sessions'] });
     },
   });
 }
@@ -421,7 +433,7 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
           <StatPill label="Loose Eggs" value={session.totalLooseEggs} accent="gray" />
           <StatPill label="Starter Eggs" value={session.totalStarterEggs ?? 0} accent="blue" />
           <StatPill label="Broken" value={session.totalBrokenEggs ?? 0} alert={(session.totalBrokenEggs ?? 0) > 10}
-            tip="Sales classifies sellable vs. unsellable at tally sign-off" accent="red" />
+            tip="PM classifies sellable vs. unsellable at tally sign-off" accent="red" />
           <StatPill label="Damaged" value={session.totalDamaged ?? 0} accent="amber" />
           <StatPill label="Soft Shell" value={session.totalSoftShell ?? 0} accent="amber" />
           <StatPill label="Deformed" value={session.totalDeformed ?? 0} accent="amber" />

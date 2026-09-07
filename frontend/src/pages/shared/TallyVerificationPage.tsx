@@ -43,8 +43,9 @@ interface TallySession {
   salesSignedAt?: string;
   storeSignedById?: string;
   storeSignedAt?: string;
-  // Sales's actual broken-egg classification, entered at sign-off — see
-  // TallyVerificationService.sign(). Null until Sales signs.
+  // PM's actual broken-egg classification, entered at sign-off — see
+  // TallyVerificationService.sign(). Null until PM signs. Visible read-only
+  // to Sales and Store once set.
   brokenSellableQty?: number | null;
   brokenUnsellableQty?: number | null;
   brokenSplitSetAt?: string | null;
@@ -134,13 +135,14 @@ function TallyCard({ tally }: { tally: TallySession }) {
 
   const session = tally.session;
 
-  // Sales must classify the session's raw broken-egg count into
+  // PM must classify the session's raw broken-egg count into
   // sellable/unsellable before their sign-off is accepted (the old
   // attendant-time Broken Sellable/Unsellable columns moved here — see
-  // production.dto.ts / TallyVerificationService.sign).
+  // production.dto.ts / TallyVerificationService.sign). Sales and Store
+  // only ever view the split (read-only) once PM has set it.
   const brokenRaw = session?.totalBrokenEggs ?? 0;
   const damagedCt = session?.totalDamaged ?? 0;
-  const needsBrokenSplit = isSales && brokenRaw > 0 && !tally.brokenSellableQty && !tally.brokenUnsellableQty;
+  const needsBrokenSplit = isPM && brokenRaw > 0 && !tally.brokenSellableQty && !tally.brokenUnsellableQty;
   const [splitSellable, setSplitSellable] = useState('');
   const [splitUnsellable, setSplitUnsellable] = useState('');
   const splitSum = (Number(splitSellable) || 0) + (Number(splitUnsellable) || 0);
@@ -225,7 +227,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
   const starterEggs  = session?.totalStarterEggs    ?? 0;
   const softShellCt  = session?.totalSoftShell        ?? 0;
   const deformedCt   = session?.totalDeformed         ?? 0;
-  // brokenRaw / damagedCt are declared above (needed earlier for the Sales
+  // brokenRaw / damagedCt are declared above (needed earlier for the PM
   // split-gating logic).
 
   // All-starter special case: every collected egg is a starter (no standard good eggs).
@@ -333,7 +335,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
               rows.push({ label: `Sellable: ${tally.brokenSellableQty ?? 0}`, value: 0, isSubline: true });
               rows.push({ label: `Unsellable: ${tally.brokenUnsellableQty ?? 0}`, value: 0, isSubline: true });
             } else {
-              rows.push({ label: 'Sales to classify sellable/unsellable at sign-off', value: 0, isSubline: true });
+              rows.push({ label: 'PM to classify sellable/unsellable at sign-off', value: 0, isSubline: true });
             }
           }
           if (damagedCt   > 0) rows.push({ label: '− Damaged',     value: damagedCt,   isDeduction: true });
@@ -557,8 +559,8 @@ function TallyCard({ tally }: { tally: TallySession }) {
         </div>
       )}
 
-      {/* Sales: broken-egg sellable/unsellable classification, required before signing */}
-      {isSales && needsBrokenSplit && !tally.isLocked && prerequisitesMet && (
+      {/* PM: broken-egg sellable/unsellable classification, required before signing */}
+      {isPM && needsBrokenSplit && !tally.isLocked && prerequisitesMet && (
         <div className="px-4 pb-3">
           <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">
             Classify {brokenRaw} Broken Egg{brokenRaw === 1 ? '' : 's'}

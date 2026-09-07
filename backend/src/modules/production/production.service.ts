@@ -607,21 +607,28 @@ export class ProductionService {
             session.sessionDate,
           );
    
-          // Notify all three tally parties
+          // Notify all three tally parties.
+          // PERF: was sequentially `await`ing one notification.create() per
+          // user in a for-loop — with several Manager/Sales/Store accounts
+          // that serializes N round-trips onto the approve request, which is
+          // exactly why a PM-shift approval (the branch that reaches here)
+          // could feel noticeably slower than an AM approval. createMany
+          // sends all rows in a single query, matching the pattern already
+          // used by TallyVerificationService's own bulk-notify helpers.
           const tallyTargets = await this.prisma.user.findMany({
             where: { role: { in: ['MANAGER', 'SALES', 'STORE'] }, isActive: true },
             select: { id: true },
           });
-          for (const t of tallyTargets) {
-            await this.prisma.notification.create({
-              data: {
+          if (tallyTargets.length > 0) {
+            await this.prisma.notification.createMany({
+              data: tallyTargets.map(t => ({
                 userId: t.id,
                 type: 'EGG_TALLY_TRIGGERED' as any,
                 title: `Next Morning Sign-off Ready — ${houseName}`,
                 message: `Both AM and PM sessions for ${houseName} (${session.batch?.batchCode ?? ''}) are approved. The morning three-party sign-off is now available.`,
                 entityId: session.id,
                 entityType: 'EggCollectionSession',
-              },
+              })),
             });
           }
         }

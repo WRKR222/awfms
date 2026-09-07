@@ -222,7 +222,7 @@ export class AiService {
   // ── Helper: post-collection breakage adjustments for a period ───────────────
   // EggCollectionSession captures raw breakage at collection time (totalBrokenEggs,
   // totalDamaged); the sellable/unsellable split (totalBrokenSellable /
-  // totalBrokenUnsellable) is entered later by Sales at tally sign-off.
+  // totalBrokenUnsellable) is entered later by the Production Manager at tally sign-off.
   // EggBreakageAdjustment is a SEPARATE record Sales raises later (storage/handling
   // breakage, recounts), and it was never queried by any report.
   private async getBreakageSummary(start: Date, end: Date) {

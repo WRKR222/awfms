@@ -5,7 +5,8 @@
 //   • rowData now records a single unclassified `broken` count plus a
 //     `damaged` count (replaces the old brokenUnsellable / brokenSellable
 //     split — that sellable/unsellable classification happens later, at
-//     three-party tally sign-off, entered by Sales) and includes starterEggs.
+//     three-party tally sign-off, entered by the Production Manager) and
+//     includes starterEggs.
 //   • Session-level: feedStoreItemId + feedKg (feed is now drawn against a
 //     Store-issued item, same residual-ledger gating as the brooder module;
 //     feedKg allows any number of decimal places), waterLiters + houseTempC,
@@ -17,7 +18,7 @@ const RowDataEntrySchema = z.object({
   totalBirds: z.number().int().min(0),
   totalEggs: z.number().int().min(0),
   starterEggs: z.number().int().min(0).default(0),
-  broken:  z.number().int().min(0).default(0), // unclassified broken eggs — Sales splits sellable/unsellable at tally sign-off
+  broken:  z.number().int().min(0).default(0), // unclassified broken eggs — PM splits sellable/unsellable at tally sign-off
   damaged: z.number().int().min(0).default(0), // e.g. dented/stained but not broken
   softShell: z.number().int().min(0).default(0),
   deformed:  z.number().int().min(0).default(0),

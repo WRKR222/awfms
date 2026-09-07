@@ -36,6 +36,117 @@ interface ReviewRow {
   reviewedBy?: { id: string; username: string } | null;
   reviewedAt: string | null;
   returnReason: string | null;
+  // The actual attendant-recorded data for this batch+day, sourced live
+  // from BrooderLog / feed / mortality / treatment tables — independent of
+  // review status, so it's populated for backdated days too (see
+  // BrooderService.getDailyReviewSectionData on the backend).
+  data?: unknown;
+}
+
+const SESSION_LABEL: Record<string, string> = {
+  MORNING: 'Morning', MIDDAY: 'Midday', EVENING: 'Evening',
+};
+
+function fmtNum(n: unknown, suffix = ''): string | null {
+  if (n === null || n === undefined || n === '') return null;
+  const num = Number(n);
+  return Number.isFinite(num) ? `${num}${suffix}` : null;
+}
+
+/** Renders the real recorded figures for one section so a reviewed OR
+ *  unreviewed day (backdated included) shows actual data, not just a bare
+ *  status pill. Each section's `data` shape comes from
+ *  BrooderService.getDailyReviewSectionData. */
+function SectionData({ section, data }: { section: ReviewRow['section']; data: unknown }) {
+  const rows = Array.isArray(data) ? data : [];
+  if (rows.length === 0) {
+    return <p className="text-xs text-gray-400 italic mb-2">No data recorded for this day.</p>;
+  }
+
+  if (section === 'ENVIRONMENT') {
+    return (
+      <ul className="text-xs text-gray-600 dark:text-gray-300 space-y-1 mb-2">
+        {rows.map((r: any, i: number) => {
+          const parts = [
+            fmtNum(r.temperature, '°C'),
+            fmtNum(r.humidityPercent, '% RH'),
+            fmtNum(r.waterConsumptionL, 'L water'),
+            fmtNum(r.lightIntensityLux, ' lux'),
+          ].filter(Boolean);
+          return (
+            <li key={i} className="flex items-start gap-1.5">
+              <span className="font-semibold text-gray-500 dark:text-gray-400 shrink-0">
+                {SESSION_LABEL[r.logSession] ?? 'Daily'}:
+              </span>
+              <span>{parts.length > 0 ? parts.join(' · ') : '—'}{r.lightingOk === false ? ' · ⚠ lighting issue' : ''}</span>
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
+
+  if (section === 'FEED') {
+    const total = rows.reduce((s: number, r: any) => s + (Number(r.quantityDispensedKg) || 0), 0);
+    return (
+      <ul className="text-xs text-gray-600 dark:text-gray-300 space-y-1 mb-2">
+        <li className="font-semibold text-gray-700 dark:text-gray-200">{total.toFixed(1)} kg total</li>
+        {rows.map((r: any, i: number) => (
+          <li key={i} className="text-gray-500 dark:text-gray-400">
+            {r.feedType} — {Number(r.quantityDispensedKg).toFixed(1)} kg
+            {r.source === 'ROW_LEVEL' && r.levelLabel ? ` (${r.levelLabel})` : ''}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  if (section === 'MORTALITY') {
+    const totalDeaths = rows.reduce((s: number, r: any) => s + (Number(r.mortalityCount) || 0), 0);
+    const totalCulls  = rows.reduce((s: number, r: any) => s + (Number(r.cullingCount) || 0), 0);
+    return (
+      <ul className="text-xs text-gray-600 dark:text-gray-300 space-y-1 mb-2">
+        <li className="font-semibold text-gray-700 dark:text-gray-200">
+          {totalDeaths} died{totalCulls > 0 ? `, ${totalCulls} culled` : ''}
+        </li>
+        {rows.map((r: any, i: number) => (
+          <li key={i} className="text-gray-500 dark:text-gray-400">
+            {r.mortalityCount} died{r.cullingCount ? `, ${r.cullingCount} culled` : ''}
+            {r.cause ? ` — ${r.cause}` : ''}
+            {r.source === 'ROW_LEVEL' && r.levelLabel ? ` (${r.levelLabel})` : ''}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  if (section === 'VACCINES' || section === 'SUPPLEMENTS') {
+    return (
+      <ul className="text-xs text-gray-600 dark:text-gray-300 space-y-1 mb-2">
+        {rows.map((r: any, i: number) => (
+          <li key={i}>
+            <span className="font-semibold text-gray-700 dark:text-gray-200">{r.name || '—'}</span>
+            {r.dose ? ` — ${r.dose}` : ''}
+            {r.quantityUsed != null ? ` (${r.quantityUsed}${r.unit ? ` ${r.unit}` : ''})` : ''}
+            {r.logSession ? ` · ${SESSION_LABEL[r.logSession] ?? r.logSession}` : ''}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  // TREATMENTS
+  return (
+    <ul className="text-xs text-gray-600 dark:text-gray-300 space-y-1 mb-2">
+      {rows.map((r: any, i: number) => (
+        <li key={i}>
+          <span className="font-semibold text-gray-700 dark:text-gray-200">{r.drugName}</span>
+          {' — '}{r.dose}{r.doseUnit ? ` ${r.doseUnit}` : ''} via {r.route?.replace(/_/g, ' ').toLowerCase() ?? '—'}
+          {r.durationDays ? ` · ${r.durationDays}d` : ''}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 const SECTION_META: Record<ReviewRow['section'], { label: string; icon: React.ElementType; accent: string }> = {
@@ -96,6 +207,8 @@ function SectionCard({
           {row.reviewedAt ? ` · ${dayjs(row.reviewedAt).format('D MMM, HH:mm')}` : ''}
         </p>
       )}
+
+      <SectionData section={row.section} data={row.data} />
 
       {!returning ? (
         <div className="flex gap-2">

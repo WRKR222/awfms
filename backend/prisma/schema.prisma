@@ -881,8 +881,8 @@ model EggCollectionSession {
   totalFullTrays  Int       @map("total_full_trays")
   totalLooseEggs  Int       @map("total_loose_eggs")
   // totalBrokenEggs = raw "Broken" count entered by the attendant (unsplit).
-  // Split into totalBrokenSellable / totalBrokenUnsellable by Sales during
-  // the three-party tally sign-off (see TallyVerificationService.sign).
+  // Split into totalBrokenSellable / totalBrokenUnsellable by the Production
+  // Manager during the three-party tally sign-off (see TallyVerificationService.sign).
   totalBrokenEggs Int       @default(0) @map("total_broken_eggs")
   // totalDamaged = raw "Damaged" count entered by the attendant (replaces
   // the old per-row Broken-Sellable/Broken-Unsellable split at collection
@@ -894,8 +894,8 @@ model EggCollectionSession {
   totalGoodEggs   Int       @map("total_good_eggs")
   totalStarterEggs   Int       @default(0) @map("total_starter_eggs")
   // Populated with a conservative default at submission (all of
-  // totalBrokenEggs treated as unsellable) and corrected by Sales's actual
-  // sellable/unsellable split when they sign the tally.
+  // totalBrokenEggs treated as unsellable) and corrected by the Production
+  // Manager's actual sellable/unsellable split when they sign the tally.
   totalBrokenSellable Int      @default(0) @map("total_broken_sellable")
   totalBrokenUnsellable Int    @default(0) @map("total_broken_unsellable")
   feedKg              Decimal?  @map("feed_kg") @db.Decimal
@@ -1383,9 +1383,10 @@ model EggTallyVerification {
   storeSignedAt    DateTime? @map("store_signed_at")
   storeRowData     Json?     @map("store_row_data")
 
-  // Sales's actual broken-egg classification, entered when Sales signs.
-  // Must sum to the session's totalBrokenEggs. Once entered, the session's
-  // totalBrokenSellable / totalBrokenUnsellable are corrected to match.
+  // Production Manager's actual broken-egg classification, entered when PM
+  // signs (visible read-only to Sales and Store). Must sum to the session's
+  // totalBrokenEggs. Once entered, the session's totalBrokenSellable /
+  // totalBrokenUnsellable are corrected to match.
   brokenSellableQty   Int?      @map("broken_sellable_qty")
   brokenUnsellableQty Int?      @map("broken_unsellable_qty")
   brokenSplitSetById  String?   @map("broken_split_set_by_id")
