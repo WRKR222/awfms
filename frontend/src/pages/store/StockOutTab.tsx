@@ -5,7 +5,20 @@ import { useForm, useWatch } from 'react-hook-form';
 import { Plus, AlertTriangle, ShieldX, CheckCircle, Pencil } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import { api } from '../../lib/api/client';
-import { fmtKES, useStoreItems, useBatches } from './_shared';
+import { fmtKES, useStoreItems, useBatches, isBrooderStage, isProductionStage } from './_shared';
+
+// Labels for the destination badge, derived from the picked batch's stage —
+// Store never chooses this directly, it cascades from the batch.
+const DESTINATION_LABELS: Record<string, string> = {
+  BROODER: 'Brooder',
+  PRODUCTION_HOUSE: 'Production House',
+};
+function destinationForStage(stage: string | undefined): 'BROODER' | 'PRODUCTION_HOUSE' | null {
+  if (!stage) return null;
+  if (isBrooderStage(stage)) return 'BROODER';
+  if (isProductionStage(stage)) return 'PRODUCTION_HOUSE';
+  return null;
+}
 
 const RECIPIENT_ROLES = [
   { value: 'MANAGER',    label: 'Production Manager' },
@@ -23,6 +36,9 @@ type FormData = {
   quantityOut:      number;
   recipientRole:    string;
   otherRecipient?:  string;
+  // Destination (Brooder / Production House) is NOT picked here — it
+  // cascades automatically, server-side, from whichever batch is selected
+  // below (its current stage says which building it's housed in).
   issuedToBatchId?: string;
   purpose?:         string;
   notes?:           string;
@@ -125,10 +141,16 @@ export function StockOutTab() {
     defaultValues: { issuedDate: dayjs().format('YYYY-MM-DD') },
   });
 
-  const watchedItemId    = useWatch({ control, name: 'storeItemId' });
-  const watchedQtyOut    = useWatch({ control, name: 'quantityOut' });
+  const watchedItemId     = useWatch({ control, name: 'storeItemId' });
+  const watchedQtyOut     = useWatch({ control, name: 'quantityOut' });
   const watchedIssuedDate = useWatch({ control, name: 'issuedDate' }) || dayjs().format('YYYY-MM-DD');
-  const selectedItem     = items.find(i => i.id === watchedItemId);
+  const watchedBatchId    = useWatch({ control, name: 'issuedToBatchId' });
+  const selectedItem      = items.find(i => i.id === watchedItemId);
+
+  // Destination cascades from whichever batch is picked — never chosen
+  // directly — so it's purely derived for display here.
+  const selectedBatch = watchedBatchId ? batches.find(b => b.id === watchedBatchId) : null;
+  const derivedDestination = destinationForStage(selectedBatch?.stage);
 
   const { data: list = [], isLoading } = useQuery({
     queryKey: ['store-stock-out'],
@@ -158,6 +180,8 @@ export function StockOutTab() {
       ...data,
       quantityOut:     Number(data.quantityOut),
       issuedToBatchId: data.issuedToBatchId || undefined,
+      // No issuedToType sent — the backend derives Brooder/Production House
+      // itself from the batch's current stage.
       recipientRole:   data.recipientRole   || undefined,
       otherRecipient:  data.otherRecipient  || undefined,
     }),
@@ -193,6 +217,8 @@ export function StockOutTab() {
   const reviewItem   = reviewData ? items.find(i => i.id === reviewData.storeItemId) : null;
   const reviewBatch  = reviewData?.issuedToBatchId ? batches.find(b => b.id === reviewData.issuedToBatchId) : null;
   const reviewRole   = reviewData ? RECIPIENT_ROLES.find(r => r.value === reviewData.recipientRole)?.label ?? reviewData.recipientRole : null;
+  const reviewDestType = destinationForStage(reviewBatch?.stage);
+  const reviewDestLabel = reviewDestType ? DESTINATION_LABELS[reviewDestType] : null;
 
   return (
     <div className="space-y-4">
@@ -286,12 +312,21 @@ export function StockOutTab() {
 
             <Field label="Recipient (Batch)">
               <select {...register('issuedToBatchId')} className="input">
-                <option value="">— None —</option>
+                <option value="">— None (role/other only) —</option>
                 {batches.length === 0
                   ? <option disabled>No batches found in system</option>
-                  : batches.map(b => <option key={b.id} value={b.id}>{b.batchCode}</option>)
+                  : batches.map(b => <option key={b.id} value={b.id}>{b.batchCode} ({b.stage})</option>)
                 }
               </select>
+              {/* Destination is never picked directly — it cascades from the
+                  batch's own stage, shown here just for confirmation. */}
+              {watchedBatchId && (
+                <p className="text-xs mt-1 text-gray-500">
+                  {derivedDestination
+                    ? <>→ Destination: <span className="font-semibold">{DESTINATION_LABELS[derivedDestination]}</span> (batch is {selectedBatch?.stage})</>
+                    : <span className="text-red-600">⚠ This batch is {selectedBatch?.stage} — not currently in the brooder or production house, so it can't receive stock.</span>}
+                </p>
+              )}
             </Field>
 
             <div className="md:col-span-2">
@@ -338,7 +373,8 @@ export function StockOutTab() {
               {reviewRole && <ReviewRow label="Issued To (Role)" value={reviewRole} />}
               {reviewData.otherRecipient && <ReviewRow label="Dept / Project" value={reviewData.otherRecipient} />}
               {reviewData.purpose && <ReviewRow label="Purpose / Person" value={reviewData.purpose} />}
-              {reviewBatch && <ReviewRow label="Batch" value={reviewBatch.batchCode} />}
+              {reviewDestLabel && <ReviewRow label="Destination" value={reviewDestLabel} />}
+              {reviewBatch && <ReviewRow label="Batch" value={`${reviewBatch.batchCode} (${reviewBatch.stage})`} />}
               {reviewData.notes && <ReviewRow label="Notes" value={reviewData.notes} />}
             </div>
 
@@ -381,7 +417,7 @@ export function StockOutTab() {
                   <th className="text-right px-4 py-2">Qty Out</th>
                   <th className="text-right px-4 py-2">Total Cost</th>
                   <th className="text-left px-4 py-2">Issued To</th>
-                  <th className="text-left px-4 py-2">Batch</th>
+                  <th className="text-left px-4 py-2">Destination</th>
                   <th className="text-left px-4 py-2">Issuing Officer</th>
                 </tr>
               </thead>
@@ -395,7 +431,20 @@ export function StockOutTab() {
                     <td className="px-4 py-2 text-right">{Number(r.quantityOut)} {r.storeItem?.unit}</td>
                     <td className="px-4 py-2 text-right">{fmtKES(r.totalCostKes)}</td>
                     <td className="px-4 py-2 text-gray-600">{r.purpose ?? '—'}</td>
-                    <td className="px-4 py-2 text-gray-600">{r.batch?.batchCode ?? '—'}</td>
+                    <td className="px-4 py-2 text-gray-600">
+                      {r.issuedToType
+                        ? <>
+                            <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
+                              r.issuedToType === 'BROODER'
+                                ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300'
+                                : 'bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300'
+                            }`}>
+                              {r.issuedToType === 'BROODER' ? 'Brooder' : 'Production House'}
+                            </span>
+                            {r.batch?.batchCode && <span className="ml-1">{r.batch.batchCode}</span>}
+                          </>
+                        : '—'}
+                    </td>
                     <td className="px-4 py-2 text-gray-600">{r.issuedBy?.fullName ?? '—'}</td>
                   </tr>
                 ))}

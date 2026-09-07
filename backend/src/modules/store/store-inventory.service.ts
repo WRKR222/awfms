@@ -291,6 +291,35 @@ export class StoreInventoryService {
       );
     }
 
+    // ── Brooder vs Production House distinction ────────────────────────────
+    // Store only picks WHICH BATCH the stock is going to — the destination
+    // (Brooder or Production House) is derived automatically from that
+    // batch's current stage, not chosen separately, so there's nothing for
+    // the two to disagree on. A batch is in the brooder while BROODING or
+    // GROWER, and in the production house once it reaches PRODUCTION;
+    // outside those stages (SOLD/DISCARDED/CLOSED) it isn't housed anywhere
+    // stock can meaningfully be issued to.
+    let issuedToType: 'BROODER' | 'PRODUCTION_HOUSE' | null = null;
+    if (dto.issuedToBatchId) {
+      const batch = await this.prisma.batch.findUnique({
+        where: { id: dto.issuedToBatchId },
+        select: { batchCode: true, stage: true },
+      });
+      if (!batch) throw new NotFoundException('Batch not found.');
+
+      if (batch.stage === 'BROODING' || batch.stage === 'GROWER') {
+        issuedToType = 'BROODER';
+      } else if (batch.stage === 'PRODUCTION') {
+        issuedToType = 'PRODUCTION_HOUSE';
+      } else {
+        throw new BadRequestException(
+          `Batch ${batch.batchCode} is ${batch.stage} — it isn't currently housed in the brooder ` +
+          `or the production house, so stock can't be issued to it.`,
+        );
+      }
+    }
+    // ── End Brooder vs Production House distinction ────────────────────────
+
     // ── Issuance Plan Gate ─────────────────────────────────────────────────
     // Every stock-out must be authorised by an approved issuance plan line.
     // validateStockOut throws BadRequestException with a clear message if not.
@@ -321,6 +350,7 @@ export class StoreInventoryService {
             issuedToName:      dto.recipientRole ? (this.ROLE_LABELS[dto.recipientRole] ?? dto.otherRecipient ?? dto.recipientRole) : (dto.issuedToName ?? null),
             issuedToHouseId:   dto.issuedToHouseId ?? null,
             issuedToBatchId:   dto.issuedToBatchId ?? null,
+            issuedToType,
             purpose:           dto.purpose ?? null,
             notes:             dto.notes ?? null,
             issuedById:        user.id,
@@ -402,7 +432,7 @@ export class StoreInventoryService {
   }
 
   async listStockOuts(storeItemId?: string, fromDate?: string, toDate?: string) {
-    return this.prisma.storeStockOut.findMany({
+    const rows = await this.prisma.storeStockOut.findMany({
       where: {
         ...(storeItemId ? { storeItemId } : {}),
         ...(fromDate || toDate
@@ -421,6 +451,23 @@ export class StoreInventoryService {
       orderBy: { issuedDate: 'desc' },
       take: 100,
     });
+
+    // issuedToBatchId has no Prisma relation defined on StoreStockOut (kept
+    // as a plain id, matching issuedToHouseId), so batch details — including
+    // the Brooder/Production House distinction — are joined manually here.
+    const batchIds = [...new Set(rows.map(r => r.issuedToBatchId).filter((id): id is string => !!id))];
+    const batches = batchIds.length
+      ? await this.prisma.batch.findMany({
+          where: { id: { in: batchIds } },
+          select: { id: true, batchCode: true, stage: true },
+        })
+      : [];
+    const batchMap = new Map(batches.map(b => [b.id, b]));
+
+    return rows.map(r => ({
+      ...r,
+      batch: r.issuedToBatchId ? (batchMap.get(r.issuedToBatchId) ?? null) : null,
+    }));
   }
 
   // ── Expiry Alerts ──────────────────────────────────────────────────────────
@@ -473,8 +520,17 @@ export class StoreInventoryService {
     opts: { includeUnissued?: boolean } = {},
   ) {
     const items = await this.prisma.storeItem.findMany({
-      where: { category: { in: categories }, isActive: true },
-      select: { id: true, name: true, sku: true, unit: true, category: true },
+      // When populating attendant pickers (includeUnissued), only offer
+      // items Store actually still has stock of — currentStock > 0 — so the
+      // dropdown never lists something the store is fully out of. Store's
+      // own issuance-plan screen (includeUnissued omitted/false) keeps its
+      // existing residual-based filter below, unaffected by this.
+      where: {
+        category: { in: categories },
+        isActive: true,
+        ...(opts.includeUnissued ? { currentStock: { gt: 0 } } : {}),
+      },
+      select: { id: true, name: true, sku: true, unit: true, category: true, currentStock: true },
     });
     if (items.length === 0) return [];
     const itemIds = items.map(i => i.id);
@@ -616,6 +672,7 @@ export class StoreInventoryService {
           sku: item.sku,
           unit: item.unit,
           category: item.category,
+          currentStock: Number(item.currentStock),
           issuedThisWeek,
           dispensedThisWeek,
           residual,

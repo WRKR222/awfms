@@ -2154,6 +2154,12 @@ model StoreStockOut {
   issuedToName    String? @map("issued_to_name")
   issuedToHouseId String? @map("issued_to_house_id")
   issuedToBatchId String? @map("issued_to_batch_id")
+  // "BROODER" | "PRODUCTION_HOUSE" — set whenever issuedToBatchId is set,
+  // derived server-side (StoreInventoryService.recordStockOut) from that
+  // batch's stage AT THE TIME OF ISSUANCE: BROODING/GROWER -> BROODER,
+  // PRODUCTION -> PRODUCTION_HOUSE. Stored (not recomputed on read) so the
+  // record stays accurate even after the batch later changes stage.
+  issuedToType    String? @map("issued_to_type")
   purpose       String?
   notes         String?
   issuedById    String   @map("issued_by_id")

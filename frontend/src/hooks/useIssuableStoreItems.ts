@@ -6,14 +6,16 @@
 //
 // Used by:
 //   • Lead Attendant feed / vaccine / supplement / treatment logging forms
-//     — pass `{ allItems: true }` so every active item in the category is
-//     selectable, not just ones Store has already issued: feed, and
+//     — pass `{ allItems: true }` so every active item in the category with
+//     currentStock > 0 in the Store role is selectable, not just ones
+//     Store has already issued to that batch/session this week: feed, and
 //     bulk-issued supplements/treatments especially, are often physically
 //     handed over before (or independent of) Store logging the stock-out
 //     in the system. The attached residual/overDrawnBy figures still let
 //     the amount recorded be tied back to what Store issues, so surplus or
 //     over-issuance stays visible once it is logged — it just isn't a hard
-//     gate on recording.
+//     gate on recording. Items Store has fully run out of (currentStock 0)
+//     are excluded even in this mode.
 //   • Store's issuance-plan screen — default (allItems omitted/false) shows
 //     only items with unconsumed issued stock, to see leftover before
 //     re-issuing the same item next week (avoid over-issuing).
@@ -27,6 +29,7 @@ export interface IssuableStoreItem {
   sku: string;
   unit: string;
   category: string;
+  currentStock: number;
   issuedThisWeek: number;
   dispensedThisWeek: number;
   residual: number;

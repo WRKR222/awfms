@@ -51,10 +51,21 @@ export function useBatches() {
     queryKey: ['batches-active'],
     queryFn: async () => {
       const res = await api.get('/flock/batches?isActive=true');
-      return res.data as Array<{ id: string; batchCode: string; houseId: string }>;
+      return res.data as Array<{ id: string; batchCode: string; houseId: string; stage: string }>;
     },
     staleTime: 5 * 60_000,
   });
+}
+
+// A batch's stage says which physical building currently holds it —
+// BROODING/GROWER birds live in the brooder, PRODUCTION birds live in the
+// production (laying) house. Used to filter the batch picker once Store
+// has chosen a stock-out destination, and to label existing records.
+export function isBrooderStage(stage: string) {
+  return stage === 'BROODING' || stage === 'GROWER';
+}
+export function isProductionStage(stage: string) {
+  return stage === 'PRODUCTION';
 }
 
 

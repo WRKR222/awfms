@@ -2148,7 +2148,7 @@ export class ProductionReportReconciliationService {
             data: {
               storeItemId: item.id, issuedDate: logDate, quantityOut: delta,
               unitCostKes: item.unitCostKes, totalCostKes: delta * Number(item.unitCostKes),
-              issuedToBatchId: batchId, issuedToName: 'Brooder (via production report)',
+              issuedToBatchId: batchId, issuedToType: 'BROODER', issuedToName: 'Brooder (via production report)',
               purpose: 'Director-approved correction from store production report',
               issuedById: userId,
             },
