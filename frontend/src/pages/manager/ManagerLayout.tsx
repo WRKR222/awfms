@@ -49,6 +49,7 @@ export function ManagerLayout() {
   const sidebarLinks: SidebarLinkItem[] = [
     { to: '/manager',                  label: 'Home',          icon: <LayoutDashboard className="w-5 h-5" />, end: true },
     { to: '/manager/batches',          label: 'Batches',       icon: <Package className="w-5 h-5" /> },
+    { to: '/manager/brooder-review',   label: 'Brooder Review', icon: <ClipboardList className="w-5 h-5" /> },
     { to: '/manager/verification',     label: 'Verification',  icon: <ClipboardCheck className="w-5 h-5" /> },
     {
       to: '/manager/tally',

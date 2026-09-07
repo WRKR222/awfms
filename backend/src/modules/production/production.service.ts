@@ -196,9 +196,37 @@ export class ProductionService {
       throw new ConflictException('Tally for this session is locked. No further submissions accepted.');
     }
 
-    // ── Validate feed store item + residual BEFORE writing anything ────────
+    // ── Validate feed store item(s) + residual BEFORE writing anything ─────
+    // Primary line first (backward-compat), then any additional lines for a
+    // same-day feed transition (e.g. Growers Mash -> Developer's Mash).
+    // Two lines against the same item within one submission are reserved
+    // against each other, same pattern as the vaccine reservation below.
     const feedItem = await this.getIssuedStoreItemOrThrow(dto.sessionFeed.feedStoreItemId);
+    const feedLines = [
+      { feedStoreItemId: dto.sessionFeed.feedStoreItemId, feedKg: dto.sessionFeed.feedKg, item: feedItem },
+    ];
+    const feedReserved = new Map<string, number>();
+    feedReserved.set(dto.sessionFeed.feedStoreItemId, dto.sessionFeed.feedKg);
+    for (const line of dto.sessionFeed.additionalLines ?? []) {
+      const lineItem = await this.getIssuedStoreItemOrThrow(line.feedStoreItemId);
+      const already = feedReserved.get(line.feedStoreItemId) ?? 0;
+      await this.assertResidualOrThrow(line.feedStoreItemId, already + line.feedKg, lineItem.unit);
+      feedReserved.set(line.feedStoreItemId, already + line.feedKg);
+      feedLines.push({ feedStoreItemId: line.feedStoreItemId, feedKg: line.feedKg, item: lineItem });
+    }
     await this.assertResidualOrThrow(dto.sessionFeed.feedStoreItemId, dto.sessionFeed.feedKg, feedItem.unit);
+    const totalFeedKg = feedLines.reduce((s, l) => s + l.feedKg, 0);
+    const feedBreakdownJson = feedLines.map(l => ({
+      storeItemId: l.feedStoreItemId,
+      name: l.item.name,
+      kg: l.feedKg,
+    }));
+
+    // ── Mortality feed-surplus capture — a mortality means the feed meant
+    // for that bird was never eaten (or only partly eaten), so Stores should
+    // issue less feed the next day instead of over-issuing on top of it.
+    const mortalityMode = dto.mortalityMode ?? 'GENERAL';
+    const mortalityRowBreakdown = mortalityMode === 'PER_ROW' ? (dto.mortalityRowBreakdown ?? []) : [];
 
     // ── Validate each vaccine/supplement store item + residual up front too,
     // reserving quantities against each other within this same request (two
@@ -248,14 +276,19 @@ export class ProductionService {
       // Sales enters the actual sellable/unsellable split at tally sign-off.
       totalBrokenSellable: 0,
       totalBrokenUnsellable: totals.totalBroken,
-      feedKg: dto.sessionFeed.feedKg,
+      feedKg: totalFeedKg,
       feedTypeName: this.deriveFeedTypeFromItem(feedItem as any),
       feedStoreItemId: dto.sessionFeed.feedStoreItemId,
+      feedBreakdownJson: feedBreakdownJson as any,
       waterLiters: dto.environment?.waterLiters ?? null,
       houseTempC: dto.environment?.houseTempC ?? null,
-      dailyFeedKg: dto.sessionFeed.feedKg,
+      dailyFeedKg: totalFeedKg,
+      mortalityMode,
+      mortalityRowBreakdown: (mortalityRowBreakdown.length > 0 ? mortalityRowBreakdown : null) as any,
+      mortalityFedBeforeDeath: mortalityMode === 'GENERAL' ? (dto.mortalityFedBeforeDeath ?? null) : null,
+      mortalityFeedAlreadyEatenKg: mortalityMode === 'GENERAL' ? (dto.mortalityFeedAlreadyEatenKg ?? null) : null,
       vaccineGiven: vaccinesGiven
-        .map((v: any) => (v.kind === 'VACCINE' ? 'V: ' : 'S: ') + v.name + ' (' + v.dosage + ')')
+        .map((v: any) => (v.kind === 'VACCINE' ? 'V: ' : v.kind === 'SUPPLEMENT' ? 'S: ' : 'T: ') + v.name + ' (' + v.dosage + ')')
         .join('; ') || null,
       henDayPercent,
       remarks: dto.remarks ?? null,
@@ -270,24 +303,28 @@ export class ProductionService {
       : await this.prisma.eggCollectionSession.create({ data });
 
     // Deduct feed from stock — feed is now a required, store-item-linked
-    // field (validated above), so this always fires.
-    try {
-      await this.prisma.feedIntakeLog.create({
-        data: {
-          batchId: dto.batchId,
-          houseId: dto.houseId,
-          feedType: data.feedTypeName as any,
-          storeItemId: dto.sessionFeed.feedStoreItemId,
-          entryDate: new Date(dto.sessionDate),
-          quantityDispensedKg: dto.sessionFeed.feedKg,
-          wastageKg: 0,
-          recommendedMinKg: 0,
-          recommendedMaxKg: 0,
-          notes: 'Logged from ' + dto.shift + ' egg collection session',
-          recordedById: user.id,
-        },
-      });
-    } catch (_) { /* best-effort feed log — residual already validated above */ }
+    // field (validated above), so this always fires. One log per feed line,
+    // so a same-day transition (e.g. Growers Mash -> Developer's Mash) draws
+    // down each item's own residual correctly instead of blending them.
+    for (const line of feedLines) {
+      try {
+        await this.prisma.feedIntakeLog.create({
+          data: {
+            batchId: dto.batchId,
+            houseId: dto.houseId,
+            feedType: this.deriveFeedTypeFromItem(line.item as any) as any,
+            storeItemId: line.feedStoreItemId,
+            entryDate: new Date(dto.sessionDate),
+            quantityDispensedKg: line.feedKg,
+            wastageKg: 0,
+            recommendedMinKg: 0,
+            recommendedMaxKg: 0,
+            notes: 'Logged from ' + dto.shift + ' egg collection session',
+            recordedById: user.id,
+          },
+        });
+      } catch (_) { /* best-effort feed log — residual already validated above */ }
+    }
 
     // Forward vaccines/supplements to VaccinationRecord (store-item-linked,
     // residual already validated above) so the Production Manager Health
@@ -297,7 +334,7 @@ export class ProductionService {
       await this.prisma.vaccinationRecord.create({
         data: {
           batchId: dto.batchId,
-          vaccineName: `${v.kind === 'SUPPLEMENT' ? '[Supplement] ' : ''}${v.name}`,
+          vaccineName: `${v.kind === 'SUPPLEMENT' ? '[Supplement] ' : v.kind === 'TREATMENT' ? '[Treatment] ' : ''}${v.name}`,
           administeredDate: new Date(dto.sessionDate),
           route: VaccinationRoute.OTHER,
           batchSize: closingStock,

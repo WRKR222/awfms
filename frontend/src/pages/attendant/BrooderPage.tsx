@@ -16,7 +16,7 @@
 //   • Log history grouped by date with sessions shown as a compact timeline.
 
 import { useState, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
 import {
@@ -255,157 +255,12 @@ function PopulationRecordSummary({ record }: { record: PopulationRecordDay }) {
   );
 }
 
-interface BackfillGap {
-  date: string; storeItemId: string; itemName: string; unit: string;
-  kind: 'feed' | 'medication'; issuedQty: number; loggedQty: number; gapQty: number;
-}
-interface BackfillReport {
-  batchId: string; batchCode: string; rangeStart: string; rangeEnd: string;
-  issuedButNotLogged: BackfillGap[];
-  missingEnvironmentalDates: string[];
-  summary: { totalGaps: number; feedGaps: number; medicationGaps: number; missingEnvironmentalDays: number };
-}
-
-type BackfillKind = 'feed' | 'supplement' | 'vaccine' | 'treatment';
-interface BackfillApplyItem { date: string; storeItemId: string; kind: BackfillKind }
-interface BackfillApplyResult {
-  applied: Array<{ date: string; storeItemId: string; itemName: string; kind: string; quantity: number }>;
-  skipped: Array<{ date: string; storeItemId: string; kind: string; reason: string }>;
-}
-
-/** Read-only gap report — what Store issued but nobody logged as used, plus
- *  which dates have no environmental reading at all. Each row has an Apply
- *  action that writes the entry through the same validated create paths a
- *  person would use by hand (feed guard, residual checks) — nothing here
- *  bypasses those. FEED and SUPPLEMENT items apply directly; MEDICATION
- *  items need a vaccine-or-treatment pick first since the store schema
- *  doesn't distinguish the two. */
-function BackfillReportPanel({ report, batchId }: { report: BackfillReport; batchId: string }) {
-  const qc = useQueryClient();
-  const [lastResult, setLastResult] = useState<BackfillApplyResult | null>(null);
-  const [pendingKey, setPendingKey] = useState<string | null>(null); // gap being resolved (medication → pick vaccine/treatment)
-
-  const applyMutation = useMutation({
-    mutationFn: (items: BackfillApplyItem[]) =>
-      api.post(`/brooder/batches/${batchId}/backfill-apply`, { items }).then(r => r.data as BackfillApplyResult),
-    onSuccess: (result) => {
-      setLastResult(result);
-      qc.invalidateQueries({ queryKey: ['brooder-backfill-report', batchId] });
-      qc.invalidateQueries({ queryKey: ['brooder-population-record-sheet', batchId] });
-    },
-  });
-
-  const { summary, issuedButNotLogged, missingEnvironmentalDates } = report;
-  const gapKey = (g: BackfillGap) => `${g.date}|${g.storeItemId}`;
-
-  if (summary.totalGaps === 0 && summary.missingEnvironmentalDays === 0) {
-    return (
-      <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1.5 py-2">
-        <CheckCircle2 className="w-3.5 h-3.5" /> No gaps found for {dayjs(report.rangeStart).format('D MMM')} – {dayjs(report.rangeEnd).format('D MMM')}.
-      </p>
-    );
-  }
-
-  const unambiguous = issuedButNotLogged.filter(g => g.kind === 'feed');
-  const supplementGaps = issuedButNotLogged.filter(g => g.kind === 'medication');
-  // Supplements are unambiguous too (SUPPLEMENT/FEED_SUPPLEMENT category is
-  // never a vaccine) but the backend lumps them with vaccines/treatments
-  // under "medication" since it can't tell them apart from category alone —
-  // so every "medication" gap here still needs the person to pick vaccine
-  // vs treatment vs supplement before it can be applied.
-
-  return (
-    <div className="space-y-3">
-      {lastResult && (
-        <div className="text-[11px] rounded-lg px-2.5 py-2 bg-blue-50 dark:bg-blue-900/10 text-blue-700 dark:text-blue-300">
-          {lastResult.applied.length > 0 && <p>Logged {lastResult.applied.length} entr{lastResult.applied.length === 1 ? 'y' : 'ies'}.</p>}
-          {lastResult.skipped.map((s, i) => (
-            <p key={i} className="text-amber-600 dark:text-amber-400 mt-0.5">
-              {dayjs(s.date).format('D MMM')}: {s.reason}
-            </p>
-          ))}
-        </div>
-      )}
-
-      {unambiguous.length > 0 && (
-        <button
-          onClick={() => applyMutation.mutate(unambiguous.map(g => ({ date: g.date, storeItemId: g.storeItemId, kind: 'feed' as const })))}
-          disabled={applyMutation.isPending}
-          className="text-[11px] font-semibold text-brand-green hover:underline disabled:opacity-50"
-        >
-          {applyMutation.isPending ? 'Applying…' : `Apply all ${unambiguous.length} feed gap${unambiguous.length === 1 ? '' : 's'}`}
-        </button>
-      )}
-
-      {issuedButNotLogged.length > 0 && (
-        <div>
-          <p className="text-[10px] font-bold text-amber-500 uppercase tracking-widest mb-1.5">
-            Issued but not logged ({issuedButNotLogged.length})
-          </p>
-          <div className="space-y-1">
-            {issuedButNotLogged.map((g) => {
-              const key = gapKey(g);
-              const isPicking = pendingKey === key;
-              return (
-                <div key={key} className="flex items-center justify-between gap-2 text-[11px] bg-amber-50 dark:bg-amber-900/10 rounded-lg px-2.5 py-1.5">
-                  <span className="text-gray-700 dark:text-gray-300">
-                    <span className="font-semibold">{dayjs(g.date).format('D MMM')}</span> · {g.itemName}
-                    <span className="text-gray-400"> · {g.gapQty.toFixed(2)}{g.unit} unlogged</span>
-                  </span>
-                  {g.kind === 'feed' ? (
-                    <button
-                      onClick={() => applyMutation.mutate([{ date: g.date, storeItemId: g.storeItemId, kind: 'feed' }])}
-                      disabled={applyMutation.isPending}
-                      className="text-amber-600 dark:text-amber-400 font-semibold whitespace-nowrap hover:underline disabled:opacity-50"
-                    >
-                      Apply
-                    </button>
-                  ) : isPicking ? (
-                    <div className="flex gap-2 whitespace-nowrap">
-                      {(['vaccine', 'supplement', 'treatment'] as const).map(k => (
-                        <button key={k}
-                          onClick={() => { applyMutation.mutate([{ date: g.date, storeItemId: g.storeItemId, kind: k }]); setPendingKey(null); }}
-                          disabled={applyMutation.isPending}
-                          className="text-amber-600 dark:text-amber-400 font-semibold hover:underline disabled:opacity-50"
-                        >
-                          {k}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setPendingKey(key)}
-                      className="text-amber-600 dark:text-amber-400 font-semibold whitespace-nowrap hover:underline"
-                    >
-                      Log as…
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-      {missingEnvironmentalDates.length > 0 && (
-        <div>
-          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">
-            No environmental reading ({missingEnvironmentalDates.length} days)
-          </p>
-          <div className="flex flex-wrap gap-1">
-            {missingEnvironmentalDates.map(d => (
-              <span key={d} className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500">
-                {dayjs(d).format('D MMM')}
-              </span>
-            ))}
-          </div>
-          <p className="text-[10px] text-gray-400 mt-1 italic">
-            No source data exists to backfill these from — nobody recorded a reading, so there's nothing to auto-fill.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
+// NOTE: the "Backfill Report" panel that used to live here (and its
+// /brooder/batches/:id/backfill-report + backfill-apply calls) has been
+// removed — it let Store-issued-but-unlogged quantities be written straight
+// into the attendant's own feed/vaccine/supplement/treatment logs, i.e.
+// brooder management data being auto-filled/changed from Store's side.
+// Store's production reports are informational only for the Director now.
 
 // ── Batch panel — inline below the cage map ───────────────────────────────────
 
@@ -413,7 +268,6 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
   const [showDailyLog,  setShowDailyLog]  = useState(false);
   const [historyOpen,   setHistoryOpen]   = useState(false);
   const [treatHistOpen, setTreatHistOpen] = useState(false);
-  const [backfillOpen,  setBackfillOpen]  = useState(false);
 
   const ageDays   = dayjs().diff(dayjs(batch.dateOfHatch), 'day');
   // 1-indexed HyLine week (days 0-6 = week 1, 7-13 = week 2, ...). Must match
@@ -434,13 +288,6 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
     queryKey: ['brooder-treatments', batch.id],
     queryFn:  () => api.get(`/flock/brooder-treatment-logs?batchId=${batch.id}`).then(r => r.data).catch(() => []),
     enabled:  treatHistOpen,
-    staleTime: 30_000,
-  });
-
-  const { data: backfillReport, isLoading: backfillLoading } = useQuery<BackfillReport>({
-    queryKey: ['brooder-backfill-report', batch.id],
-    queryFn:  () => api.get(`/brooder/batches/${batch.id}/backfill-report?days=60`).then(r => r.data),
-    enabled:  backfillOpen,
     staleTime: 30_000,
   });
 
@@ -466,6 +313,18 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
   const today       = dayjs().format('YYYY-MM-DD');
   const daysSince   = lastLog ? dayjs(today).diff(dayjs(lastLog.logDate).format('YYYY-MM-DD'), 'day') : null;
   const logOverdue  = daysSince === null || daysSince > 0;
+
+  // Sections the Production Manager has returned for re-recording — surfaced
+  // here so the attendant knows exactly what to fix without re-doing the
+  // whole day's entry.
+  const { data: outstandingReturns = [] } = useQuery<{
+    logDate: string;
+    sections: { section: string; returnReason: string | null }[];
+  }[]>({
+    queryKey: ['brooder-outstanding-returns', batch.id],
+    queryFn: () => api.get(`/brooder/batches/${batch.id}/outstanding-returns?days=14`).then(r => r.data).catch(() => []),
+    staleTime: 30_000,
+  });
 
   // Group logs by date
   const grouped = useMemo(() => {
@@ -523,6 +382,21 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
         </div>
       </div>
 
+      {/* Sections the Production Manager returned for re-recording */}
+      {outstandingReturns.length > 0 && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl px-3 py-2 space-y-1">
+          <p className="text-[11px] font-bold text-red-700 dark:text-red-400 flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5" /> Returned for re-recording
+          </p>
+          {outstandingReturns.map(o => (
+            <p key={o.logDate} className="text-[11px] text-red-600 dark:text-red-300">
+              {dayjs(o.logDate).format('D MMM')} — {o.sections.map(s => s.section.charAt(0) + s.section.slice(1).toLowerCase()).join(', ')}
+              {o.sections[0]?.returnReason ? `: ${o.sections[0].returnReason}` : ''}
+            </p>
+          ))}
+        </div>
+      )}
+
       {/* Last log summary strip */}
       {lastLog && (
         <div className="bg-gray-50 dark:bg-dark-bg rounded-xl px-3 py-2 flex items-center gap-3 flex-wrap text-[11px] text-gray-500">
@@ -554,12 +428,6 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
           className="flex items-center gap-1.5 border border-red-200 dark:border-red-900/30 text-red-600 dark:text-red-400 rounded-xl px-4 py-2.5 text-xs font-semibold hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors">
           Treatments
           {treatHistOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-        </button>
-        <button onClick={() => setBackfillOpen(o => !o)}
-          title="What Store has issued to this batch but nobody has logged as used yet, plus days with no environmental reading"
-          className="flex items-center gap-1.5 border border-amber-200 dark:border-amber-900/30 text-amber-600 dark:text-amber-400 rounded-xl px-4 py-2.5 text-xs font-semibold hover:bg-amber-50 dark:hover:bg-amber-900/10 transition-colors">
-          Backfill Report
-          {backfillOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
         </button>
       </div>
 
@@ -663,20 +531,6 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
                   {t.loggedBy && <p className="text-[10px] text-gray-400">by {t.loggedBy.fullName}</p>}
                 </div>
               ))}
-        </div>
-      )}
-
-      {/* ── Backfill report ── */}
-      {backfillOpen && (
-        <div className="border-t border-gray-100 dark:border-dark-border pt-3 space-y-2">
-          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-            Backfill Report — last 60 days
-          </p>
-          {backfillLoading
-            ? <p className="text-xs text-gray-400 text-center py-4">Loading…</p>
-            : backfillReport
-            ? <BackfillReportPanel report={backfillReport} batchId={batch.id} />
-            : <p className="text-xs text-gray-400 text-center py-4">Could not load report.</p>}
         </div>
       )}
 

@@ -21,7 +21,10 @@ import {
 import { api } from '../../lib/api/client';
 import { useOfflineMutation } from '../../hooks/useOfflineSync';
 import { useOfflineStore } from '../../stores/offline.store';
-import { useIssuableStoreItems, FEED_CATEGORIES, MEDICATION_CATEGORIES } from '../../hooks/useIssuableStoreItems';
+import {
+  useIssuableStoreItems, FEED_CATEGORIES,
+  VACCINE_CATEGORIES, SUPPLEMENT_CATEGORIES, TREATMENT_CATEGORIES,
+} from '../../hooks/useIssuableStoreItems';
 import dayjs from '../../lib/dayjs';
 
 const inputCls  = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-base bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
@@ -54,11 +57,26 @@ interface RowEntry {
 }
 
 interface VaccineEntry {
-  kind: 'VACCINE' | 'SUPPLEMENT';
+  kind: 'VACCINE' | 'SUPPLEMENT' | 'TREATMENT';
   storeItemId: string;
   name: string;
   dosage: string;
   quantityUsed: string; // string in form state — allows any number of decimal places, parsed on submit
+}
+
+interface FeedLineEntry {
+  storeItemId: string;
+  kg: string; // string in form state — parsed on submit
+}
+
+type MortalityMode = 'GENERAL' | 'PER_ROW';
+type FedBeforeDeath = 'YES' | 'NO' | 'MIXED' | '';
+
+interface MortalityRowEntry {
+  rowCode: string;
+  count: string;
+  fedBeforeDeath: FedBeforeDeath;
+  feedAlreadyEatenKg: string;
 }
 
 type BlockKey = 'BLOCK1' | 'BLOCK2';
@@ -217,8 +235,6 @@ export function EggCollectionPage() {
       mortalities: 0,
       remarks: '',
       batchId: '',
-      feedKg: '' as string | number,
-      feedStoreItemId: '',
       waterLiters: '' as string | number,
       houseTempC: '' as string | number,
     },
@@ -228,8 +244,14 @@ export function EggCollectionPage() {
 
   // Feed items Store has actually issued — production-house feed only.
   const { data: feedItems = [] } = useIssuableStoreItems(FEED_CATEGORIES);
-  // Vaccine/supplement items Store has actually issued.
-  const { data: medicationItems = [] } = useIssuableStoreItems(MEDICATION_CATEGORIES);
+  // Vaccines, supplements and treatments each draw from their own Store
+  // category so a vaccine picker can never show a supplement, etc.
+  const { data: vaccineItems    = [] } = useIssuableStoreItems(VACCINE_CATEGORIES);
+  const { data: supplementItems = [] } = useIssuableStoreItems(SUPPLEMENT_CATEGORIES);
+  const { data: treatmentItems  = [] } = useIssuableStoreItems(TREATMENT_CATEGORIES);
+  function itemsForKind(kind: VaccineEntry['kind']) {
+    return kind === 'VACCINE' ? vaccineItems : kind === 'SUPPLEMENT' ? supplementItems : treatmentItems;
+  }
 
   // Minimal in-flight flag — set true on mutate, cleared once server confirms
   const [localSubmitPending, setLocalSubmitPending] = useState(false);
@@ -240,6 +262,37 @@ export function EggCollectionPage() {
   });
   const [vaccines, setVaccines] = useState<VaccineEntry[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // ── Feed — supports a same-day transition (e.g. Growers Mash -> Developer's
+  // Mash) as separate line items, each drawn against its own Store residual,
+  // rather than one blended figure.
+  const [feedLines, setFeedLines] = useState<FeedLineEntry[]>([{ storeItemId: '', kg: '' }]);
+  function addFeedLine() { setFeedLines(f => [...f, { storeItemId: '', kg: '' }]); }
+  function removeFeedLine(i: number) { setFeedLines(f => f.filter((_, j) => j !== i)); }
+  function updateFeedLine(i: number, field: keyof FeedLineEntry, val: string) {
+    setFeedLines(f => f.map((line, j) => j === i ? { ...line, [field]: val } : line));
+  }
+
+  // ── Mortality — general (one figure for the house) or per-row, so the
+  // system can narrow feed-surplus tracking down to where the birds were.
+  const [mortalityMode, setMortalityMode] = useState<MortalityMode>('GENERAL');
+  const [mortalityFedBeforeDeath, setMortalityFedBeforeDeath] = useState<FedBeforeDeath>('');
+  const [mortalityFeedAlreadyEatenKg, setMortalityFeedAlreadyEatenKg] = useState('');
+  const [mortalityRows, setMortalityRows] = useState<MortalityRowEntry[]>(
+    (() => {
+      const rows: MortalityRowEntry[] = [];
+      for (const letter of UNIT_LETTERS) {
+        for (const rowNum of [1, 2]) {
+          rows.push({ rowCode: `${letter}${rowNum}`, count: '', fedBeforeDeath: '', feedAlreadyEatenKg: '' });
+        }
+      }
+      return rows;
+    })(),
+  );
+  function updateMortalityRow(idx: number, field: keyof MortalityRowEntry, val: string) {
+    setMortalityRows(rows => rows.map((r, i) => i === idx ? { ...r, [field]: val } : r));
+  }
+  const mortalityRowSum = mortalityRows.reduce((s, r) => s + (Number(r.count) || 0), 0);
 
   // Derive session state from server
   const amSession = (todaySessions as any[]).find((s: any) => s.shift === 'AM');
@@ -270,11 +323,30 @@ export function EggCollectionPage() {
     setBlockData({ BLOCK1: { rows: returned.rowData } });
     if (returned.openingPop  != null) setValue('openingPop',  returned.openingPop);
     if (returned.mortalities  != null) setValue('mortalities',  returned.mortalities);
-    if (returned.feedKg       != null) setValue('feedKg',       returned.feedKg);
-    if (returned.feedStoreItemId)       setValue('feedStoreItemId', returned.feedStoreItemId);
     if (returned.waterLiters  != null) setValue('waterLiters',  returned.waterLiters);
     if (returned.houseTempC   != null) setValue('houseTempC',   returned.houseTempC);
     if (returned.remarks)               setValue('remarks',      returned.remarks);
+    // Feed lines — prefer the full breakdown if present, else fall back to
+    // the single legacy feedKg/feedStoreItemId pair.
+    if (Array.isArray(returned.feedBreakdownJson) && returned.feedBreakdownJson.length > 0) {
+      setFeedLines(returned.feedBreakdownJson.map((l: any) => ({ storeItemId: l.storeItemId, kg: String(l.kg ?? '') })));
+    } else if (returned.feedStoreItemId) {
+      setFeedLines([{ storeItemId: returned.feedStoreItemId, kg: returned.feedKg != null ? String(returned.feedKg) : '' }]);
+    }
+    // Mortality mode + breakdown
+    if (returned.mortalityMode === 'PER_ROW' && Array.isArray(returned.mortalityRowBreakdown)) {
+      setMortalityMode('PER_ROW');
+      setMortalityRows(rows => rows.map(r => {
+        const match = (returned.mortalityRowBreakdown as any[]).find((m: any) => m.rowCode === r.rowCode);
+        return match
+          ? { rowCode: r.rowCode, count: String(match.count ?? ''), fedBeforeDeath: match.fedBeforeDeath ?? '', feedAlreadyEatenKg: match.feedAlreadyEatenKg != null ? String(match.feedAlreadyEatenKg) : '' }
+          : r;
+      }));
+    } else {
+      setMortalityMode('GENERAL');
+      if (returned.mortalityFedBeforeDeath) setMortalityFedBeforeDeath(returned.mortalityFedBeforeDeath);
+      if (returned.mortalityFeedAlreadyEatenKg != null) setMortalityFeedAlreadyEatenKg(String(returned.mortalityFeedAlreadyEatenKg));
+    }
   }, [pageMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { mutate: offlineMutate } = useOfflineMutation({
@@ -316,11 +388,18 @@ export function EggCollectionPage() {
   function onSubmit(data: any) {
     setSubmitError(null);
 
-    const feedKg = Number(data.feedKg);
     const waterL = Number(data.waterLiters);
     const tempC  = Number(data.houseTempC);
-    if (!data.feedStoreItemId || !(feedKg > 0)) {
+
+    const cleanedFeedLines = feedLines
+      .filter(l => l.storeItemId || l.kg)
+      .map(l => ({ feedStoreItemId: l.storeItemId, feedKg: Number(l.kg) }));
+    if (cleanedFeedLines.length === 0 || !cleanedFeedLines[0].feedStoreItemId || !(cleanedFeedLines[0].feedKg > 0)) {
       setSubmitError('Session feed consumption is required (feed type and kg dispensed, from what Store has issued).');
+      return;
+    }
+    if (cleanedFeedLines.some(l => !l.feedStoreItemId || !(l.feedKg > 0))) {
+      setSubmitError('Each feed line must have a feed type and a kg dispensed greater than zero.');
       return;
     }
     if (!(waterL > 0) || !(tempC > 0)) {
@@ -341,11 +420,34 @@ export function EggCollectionPage() {
       }))
       .filter(v => v.storeItemId || v.name || v.dosage);
     if (cleanedVaccines.some(v => !v.storeItemId || !v.name || !v.dosage)) {
-      setSubmitError('Each vaccine/supplement entry must have an item selected, a name, and a dosage.');
+      setSubmitError('Each vaccine/supplement/treatment entry must have an item selected, a name, and a dosage.');
       return;
     }
 
+    const totalMortalities = Number(data.mortalities);
+    let mortalityPayload: any = { mortalityMode, mortalityRowBreakdown: [] as any[] };
+    if (mortalityMode === 'PER_ROW') {
+      const cleanedRows = mortalityRows
+        .filter(r => Number(r.count) > 0)
+        .map(r => ({
+          rowCode: r.rowCode,
+          count: Number(r.count),
+          fedBeforeDeath: r.fedBeforeDeath || undefined,
+          feedAlreadyEatenKg: r.feedAlreadyEatenKg?.trim() ? Number(r.feedAlreadyEatenKg) : undefined,
+        }));
+      if (cleanedRows.length > 0 && mortalityRowSum !== totalMortalities) {
+        setSubmitError(`Per-row mortality breakdown (${mortalityRowSum}) must add up to the total mortalities entered (${totalMortalities}).`);
+        return;
+      }
+      mortalityPayload.mortalityRowBreakdown = cleanedRows;
+    } else {
+      mortalityPayload.mortalityFedBeforeDeath = mortalityFedBeforeDeath || undefined;
+      mortalityPayload.mortalityFeedAlreadyEatenKg = mortalityFeedAlreadyEatenKg?.trim() ? Number(mortalityFeedAlreadyEatenKg) : undefined;
+    }
+
     setLocalSubmitPending(true);
+
+    const [primaryFeed, ...additionalFeed] = cleanedFeedLines;
 
     offlineMutate({
       batchId: data.batchId,
@@ -353,7 +455,8 @@ export function EggCollectionPage() {
       sessionDate: dayjs().format('YYYY-MM-DD'),
       shift: activeShift,  // hardcoded from pageMode — no user-controlled radio
       openingPop: Number(data.openingPop),
-      mortalities: Number(data.mortalities),
+      mortalities: totalMortalities,
+      ...mortalityPayload,
       block: 'BLOCK1',
       rowData: allRows.map(r => ({
         rowCode: r.rowCode,
@@ -367,7 +470,7 @@ export function EggCollectionPage() {
         weightKg: Number(r.weightKg),
         attendantName: r.attendantName,
       })),
-      sessionFeed: { feedKg, feedStoreItemId: data.feedStoreItemId },
+      sessionFeed: { feedKg: primaryFeed.feedKg, feedStoreItemId: primaryFeed.feedStoreItemId, additionalLines: additionalFeed },
       environment: { waterLiters: waterL, houseTempC: tempC },
       vaccinesGiven: cleanedVaccines,
       remarks: data.remarks || undefined,
@@ -466,6 +569,83 @@ export function EggCollectionPage() {
               </div>
             </div>
           </div>
+
+          {mortalities > 0 && (
+            <div className="mt-4 pt-4 border-t border-gray-100 dark:border-dark-border">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                  Mortality Detail — Feed Surplus
+                </p>
+                <div className="flex rounded-lg overflow-hidden border border-gray-200 dark:border-dark-border text-xs font-semibold">
+                  <button type="button" onClick={() => setMortalityMode('GENERAL')}
+                    className={`px-3 py-1.5 ${mortalityMode === 'GENERAL' ? 'bg-brand-green text-white' : 'bg-white dark:bg-dark-bg text-gray-500'}`}>
+                    General
+                  </button>
+                  <button type="button" onClick={() => setMortalityMode('PER_ROW')}
+                    className={`px-3 py-1.5 ${mortalityMode === 'PER_ROW' ? 'bg-brand-green text-white' : 'bg-white dark:bg-dark-bg text-gray-500'}`}>
+                    Per Row
+                  </button>
+                </div>
+              </div>
+              <p className="text-[11px] text-gray-400 mb-2">
+                A mortality means the feed meant for that bird went uneaten (or only partly eaten) —
+                record this so Store issues less feed tomorrow instead of over-issuing.
+              </p>
+
+              {mortalityMode === 'GENERAL' ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-gray-500 mb-1">Fed before death?</label>
+                    <select value={mortalityFedBeforeDeath} onChange={e => setMortalityFedBeforeDeath(e.target.value as FedBeforeDeath)} className={inputCls}>
+                      <option value="">Select…</option>
+                      <option value="NO">No — died before feeding</option>
+                      <option value="YES">Yes — had already eaten</option>
+                      <option value="MIXED">Mixed (some fed, some not)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-gray-500 mb-1">Feed NOT consumed (kg est.)</label>
+                    <input type="number" min="0" step="any" inputMode="decimal" value={mortalityFeedAlreadyEatenKg}
+                      onChange={e => setMortalityFeedAlreadyEatenKg(e.target.value)} className={inputCls} placeholder="e.g. 0.5" />
+                  </div>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs min-w-[560px]">
+                    <thead>
+                      <tr>
+                        {['Row', 'Dead', 'Fed before death?', 'Feed NOT consumed (kg)'].map(h => (
+                          <th key={h} className="text-center text-gray-400 font-medium pb-1.5 px-1">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mortalityRows.map((r, i) => (
+                        <tr key={r.rowCode}>
+                          <td className="px-1 py-1 text-center">
+                            <span className="text-xs font-bold text-brand-green bg-brand-green/10 rounded-lg px-2 py-1">{r.rowCode}</span>
+                          </td>
+                          <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={r.count} onChange={e => updateMortalityRow(i, 'count', e.target.value)} className={numInput} placeholder="0" /></td>
+                          <td className="px-1 py-1">
+                            <select value={r.fedBeforeDeath} onChange={e => updateMortalityRow(i, 'fedBeforeDeath', e.target.value)} className={numInput}>
+                              <option value="">—</option>
+                              <option value="NO">No</option>
+                              <option value="YES">Yes</option>
+                              <option value="MIXED">Mixed</option>
+                            </select>
+                          </td>
+                          <td className="px-1 py-1"><input type="number" min="0" step="any" inputMode="decimal" value={r.feedAlreadyEatenKg} onChange={e => updateMortalityRow(i, 'feedAlreadyEatenKg', e.target.value)} className={numInput} placeholder="0" /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className={`text-[11px] mt-2 ${mortalityRowSum === mortalities ? 'text-gray-400' : 'text-red-500 font-semibold'}`}>
+                    Row total: {mortalityRowSum} / {mortalities} mortalities entered above
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* ── Block selection ── */}
@@ -593,32 +773,47 @@ export function EggCollectionPage() {
 
         {/* ── Session Feed Consumption ── */}
         <div className={cardCls}>
-          <p className={sectionLbl + ' flex items-center gap-2'}>
-            <Wheat className="w-4 h-4 text-brand-green" /> Session Feed Consumption ({activeShift}) *
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Feed Dispensed (kg)</label>
-              <input {...register('feedKg')} type="number" min="0" step="any" inputMode="decimal" className={inputCls} placeholder="e.g. 45.532" />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Feed Type Given</label>
-              <select {...register('feedStoreItemId')} className={inputCls}>
-                <option value="">Select feed issued by Store...</option>
-                {feedItems.length === 0 && (
-                  <option value="" disabled>No feed has been issued from the store yet</option>
-                )}
-                {feedItems.map(item => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} — {item.residual.toFixed(2)} {item.unit} left
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div className="flex items-center justify-between mb-1">
+            <p className={sectionLbl + ' flex items-center gap-2 mb-0'}>
+              <Wheat className="w-4 h-4 text-brand-green" /> Session Feed Consumption ({activeShift}) *
+            </p>
+            <button type="button" onClick={addFeedLine}
+              className="text-xs font-semibold text-brand-green hover:underline flex items-center gap-1">
+              <Plus className="w-3 h-3" /> Add feed line (transition)
+            </button>
           </div>
+          {feedLines.map((line, i) => (
+            <div key={i} className="grid grid-cols-1 md:grid-cols-[1fr,1fr,auto] gap-3 items-end mt-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Feed Type Given</label>
+                <select value={line.storeItemId} onChange={e => updateFeedLine(i, 'storeItemId', e.target.value)} className={inputCls}>
+                  <option value="">Select feed issued by Store...</option>
+                  {feedItems.length === 0 && (
+                    <option value="" disabled>No feed has been issued from the store yet</option>
+                  )}
+                  {feedItems.map(item => (
+                    <option key={item.id} value={item.id}>
+                      {item.name} — {item.residual.toFixed(2)} {item.unit} left
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Kg Dispensed</label>
+                <input type="number" min="0" step="any" inputMode="decimal" value={line.kg}
+                  onChange={e => updateFeedLine(i, 'kg', e.target.value)} className={inputCls} placeholder="e.g. 45.532" />
+              </div>
+              {feedLines.length > 1 && (
+                <button type="button" onClick={() => removeFeedLine(i)} className="p-2 text-gray-400 hover:text-red-500 mb-1">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          ))}
           <p className="text-[11px] text-gray-400 mt-2">
-            Production-house feed only, drawn against what Store has issued. Brooder feed is logged by the
-            Production Manager.
+            Production-house feed only, drawn against what Store has issued. Add a second line for a
+            same-day ration transition, e.g. Growers Mash (20 kg) / Developer's Mash (10 kg), instead of
+            one blended figure. Brooder feed is logged by the Production Manager.
           </p>
         </div>
 
@@ -643,11 +838,11 @@ export function EggCollectionPage() {
           </div>
         </div>
 
-        {/* ── Vaccines / Supplements ── */}
+        {/* ── Vaccines / Supplements / Treatments ── */}
         <div className={cardCls}>
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide flex items-center gap-2">
-              <Syringe className="w-4 h-4 text-rose-500" /> Vaccines &amp; Supplements (optional)
+              <Syringe className="w-4 h-4 text-rose-500" /> Vaccines, Supplements &amp; Treatments (optional)
             </p>
             <button
               type="button"
@@ -659,22 +854,27 @@ export function EggCollectionPage() {
           </div>
           {vaccines.length === 0 && (
             <p className="text-xs text-gray-400 italic">
-              No vaccines or supplements given this session. Entries here will appear in the
-              Production Manager's Health page as a historical vaccination log, and draw down what
-              Store has issued.
+              Nothing given this session. Entries here will appear in the Production Manager's Health
+              page as a historical log, and draw down what Store has issued — vaccines, supplements and
+              treatments are kept in their own separate categories.
             </p>
           )}
-          {vaccines.map((v, i) => (
+          {vaccines.map((v, i) => {
+            const kindItems = itemsForKind(v.kind);
+            return (
             <div key={i} className="grid grid-cols-12 gap-2 items-end mb-2">
               <div className="col-span-2">
                 <label className="block text-[11px] text-gray-500 mb-1">Type</label>
                 <select
                   value={v.kind}
-                  onChange={e => setVaccines(prev => prev.map((p, j) => j === i ? { ...p, kind: e.target.value as VaccineEntry['kind'] } : p))}
+                  onChange={e => setVaccines(prev => prev.map((p, j) => j === i
+                    ? { ...p, kind: e.target.value as VaccineEntry['kind'], storeItemId: '', name: '' } // reset item — each kind has its own list
+                    : p))}
                   className={inputCls + ' py-2 text-sm'}
                 >
                   <option value="VACCINE">Vaccine</option>
                   <option value="SUPPLEMENT">Supplement</option>
+                  <option value="TREATMENT">Treatment</option>
                 </select>
               </div>
               <div className="col-span-4">
@@ -682,7 +882,7 @@ export function EggCollectionPage() {
                 <select
                   value={v.storeItemId}
                   onChange={e => {
-                    const item = medicationItems.find(m => m.id === e.target.value);
+                    const item = kindItems.find(m => m.id === e.target.value);
                     setVaccines(prev => prev.map((p, j) => j === i
                       ? { ...p, storeItemId: e.target.value, name: item ? item.name : p.name }
                       : p));
@@ -690,10 +890,10 @@ export function EggCollectionPage() {
                   className={inputCls + ' py-2 text-sm'}
                 >
                   <option value="">Select item...</option>
-                  {medicationItems.length === 0 && (
-                    <option value="" disabled>No vaccines/supplements issued yet</option>
+                  {kindItems.length === 0 && (
+                    <option value="" disabled>No {v.kind.toLowerCase()}s issued yet</option>
                   )}
-                  {medicationItems.map(item => (
+                  {kindItems.map(item => (
                     <option key={item.id} value={item.id}>
                       {item.name} — {item.residual.toFixed(2)} {item.unit} left
                     </option>
@@ -729,7 +929,8 @@ export function EggCollectionPage() {
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* ── Grand Totals ── */}

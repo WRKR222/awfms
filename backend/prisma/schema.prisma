@@ -218,10 +218,28 @@ enum StoreItemCategory {
   FEED
   SUPPLEMENT
   FEED_SUPPLEMENT
+  // Split out of MEDICATION so attendant-facing Vaccine pickers never show
+  // supplements or treatments (antibiotics/dewormers) alongside vaccines.
+  // Existing vaccine items filed under MEDICATION are NOT auto-migrated —
+  // Store/PM re-tags them into VACCINE by hand after this ships (see
+  // migration 20260907090000_add_vaccine_category).
+  VACCINE
   PACKAGING
   CLEANING
   SAFETY
   OTHER
+}
+
+/// Which section of a brooder day's record a Production Manager is
+/// reviewing. Kept separate from HealthEventType/NotificationType — this is
+/// purely about the PM's daily sign-off workflow (see BrooderDailyReview).
+enum BrooderReviewSection {
+  ENVIRONMENT
+  FEED
+  MORTALITY
+  VACCINES
+  SUPPLEMENTS
+  TREATMENTS
 }
 
 enum EmployeeStatus {
@@ -314,6 +332,7 @@ model User {
   brooderGeneralFeedLogs      BrooderGeneralFeedLog[]      @relation("BrooderGeneralFeedLoggedBy")
   brooderGeneralMortalityLogs BrooderGeneralMortalityLog[] @relation("BrooderGeneralMortalityLoggedBy")
   brooderStockCounts          BrooderStockCount[]          @relation("BrooderStockCountLoggedBy")
+  brooderDailyReviewsDone     BrooderDailyReview[]         @relation("BrooderDailyReviewReviewedBy")
 
   // Store Production Report verification
   productionReportsUploaded StoreProductionReport[] @relation("ProductionReportUploadedBy")
@@ -437,6 +456,7 @@ model Batch {
   brooderGeneralFeedLogs      BrooderGeneralFeedLog[]
   brooderGeneralMortalityLogs BrooderGeneralMortalityLog[]
   brooderStockCounts          BrooderStockCount[]
+  brooderDailyReviews         BrooderDailyReview[]
   storeProductionReport       StoreProductionReport?
   @@index([stage])
   @@index([isActive])
@@ -843,7 +863,18 @@ model EggCollectionSession {
   collectedById String      @map("collected_by_id")
 
   openingPop    Int         @map("opening_pop")
+  // `mortalities` stays the roll-up total (existing dashboards/reports read
+  // this). `mortalityMode` says how it was captured today; when PER_ROW,
+  // `mortalityRowBreakdown` carries the per-row detail — shape:
+  // [{ rowId, count, cause?, fedBeforeDeath?: "Y"|"N"|"MIXED", feedAlreadyEatenKg? }].
+  // When GENERAL, the same fed-before-death/feed-eaten detail is carried in
+  // the scalar fields below instead. Either way this is what lets Stores
+  // net the dead birds' feed out of tomorrow's issuance.
   mortalities   Int         @default(0)
+  mortalityMode String      @default("GENERAL") @map("mortality_mode") // "GENERAL" | "PER_ROW"
+  mortalityRowBreakdown Json?   @map("mortality_row_breakdown")
+  mortalityFedBeforeDeath String? @map("mortality_fed_before_death") // "Y" | "N" | "MIXED" — GENERAL mode only
+  mortalityFeedAlreadyEatenKg Decimal? @map("mortality_feed_already_eaten_kg") @db.Decimal(8, 3)
   closingStock  Int         @map("closing_stock")
   rowData       Json        @map("row_data")
 
@@ -873,6 +904,13 @@ model EggCollectionSession {
   // brooder module's storeItemId-gated feed logging. Nullable for legacy
   // sessions recorded before this was required.
   feedStoreItemId     String?   @map("feed_store_item_id")
+  // Multiple feed items dispensed the same session — e.g. a Grower→Developer
+  // transition day recorded as two lines ("Grower Mash 335kg" / "Developer
+  // Mash 112kg") instead of one blended figure. feedKg/feedTypeName/
+  // feedStoreItemId above stay populated with the FIRST item for backward
+  // compatibility with existing reports; this carries the full breakdown.
+  // Shape: [{ storeItemId, itemName, issuedKg, dispensedKg }].
+  feedBreakdownJson   Json?     @map("feed_breakdown_json")
   waterLiters         Decimal?  @map("water_liters") @db.Decimal(8, 2)
   houseTempC          Decimal?  @map("house_temp_c") @db.Decimal(5, 1)
   editedAt           DateTime? @map("edited_at")
@@ -1839,6 +1877,13 @@ model BrooderLevelMortalityLog {
   mortalityCount Int      @default(0) @map("mortality_count")
   cullingCount   Int      @default(0) @map("culling_count")
   cause          String?                                         // MortalityCause enum value
+  // Whether the dead/culled birds had already been fed that day —
+  // "Y" (fed), "N" (not yet fed), "MIXED" (some of each, for a count > 1).
+  // Feeds the feed-wastage/surplus calculation: a bird that died before
+  // being fed no longer needs that day's ration (Store issues less
+  // tomorrow); a bird that died after eating already consumed its share.
+  fedBeforeDeath     String? @map("fed_before_death")
+  feedAlreadyEatenKg Float?  @map("feed_already_eaten_kg")
   notes          String?
   loggedById     String   @map("logged_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -1936,6 +1981,10 @@ model BrooderGeneralMortalityLog {
   mortalityCount Int      @default(0) @map("mortality_count")
   cullingCount   Int      @default(0) @map("culling_count")
   cause          String?
+  // See BrooderLevelMortalityLog.fedBeforeDeath / feedAlreadyEatenKg — same
+  // purpose, whole-brooder scale.
+  fedBeforeDeath     String? @map("fed_before_death")
+  feedAlreadyEatenKg Float?  @map("feed_already_eaten_kg")
   notes          String?
   loggedById     String   @map("logged_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -1945,6 +1994,35 @@ model BrooderGeneralMortalityLog {
 
   @@index([batchId, logDate])
   @@map("brooder_general_mortality_logs")
+}
+
+/// A Production Manager's per-section sign-off on one batch's one day of
+/// brooder recording (Environment / Feed / Mortality / Vaccines /
+/// Supplements / Treatments). Deliberately separate from the underlying
+/// logs (BrooderLog, BrooderLevelFeedLog, etc.) — this table never holds
+/// the recorded data itself, only the review outcome, so returning a
+/// section for re-recording never touches or overwrites what the attendant
+/// entered. PENDING until a PM acts; RETURNED carries returnReason and is
+/// what the attendant's dashboard surfaces as "needs re-recording".
+model BrooderDailyReview {
+  id           String               @id @default(uuid())
+  batchId      String               @map("batch_id")
+  logDate      DateTime             @map("log_date") @db.Date
+  section      BrooderReviewSection
+  status       EntryStatus          @default(PENDING)
+  reviewedById String?              @map("reviewed_by_id")
+  reviewedAt   DateTime?            @map("reviewed_at")
+  returnReason String?              @map("return_reason")
+  createdAt    DateTime             @default(now()) @map("created_at")
+  updatedAt    DateTime             @updatedAt @map("updated_at")
+
+  batch      Batch @relation(fields: [batchId], references: [id])
+  reviewedBy User? @relation("BrooderDailyReviewReviewedBy", fields: [reviewedById], references: [id])
+
+  @@unique([batchId, logDate, section])
+  @@index([batchId, logDate])
+  @@index([status])
+  @@map("brooder_daily_reviews")
 }
 
 /// Whole-batch opening/closing stock reconciliation — one entry per

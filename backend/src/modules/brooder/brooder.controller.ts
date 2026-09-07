@@ -337,33 +337,54 @@ export class BrooderController {
     return this.svc.getPopulationRecordSheet(batchId, days ? Number(days) : 30);
   }
 
-  /** GET /brooder/batches/:batchId/backfill-report?days=60
-   *  Read-only: what Store has issued to this batch but nobody has logged
-   *  as used yet (feed/vaccines/supplements/treatments), plus which dates
-   *  have no environmental reading at all. Nothing is written — this is
-   *  the gap report to review before running a backfill. */
-  @Get('batches/:batchId/backfill-report')
+  // NOTE: the "backfill report / backfill apply" endpoints that used to live
+  // here (GET .../backfill-report, POST .../backfill-apply) have been
+  // removed, along with their BrooderService methods. They let Store-issued-
+  // but-unlogged quantities be written straight into the attendant's
+  // brooder feed/vaccine/supplement/treatment logs — i.e. brooder
+  // management data being auto-filled/changed from Store's side rather than
+  // the attendant's own recording. Store's production reports are now
+  // informational only for the Director (see
+  // ProductionReportReconciliationService) and never write into brooder logs.
+
+  // ── PM daily review, per section ─────────────────────────────────────────
+  /** GET /brooder/batches/:batchId/daily-review?date=2026-06-27
+   *  Every section's review status for the day (Environment/Feed/Mortality/
+   *  Vaccines/Supplements/Treatments) — defaults any not-yet-reviewed
+   *  section to PENDING. Used by both the PM's review screen and the
+   *  attendant's own dashboard (to see what's outstanding). */
+  @Get('batches/:batchId/daily-review')
   @RequirePermission(Permission.FLOCK_VIEW)
-  getBackfillReport(@Param('batchId') batchId: string, @Query('days') days?: string) {
-    return this.svc.getBackfillReport(batchId, days ? Number(days) : 60);
+  getDailyReview(@Param('batchId') batchId: string, @Query('date') date: string) {
+    if (!date) throw new BadRequestException('date is required (YYYY-MM-DD).');
+    return this.svc.getDailyReview(batchId, new Date(date));
   }
 
-  /** POST /brooder/batches/:batchId/backfill-apply
-   *  Applies a chosen subset of gaps from getBackfillReport. Body:
-   *  { items: [{ date, storeItemId, kind: 'feed'|'supplement'|'vaccine'|'treatment' }] }
-   *  Requires manager-level write access — this creates real feed/vaccine/
-   *  supplement/treatment log rows, not just a preview. */
-  @Post('batches/:batchId/backfill-apply')
-  @RequirePermission(Permission.FEED_INTAKE_LOG)
-  applyBackfill(
+  /** POST /brooder/batches/:batchId/daily-review
+   *  Body: { date, section, status: 'APPROVED'|'RETURNED', returnReason? }
+   *  PM/Director sign-off on one section of one day. RETURNED requires a
+   *  reason — the attendant sees it and re-records just that section; every
+   *  other section (and the underlying logs themselves) is untouched. */
+  @Post('batches/:batchId/daily-review')
+  @RequirePermission(Permission.FLOCK_ENTRY_APPROVE)
+  setDailyReview(
     @Param('batchId') batchId: string,
-    @Body() body: { items?: Array<{ date: string; storeItemId: string; kind: 'feed' | 'supplement' | 'vaccine' | 'treatment' }> },
+    @Body() body: { date?: string; section?: string; status?: 'APPROVED' | 'RETURNED' | 'PENDING'; returnReason?: string },
     @CurrentUser() user: any,
   ) {
-    if (!Array.isArray(body?.items) || body.items.length === 0) {
-      throw new BadRequestException('items is required and must be a non-empty array');
+    if (!body?.date || !body?.section || !body?.status) {
+      throw new BadRequestException('date, section and status are required.');
     }
-    return this.svc.applyBackfill(batchId, body.items, user.id);
+    return this.svc.setDailyReviewStatus(batchId, new Date(body.date), body.section, body.status, user.id, body.returnReason);
+  }
+
+  /** GET /brooder/batches/:batchId/outstanding-returns?days=30
+   *  Days within the lookback window that still have at least one RETURNED
+   *  section the attendant hasn't had re-reviewed yet. */
+  @Get('batches/:batchId/outstanding-returns')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getOutstandingReturns(@Param('batchId') batchId: string, @Query('days') days?: string) {
+    return this.svc.getOutstandingReturns(batchId, days ? Number(days) : 30);
   }
 
   // ── Bird weight samples (Req 6 + Req 7) ─────────────────────────────────

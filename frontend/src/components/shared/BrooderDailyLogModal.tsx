@@ -61,7 +61,10 @@ import {
 import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
 import { useBrooderRowsAndLevels } from '../../hooks/useBrooderCageMap';
-import { useIssuableStoreItems, FEED_CATEGORIES, MEDICATION_CATEGORIES } from '../../hooks/useIssuableStoreItems';
+import {
+  useIssuableStoreItems, FEED_CATEGORIES,
+  VACCINE_CATEGORIES, SUPPLEMENT_CATEGORIES, TREATMENT_CATEGORIES,
+} from '../../hooks/useIssuableStoreItems';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -195,9 +198,15 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
   const min   = dayjs(batch.dateOfHatch).format('YYYY-MM-DD');
 
   const { data: rowsAndLevels = [] } = useBrooderRowsAndLevels(true);
-  const { data: medItemsRaw,  isLoading: medItemsLoading  } = useIssuableStoreItems(MEDICATION_CATEGORIES);
-  const { data: feedItemsRaw, isLoading: feedItemsLoading } = useIssuableStoreItems(FEED_CATEGORIES);
-  const medItems  = medItemsRaw ?? [];
+  // Vaccines, supplements and treatments each draw from their own Store
+  // category so, e.g., the vaccine picker can never show a supplement.
+  const { data: vaccineItemsRaw,    isLoading: vaccineItemsLoading    } = useIssuableStoreItems(VACCINE_CATEGORIES);
+  const { data: supplementItemsRaw, isLoading: supplementItemsLoading } = useIssuableStoreItems(SUPPLEMENT_CATEGORIES);
+  const { data: treatmentItemsRaw,  isLoading: treatmentItemsLoading  } = useIssuableStoreItems(TREATMENT_CATEGORIES);
+  const { data: feedItemsRaw,       isLoading: feedItemsLoading       } = useIssuableStoreItems(FEED_CATEGORIES);
+  const vaccineItems    = vaccineItemsRaw ?? [];
+  const supplementItems = supplementItemsRaw ?? [];
+  const treatmentItems  = treatmentItemsRaw ?? [];
   const feedItems = (feedItemsRaw ?? []).filter(i => deriveFeedType(i) !== null);
 
   // ── Shared date ──────────────────────────────────────────────────────────
@@ -250,7 +259,7 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
     setVaccines(v => v.map((item, j) => {
       if (j !== i) return item;
       const next = { ...item, [field]: val };
-      if (field === 'storeItemId') next.name = medItems.find(m => m.id === val)?.name ?? '';
+      if (field === 'storeItemId') next.name = vaccineItems.find(m => m.id === val)?.name ?? '';
       return next;
     }));
   }
@@ -261,7 +270,7 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
     setSupplements(s => s.map((item, j) => {
       if (j !== i) return item;
       const next = { ...item, [field]: val };
-      if (field === 'storeItemId') next.name = medItems.find(m => m.id === val)?.name ?? '';
+      if (field === 'storeItemId') next.name = supplementItems.find(m => m.id === val)?.name ?? '';
       return next;
     }));
   }
@@ -274,7 +283,7 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
     setTreatments(t => t.map((item, j) => {
       if (j !== i) return item;
       const next = { ...item, [field]: val };
-      if (field === 'storeItemId') next.drugName = medItems.find(m => m.id === val)?.name ?? '';
+      if (field === 'storeItemId') next.drugName = treatmentItems.find(m => m.id === val)?.name ?? '';
       if (field === 'rowId') next.levelId = ''; // level depends on row
       return next;
     }));
@@ -760,14 +769,14 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                   {vaccines.length === 0 && (
                     <p className="text-[11px] text-gray-400 italic">No vaccines added.</p>
                   )}
-                  {!medItemsLoading && medItems.length === 0 && (
+                  {!vaccineItemsLoading && vaccineItems.length === 0 && (
                     <p className="text-[11px] text-amber-600 dark:text-amber-400 flex items-start gap-1">
                       <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                      No vaccines/medication issued from the store this week yet.
+                      No vaccines issued from the store this week yet.
                     </p>
                   )}
                   {vaccines.map((v, i) => {
-                    const picked = medItems.find(m => m.id === v.storeItemId);
+                    const picked = vaccineItems.find(m => m.id === v.storeItemId);
                     return (
                       <div key={i} className="bg-white dark:bg-dark-bg rounded-xl border border-purple-100 dark:border-purple-800 p-3 space-y-2">
                         <div className="flex items-center justify-between">
@@ -779,9 +788,9 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                         <div>
                           <label className={lCls}>Vaccine *</label>
                           <select value={v.storeItemId} onChange={e => updateVaccine(i, 'storeItemId', e.target.value)}
-                            className={iCls} disabled={medItemsLoading}>
-                            <option value="">{medItemsLoading ? 'Loading…' : 'Select vaccine…'}</option>
-                            {medItems.map(m => (
+                            className={iCls} disabled={vaccineItemsLoading}>
+                            <option value="">{vaccineItemsLoading ? 'Loading…' : 'Select vaccine…'}</option>
+                            {vaccineItems.map(m => (
                               <option key={m.id} value={m.id}>{m.name} — residual {m.residual.toFixed(2)} {m.unit.toLowerCase()}</option>
                             ))}
                           </select>
@@ -824,8 +833,14 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                   {supplements.length === 0 && (
                     <p className="text-[11px] text-gray-400 italic">No supplements added.</p>
                   )}
+                  {!supplementItemsLoading && supplementItems.length === 0 && (
+                    <p className="text-[11px] text-amber-600 dark:text-amber-400 flex items-start gap-1">
+                      <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                      No supplements issued from the store this week yet.
+                    </p>
+                  )}
                   {supplements.map((s, i) => {
-                    const picked = medItems.find(m => m.id === s.storeItemId);
+                    const picked = supplementItems.find(m => m.id === s.storeItemId);
                     return (
                       <div key={i} className="bg-white dark:bg-dark-bg rounded-xl border border-teal-100 dark:border-teal-800 p-3 space-y-2">
                         <div className="flex items-center justify-between">
@@ -837,9 +852,9 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                         <div>
                           <label className={lCls}>Supplement *</label>
                           <select value={s.storeItemId} onChange={e => updateSupplement(i, 'storeItemId', e.target.value)}
-                            className={iCls} disabled={medItemsLoading}>
-                            <option value="">{medItemsLoading ? 'Loading…' : 'Select supplement…'}</option>
-                            {medItems.map(m => (
+                            className={iCls} disabled={supplementItemsLoading}>
+                            <option value="">{supplementItemsLoading ? 'Loading…' : 'Select supplement…'}</option>
+                            {supplementItems.map(m => (
                               <option key={m.id} value={m.id}>{m.name} — residual {m.residual.toFixed(2)} {m.unit.toLowerCase()}</option>
                             ))}
                           </select>
@@ -889,9 +904,9 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                       <div>
                         <label className={lCls}><Pill className="w-3 h-3 inline mr-1 text-red-400" />Drug / Product</label>
                         <select value={t.storeItemId} onChange={e => updateTreatment(i, 'storeItemId', e.target.value)}
-                          className={iCls} disabled={medItemsLoading}>
-                          <option value="">{medItemsLoading ? 'Loading…' : 'Select drug (leave blank to skip)…'}</option>
-                          {medItems.map(m => (
+                          className={iCls} disabled={treatmentItemsLoading}>
+                          <option value="">{treatmentItemsLoading ? 'Loading…' : 'Select drug (leave blank to skip)…'}</option>
+                          {treatmentItems.map(m => (
                             <option key={m.id} value={m.id}>{m.name} — residual {m.residual.toFixed(2)} {m.unit.toLowerCase()}</option>
                           ))}
                         </select>
@@ -916,7 +931,7 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
                       </div>
                       <div>
                         {(() => {
-                          const picked = medItems.find(m => m.id === t.storeItemId);
+                          const picked = treatmentItems.find(m => m.id === t.storeItemId);
                           return (
                             <>
                               <label className={lCls}>Quantity used{picked ? ` (${picked.unit.toLowerCase()})` : ''}</label>

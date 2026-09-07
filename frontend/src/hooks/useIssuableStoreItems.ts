@@ -26,7 +26,24 @@ export interface IssuableStoreItem {
 }
 
 export const FEED_CATEGORIES = ['FEED', 'FEED_SUPPLEMENT'] as const;
-export const MEDICATION_CATEGORIES = ['MEDICATION', 'SUPPLEMENT'] as const;
+
+// Deprecated: kept only so older code that hasn't been migrated yet still
+// compiles. Do NOT use this for new vaccine/supplement/treatment pickers —
+// it lumps all three together, which is exactly what attendants must never
+// see (a vaccine picker showing supplements, etc). Use the three category
+// sets below instead.
+export const MEDICATION_CATEGORIES = ['MEDICATION', 'SUPPLEMENT', 'VACCINE'] as const;
+
+// Vaccines only — Store items tagged under the dedicated VACCINE category.
+export const VACCINE_CATEGORIES = ['VACCINE'] as const;
+
+// Supplements only (vitamins, electrolytes, feed additives given as a
+// supplement rather than a medical treatment).
+export const SUPPLEMENT_CATEGORIES = ['SUPPLEMENT'] as const;
+
+// Treatments/medication only (antibiotics, dewormers, other medical
+// treatments) — explicitly excludes VACCINE and SUPPLEMENT.
+export const TREATMENT_CATEGORIES = ['MEDICATION'] as const;
 
 export function useIssuableStoreItems(categories: readonly string[]) {
   const key = [...categories].sort().join(',');

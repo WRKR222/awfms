@@ -56,6 +56,12 @@ export interface RecordProductionFeedWastageParams {
   feedType: string;
   storeItemId: string | null;
   loggedById: string;
+  /** Feed not consumed today because of mortality (see
+   *  getBrooderMortalityFeedCreditKg's doc comment for the brooder-side
+   *  equivalent) — shrinks the effective requirement before comparing
+   *  against actualKg. Callers that don't compute this may omit it
+   *  (treated as 0), same as before this field existed. */
+  mortalityFeedCreditKg?: number;
 }
 
 @Injectable()
@@ -66,6 +72,32 @@ export class FeedWastageService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
   ) {}
+
+  // ── Mortality → feed credit ──────────────────────────────────────────────
+  // A bird that died before being fed no longer needed that day's ration; a
+  // bird that died after eating already consumed its share. Either way, the
+  // attendant records the uneaten/leftover portion as
+  // fedBeforeDeath + feedAlreadyEatenKg (see BrooderLevelMortalityLog /
+  // BrooderGeneralMortalityLog) — despite the column's legacy name, this
+  // value is the ESTIMATED UNEATEN kg for that mortality event, i.e. exactly
+  // the credit that should shrink today's effective ration. Summed across
+  // both the general-sheet and row/level mortality logs for the day, since
+  // either (or both) may have entries for the same batch+date.
+  private async getBrooderMortalityFeedCreditKg(batchId: string, dayStart: Date, dayEnd: Date): Promise<number> {
+    const [general, level] = await Promise.all([
+      this.prisma.brooderGeneralMortalityLog.aggregate({
+        where: { batchId, logDate: { gte: dayStart, lte: dayEnd } },
+        _sum: { feedAlreadyEatenKg: true },
+      }),
+      this.prisma.brooderLevelMortalityLog.aggregate({
+        where: { batchId, logDate: { gte: dayStart, lte: dayEnd } },
+        _sum: { feedAlreadyEatenKg: true },
+      }),
+    ]);
+    return Math.max(0,
+      (general._sum.feedAlreadyEatenKg ?? 0) + (level._sum.feedAlreadyEatenKg ?? 0),
+    );
+  }
 
   // ── Feed wastage: over-issuance detection + cost (whole-brooder path) ────
   //
@@ -116,9 +148,15 @@ export class FeedWastageService {
     });
     const dispensedKgTotal = Math.round((dayTotal._sum.quantityDispensedKg ?? 0) * 100) / 100;
 
+    // A mortality that day shrinks the effective ration — see
+    // getBrooderMortalityFeedCreditKg's doc comment. Never lets the
+    // effective ration go negative.
+    const mortalityCreditKg = await this.getBrooderMortalityFeedCreditKg(batch.id, entryDateStart, entryDateEnd);
+    const effectiveRationKg = Math.max(0, dailyRationKg - mortalityCreditKg);
+
     const dispensedBeforeThisEntry = Math.max(0, dispensedKgTotal - thisEntryKg);
-    const excessBefore = Math.max(0, dispensedBeforeThisEntry - dailyRationKg);
-    const excessAfter  = Math.max(0, dispensedKgTotal - dailyRationKg);
+    const excessBefore = Math.max(0, dispensedBeforeThisEntry - effectiveRationKg);
+    const excessAfter  = Math.max(0, dispensedKgTotal - effectiveRationKg);
     const excessKg     = Math.round((excessAfter - excessBefore) * 100) / 100;
 
     // Rounding-noise tolerance — mirrors the 0.05kg tolerance the
@@ -150,7 +188,7 @@ export class FeedWastageService {
         storeItemId,
         storeItemName,
         entryDate:        entryDateStart,
-        requiredKgForDay: dailyRationKg,
+        requiredKgForDay: effectiveRationKg,
         dispensedKgTotal,
         excessKg,
         unitCostKes,
@@ -163,6 +201,10 @@ export class FeedWastageService {
       ? ` Cost of the excess: KES ${excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
         `(${storeItemName} @ KES ${unitCostKes!.toFixed(2)}/kg).`
       : ' This feed entry was not linked to a store item, so no cost could be calculated.';
+    const mortalityLine = mortalityCreditKg > 0.05
+      ? ` (Standard ration was ${dailyRationKg.toFixed(2)}kg, reduced by ${mortalityCreditKg.toFixed(2)}kg of feed ` +
+        `not consumed by today's mortality — Store should issue that much less tomorrow.)`
+      : '';
 
     // Director-only — unlike the other Brooder alerts (mortality, weight
     // anomaly, stock mismatch) this one deliberately does NOT go through
@@ -173,8 +215,8 @@ export class FeedWastageService {
       'BROODER_FEED_WASTAGE' as any,
       `Feed Over-Issued — ${batch.batchCode}`,
       `Batch ${batch.batchCode} has been given ${dispensedKgTotal.toFixed(2)}kg of feed so far today ` +
-      `against a required ${dailyRationKg.toFixed(2)}kg — ${excessKg.toFixed(2)}kg more than estimated.` +
-      costLine,
+      `against a required ${effectiveRationKg.toFixed(2)}kg — ${excessKg.toFixed(2)}kg more than estimated.` +
+      mortalityLine + costLine,
       { entityId: batch.id, entityType: 'Brooder' },
     );
 
@@ -205,12 +247,13 @@ export class FeedWastageService {
   async recordProductionOverIssuance(params: RecordProductionFeedWastageParams) {
     const {
       batch, entryDate, populationOpeningStock, requiredKg, actualKg,
-      sourceEntityId, feedType, storeItemId, loggedById,
+      sourceEntityId, feedType, storeItemId, loggedById, mortalityFeedCreditKg = 0,
     } = params;
 
     if (!requiredKg || requiredKg <= 0) return null;
 
-    const excessKg = Math.round((actualKg - requiredKg) * 100) / 100;
+    const effectiveRequiredKg = Math.max(0, requiredKg - mortalityFeedCreditKg);
+    const excessKg = Math.round((actualKg - effectiveRequiredKg) * 100) / 100;
     // Same rounding-noise tolerance as the brooder check.
     if (excessKg <= 0.05) return null;
 
@@ -242,7 +285,7 @@ export class FeedWastageService {
         storeItemId,
         storeItemName,
         entryDate:        entryDateStart,
-        requiredKgForDay: requiredKg,
+        requiredKgForDay: effectiveRequiredKg,
         dispensedKgTotal: actualKg,
         excessKg,
         unitCostKes,
@@ -255,6 +298,10 @@ export class FeedWastageService {
       ? ` Cost of the excess: KES ${excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
         `(${storeItemName} @ KES ${unitCostKes!.toFixed(2)}/kg).`
       : ' This feed entry was not linked to a store item, so no cost could be calculated.';
+    const mortalityLine = mortalityFeedCreditKg > 0.05
+      ? ` (Standard requirement was ${requiredKg.toFixed(2)}kg, reduced by ${mortalityFeedCreditKg.toFixed(2)}kg of feed ` +
+        `not consumed by today's mortality.)`
+      : '';
 
     // Director-only, same as the brooder alert.
     await this.notifications.notifyRole(
@@ -262,9 +309,9 @@ export class FeedWastageService {
       'BROODER_FEED_WASTAGE' as any,
       `Feed Over-Issued — ${batch.batchCode}`,
       `Batch ${batch.batchCode} was recorded with ${actualKg.toFixed(2)}kg of feed on ${dayStr} ` +
-      `against a required ${requiredKg.toFixed(2)}kg for its reported opening stock of ` +
+      `against a required ${effectiveRequiredKg.toFixed(2)}kg for its reported opening stock of ` +
       `${populationOpeningStock.toLocaleString()} birds — ${excessKg.toFixed(2)}kg more than estimated.` +
-      costLine,
+      mortalityLine + costLine,
       { entityId: batch.id, entityType: 'Brooder' },
     );
 
@@ -331,7 +378,9 @@ export class FeedWastageService {
     const dispensedKgTotal = Math.round(
       rows.reduce((sum, r) => sum + (r.quantityDispensedKg ?? 0), 0) * 100,
     ) / 100;
-    const excessKg = Math.round((dispensedKgTotal - dailyRationKg) * 100) / 100;
+    const mortalityCreditKg = await this.getBrooderMortalityFeedCreditKg(batch.id, entryDateStart, entryDateEnd);
+    const effectiveRationKg = Math.max(0, dailyRationKg - mortalityCreditKg);
+    const excessKg = Math.round((dispensedKgTotal - effectiveRationKg) * 100) / 100;
     if (excessKg <= 0.05) return null;
 
     // The row that contributed the most kg that day — used to attribute
@@ -363,7 +412,7 @@ export class FeedWastageService {
         storeItemId:      dominant.storeItemId,
         storeItemName,
         entryDate:        entryDateStart,
-        requiredKgForDay: dailyRationKg,
+        requiredKgForDay: effectiveRationKg,
         dispensedKgTotal,
         excessKg,
         unitCostKes,
@@ -377,13 +426,17 @@ export class FeedWastageService {
         ? ` Cost of the excess: KES ${excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
           `(${storeItemName} @ KES ${unitCostKes!.toFixed(2)}/kg).`
         : ' This feed entry was not linked to a store item, so no cost could be calculated.';
+      const mortalityLine = mortalityCreditKg > 0.05
+        ? ` (Standard ration was ${dailyRationKg.toFixed(2)}kg, reduced by ${mortalityCreditKg.toFixed(2)}kg of feed ` +
+          `not consumed by that day's mortality.)`
+        : '';
       await this.notifications.notifyRole(
         UserRole.OWNER,
         'BROODER_FEED_WASTAGE' as any,
         `Feed Over-Issued — ${batch.batchCode} (${dayStr})`,
         `Batch ${batch.batchCode} was given ${dispensedKgTotal.toFixed(2)}kg of feed on ${dayStr} ` +
-        `against a required ${dailyRationKg.toFixed(2)}kg — ${excessKg.toFixed(2)}kg more than estimated.` +
-        costLine,
+        `against a required ${effectiveRationKg.toFixed(2)}kg — ${excessKg.toFixed(2)}kg more than estimated.` +
+        mortalityLine + costLine,
         { entityId: batch.id, entityType: 'Brooder' },
       );
     }

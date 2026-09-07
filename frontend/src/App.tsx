@@ -26,6 +26,7 @@ import { ManagerHome }      from './pages/manager/ManagerHome';
 import { ManagerBatches }   from './pages/manager/ManagerBatches';
 import { VerificationQueue } from './pages/manager/VerificationQueue';
 import { HdpControlsPage }  from './pages/manager/HdpControlsPage';
+import { BrooderDailyReviewPage } from './pages/manager/BrooderDailyReviewPage';
 
 // Accountant pages
 import { AccountantHome }   from './pages/accountant/AccountantHome';
@@ -204,6 +205,7 @@ function AppInner() {
         >
           <Route index                    element={<ManagerHome />} />
           <Route path="batches"           element={<ManagerBatches />} />
+          <Route path="brooder-review"    element={<BrooderDailyReviewPage />} />
           <Route path="verification"      element={<VerificationQueue />} />
           <Route path="hdp-controls"      element={<HdpControlsPage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
