@@ -243,12 +243,16 @@ export function EggCollectionPage() {
   const { isOnline } = useOfflineStore();
 
   // Feed items Store has actually issued — production-house feed only.
-  const { data: feedItems = [] } = useIssuableStoreItems(FEED_CATEGORIES);
+  // allItems: true — list every active Store item in the category, not just
+  // ones already issued (feed and bulk-issued supplements/treatments are
+  // often handed over before Store logs the stock-out); residual/
+  // overDrawnBy still let surplus be monitored once it is logged.
+  const { data: feedItems = [] } = useIssuableStoreItems(FEED_CATEGORIES, { allItems: true });
   // Vaccines, supplements and treatments each draw from their own Store
   // category so a vaccine picker can never show a supplement, etc.
-  const { data: vaccineItems    = [] } = useIssuableStoreItems(VACCINE_CATEGORIES);
-  const { data: supplementItems = [] } = useIssuableStoreItems(SUPPLEMENT_CATEGORIES);
-  const { data: treatmentItems  = [] } = useIssuableStoreItems(TREATMENT_CATEGORIES);
+  const { data: vaccineItems    = [] } = useIssuableStoreItems(VACCINE_CATEGORIES, { allItems: true });
+  const { data: supplementItems = [] } = useIssuableStoreItems(SUPPLEMENT_CATEGORIES, { allItems: true });
+  const { data: treatmentItems  = [] } = useIssuableStoreItems(TREATMENT_CATEGORIES, { allItems: true });
   function itemsForKind(kind: VaccineEntry['kind']) {
     return kind === 'VACCINE' ? vaccineItems : kind === 'SUPPLEMENT' ? supplementItems : treatmentItems;
   }

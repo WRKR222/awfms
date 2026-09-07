@@ -26,7 +26,7 @@
 
 import {
   Injectable, NotFoundException, ConflictException,
-  BadRequestException, ForbiddenException,
+  BadRequestException, ForbiddenException, Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { EntryStatus, VaccinationRoute } from '@prisma/client';
@@ -87,44 +87,41 @@ export class ProductionService {
     private readonly storeInventory: StoreInventoryService,
   ) {}
 
-  // A feed/vaccine/supplement can only be logged against a store item that
-  // Store has actually issued (stock-out) — mirrors
-  // FlockService.getIssuedStoreItemOrThrow so the attendant can't select
-  // something never physically handed to them, and the residual math
-  // (issued − dispensed) stays accurate across brooder AND production-house
-  // logging. All-time check (no calendar-week floor) — see FlockService for
-  // the full rationale.
+  private readonly logger = new Logger(ProductionService.name);
+
+  // A feed/vaccine/supplement/treatment can be logged against any active
+  // store item in the right category — it no longer has to have been
+  // issued (stock-out'd) first. Mirrors FlockService.getIssuedStoreItemOrThrow:
+  // feed, and bulk-issued supplements/treatments especially, are routinely
+  // handed to the attendant before Store logs the stock-out in the system
+  // (or issued once in bulk and drawn down across many later days) — the
+  // residual check below still ties the recorded amount back to Store's
+  // issuance once it exists, flagging surplus rather than gating on it.
   private async getIssuedStoreItemOrThrow(storeItemId: string) {
-    const [issued, item] = await Promise.all([
-      this.prisma.storeStockOut.aggregate({
-        where: { storeItemId },
-        _sum: { quantityOut: true },
-      }),
-      this.prisma.storeItem.findUnique({ where: { id: storeItemId }, select: { unit: true, name: true, category: true } }),
-    ]);
-    if (!issued._sum.quantityOut || Number(issued._sum.quantityOut) <= 0) {
-      throw new BadRequestException(
-        'This item has never been issued from the store and cannot be logged. Ask Store to issue it first.',
-      );
-    }
-    if (!item) throw new BadRequestException('Store item not found.');
+    const item = await this.prisma.storeItem.findUnique({
+      where: { id: storeItemId },
+      select: { unit: true, name: true, category: true, isActive: true },
+    });
+    if (!item || !item.isActive) throw new BadRequestException('Store item not found.');
     return item;
   }
 
-  // Hard stock check — confirms there's actually residual LEFT of the item,
-  // not just that it was issued at some point. Mirrors
-  // FlockService.assertResidualOrThrow.
-  private async assertResidualOrThrow(
+  // Soft stock check — no longer blocks the write; it warns (for Store/PM
+  // follow-up) when the amount recorded runs past the item's residual
+  // (issued − dispensed, all-time). Mirrors FlockService.checkResidualOrWarn.
+  private async checkResidualOrWarn(
     storeItemId: string,
     quantityRequested: number,
     unit: string | null,
+    context: string,
   ): Promise<void> {
     const residualInfo = await this.storeInventory.getResidualForItem(storeItemId);
     const residualBefore = residualInfo?.residual ?? 0;
     if (quantityRequested > residualBefore) {
-      throw new BadRequestException(
-        `Not enough of this item left to log. Residual remaining: ${Math.max(0, residualBefore).toFixed(3)} ` +
-        `${unit ?? ''}, requested: ${quantityRequested}. Ask Store to issue more before logging further.`,
+      this.logger.warn(
+        `[StockSurplus] ${context}: storeItemId=${storeItemId} requested=${quantityRequested}${unit ?? ''} ` +
+        `exceeds residual=${Math.max(0, residualBefore).toFixed(3)}${unit ?? ''} — recorded anyway, ` +
+        `flagged for Store/PM follow-up.`,
       );
     }
   }
@@ -210,11 +207,11 @@ export class ProductionService {
     for (const line of dto.sessionFeed.additionalLines ?? []) {
       const lineItem = await this.getIssuedStoreItemOrThrow(line.feedStoreItemId);
       const already = feedReserved.get(line.feedStoreItemId) ?? 0;
-      await this.assertResidualOrThrow(line.feedStoreItemId, already + line.feedKg, lineItem.unit);
+      await this.checkResidualOrWarn(line.feedStoreItemId, already + line.feedKg, lineItem.unit, 'Egg collection feed line');
       feedReserved.set(line.feedStoreItemId, already + line.feedKg);
       feedLines.push({ feedStoreItemId: line.feedStoreItemId, feedKg: line.feedKg, item: lineItem });
     }
-    await this.assertResidualOrThrow(dto.sessionFeed.feedStoreItemId, dto.sessionFeed.feedKg, feedItem.unit);
+    await this.checkResidualOrWarn(dto.sessionFeed.feedStoreItemId, dto.sessionFeed.feedKg, feedItem.unit, 'Egg collection feed');
     const totalFeedKg = feedLines.reduce((s, l) => s + l.feedKg, 0);
     const feedBreakdownJson = feedLines.map(l => ({
       storeItemId: l.feedStoreItemId,
@@ -239,7 +236,7 @@ export class ProductionService {
       const qty = v.quantityUsed ?? 0;
       if (qty > 0) {
         const alreadyReserved = reserved.get(v.storeItemId) ?? 0;
-        await this.assertResidualOrThrow(v.storeItemId, alreadyReserved + qty, item.unit);
+        await this.checkResidualOrWarn(v.storeItemId, alreadyReserved + qty, item.unit, `Egg collection ${v.kind.toLowerCase()}`);
         reserved.set(v.storeItemId, alreadyReserved + qty);
       }
     }

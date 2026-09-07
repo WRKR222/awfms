@@ -200,10 +200,15 @@ export function BrooderDailyLogModal({ batch, presetScope, onClose }: Props) {
   const { data: rowsAndLevels = [] } = useBrooderRowsAndLevels(true);
   // Vaccines, supplements and treatments each draw from their own Store
   // category so, e.g., the vaccine picker can never show a supplement.
-  const { data: vaccineItemsRaw,    isLoading: vaccineItemsLoading    } = useIssuableStoreItems(VACCINE_CATEGORIES);
-  const { data: supplementItemsRaw, isLoading: supplementItemsLoading } = useIssuableStoreItems(SUPPLEMENT_CATEGORIES);
-  const { data: treatmentItemsRaw,  isLoading: treatmentItemsLoading  } = useIssuableStoreItems(TREATMENT_CATEGORIES);
-  const { data: feedItemsRaw,       isLoading: feedItemsLoading       } = useIssuableStoreItems(FEED_CATEGORIES);
+  // allItems: true — list every active Store item in the category, not just
+  // ones already issued. Feed and bulk-issued supplements/treatments are
+  // often physically handed over before Store logs the stock-out; the
+  // residual/overDrawnBy figures returned still let surplus/over-issuance
+  // be monitored once it is logged, without blocking recording up front.
+  const { data: vaccineItemsRaw,    isLoading: vaccineItemsLoading    } = useIssuableStoreItems(VACCINE_CATEGORIES, { allItems: true });
+  const { data: supplementItemsRaw, isLoading: supplementItemsLoading } = useIssuableStoreItems(SUPPLEMENT_CATEGORIES, { allItems: true });
+  const { data: treatmentItemsRaw,  isLoading: treatmentItemsLoading  } = useIssuableStoreItems(TREATMENT_CATEGORIES, { allItems: true });
+  const { data: feedItemsRaw,       isLoading: feedItemsLoading       } = useIssuableStoreItems(FEED_CATEGORIES, { allItems: true });
   const vaccineItems    = vaccineItemsRaw ?? [];
   const supplementItems = supplementItemsRaw ?? [];
   const treatmentItems  = treatmentItemsRaw ?? [];

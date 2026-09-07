@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -21,68 +22,65 @@ dayjs.extend(isoWeek);
  */
 @Injectable()
 export class FlockService {
+  private readonly logger = new Logger(FlockService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storeInventory: StoreInventoryService,
   ) {}
 
-  // A vaccine/supplement/treatment can only be logged against a store item
-  // that Store has actually issued (stock-out) this week — this stops the
-  // attendant from selecting something that was never physically handed to
-  // them, and keeps residual math (issued - dispensed) accurate. The Mon–Sun
-  // window matches IssuancePlanService.validateStockOut.
+  // A vaccine/supplement/treatment can be logged against any active store
+  // item in the right category — it no longer has to have been issued
+  // (stock-out'd) first. Feed, and bulk-issued supplements/treatments
+  // especially, are often physically handed to the attendant before Store
+  // gets round to logging the stock-out in the system (or a supplement is
+  // issued once in bulk and drawn down across many later days). Blocking
+  // the log entry until Store's record catches up just meant the attendant
+  // couldn't record what actually happened; instead, once Store does log
+  // the issuance, checkResidualOrWarn (below) ties the recorded amount back
+  // to it and flags any surplus/over-issuance rather than gating on it.
   //
-  // Also returns the store item so its `unit` can be snapshotted onto the
+  // Still returns the store item so its `unit` can be snapshotted onto the
   // log entry server-side — the unit must come from the store item itself,
   // never from whatever the client happens to send, or the residual
   // subtraction (issued qty - dispensed qty) could silently compare
   // mismatched units.
   private async getIssuedStoreItemOrThrow(storeItemId: string) {
-    // All-time check, matching the residual ledger model in
-    // StoreInventoryService.getIssuableStoreItems — an item that was issued
-    // last week (or any week) and still has unconsumed stock is still
-    // legitimately issuable today. A calendar-week bound here would reject
-    // a perfectly valid backdated entry the same way the residual
-    // calculation used to.
-    const [issued, item] = await Promise.all([
-      this.prisma.storeStockOut.aggregate({
-        where: { storeItemId },
-        _sum: { quantityOut: true },
-      }),
-      this.prisma.storeItem.findUnique({ where: { id: storeItemId }, select: { unit: true } }),
-    ]);
-    if (!issued._sum.quantityOut || Number(issued._sum.quantityOut) <= 0) {
-      throw new BadRequestException(
-        'This item has never been issued from the store and cannot be logged. Ask Store to issue it first.',
-      );
-    }
-    if (!item) throw new BadRequestException('Store item not found.');
+    const item = await this.prisma.storeItem.findUnique({
+      where: { id: storeItemId },
+      select: { unit: true, isActive: true },
+    });
+    if (!item || !item.isActive) throw new BadRequestException('Store item not found.');
     return item;
   }
 
-  // Hard stock check: getIssuedStoreItemOrThrow only confirms the item was
-  // issued from the store at all this week — it does not confirm anything
-  // is actually LEFT of it. Without this, an attendant could keep logging
-  // vaccines/supplements/treatments against a store item long after its
-  // issued stock was fully consumed, and the residual shown on the
-  // Store/attendant screens would never reach a real floor of 0.
+  // Soft stock check — no longer blocks the write. It still computes the
+  // residual (issued - dispensed, all-time, minus whatever this same
+  // request has already reserved against the same item) and, if the
+  // amount being recorded runs past it, logs a warning so Store/PM can see
+  // the surplus/over-issuance and follow up — the attendant's entry is not
+  // rejected for it. This matters most for feed and bulk-issued
+  // supplements/treatments, which are routinely recorded before (or
+  // independent of) that day's Store issuance.
   //
   // `alreadyReserved` lets callers account for other entries in the SAME
   // request that draw against the same storeItemId (e.g. two vaccines in
   // one daily log both linked to the same bottle) — the DB doesn't know
   // about those yet since none have been written when this runs.
-  private async assertResidualOrThrow(
+  private async checkResidualOrWarn(
     storeItemId: string,
     quantityRequested: number,
     alreadyReserved: number,
     unit: string | null,
+    context: string,
   ): Promise<number> {
     const residualInfo = await this.storeInventory.getResidualForItem(storeItemId);
     const residualBefore = (residualInfo?.residual ?? 0) - alreadyReserved;
     if (quantityRequested > residualBefore) {
-      throw new BadRequestException(
-        `Not enough of this item left to log. Residual remaining: ${Math.max(0, residualBefore).toFixed(3)} ` +
-        `${unit ?? ''}, requested: ${quantityRequested}. Ask Store to issue more before logging further.`,
+      this.logger.warn(
+        `[StockSurplus] ${context}: storeItemId=${storeItemId} requested=${quantityRequested}${unit ?? ''} ` +
+        `exceeds residual=${Math.max(0, residualBefore).toFixed(3)}${unit ?? ''} — recorded anyway, ` +
+        `flagged for Store/PM follow-up.`,
       );
     }
     return residualBefore - quantityRequested;
@@ -960,9 +958,9 @@ export class FlockService {
       });
     }
 
-    // Every vaccine/supplement tagged with a store item must actually have
-    // been issued out of the store this week — checked in parallel. The
-    // item's stock unit is snapshotted onto the entry here (server-side,
+    // Every vaccine/supplement tagged with a store item is looked up (in
+    // parallel) — it does not have to have been issued yet. The item's
+    // stock unit is snapshotted onto the entry here (server-side,
     // authoritative) so the residual subtraction is always unit-consistent.
     const storeItemIdsToCheck = Array.from(new Set([
       ...vaccinesArr.map(v => v.storeItemId),
@@ -981,11 +979,12 @@ export class FlockService {
     for (const entry of [...vaccinesArr, ...supplementsArr]) {
       if (!entry.storeItemId || entry.quantityUsed == null) continue;
       const alreadyReserved = reservedByItem.get(entry.storeItemId) ?? 0;
-      await this.assertResidualOrThrow(
+      await this.checkResidualOrWarn(
         entry.storeItemId,
         entry.quantityUsed,
         alreadyReserved,
         unitByStoreItemId.get(entry.storeItemId) ?? null,
+        'Brooder vaccine/supplement log',
       );
       reservedByItem.set(entry.storeItemId, alreadyReserved + entry.quantityUsed);
     }
@@ -1074,11 +1073,12 @@ export class FlockService {
     if (!batch) throw new NotFoundException('Batch not found');
     const issuedItem = input.storeItemId ? await this.getIssuedStoreItemOrThrow(input.storeItemId) : null;
     if (input.storeItemId && input.quantityUsed != null) {
-      await this.assertResidualOrThrow(
+      await this.checkResidualOrWarn(
         input.storeItemId,
         Number(input.quantityUsed),
         0,
         issuedItem?.unit ?? null,
+        'Brooder treatment log',
       );
     }
     return (this.prisma as any).brooderTreatmentLog.create({

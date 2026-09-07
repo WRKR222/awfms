@@ -40,19 +40,23 @@ export class StoreInventoryController {
     return this.svc.getLowStockItems();
   }
 
-  // Items actually issued out of the store this week, in the given
-  // category/categories, with computed dispensed/residual totals.
-  // Used by: the Lead Attendant's feed/vaccine/supplement/treatment
-  // logging dropdowns (only issued items are selectable), and by the
-  // Store's issuance-plan screen (to see leftover stock before re-issuing).
+  // Items actually issued out of the store (all-time), in the given
+  // category/categories, with computed dispensed/residual/overDrawnBy
+  // totals. Used by the Store's issuance-plan screen (to see leftover
+  // stock before re-issuing) — and, with all=true, by the Lead Attendant's
+  // feed/vaccine/supplement/treatment logging dropdowns, which list every
+  // active item in the category regardless of issuance so an attendant can
+  // record what was physically given even before Store logs the stock-out;
+  // the attached residual/overDrawnBy figures let Store/PM still monitor
+  // for surplus or over-issuance once it is logged.
   @Get('issuable-items')
   @RequirePermission(Permission.INVENTORY_VIEW)
-  issuableItems(@Query('categories') categories?: string) {
+  issuableItems(@Query('categories') categories?: string, @Query('all') all?: string) {
     const list = (categories ?? '')
       .split(',')
       .map(c => c.trim())
       .filter(Boolean) as any[];
-    return this.svc.getIssuableStoreItems(list);
+    return this.svc.getIssuableStoreItems(list, { includeUnissued: all === 'true' });
   }
 
   @Get('items/:id')

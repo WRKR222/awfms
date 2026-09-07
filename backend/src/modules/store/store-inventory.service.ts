@@ -468,7 +468,10 @@ export class StoreInventoryService {
   //
   // "This week" follows the same Mon–Sun window the issuance plan itself
   // uses (see IssuancePlanService.validateStockOut).
-  async getIssuableStoreItems(categories: StoreItemCategory[]) {
+  async getIssuableStoreItems(
+    categories: StoreItemCategory[],
+    opts: { includeUnissued?: boolean } = {},
+  ) {
     const items = await this.prisma.storeItem.findMany({
       where: { category: { in: categories }, isActive: true },
       select: { id: true, name: true, sku: true, unit: true, category: true },
@@ -590,12 +593,20 @@ export class StoreInventoryService {
         const issuedThisWeek = Math.round((issuedMap.get(item.id) ?? 0) * 1000) / 1000;
         const dispensedThisWeek = Math.round((dispensedMap.get(item.id) ?? 0) * 1000) / 1000;
         const residual = Math.max(0, Math.round((issuedThisWeek - dispensedThisWeek) * 1000) / 1000);
+        // Positive only when dispensed has run past what's been issued —
+        // i.e. the item was recorded/used before (or beyond) Store logging
+        // its issuance. Surfaced so Store/PM can monitor for surplus/over-
+        // issuance instead of a hard block preventing the attendant from
+        // recording at all (feed, and bulk-issued supplements/treatments,
+        // are both allowed to be recorded ahead of — or independent of —
+        // that day's Store issuance).
+        const overDrawnBy = Math.max(0, Math.round((dispensedThisWeek - issuedThisWeek) * 1000) / 1000);
 
         // DIAGNOSTIC — kept at debug level, safe to leave on in production.
         if ((item.category as any) === 'FEED' || (item.category as any) === 'FEED_SUPPLEMENT') {
           this.logger.debug(
             `[Residual] item=${item.name} (${item.id}) issuedAllTime=${issuedThisWeek} ` +
-            `dispensedAllTime=${dispensedThisWeek} residual=${residual}`,
+            `dispensedAllTime=${dispensedThisWeek} residual=${residual} overDrawnBy=${overDrawnBy}`,
           );
         }
 
@@ -608,11 +619,18 @@ export class StoreInventoryService {
           issuedThisWeek,
           dispensedThisWeek,
           residual,
+          overDrawnBy,
         };
       })
-      // An item stays issuable as long as there's unconsumed stock against
-      // it — not just during the calendar week it happened to be issued in.
-      .filter(i => i.residual > 0);
+      // Default: an item stays issuable as long as there's unconsumed stock
+      // against it — not just during the calendar week it happened to be
+      // issued in. Pass includeUnissued to instead return every active item
+      // in the category regardless of issuance/residual — used to populate
+      // attendant pickers, since feed/vaccines/supplements/treatments can
+      // all be recorded before (or independent of) Store logging that
+      // day's issuance; the residual/overDrawnBy figures are still attached
+      // for display so surplus/over-issuance stays visible.
+      .filter(i => opts.includeUnissued || i.residual > 0);
   }
 
   // ── Single-item residual lookup ─────────────────────────────────────────
@@ -624,18 +642,21 @@ export class StoreInventoryService {
   // what the attendant/store screens display.
   async getResidualForItem(
     storeItemId: string,
-  ): Promise<{ issuedThisWeek: number; dispensedThisWeek: number; residual: number } | null> {
+  ): Promise<{ issuedThisWeek: number; dispensedThisWeek: number; residual: number; overDrawnBy: number } | null> {
     const item = await this.prisma.storeItem.findUnique({
       where:  { id: storeItemId },
       select: { category: true },
     });
     if (!item) return null;
 
-    const list = await this.getIssuableStoreItems([item.category]);
+    // includeUnissued: this lookup is used to compute/monitor residual for
+    // an item that may never have been issued yet (feed/vaccines/
+    // supplements/treatments can all be recorded ahead of Store's
+    // issuance) — it must not be silently dropped by the issuable-only
+    // filter the way the attendant-picker call of this method is.
+    const list = await this.getIssuableStoreItems([item.category], { includeUnissued: true });
     const match = list.find(i => i.id === storeItemId);
-    // Not in the list means issuedThisWeek is 0 (getIssuableStoreItems
-    // filters those out) — so residual is 0, nothing left to dispense.
-    return match ?? { issuedThisWeek: 0, dispensedThisWeek: 0, residual: 0 };
+    return match ?? { issuedThisWeek: 0, dispensedThisWeek: 0, residual: 0, overDrawnBy: 0 };
   }
 
 }

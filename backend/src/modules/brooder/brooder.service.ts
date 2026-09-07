@@ -1562,48 +1562,32 @@ export class BrooderService {
       );
     }
 
-    // A feed type can only be logged against a store item Store has actually
-    // issued (stock-out) this week — keeps the attendant from logging feed
-    // that was never physically handed to them, and keeps residual math
-    // (issued - dispensed) accurate. Mon–Sun window matches the issuance plan.
-    // The unit is snapshotted from the store item itself (never trusted from
-    // the client) so quantityDispensedKg is always diffed against the same
+    // A feed type can be logged against any active Store FEED-category item
+    // — it no longer has to have been issued (stock-out'd) first. Feed is
+    // routinely dispensed before Store gets round to logging the stock-out
+    // in the system, so gating the log entry on that just meant the
+    // attendant couldn't record what actually happened. The unit is still
+    // snapshotted from the store item itself (never trusted from the
+    // client) so quantityDispensedKg is always diffed against the same
     // unit the stock-out was recorded in.
     let feedItemUnit: string | null = null;
     let residualAfterKg: number | null = null;
     if (dto.storeItemId) {
-      // All-time check, matching the residual ledger model in
-      // StoreInventoryService.getIssuableStoreItems — an item issued in any
-      // prior week that still has unconsumed stock is still legitimately
-      // issuable today. A calendar-week bound here would reject a
-      // perfectly valid backdated entry (e.g. logging a feeding from a day
-      // that falls in the previous Mon–Sun window).
-      const [issued, item] = await Promise.all([
-        this.prisma.storeStockOut.aggregate({
-          where: { storeItemId: dto.storeItemId },
-          _sum: { quantityOut: true },
-        }),
-        this.prisma.storeItem.findUnique({ where: { id: dto.storeItemId }, select: { unit: true } }),
-      ]);
-      if (!issued._sum.quantityOut || Number(issued._sum.quantityOut) <= 0) {
-        throw new BadRequestException(
-          'This feed item has never been issued from the store and cannot be logged. Ask Store to issue it first.',
-        );
-      }
-      feedItemUnit = item?.unit ?? null;
+      const item = await this.prisma.storeItem.findUnique({ where: { id: dto.storeItemId }, select: { unit: true, isActive: true } });
+      if (!item || !item.isActive) throw new BadRequestException('Feed item not found.');
+      feedItemUnit = item.unit ?? null;
 
-      // Hard stock check: this only confirmed the item was issued at all —
-      // it does not confirm anything is actually LEFT of it. Without this,
-      // an attendant can keep logging feed against a store item long after
-      // its issued stock has been fully consumed, and the residual shown
-      // on the Store/attendant screens never reaches a real floor of 0.
+      // Soft stock check — no longer blocks the write. Once Store logs the
+      // issuance, this ties the recorded dispensed amount back to it and
+      // flags any resulting surplus/over-issuance via a warning log rather
+      // than rejecting the entry outright.
       const residualInfo = await this.storeInventory.getResidualForItem(dto.storeItemId);
       const residualBefore = residualInfo?.residual ?? 0;
       if (dto.quantityDispensedKg > residualBefore) {
-        throw new BadRequestException(
-          `Not enough of this item left to log. Residual remaining: ${residualBefore.toFixed(3)} ` +
-          `${feedItemUnit ?? 'kg'}, requested: ${dto.quantityDispensedKg}. ` +
-          `Ask Store to issue more before logging further.`,
+        this.logger.warn(
+          `[StockSurplus] Brooder level feed log: storeItemId=${dto.storeItemId} ` +
+          `requested=${dto.quantityDispensedKg}${feedItemUnit ?? 'kg'} exceeds residual=` +
+          `${residualBefore.toFixed(3)}${feedItemUnit ?? 'kg'} — recorded anyway, flagged for Store/PM follow-up.`,
         );
       }
       residualAfterKg = Math.round((residualBefore - dto.quantityDispensedKg) * 1000) / 1000;
@@ -1940,33 +1924,23 @@ export class BrooderService {
     // general and a row/level entry existing for the same batch + date.
     await this.assertNoLevelSpecificFeedLog(dto.batchId, entryDate);
 
-    // Same store-item residual bookkeeping as the row/level version — a
-    // feed type can only be logged against a store item Store has actually
-    // issued, and only up to whatever residual is left of it.
+    // Same store-item bookkeeping as the row/level version — a feed type
+    // can be logged against any active store item, whether or not Store
+    // has issued it yet; residual is checked but only to warn, not block.
     let feedItemUnit: string | null = null;
     let residualAfterKg: number | null = null;
     if (dto.storeItemId) {
-      const [issued, item] = await Promise.all([
-        this.prisma.storeStockOut.aggregate({
-          where: { storeItemId: dto.storeItemId },
-          _sum: { quantityOut: true },
-        }),
-        this.prisma.storeItem.findUnique({ where: { id: dto.storeItemId }, select: { unit: true } }),
-      ]);
-      if (!issued._sum.quantityOut || Number(issued._sum.quantityOut) <= 0) {
-        throw new BadRequestException(
-          'This feed item has never been issued from the store and cannot be logged. Ask Store to issue it first.',
-        );
-      }
-      feedItemUnit = item?.unit ?? null;
+      const item = await this.prisma.storeItem.findUnique({ where: { id: dto.storeItemId }, select: { unit: true, isActive: true } });
+      if (!item || !item.isActive) throw new BadRequestException('Feed item not found.');
+      feedItemUnit = item.unit ?? null;
 
       const residualInfo = await this.storeInventory.getResidualForItem(dto.storeItemId);
       const residualBefore = residualInfo?.residual ?? 0;
       if (dto.quantityDispensedKg > residualBefore) {
-        throw new BadRequestException(
-          `Not enough of this item left to log. Residual remaining: ${residualBefore.toFixed(3)} ` +
-          `${feedItemUnit ?? 'kg'}, requested: ${dto.quantityDispensedKg}. ` +
-          `Ask Store to issue more before logging further.`,
+        this.logger.warn(
+          `[StockSurplus] Brooder general feed log: storeItemId=${dto.storeItemId} ` +
+          `requested=${dto.quantityDispensedKg}${feedItemUnit ?? 'kg'} exceeds residual=` +
+          `${residualBefore.toFixed(3)}${feedItemUnit ?? 'kg'} — recorded anyway, flagged for Store/PM follow-up.`,
         );
       }
       residualAfterKg = Math.round((residualBefore - dto.quantityDispensedKg) * 1000) / 1000;

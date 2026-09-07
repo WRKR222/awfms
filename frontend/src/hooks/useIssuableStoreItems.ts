@@ -1,14 +1,21 @@
 // src/hooks/useIssuableStoreItems.ts
 //
-// Items that Store has actually issued (stock-out) this week, in a given
-// category or categories, with residual = issued - dispensed already
-// computed server-side.
+// Store items in a given category or categories, with issued/dispensed/
+// residual (and overDrawnBy) computed server-side from the all-time stock
+// ledger.
 //
 // Used by:
 //   • Lead Attendant feed / vaccine / supplement / treatment logging forms
-//     — only issued items are selectable, so the attendant can't log
-//     against something never physically handed to them.
-//   • Store's issuance-plan screen — to see leftover stock before
+//     — pass `{ allItems: true }` so every active item in the category is
+//     selectable, not just ones Store has already issued: feed, and
+//     bulk-issued supplements/treatments especially, are often physically
+//     handed over before (or independent of) Store logging the stock-out
+//     in the system. The attached residual/overDrawnBy figures still let
+//     the amount recorded be tied back to what Store issues, so surplus or
+//     over-issuance stays visible once it is logged — it just isn't a hard
+//     gate on recording.
+//   • Store's issuance-plan screen — default (allItems omitted/false) shows
+//     only items with unconsumed issued stock, to see leftover before
 //     re-issuing the same item next week (avoid over-issuing).
 
 import { useQuery } from '@tanstack/react-query';
@@ -23,6 +30,7 @@ export interface IssuableStoreItem {
   issuedThisWeek: number;
   dispensedThisWeek: number;
   residual: number;
+  overDrawnBy: number;
 }
 
 export const FEED_CATEGORIES = ['FEED', 'FEED_SUPPLEMENT'] as const;
@@ -45,13 +53,17 @@ export const SUPPLEMENT_CATEGORIES = ['SUPPLEMENT'] as const;
 // treatments) — explicitly excludes VACCINE and SUPPLEMENT.
 export const TREATMENT_CATEGORIES = ['MEDICATION'] as const;
 
-export function useIssuableStoreItems(categories: readonly string[]) {
+export function useIssuableStoreItems(
+  categories: readonly string[],
+  opts: { allItems?: boolean } = {},
+) {
   const key = [...categories].sort().join(',');
+  const allItems = opts.allItems ?? false;
   return useQuery<IssuableStoreItem[]>({
-    queryKey: ['store-issuable-items', key],
+    queryKey: ['store-issuable-items', key, allItems],
     queryFn: () =>
       api
-        .get('/store/inventory/issuable-items', { params: { categories: key } })
+        .get('/store/inventory/issuable-items', { params: { categories: key, all: allItems ? 'true' : undefined } })
         .then(r => r.data),
     enabled: categories.length > 0,
     staleTime: 15_000,
