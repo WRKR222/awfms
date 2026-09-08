@@ -41,6 +41,17 @@ export class ProductionController {
     return this.svc.getTodaySummary(houseId);
   }
 
+  // Farm-time-aware AM/PM submission-window snapshot — same purpose as the
+  // brooder module's /flock/brooder-session-status: lets the attendant UI
+  // show/gate the AM/PM buttons without trusting the viewer's own device
+  // clock/timezone. Declared before 'sessions/:id' so it isn't swallowed
+  // by that param route.
+  @Get('sessions/window-status')
+  @RequirePermission(Permission.PRODUCTION_VIEW)
+  windowStatus() {
+    return this.svc.getEggCollectionSessionStatus();
+  }
+
   @Get('sessions/:id')
   @RequirePermission(Permission.PRODUCTION_VIEW)
   findOne(@Param('id') id: string) {

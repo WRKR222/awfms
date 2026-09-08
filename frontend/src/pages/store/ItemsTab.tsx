@@ -43,14 +43,10 @@ export function categoryDisplayLabel(item: { category: string; customCategoryLab
   return CATEGORY_LABELS[item.category] ?? item.category;
 }
 
-// Kilograms/Litres are deliberately NOT offered for non-Feed items — every
-// item is stocked in the lowest unit of measure (grams for mass,
-// millilitres for volume) so every vaccine/supplement/treatment quantity
-// recorded against it downstream stays consistently in g/ml. The backend
-// rejects "kg"/"L" (and common spellings) for any category but Feed, even
-// if typed into the custom unit field below.
 const UNITS = [
+  { value: 'KG',     label: 'Kilograms (kg)' },
   { value: 'G',      label: 'Grams (g)' },
+  { value: 'L',      label: 'Litres (L)' },
   { value: 'ML',     label: 'Millilitres (mL)' },
   { value: 'PIECE',  label: 'Pieces' },
   { value: 'BOX',    label: 'Boxes' },
@@ -60,20 +56,10 @@ const UNITS = [
   { value: 'TRAY',   label: 'Trays' },
 ];
 
-// Feed keeps kg/L — it's the base unit of the whole HyLine feed ration
-// schedule and wastage tracking (a much larger subsystem built entirely on
-// kg), so feed items are exempt from the lowest-unit-of-measure rule the
-// other categories follow.
-const FEED_UNITS = [
-  { value: 'KG', label: 'Kilograms (kg)' },
-  { value: 'G',  label: 'Grams (g)' },
-  { value: 'BAG', label: 'Bags' },
-];
-
 // Sentinel option that reveals a free-text input for any unit not in the
 // preset list above (e.g. "Roll", "Dozen", "Pair").
 const CUSTOM_UNIT = '__CUSTOM__';
-const PRESET_UNIT_VALUES = new Set([...UNITS, ...FEED_UNITS].map(u => u.value));
+const PRESET_UNIT_VALUES = new Set(UNITS.map(u => u.value));
 
 type FormData = {
   name: string;
@@ -305,14 +291,9 @@ export function ItemsTab() {
             <Field label="Unit *" error={errors.unit?.message}>
               <select {...register('unit', { required: 'Required' })} className="input">
                 <option value="">Select…</option>
-                {(selectedCategory === 'FEED' ? FEED_UNITS : UNITS).map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                {UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
                 <option value={CUSTOM_UNIT}>Other (custom)…</option>
               </select>
-              {selectedCategory !== 'FEED' && (
-                <p className="text-[11px] text-gray-400 mt-1">
-                  Grams/millilitres only — the lowest unit of measure. Feed items keep kg.
-                </p>
-              )}
               {selectedUnit === CUSTOM_UNIT && (
                 <input
                   {...register('customUnit', {

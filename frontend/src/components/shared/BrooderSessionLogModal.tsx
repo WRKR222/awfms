@@ -143,6 +143,12 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
   const { data: statusData } = useBrooderSessionStatus();
   const sessionInfo = statusData?.sessions.find(s => s.key === session);
   const isOpen = sessionInfo ? sessionInfo.open : true; // default open while status is loading
+  // Server-authoritative farm-local date (never the device's own clock/
+  // timezone — same value the backend's assertIsToday() checks against).
+  // Required by /brooder/general-feed-logs, /brooder/general-mortality-logs
+  // and /brooder/mortality-logs (entryDate/logDate); the browser-local
+  // fallback only applies in the brief window before statusData loads.
+  const todayStr = statusData?.farmDate ?? new Date().toISOString().slice(0, 10);
 
   const { data: vaccineItemsRaw }    = useIssuableStoreItems(VACCINE_CATEGORIES, { allItems: true });
   const { data: supplementItemsRaw } = useIssuableStoreItems(SUPPLEMENT_CATEGORIES, { allItems: true });
@@ -212,8 +218,8 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
   }
 
   // ── Feed (MORNING/EVENING only) ──────────────────────────────────────────
-  // Quantity is in whatever unit the selected feed item is stocked in — new
-  // feed items are stocked in grams (lowest unit of measure), not kg.
+  // Quantity is in whatever unit the selected feed item is stocked in
+  // (kg for feed items, per the store item's own `unit` field).
   const [feedStoreItemId, setFeedStoreItemId] = useState('');
   const [feedQuantityKg,  setFeedQuantityKg]  = useState('');
   const selectedFeedItem = feedItems.find(i => i.id === feedStoreItemId) ?? null;
@@ -226,6 +232,12 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
   const [mortalityCount, setMortalityCount] = useState('0');
   const [cullingCount,   setCullingCount]   = useState('0');
   const [cause,           setCause]         = useState('');
+  // Optional feed-wastage-credit capture — never required to submit a
+  // mortality entry. '' = not captured (no assumption made). 'NO' = hadn't
+  // received today's feed yet. 'PARTIAL' = ate some, feedAlreadyEatenKg
+  // holds how much.
+  const [fedBeforeDeath, setFedBeforeDeath] = useState<'' | 'NO' | 'PARTIAL'>('');
+  const [feedAlreadyEatenKg, setFeedAlreadyEatenKg] = useState('');
   const totalLost = (Number(mortalityCount) || 0) + (Number(cullingCount) || 0);
 
   const mortLevelsForRow = rowsAndLevels.find(r => r.rowId === mortRowId)?.levels ?? [];
@@ -317,6 +329,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
           const item = feedItems.find(i => i.id === feedStoreItemId);
           await api.post('/brooder/general-feed-logs', {
             batchId: batch.id,
+            entryDate: todayStr,
             logSession: session,
             feedType: item ? deriveFeedType(item) ?? undefined : undefined,
             storeItemId: feedStoreItemId,
@@ -330,23 +343,35 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
       // 4) Mortality — every session, General or Row/Level/Cage.
       if (totalLost > 0) {
         try {
+          // Optional feed-wastage-credit fields — omitted entirely (not
+          // sent as null/false) when the attendant didn't touch the
+          // toggle, so the backend makes no assumption either way.
+          const feedCreditFields = fedBeforeDeath === 'NO'
+            ? { fedBeforeDeath: false }
+            : fedBeforeDeath === 'PARTIAL'
+              ? { fedBeforeDeath: true, feedAlreadyEatenKg: feedAlreadyEatenKg ? Number(feedAlreadyEatenKg) : 0 }
+              : {};
           if (mortalityScope === 'GENERAL') {
             await api.post('/brooder/general-mortality-logs', {
               batchId: batch.id,
+              logDate: todayStr,
               logSession: session,
               mortalityCount: Number(mortalityCount) || 0,
               cullingCount: Number(cullingCount) || 0,
               cause: cause || undefined,
+              ...feedCreditFields,
             });
           } else {
             await api.post('/brooder/mortality-logs', {
               levelId: mortLevelId,
               cageId: mortCageId,
               batchId: batch.id,
+              logDate: todayStr,
               logSession: session,
               mortalityCount: Number(mortalityCount) || 0,
               cullingCount: Number(cullingCount) || 0,
               cause: cause || undefined,
+              ...feedCreditFields,
             });
           }
         } catch (err: any) {
@@ -650,11 +675,11 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
               <div className="grid grid-cols-3 gap-2">
                 <select value={mortRowId} onChange={e => { setMortRowId(e.target.value); setMortLevelId(''); setMortCageId(''); }} className={iCls}>
                   <option value="">Row…</option>
-                  {rowsAndLevels.map(r => <option key={r.rowId} value={r.rowId}>{r.rowLabel}</option>)}
+                  {rowsAndLevels.map(r => <option key={r.rowId} value={r.rowId}>{r.label}</option>)}
                 </select>
                 <select value={mortLevelId} onChange={e => { setMortLevelId(e.target.value); setMortCageId(''); }} className={iCls} disabled={!mortRowId}>
                   <option value="">Level…</option>
-                  {mortLevelsForRow.map(l => <option key={l.levelId} value={l.levelId}>{l.levelLabel}</option>)}
+                  {mortLevelsForRow.map(l => <option key={l.levelId} value={l.levelId}>{l.label}</option>)}
                 </select>
                 <select value={mortCageId} onChange={e => setMortCageId(e.target.value)} className={iCls} disabled={!mortLevelId}>
                   <option value="">Cage…</option>
@@ -679,6 +704,35 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                 </select>
               </div>
             </div>
+            {totalLost > 0 && (
+              <div className="rounded-xl bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/50 p-3 space-y-2">
+                <FieldLabel>Had these birds eaten today's feed already? (optional)</FieldLabel>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 -mt-1">
+                  Helps Store know how much less feed to expect being needed today — skip if unsure.
+                </p>
+                <div className="flex rounded-lg border border-gray-200 dark:border-dark-border overflow-hidden text-xs font-semibold">
+                  <button type="button" onClick={() => setFedBeforeDeath('')}
+                    className={`flex-1 py-1.5 ${fedBeforeDeath === '' ? 'bg-gray-800 text-white' : 'bg-white dark:bg-dark-bg text-gray-500'}`}>
+                    Not sure
+                  </button>
+                  <button type="button" onClick={() => setFedBeforeDeath('NO')}
+                    className={`flex-1 py-1.5 ${fedBeforeDeath === 'NO' ? 'bg-gray-800 text-white' : 'bg-white dark:bg-dark-bg text-gray-500'}`}>
+                    No, not yet
+                  </button>
+                  <button type="button" onClick={() => setFedBeforeDeath('PARTIAL')}
+                    className={`flex-1 py-1.5 ${fedBeforeDeath === 'PARTIAL' ? 'bg-gray-800 text-white' : 'bg-white dark:bg-dark-bg text-gray-500'}`}>
+                    Yes, partly
+                  </button>
+                </div>
+                {fedBeforeDeath === 'PARTIAL' && (
+                  <div>
+                    <FieldLabel>Roughly how much feed (kg) had they already eaten?</FieldLabel>
+                    <input value={feedAlreadyEatenKg} onChange={e => setFeedAlreadyEatenKg(e.target.value)}
+                      type="number" step="0.01" min="0" className={iCls} placeholder="e.g. 0.05" />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Notes */}

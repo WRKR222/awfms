@@ -163,34 +163,6 @@ export class StoreInventoryService {
     return item;
   }
 
-  // Every non-FEED item must be stocked in the LOWEST unit of measure —
-  // kg/L are rejected in favour of g/ml, so every vaccine/supplement/
-  // treatment quantity recorded downstream (denominated in whatever unit
-  // the store item declares) is consistently in grams/millilitres, never
-  // kilograms/litres. Existing kg/L items were one-time migrated to g/ml
-  // (see migration 20260908150000); this guard only stops NEW kg/L items
-  // (via the preset dropdown or the free-text "custom unit" field) from
-  // being created going forward.
-  //
-  // FEED is exempt — kg is the base unit of the whole HyLine ration
-  // schedule / feed-wastage subsystem (feed-standard.util.ts and its many
-  // consumers, all built around kg). Converting feed's stock unit without
-  // rescaling that entire schedule/wastage engine would silently corrupt
-  // those comparisons, so it deliberately stays in kg. See the migration's
-  // own comment for the full reasoning.
-  private static readonly REJECTED_UNITS = new Set([
-    'kg', 'kgs', 'kilogram', 'kilograms', 'kilo', 'kilos',
-    'l', 'ltr', 'ltrs', 'litre', 'litres', 'liter', 'liters',
-  ]);
-  private assertLowestUnitOfMeasure(unit: string, category: string) {
-    if (category === 'FEED') return;
-    if (StoreInventoryService.REJECTED_UNITS.has(unit.trim().toLowerCase())) {
-      throw new BadRequestException(
-        `"${unit}" is not the lowest unit of measure — use grams (g) for mass or millilitres (ml) for volume instead of kilograms/litres.`,
-      );
-    }
-  }
-
   private assertValidCategory(category: string) {
     if (!Object.values(StoreItemCategory).includes(category as StoreItemCategory)) {
       throw new BadRequestException(
@@ -211,7 +183,6 @@ export class StoreInventoryService {
     const existing = await this.prisma.storeItem.findUnique({ where: { sku: dto.sku } });
     if (existing) throw new ConflictException(`SKU "${dto.sku}" is already in use`);
     this.assertValidCategory(dto.category);
-    this.assertLowestUnitOfMeasure(dto.unit, dto.category);
 
     return this.prisma.storeItem.create({
       data: {
@@ -232,7 +203,6 @@ export class StoreInventoryService {
   async updateItem(id: string, dto: UpdateStoreItemDto) {
     const current = await this.getItemById(id);
     const effectiveCategory = dto.category ?? current.category;
-    if (dto.unit !== undefined) this.assertLowestUnitOfMeasure(dto.unit, effectiveCategory);
     return this.prisma.storeItem.update({
       where: { id },
       data: {

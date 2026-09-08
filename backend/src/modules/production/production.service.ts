@@ -34,6 +34,7 @@ import { RequestUser } from '../../auth/types/request-user.type';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import type { CreateEggCollectionSessionDto } from './production.dto';
 import { TallyVerificationService } from '../store/tally-verification.service';
+import { assertEggCollectionSessionOpen, getEggCollectionSessionStatus } from '../../common/production/egg-collection-session-window.util';
 import { StoreInventoryService } from '../store/store-inventory.service';
 import { CageMapService } from './cage-map.service';
 
@@ -144,6 +145,10 @@ export class ProductionService {
     return 'LAYER_MASH'; // production-house default — birds here are always layers
   }
 
+  getEggCollectionSessionStatus() {
+    return getEggCollectionSessionStatus();
+  }
+
   async createEggCollection(dto: CreateEggCollectionSessionDto, user: RequestUser) {
     if (user.role !== 'ATTENDANT') {
       throw new ForbiddenException('Only the Lead Attendant may submit egg collection sessions');
@@ -156,6 +161,12 @@ export class ProductionService {
       where: { id: dto.batchId, deletedAt: null, stage: { not: 'CLOSED' } },
     });
     if (!batch) throw new NotFoundException('Batch not found or closed');
+
+    // Daily submission deadline: AM locks at 12:00pm, PM locks at 4:30pm
+    // (farm-local time) — past that, the shift is closed until tomorrow's
+    // AM window opens at midnight. Only applies to TODAY's sessionDate; a
+    // backdated correction is exempt (see the util's own comment).
+    assertEggCollectionSessionOpen(dto.shift, dto.sessionDate);
 
     // FIX-2: Block same-day recording if both sessions are already approved (day is locked)
     if (dto.shift === 'PM') {
@@ -221,12 +232,6 @@ export class ProductionService {
       kg: l.feedKg,
     }));
 
-    // ── Mortality feed-surplus capture — a mortality means the feed meant
-    // for that bird was never eaten (or only partly eaten), so Stores should
-    // issue less feed the next day instead of over-issuing on top of it.
-    const mortalityMode = dto.mortalityMode ?? 'GENERAL';
-    const mortalityRowBreakdown = mortalityMode === 'PER_ROW' ? (dto.mortalityRowBreakdown ?? []) : [];
-
     // ── Validate each vaccine/supplement store item + residual up front too,
     // reserving quantities against each other within this same request (two
     // vaccine entries drawing on the same bottle can't both pass residual
@@ -282,10 +287,6 @@ export class ProductionService {
       waterLiters: dto.environment?.waterLiters ?? null,
       houseTempC: dto.environment?.houseTempC ?? null,
       dailyFeedKg: totalFeedKg,
-      mortalityMode,
-      mortalityRowBreakdown: (mortalityRowBreakdown.length > 0 ? mortalityRowBreakdown : null) as any,
-      mortalityFedBeforeDeath: mortalityMode === 'GENERAL' ? (dto.mortalityFedBeforeDeath ?? null) : null,
-      mortalityFeedAlreadyEatenKg: mortalityMode === 'GENERAL' ? (dto.mortalityFeedAlreadyEatenKg ?? null) : null,
       vaccineGiven: vaccinesGiven
         .map((v: any) => (v.kind === 'VACCINE' ? 'V: ' : v.kind === 'SUPPLEMENT' ? 'S: ' : 'T: ') + v.name + ' (' + v.dosage + ')')
         .join('; ') || null,

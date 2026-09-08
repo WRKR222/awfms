@@ -22,6 +22,7 @@ import { api } from '../../lib/api/client';
 import { useOfflineMutation } from '../../hooks/useOfflineSync';
 import { useOfflineStore } from '../../stores/offline.store';
 import { useTodayEggSessions } from '../../hooks/useEggSessions';
+import { useEggCollectionSessionStatus } from '../../hooks/useEggCollectionSessionStatus';
 import { useAttendantRealtime } from '../../hooks/useRealtime';
 import {
   useIssuableStoreItems, FEED_CATEGORIES,
@@ -71,16 +72,6 @@ interface FeedLineEntry {
   kg: string; // string in form state — parsed on submit
 }
 
-type MortalityMode = 'GENERAL' | 'PER_ROW';
-type FedBeforeDeath = 'YES' | 'NO' | 'MIXED' | '';
-
-interface MortalityRowEntry {
-  rowCode: string;
-  count: string;
-  fedBeforeDeath: FedBeforeDeath;
-  feedAlreadyEatenKg: string;
-}
-
 type BlockKey = 'BLOCK1' | 'BLOCK2';
 
 function buildDefaultBlock(): { rows: RowEntry[] } {
@@ -105,24 +96,33 @@ type PageMode =
   | 'AM_FORM'
   | 'AM_PENDING'
   | 'AM_RETURNED'
+  | 'AM_TIME_LOCKED'
   | 'PM_FORM'
   | 'PM_PENDING'
   | 'PM_RETURNED'
+  | 'PM_TIME_LOCKED'
   | 'DAY_LOCKED';
 
 function resolvePageMode(
   amSession: any,
   pmSession: any,
   localSubmitPending: boolean,
+  // Whether each shift's submission window is currently open (farm-local
+  // clock) — undefined while the status is still loading, treated as open
+  // so the form isn't wrongly locked during that brief window.
+  amWindowOpen: boolean | undefined,
+  pmWindowOpen: boolean | undefined,
 ): PageMode {
   if (!amSession || amSession.status === 'RETURNED') {
     if (localSubmitPending) return 'AM_PENDING';
+    if (amWindowOpen === false) return 'AM_TIME_LOCKED';
     return amSession?.status === 'RETURNED' ? 'AM_RETURNED' : 'AM_FORM';
   }
   if (amSession.status === 'PENDING') return 'AM_PENDING';
   if (amSession.status === 'APPROVED') {
     if (!pmSession || pmSession.status === 'RETURNED') {
       if (localSubmitPending) return 'PM_PENDING';
+      if (pmWindowOpen === false) return 'PM_TIME_LOCKED';
       return pmSession?.status === 'RETURNED' ? 'PM_RETURNED' : 'PM_FORM';
     }
     if (pmSession.status === 'PENDING') return 'PM_PENDING';
@@ -208,6 +208,30 @@ function DayLockedPanel({ amSession, pmSession }: { amSession: any; pmSession: a
   );
 }
 
+function TimeLockedPanel({ shift, closesLabel, reopenNote }: { shift: 'AM' | 'PM'; closesLabel?: string; reopenNote: string }) {
+  const navigate = useNavigate();
+  return (
+    <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
+      <Lock className="w-16 h-16 text-gray-400 mb-4" />
+      <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">{shift} Session Closed</h2>
+      <p className="text-gray-500 dark:text-gray-400 mt-2 max-w-sm">
+        {closesLabel
+          ? `The ${shift} egg collection window closes at ${closesLabel} and has already passed for today.`
+          : `The ${shift} egg collection window has closed for today.`}
+      </p>
+      <div className="mt-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-xl px-4 py-2 max-w-xs">
+        <p className="text-xs text-blue-600 dark:text-blue-400">{reopenNote}</p>
+      </div>
+      <button
+        onClick={() => navigate('/attendant')}
+        className="mt-6 bg-brand-green text-white rounded-xl px-8 py-3 font-semibold"
+      >
+        Back to Home
+      </button>
+    </div>
+  );
+}
+
 // ── Main Component ─────────────────────────────────────────────────────────────
 
 export function EggCollectionPage() {
@@ -274,32 +298,18 @@ export function EggCollectionPage() {
     setFeedLines(f => f.map((line, j) => j === i ? { ...line, [field]: val } : line));
   }
 
-  // ── Mortality — general (one figure for the house) or per-row, so the
-  // system can narrow feed-surplus tracking down to where the birds were.
-  const [mortalityMode, setMortalityMode] = useState<MortalityMode>('GENERAL');
-  const [mortalityFedBeforeDeath, setMortalityFedBeforeDeath] = useState<FedBeforeDeath>('');
-  const [mortalityFeedAlreadyEatenKg, setMortalityFeedAlreadyEatenKg] = useState('');
-  const [mortalityRows, setMortalityRows] = useState<MortalityRowEntry[]>(
-    (() => {
-      const rows: MortalityRowEntry[] = [];
-      for (const letter of UNIT_LETTERS) {
-        for (const rowNum of [1, 2]) {
-          rows.push({ rowCode: `${letter}${rowNum}`, count: '', fedBeforeDeath: '', feedAlreadyEatenKg: '' });
-        }
-      }
-      return rows;
-    })(),
-  );
-  function updateMortalityRow(idx: number, field: keyof MortalityRowEntry, val: string) {
-    setMortalityRows(rows => rows.map((r, i) => i === idx ? { ...r, [field]: val } : r));
-  }
-  const mortalityRowSum = mortalityRows.reduce((s, r) => s + (Number(r.count) || 0), 0);
-
   // Derive session state from server
   const amSession = (todaySessions as any[]).find((s: any) => s.shift === 'AM');
   const pmSession = (todaySessions as any[]).find((s: any) => s.shift === 'PM');
 
-  const pageMode = resolvePageMode(amSession, pmSession, localSubmitPending);
+  // Farm-time-aware submission cutoffs — AM locks at 12:00pm, PM at 4:30pm.
+  const { data: windowStatus } = useEggCollectionSessionStatus();
+  const amWindowOpen = windowStatus?.shifts.find(s => s.shift === 'AM')?.open;
+  const pmWindowOpen = windowStatus?.shifts.find(s => s.shift === 'PM')?.open;
+  const pmClosesLabel = windowStatus?.shifts.find(s => s.shift === 'PM')?.closesLabel;
+  const amClosesLabel = windowStatus?.shifts.find(s => s.shift === 'AM')?.closesLabel;
+
+  const pageMode = resolvePageMode(amSession, pmSession, localSubmitPending, amWindowOpen, pmWindowOpen);
 
   // Determine shift from pageMode — no user control
   const activeShift: 'AM' | 'PM' =
@@ -310,7 +320,7 @@ export function EggCollectionPage() {
   // Clear localSubmitPending once server catches up
   useEffect(() => {
     if (localSubmitPending) {
-      const mode = resolvePageMode(amSession, pmSession, false);
+      const mode = resolvePageMode(amSession, pmSession, false, amWindowOpen, pmWindowOpen);
       if (mode === 'AM_PENDING' || mode === 'PM_PENDING') {
         setLocalSubmitPending(false);
       }
@@ -333,20 +343,6 @@ export function EggCollectionPage() {
       setFeedLines(returned.feedBreakdownJson.map((l: any) => ({ storeItemId: l.storeItemId, kg: String(l.kg ?? '') })));
     } else if (returned.feedStoreItemId) {
       setFeedLines([{ storeItemId: returned.feedStoreItemId, kg: returned.feedKg != null ? String(returned.feedKg) : '' }]);
-    }
-    // Mortality mode + breakdown
-    if (returned.mortalityMode === 'PER_ROW' && Array.isArray(returned.mortalityRowBreakdown)) {
-      setMortalityMode('PER_ROW');
-      setMortalityRows(rows => rows.map(r => {
-        const match = (returned.mortalityRowBreakdown as any[]).find((m: any) => m.rowCode === r.rowCode);
-        return match
-          ? { rowCode: r.rowCode, count: String(match.count ?? ''), fedBeforeDeath: match.fedBeforeDeath ?? '', feedAlreadyEatenKg: match.feedAlreadyEatenKg != null ? String(match.feedAlreadyEatenKg) : '' }
-          : r;
-      }));
-    } else {
-      setMortalityMode('GENERAL');
-      if (returned.mortalityFedBeforeDeath) setMortalityFedBeforeDeath(returned.mortalityFedBeforeDeath);
-      if (returned.mortalityFeedAlreadyEatenKg != null) setMortalityFeedAlreadyEatenKg(String(returned.mortalityFeedAlreadyEatenKg));
     }
   }, [pageMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -431,25 +427,6 @@ export function EggCollectionPage() {
     }
 
     const totalMortalities = Number(data.mortalities);
-    let mortalityPayload: any = { mortalityMode, mortalityRowBreakdown: [] as any[] };
-    if (mortalityMode === 'PER_ROW') {
-      const cleanedRows = mortalityRows
-        .filter(r => Number(r.count) > 0)
-        .map(r => ({
-          rowCode: r.rowCode,
-          count: Number(r.count),
-          fedBeforeDeath: r.fedBeforeDeath || undefined,
-          feedAlreadyEatenKg: r.feedAlreadyEatenKg?.trim() ? Number(r.feedAlreadyEatenKg) : undefined,
-        }));
-      if (cleanedRows.length > 0 && mortalityRowSum !== totalMortalities) {
-        setSubmitError(`Per-row mortality breakdown (${mortalityRowSum}) must add up to the total mortalities entered (${totalMortalities}).`);
-        return;
-      }
-      mortalityPayload.mortalityRowBreakdown = cleanedRows;
-    } else {
-      mortalityPayload.mortalityFedBeforeDeath = mortalityFedBeforeDeath || undefined;
-      mortalityPayload.mortalityFeedAlreadyEatenKg = mortalityFeedAlreadyEatenKg?.trim() ? Number(mortalityFeedAlreadyEatenKg) : undefined;
-    }
 
     setLocalSubmitPending(true);
 
@@ -462,7 +439,6 @@ export function EggCollectionPage() {
       shift: activeShift,  // hardcoded from pageMode — no user-controlled radio
       openingPop: Number(data.openingPop),
       mortalities: totalMortalities,
-      ...mortalityPayload,
       block: 'BLOCK1',
       rowData: allRows.map(r => ({
         rowCode: r.rowCode,
@@ -487,6 +463,26 @@ export function EggCollectionPage() {
 
   if (pageMode === 'DAY_LOCKED') {
     return <DayLockedPanel amSession={amSession} pmSession={pmSession} />;
+  }
+
+  if (pageMode === 'AM_TIME_LOCKED') {
+    return (
+      <TimeLockedPanel
+        shift="AM"
+        closesLabel={amClosesLabel}
+        reopenNote="This is a same-day cutoff, not a missed day — a Production Manager can still record this session manually if needed."
+      />
+    );
+  }
+
+  if (pageMode === 'PM_TIME_LOCKED') {
+    return (
+      <TimeLockedPanel
+        shift="PM"
+        closesLabel={pmClosesLabel}
+        reopenNote="Next session opens tomorrow at 12:00am (AM)."
+      />
+    );
   }
 
   if (pageMode === 'AM_PENDING' || pageMode === 'PM_PENDING') {
@@ -575,83 +571,6 @@ export function EggCollectionPage() {
               </div>
             </div>
           </div>
-
-          {mortalities > 0 && (
-            <div className="mt-4 pt-4 border-t border-gray-100 dark:border-dark-border">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                  Mortality Detail — Feed Surplus
-                </p>
-                <div className="flex rounded-lg overflow-hidden border border-gray-200 dark:border-dark-border text-xs font-semibold">
-                  <button type="button" onClick={() => setMortalityMode('GENERAL')}
-                    className={`px-3 py-1.5 ${mortalityMode === 'GENERAL' ? 'bg-brand-green text-white' : 'bg-white dark:bg-dark-bg text-gray-500'}`}>
-                    General
-                  </button>
-                  <button type="button" onClick={() => setMortalityMode('PER_ROW')}
-                    className={`px-3 py-1.5 ${mortalityMode === 'PER_ROW' ? 'bg-brand-green text-white' : 'bg-white dark:bg-dark-bg text-gray-500'}`}>
-                    Per Row
-                  </button>
-                </div>
-              </div>
-              <p className="text-[11px] text-gray-400 mb-2">
-                A mortality means the feed meant for that bird went uneaten (or only partly eaten) —
-                record this so Store issues less feed tomorrow instead of over-issuing.
-              </p>
-
-              {mortalityMode === 'GENERAL' ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] text-gray-500 mb-1">Fed before death?</label>
-                    <select value={mortalityFedBeforeDeath} onChange={e => setMortalityFedBeforeDeath(e.target.value as FedBeforeDeath)} className={inputCls}>
-                      <option value="">Select…</option>
-                      <option value="NO">No — died before feeding</option>
-                      <option value="YES">Yes — had already eaten</option>
-                      <option value="MIXED">Mixed (some fed, some not)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-500 mb-1">Feed NOT consumed (kg est.)</label>
-                    <input type="number" min="0" step="any" inputMode="decimal" value={mortalityFeedAlreadyEatenKg}
-                      onChange={e => setMortalityFeedAlreadyEatenKg(e.target.value)} className={inputCls} placeholder="e.g. 0.5" />
-                  </div>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs min-w-[560px]">
-                    <thead>
-                      <tr>
-                        {['Row', 'Dead', 'Fed before death?', 'Feed NOT consumed (kg)'].map(h => (
-                          <th key={h} className="text-center text-gray-400 font-medium pb-1.5 px-1">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {mortalityRows.map((r, i) => (
-                        <tr key={r.rowCode}>
-                          <td className="px-1 py-1 text-center">
-                            <span className="text-xs font-bold text-brand-green bg-brand-green/10 rounded-lg px-2 py-1">{r.rowCode}</span>
-                          </td>
-                          <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={r.count} onChange={e => updateMortalityRow(i, 'count', e.target.value)} className={numInput} placeholder="0" /></td>
-                          <td className="px-1 py-1">
-                            <select value={r.fedBeforeDeath} onChange={e => updateMortalityRow(i, 'fedBeforeDeath', e.target.value)} className={numInput}>
-                              <option value="">—</option>
-                              <option value="NO">No</option>
-                              <option value="YES">Yes</option>
-                              <option value="MIXED">Mixed</option>
-                            </select>
-                          </td>
-                          <td className="px-1 py-1"><input type="number" min="0" step="any" inputMode="decimal" value={r.feedAlreadyEatenKg} onChange={e => updateMortalityRow(i, 'feedAlreadyEatenKg', e.target.value)} className={numInput} placeholder="0" /></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  <p className={`text-[11px] mt-2 ${mortalityRowSum === mortalities ? 'text-gray-400' : 'text-red-500 font-semibold'}`}>
-                    Row total: {mortalityRowSum} / {mortalities} mortalities entered above
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         {/* ── Block selection ── */}
