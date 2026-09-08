@@ -1937,6 +1937,15 @@ model BrooderLevelMortalityLog {
   mortalityCount Int      @default(0) @map("mortality_count")
   cullingCount   Int      @default(0) @map("culling_count")
   cause          String?                                         // MortalityCause enum value
+  // ── Feed-wastage intelligence (re-added, redesigned — see
+  // FeedWastageService.getTodaysMortalityFeedCreditKg). Optional: the
+  // attendant is never blocked from submitting a mortality without these.
+  // fedBeforeDeath null/unset = not captured, no feed-credit assumption
+  // made. false = died before today's feed reached them (full per-bird
+  // ration credited back). true = feedAlreadyEatenKg is how much of their
+  // share they'd already eaten (only the remainder is credited).
+  fedBeforeDeath     Boolean? @map("fed_before_death")
+  feedAlreadyEatenKg Decimal? @map("feed_already_eaten_kg") @db.Decimal
   notes          String?
   loggedById     String   @map("logged_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -2042,6 +2051,10 @@ model BrooderGeneralMortalityLog {
   mortalityCount Int      @default(0) @map("mortality_count")
   cullingCount   Int      @default(0) @map("culling_count")
   cause          String?
+  // See the identical fields on BrooderLevelMortalityLog for the full
+  // explanation — same optional feed-wastage-credit capture, same semantics.
+  fedBeforeDeath     Boolean? @map("fed_before_death")
+  feedAlreadyEatenKg Decimal? @map("feed_already_eaten_kg") @db.Decimal
   notes          String?
   loggedById     String   @map("logged_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
