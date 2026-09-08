@@ -23,10 +23,17 @@
 -- true = feed_already_eaten_kg is the attendant's estimate of what they'd
 -- already eaten; only the remainder is credited.
 
+-- IF NOT EXISTS: these exact column names were DROPPED from these exact two
+-- tables by 20260908110000_remove_mortality_feed_surplus_system earlier in
+-- the same migration history. If that drop hasn't actually reached this
+-- database yet (or an earlier attempt at THIS migration partially applied
+-- before failing), a plain ADD COLUMN fails with "column already exists" —
+-- IF NOT EXISTS makes this migration safe to (re-)run regardless of which
+-- of those already happened here.
 ALTER TABLE "brooder_level_mortality_logs"
-  ADD COLUMN "fed_before_death" BOOLEAN,
-  ADD COLUMN "feed_already_eaten_kg" DECIMAL;
+  ADD COLUMN IF NOT EXISTS "fed_before_death" BOOLEAN,
+  ADD COLUMN IF NOT EXISTS "feed_already_eaten_kg" DECIMAL;
 
 ALTER TABLE "brooder_general_mortality_logs"
-  ADD COLUMN "fed_before_death" BOOLEAN,
-  ADD COLUMN "feed_already_eaten_kg" DECIMAL;
+  ADD COLUMN IF NOT EXISTS "fed_before_death" BOOLEAN,
+  ADD COLUMN IF NOT EXISTS "feed_already_eaten_kg" DECIMAL;
