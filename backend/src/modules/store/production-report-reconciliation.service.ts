@@ -736,9 +736,15 @@ export class ProductionReportReconciliationService {
     }
 
     // BROODING / GROWER — read-only (see BROODER_MGMT_IS_READ_ONLY): compare
-    // against the attendant's own BrooderLog row, never write to it.
-    const existing = await this.prisma.brooderLog.findFirst({ where: { batchId, logDate, logSession: null } });
-    if (existing && existing.waterConsumptionL != null && Math.abs(existing.waterConsumptionL - reportWater) < 0.01) {
+    // against the attendant's own BrooderLog rows, never write to them.
+    // The attendant's 3-popup daily log records water per SESSION (Morning/
+    // Midday/Evening, each its own BrooderLog row) rather than one once-daily
+    // row, so the report's single daily figure is compared against the SUM
+    // of that day's session rows, not any one row in isolation.
+    const dayLogs = await this.prisma.brooderLog.findMany({ where: { batchId, logDate } });
+    const loggedRows = dayLogs.filter(l => l.waterConsumptionL != null);
+    const loggedTotal = loggedRows.reduce((s, l) => s + Number(l.waterConsumptionL), 0);
+    if (loggedRows.length && Math.abs(loggedTotal - reportWater) < 0.01) {
       row.resolution.water = 'MATCHED';
       onMatch();
       return;
@@ -747,7 +753,7 @@ export class ProductionReportReconciliationService {
     discrepancies.push({
       rowDate: row.date, field: 'water', discrepancyType: ProductionReportDiscrepancyType.OTHER,
       locationRef: row.locationRef,
-      systemValue: existing?.waterConsumptionL != null ? String(existing.waterConsumptionL) : null,
+      systemValue: loggedRows.length ? String(loggedTotal) : null,
       reportValue: String(reportWater),
       notes: this.brooderReadOnlyNote('water consumption'),
     });
@@ -925,7 +931,6 @@ export class ProductionReportReconciliationService {
         row.openingStock, FeedType.LAYER_MASH, ageWeeks, 1,
         (_feedType, aw) => hylineGramsPerBirdPerDay(aw),
       );
-      const mortalityFeedCreditKg = await this.getProductionMortalityFeedCreditKg(sessionId);
       const wastageLog = await this.feedWastage.recordProductionOverIssuance({
         batch: { id: batchId, batchCode: batch.batchCode },
         entryDate: logDate,
@@ -936,7 +941,6 @@ export class ProductionReportReconciliationService {
         feedType,
         storeItemId: matchedFeedItem?.id ?? null,
         loggedById: uploaderId,
-        mortalityFeedCreditKg,
       });
       if (wastageLog) {
         this.logChange(appliedChanges, batchId, row.date, 'BrooderFeedWastageLog', wastageLog.id, 'CREATE', null, wastageLog);
@@ -947,24 +951,6 @@ export class ProductionReportReconciliationService {
         `on ${row.date} (${wastageErr?.code ?? wastageErr?.message}). Report row was still applied.`,
       );
     }
-  }
-
-  /** Feed not consumed that session because of mortality — the
-   *  EggCollectionSession-side equivalent of
-   *  FeedWastageService.getBrooderMortalityFeedCreditKg. GENERAL mode reads
-   *  the scalar mortalityFeedAlreadyEatenKg; PER_ROW mode sums
-   *  feedAlreadyEatenKg across mortalityRowBreakdown's entries. */
-  private async getProductionMortalityFeedCreditKg(sessionId: string): Promise<number> {
-    const session = await this.prisma.eggCollectionSession.findUnique({
-      where: { id: sessionId },
-      select: { mortalityMode: true, mortalityFeedAlreadyEatenKg: true, mortalityRowBreakdown: true },
-    });
-    if (!session) return 0;
-    if (session.mortalityMode === 'PER_ROW') {
-      const rows = Array.isArray(session.mortalityRowBreakdown) ? session.mortalityRowBreakdown as any[] : [];
-      return rows.reduce((sum, r) => sum + (Number(r?.feedAlreadyEatenKg) || 0), 0);
-    }
-    return Number(session.mortalityFeedAlreadyEatenKg ?? 0);
   }
 
   /** Reconciles a two-way split feed cell — e.g. "chickcrumbs/growers
@@ -1803,10 +1789,15 @@ export class ProductionReportReconciliationService {
       const existing = await this.prisma.brooderTreatmentLog.findFirst({ where: { batchId, treatmentDate: logDate, storeItemId } });
       return !!existing;
     }
-    const log = await this.prisma.brooderLog.findFirst({ where: { batchId, logDate, logSession: null } });
-    for (const arr of [log?.vaccinesJson, log?.supplementsJson]) {
-      if (!Array.isArray(arr)) continue;
-      if ((arr as any[]).some(e => e?.storeItemId === storeItemId)) return true;
+    // Vaccines/supplements can land in any of the day's session rows (the
+    // 3-popup attendant log, or a legacy once-daily logSession:null row) —
+    // check across all of them, not just one.
+    const dayLogs = await this.prisma.brooderLog.findMany({ where: { batchId, logDate } });
+    for (const log of dayLogs) {
+      for (const arr of [log.vaccinesJson, log.supplementsJson]) {
+        if (!Array.isArray(arr)) continue;
+        if ((arr as any[]).some(e => e?.storeItemId === storeItemId)) return true;
+      }
     }
     return false;
   }
@@ -1970,17 +1961,22 @@ export class ProductionReportReconciliationService {
    *  this" vs. "nothing recorded yet, check the held balance" before
    *  double-counting a report row against an existing log entry. */
   private async sumTodaysLoggedUsage(storeItemId: string, batchId: string, logDate: Date): Promise<number> {
-    const [feedLogs, treatmentLogs, brooderLog] = await Promise.all([
+    const [feedLogs, treatmentLogs, brooderLogs] = await Promise.all([
       this.prisma.brooderGeneralFeedLog.findMany({ where: { batchId, entryDate: logDate, storeItemId } }),
       this.prisma.brooderTreatmentLog.findMany({ where: { batchId, treatmentDate: logDate, storeItemId } }),
-      this.prisma.brooderLog.findFirst({ where: { batchId, logDate, logSession: null } }),
+      // Every session row for the day (Morning/Midday/Evening, or a legacy
+      // once-daily logSession:null row) can carry its own vaccinesJson /
+      // supplementsJson entries — sum across all of them, not just one.
+      this.prisma.brooderLog.findMany({ where: { batchId, logDate } }),
     ]);
     let total = feedLogs.reduce((s, l) => s + l.quantityDispensedKg, 0);
     total += treatmentLogs.reduce((s, l) => s + Number(l.quantityUsed ?? 0), 0);
-    for (const arr of [brooderLog?.vaccinesJson, brooderLog?.supplementsJson]) {
-      if (!Array.isArray(arr)) continue;
-      for (const entry of arr as any[]) {
-        if (entry?.storeItemId === storeItemId && typeof entry?.quantityUsed === 'number') total += entry.quantityUsed;
+    for (const brooderLog of brooderLogs) {
+      for (const arr of [brooderLog?.vaccinesJson, brooderLog?.supplementsJson]) {
+        if (!Array.isArray(arr)) continue;
+        for (const entry of arr as any[]) {
+          if (entry?.storeItemId === storeItemId && typeof entry?.quantityUsed === 'number') total += entry.quantityUsed;
+        }
       }
     }
     return total;

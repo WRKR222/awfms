@@ -84,6 +84,7 @@ import isoWeek from 'dayjs/plugin/isoWeek';
 dayjs.extend(isoWeek);
 import { ZodError } from 'zod';
 import { parseCageLayoutDescription, CageLayoutParseError, ParsedCageBlock } from './cage-layout-parser.util';
+import { assertBrooderSessionOpen, assertIsToday } from '../../common/brooder/brooder-session-window.util';
 
 function parseOrThrow<T>(schema: { parse: (v: unknown) => T }, value: unknown): T {
   try {
@@ -1548,6 +1549,16 @@ export class BrooderService {
   async createLevelFeedLog(input: unknown, userId: string) {
     const dto = parseOrThrow(CreateLevelFeedLogSchema, input);
 
+    // 3-popup daily log: feed is only on the Morning/Evening popups. Only
+    // enforced when logSession is present — other callers omit it.
+    if (dto.logSession) {
+      if (dto.logSession === 'MIDDAY') {
+        throw new BadRequestException('Feed can only be logged from the Morning or Evening popup.');
+      }
+      assertIsToday(dto.entryDate);
+      assertBrooderSessionOpen(dto.logSession);
+    }
+
     // Guard against double counting: if the whole batch has already been
     // fed on the general population sheet for this date, a row/level entry
     // for the same date would count that feeding twice when totals roll up.
@@ -1671,6 +1682,7 @@ export class BrooderService {
         storeItemId:         dto.storeItemId ?? null,
         unit:                feedItemUnit,
         entryDate:           new Date(`${dto.entryDate}T00:00:00.000Z`),
+        logSession:          dto.logSession ?? null,
         quantityDispensedKg: dto.quantityDispensedKg,
         requiredKgForWeek,
         notes:               dto.notes ?? null,
@@ -1767,6 +1779,13 @@ export class BrooderService {
   async createLevelMortalityLog(input: unknown, userId: string) {
     const dto = parseOrThrow(CreateLevelMortalityLogSchema, input);
 
+    // 3-popup daily log: "mortalities if any" is on all 3 popups. Only
+    // enforced when logSession is present — other callers omit it.
+    if (dto.logSession) {
+      assertIsToday(dto.logDate);
+      assertBrooderSessionOpen(dto.logSession);
+    }
+
     const cage = await this.prisma.brooderCage.findUnique({
       where:   { id: dto.cageId },
       include: { assignment: true, level: { include: { row: true } } },
@@ -1800,6 +1819,7 @@ export class BrooderService {
           cageId:         dto.cageId,
           batchId:        dto.batchId,
           logDate:        new Date(dto.logDate),
+          logSession:     dto.logSession ?? null,
           mortalityCount: dto.mortalityCount,
           cullingCount:   dto.cullingCount,
           cause:          dto.cause ?? null,
@@ -1914,6 +1934,16 @@ export class BrooderService {
     const dto = parseOrThrow(CreateGeneralFeedLogSchema, input);
     const entryDate = new Date(`${dto.entryDate}T00:00:00.000Z`);
 
+    // 3-popup daily log: feed is only on the Morning/Evening popups. Only
+    // enforced when logSession is present — other callers omit it.
+    if (dto.logSession) {
+      if (dto.logSession === 'MIDDAY') {
+        throw new BadRequestException('Feed can only be logged from the Morning or Evening popup.');
+      }
+      assertIsToday(dto.entryDate);
+      assertBrooderSessionOpen(dto.logSession);
+    }
+
     const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
@@ -1959,6 +1989,7 @@ export class BrooderService {
         storeItemId:         dto.storeItemId ?? null,
         unit:                feedItemUnit,
         entryDate,
+        logSession:          dto.logSession ?? null,
         quantityDispensedKg: dto.quantityDispensedKg,
         requiredKgForDay:    dailyRationKg,
         notes:               dto.notes ?? null,
@@ -2129,6 +2160,13 @@ export class BrooderService {
     const dto = parseOrThrow(CreateGeneralMortalityLogSchema, input);
     const logDate = new Date(dto.logDate);
 
+    // 3-popup daily log: "mortalities if any" is on all 3 popups. Only
+    // enforced when logSession is present — other callers omit it.
+    if (dto.logSession) {
+      assertIsToday(dto.logDate);
+      assertBrooderSessionOpen(dto.logSession);
+    }
+
     const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
@@ -2149,6 +2187,7 @@ export class BrooderService {
         data: {
           batchId:        dto.batchId,
           logDate,
+          logSession:     dto.logSession ?? null,
           mortalityCount: dto.mortalityCount,
           cullingCount:   dto.cullingCount,
           cause:          dto.cause ?? null,
@@ -3378,15 +3417,24 @@ export class BrooderService {
       waterConsumptionL: l.waterConsumptionL,
       lightIntensityLux: l.lightIntensityLux,
       lightingOk: l.lightingOk,
+      // MORNING popup only — 3am + 6am dual readings.
+      reading3amTemperature: (l as any).reading3amTemperature,
+      reading3amHumidityPercent: (l as any).reading3amHumidityPercent,
+      reading3amLightIntensityLux: (l as any).reading3amLightIntensityLux,
+      reading3amLightingOk: (l as any).reading3amLightingOk,
+      reading6amTemperature: (l as any).reading6amTemperature,
+      reading6amHumidityPercent: (l as any).reading6amHumidityPercent,
+      reading6amLightIntensityLux: (l as any).reading6amLightIntensityLux,
+      reading6amLightingOk: (l as any).reading6amLightingOk,
       notes: l.notes,
     }));
 
     const FEED = [
       ...generalFeed.map(f => ({
-        source: 'GENERAL' as const, feedType: f.feedType, quantityDispensedKg: f.quantityDispensedKg,
+        source: 'GENERAL' as const, feedType: f.feedType, quantityDispensedKg: f.quantityDispensedKg, unit: (f as any).unit,
       })),
       ...levelFeed.map((f: any) => ({
-        source: 'ROW_LEVEL' as const, feedType: f.feedType, quantityDispensedKg: f.quantityDispensedKg,
+        source: 'ROW_LEVEL' as const, feedType: f.feedType, quantityDispensedKg: f.quantityDispensedKg, unit: f.unit,
         levelLabel: levelLabel(f),
       })),
     ];

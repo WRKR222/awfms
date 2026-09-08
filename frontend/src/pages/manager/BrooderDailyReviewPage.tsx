@@ -67,18 +67,42 @@ function SectionData({ section, data }: { section: ReviewRow['section']; data: u
     return (
       <ul className="text-xs text-gray-600 dark:text-gray-300 space-y-1 mb-2">
         {rows.map((r: any, i: number) => {
-          const parts = [
+          // Morning popup records two readings (3am + 6am) instead of one.
+          const has3am6am = r.reading3amTemperature != null || r.reading6amTemperature != null
+            || r.reading3amHumidityPercent != null || r.reading6amHumidityPercent != null;
+          const parts = has3am6am ? [] : [
             fmtNum(r.temperature, '°C'),
             fmtNum(r.humidityPercent, '% RH'),
-            fmtNum(r.waterConsumptionL, 'L water'),
             fmtNum(r.lightIntensityLux, ' lux'),
           ].filter(Boolean);
+          const reading3am = [
+            fmtNum(r.reading3amTemperature, '°C'),
+            fmtNum(r.reading3amHumidityPercent, '% RH'),
+            fmtNum(r.reading3amLightIntensityLux, ' lux'),
+          ].filter(Boolean);
+          const reading6am = [
+            fmtNum(r.reading6amTemperature, '°C'),
+            fmtNum(r.reading6amHumidityPercent, '% RH'),
+            fmtNum(r.reading6amLightIntensityLux, ' lux'),
+          ].filter(Boolean);
+          const water = fmtNum(r.waterConsumptionL, ' L water');
           return (
             <li key={i} className="flex items-start gap-1.5">
               <span className="font-semibold text-gray-500 dark:text-gray-400 shrink-0">
                 {SESSION_LABEL[r.logSession] ?? 'Daily'}:
               </span>
-              <span>{parts.length > 0 ? parts.join(' · ') : '—'}{r.lightingOk === false ? ' · ⚠ lighting issue' : ''}</span>
+              <span>
+                {has3am6am ? (
+                  <>
+                    {reading3am.length > 0 && <span>3am: {reading3am.join(' · ')}</span>}
+                    {reading3am.length > 0 && reading6am.length > 0 && ' · '}
+                    {reading6am.length > 0 && <span>6am: {reading6am.join(' · ')}</span>}
+                    {(reading3am.length === 0 && reading6am.length === 0) && '—'}
+                  </>
+                ) : (parts.length > 0 ? parts.join(' · ') : '—')}
+                {water ? ` · ${water}` : ''}
+                {r.lightingOk === false ? ' · ⚠ lighting issue' : ''}
+              </span>
             </li>
           );
         })}
@@ -90,10 +114,10 @@ function SectionData({ section, data }: { section: ReviewRow['section']; data: u
     const total = rows.reduce((s: number, r: any) => s + (Number(r.quantityDispensedKg) || 0), 0);
     return (
       <ul className="text-xs text-gray-600 dark:text-gray-300 space-y-1 mb-2">
-        <li className="font-semibold text-gray-700 dark:text-gray-200">{total.toFixed(1)} kg total</li>
+        <li className="font-semibold text-gray-700 dark:text-gray-200">{total.toLocaleString()} total (units per item)</li>
         {rows.map((r: any, i: number) => (
           <li key={i} className="text-gray-500 dark:text-gray-400">
-            {r.feedType} — {Number(r.quantityDispensedKg).toFixed(1)} kg
+            {r.feedType} — {Number(r.quantityDispensedKg).toLocaleString()}{r.unit ? ` ${r.unit}` : ''}
             {r.source === 'ROW_LEVEL' && r.levelLabel ? ` (${r.levelLabel})` : ''}
           </li>
         ))}

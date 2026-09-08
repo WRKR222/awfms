@@ -12,7 +12,7 @@ import { api } from '../../lib/api/client';
 import {
   Plus, FileText, DollarSign, CheckCircle, AlertCircle, AlertTriangle,
   Upload, FileUp, X, CreditCard, Settings2, ChevronDown, ChevronRight,
-  TrendingUp, BarChart2, ShoppingCart,
+  TrendingUp, BarChart2, ShoppingCart, Download,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 
@@ -273,51 +273,108 @@ const STATUS_ICON: Record<string, React.ElementType> = {
   PAID: CheckCircle, OVERDUE: AlertCircle, UNPAID: AlertTriangle, PARTIAL: AlertCircle,
 };
 
+// A payment can be made up of more than one method — e.g. part cash, rest
+// M-Pesa. Each line is its own {amount, paymentMethod, reference} and all
+// lines submit together as one split payment (POST /finance/invoices/payments/split),
+// so the invoice flips to PAID/PARTIAL off their combined total rather than
+// one line at a time.
+interface PaymentLine { amount: string; paymentMethod: string; reference: string; }
+function emptyLine(amount = ''): PaymentLine { return { amount, paymentMethod: 'CASH', reference: '' }; }
+
 function PaymentForm({ invoiceId, balanceDue, onClose }: { invoiceId: string; balanceDue: number; onClose: () => void }) {
   const qc = useQueryClient();
-  const { register, handleSubmit, formState: { errors } } = useForm<any>({
-    defaultValues: { amount: balanceDue, paymentDate: dayjs().format('YYYY-MM-DD'), paymentMethod: 'CASH' },
-  });
+  const [paymentDate, setPaymentDate] = useState(dayjs().format('YYYY-MM-DD'));
+  const [notes, setNotes] = useState('');
+  const [lines, setLines] = useState<PaymentLine[]>([emptyLine(String(balanceDue))]);
+
+  const totalEntered = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+  const isSplit = lines.length > 1;
+
+  function addLine() { setLines(ls => [...ls, emptyLine()]); }
+  function removeLine(i: number) { setLines(ls => ls.filter((_, j) => j !== i)); }
+  function updateLine(i: number, field: keyof PaymentLine, val: string) {
+    setLines(ls => ls.map((l, j) => j === i ? { ...l, [field]: val } : l));
+  }
 
   const log = useMutation({
-    mutationFn: (d: any) => api.post('/finance/invoices/payments', { ...d, invoiceId, amount: Number(d.amount) }),
+    mutationFn: () => api.post('/finance/invoices/payments/split', {
+      invoiceId,
+      paymentDate,
+      payments: lines
+        .filter(l => Number(l.amount) > 0)
+        .map(l => ({ amount: Number(l.amount), paymentMethod: l.paymentMethod, reference: l.reference || undefined, notes: notes || undefined })),
+    }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['finance-invoices'] }); qc.invalidateQueries({ queryKey: ['ar-summary'] }); onClose(); },
   });
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white dark:bg-dark-card rounded-2xl p-5 w-full max-w-sm space-y-3" onClick={e => e.stopPropagation()}>
+      <div className="bg-white dark:bg-dark-card rounded-2xl p-5 w-full max-w-md space-y-3 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-gray-800 dark:text-gray-100">Log Payment</h3>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
-        <form onSubmit={handleSubmit(d => log.mutate(d))} className="space-y-3">
-          <Fld label="Amount (KES) *">
-            <input type="number" step="0.01" min="0.01" {...register('amount', { required: true })} className={inp} />
-          </Fld>
-          <Fld label="Payment Date *">
-            <input type="date" {...register('paymentDate', { required: true })} className={inp} />
-          </Fld>
-          <Fld label="Payment Method *">
-            <select {...register('paymentMethod', { required: true })} className={inp}>
-              <option value="CASH">Cash</option>
-              <option value="MPESA">M-Pesa</option>
-              <option value="BANK_TRANSFER">Bank Transfer</option>
-            </select>
-          </Fld>
-          <Fld label="Reference (optional)">
-            <input {...register('reference')} className={inp} placeholder="Transaction ID, cheque no." />
-          </Fld>
-          <Fld label="Notes">
-            <input {...register('notes')} className={inp} />
-          </Fld>
-          <button type="submit" disabled={log.isPending}
-            className="w-full bg-brand-green text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
-            <CreditCard className="w-4 h-4" />
-            {log.isPending ? 'Logging…' : 'Log Payment'}
-          </button>
-          {log.isError && <p className="text-xs text-red-600">Failed to log payment. Please try again.</p>}
-        </form>
+        <p className="text-xs text-gray-400">Balance due: KES {balanceDue.toLocaleString()}. Add another line below to split this payment across more than one method (e.g. part cash, rest M-Pesa).</p>
+
+        <Fld label="Payment Date *">
+          <input type="date" value={paymentDate} onChange={e => setPaymentDate(e.target.value)} className={inp} />
+        </Fld>
+
+        <div className="space-y-2">
+          {lines.map((l, i) => (
+            <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-2.5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-gray-500">Payment {i + 1}</span>
+                {lines.length > 1 && (
+                  <button type="button" onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Fld label="Amount (KES) *">
+                  <input type="number" step="0.01" min="0.01" value={l.amount}
+                    onChange={e => updateLine(i, 'amount', e.target.value)} className={inp} />
+                </Fld>
+                <Fld label="Method *">
+                  <select value={l.paymentMethod} onChange={e => updateLine(i, 'paymentMethod', e.target.value)} className={inp}>
+                    <option value="CASH">Cash</option>
+                    <option value="MPESA">M-Pesa</option>
+                    <option value="BANK_TRANSFER">Bank Transfer</option>
+                  </select>
+                </Fld>
+              </div>
+              <Fld label="Reference (optional)">
+                <input value={l.reference} onChange={e => updateLine(i, 'reference', e.target.value)}
+                  className={inp} placeholder="Transaction ID, cheque no." />
+              </Fld>
+            </div>
+          ))}
+        </div>
+
+        <button type="button" onClick={addLine}
+          className="w-full border border-dashed border-gray-300 dark:border-dark-border text-gray-500 rounded-xl py-2 text-xs font-semibold hover:bg-gray-50 dark:hover:bg-dark-bg">
+          + Split into another payment method
+        </button>
+
+        <Fld label="Notes">
+          <input value={notes} onChange={e => setNotes(e.target.value)} className={inp} />
+        </Fld>
+
+        <div className="flex items-center justify-between text-xs text-gray-500 px-1">
+          <span>Total entered:</span>
+          <span className={`font-bold ${totalEntered > balanceDue + 0.01 ? 'text-red-500' : 'text-gray-700 dark:text-gray-300'}`}>
+            KES {totalEntered.toLocaleString()}
+          </span>
+        </div>
+
+        <button type="button" disabled={log.isPending || totalEntered <= 0}
+          onClick={() => log.mutate()}
+          className="w-full bg-brand-green text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
+          <CreditCard className="w-4 h-4" />
+          {log.isPending ? 'Logging…' : isSplit ? `Log Split Payment (${lines.filter(l => Number(l.amount) > 0).length} methods)` : 'Log Payment'}
+        </button>
+        {log.isError && <p className="text-xs text-red-600">Failed to log payment. Please try again.</p>}
       </div>
     </div>
   );
@@ -326,8 +383,23 @@ function PaymentForm({ invoiceId, balanceDue, onClose }: { invoiceId: string; ba
 function InvoicesTab() {
   const [statusFilter, setStatusFilter] = useState('');
   const [payingInvoice, setPayingInvoice] = useState<any>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const { data: invoices = [], isLoading } = useInvoices(statusFilter || undefined);
   const { data: ar } = useArSummary();
+
+  async function downloadInvoice(inv: any) {
+    setDownloadingId(inv.id);
+    try {
+      const res = await api.get(`/finance/invoices/${inv.id}/pdf`, { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = `Invoice-${inv.invoiceNumber}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // Best-effort — a failed download just leaves the button clickable again.
+    }
+    setDownloadingId(null);
+  }
 
   return (
     <div className="space-y-4">
@@ -399,6 +471,12 @@ function InvoicesTab() {
                     <p className="text-xs text-red-500">Bal: KES {Number(inv.balanceDue).toLocaleString()}</p>
                   )}
                 </div>
+                <button
+                  onClick={() => downloadInvoice(inv)}
+                  disabled={downloadingId === inv.id}
+                  className="flex-shrink-0 bg-white dark:bg-dark-bg border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300 text-xs px-3 py-1.5 rounded-lg font-semibold hover:bg-gray-50 dark:hover:bg-dark-card flex items-center gap-1 disabled:opacity-50">
+                  <Download className="w-3 h-3" /> {downloadingId === inv.id ? '…' : 'PDF'}
+                </button>
                 {/* GAP-09 FIX: payment logging button */}
                 {canPay && (
                   <button
@@ -810,9 +888,138 @@ function ExportTab() {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
+// ── Budgets Tab ────────────────────────────────────────────────────────────
+// Feed / Charcoal / Vaccines / Supplements — everything consumed by the
+// birds. The Accountant sets a KES figure per category per day and sees it
+// against that day's actual Store stock-out cost (matched by category, or
+// by name for Charcoal — see FinanceService.getDailyBudgetStatus). Below
+// it, the full breakdown of what Store issued that day (any category, not
+// just the four budgeted ones) so the Accountant can see exactly what was
+// handed out and what it cost.
+
+const BUDGET_CATEGORY_LABELS: Record<string, string> = {
+  FEED: 'Feed', CHARCOAL: 'Charcoal', VACCINE: 'Vaccines', SUPPLEMENT: 'Supplements',
+};
+
+function useDailyBudgetStatus(date: string) {
+  return useQuery({
+    queryKey: ['daily-budget-status', date],
+    queryFn: async () => (await api.get(`/finance/budgets?date=${date}`)).data,
+  });
+}
+
+function useStockOutCost(date: string) {
+  return useQuery({
+    queryKey: ['stock-out-cost', date],
+    queryFn: async () => (await api.get(`/finance/stock-out-cost?date=${date}`)).data,
+  });
+}
+
+function BudgetsTab() {
+  const qc = useQueryClient();
+  const [date, setDate] = useState(dayjs().format('YYYY-MM-DD'));
+  const { data: status, isLoading } = useDailyBudgetStatus(date);
+  const { data: stockOutCost, isLoading: stockLoading } = useStockOutCost(date);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+
+  const setBudget = useMutation({
+    mutationFn: (vars: { category: string; amountKes: number }) =>
+      api.post('/finance/budgets', { budgetDate: date, category: vars.category, amountKes: vars.amountKes }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['daily-budget-status', date] }),
+  });
+
+  return (
+    <div className="space-y-5">
+      <Fld label="Date">
+        <input type="date" value={date} max={dayjs().format('YYYY-MM-DD')} onChange={e => setDate(e.target.value)} className={`${inp} max-w-xs`} />
+      </Fld>
+
+      {isLoading ? (
+        <p className="text-sm text-gray-400 text-center py-4">Loading budget…</p>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {(status?.lines ?? []).map((line: any) => {
+            const draft = drafts[line.category] ?? String(line.budgetedKes || '');
+            const overBudget = line.hasBudget && line.varianceKes < 0;
+            return (
+              <div key={line.category} className="bg-white dark:bg-dark-card rounded-2xl p-4 border border-gray-100 dark:border-dark-border space-y-2">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{BUDGET_CATEGORY_LABELS[line.category] ?? line.category}</p>
+                <div className="flex items-center gap-2">
+                  <input type="number" min="0" step="0.01" value={draft}
+                    onChange={e => setDrafts(d => ({ ...d, [line.category]: e.target.value }))}
+                    placeholder="Set budget (KES)" className={inp} />
+                  <button
+                    onClick={() => setBudget.mutate({ category: line.category, amountKes: Number(draft) || 0 })}
+                    disabled={setBudget.isPending}
+                    className="flex-shrink-0 bg-brand-green text-white text-xs px-3 py-2 rounded-lg font-semibold disabled:opacity-50">
+                    Save
+                  </button>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-500">Actual (Store issued):</span>
+                  <span className="font-bold text-gray-700 dark:text-gray-300">KES {line.actualKes.toLocaleString()}</span>
+                </div>
+                {line.hasBudget && (
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-500">Variance:</span>
+                    <span className={`font-bold ${overBudget ? 'text-red-500' : 'text-brand-green'}`}>
+                      {overBudget ? 'Over by ' : 'Under by '}KES {Math.abs(line.varianceKes).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {status && (
+        <div className="bg-brand-green/10 dark:bg-brand-green/5 rounded-2xl px-4 py-3 flex justify-between text-sm">
+          <span className="text-gray-700 dark:text-gray-300 font-semibold">Total for the day</span>
+          <span className="font-bold text-brand-green">
+            Budgeted KES {status.totalBudgetedKes.toLocaleString()} · Actual KES {status.totalActualKes.toLocaleString()}
+          </span>
+        </div>
+      )}
+
+      <div>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">What Store Issued Today</p>
+        {stockLoading ? (
+          <p className="text-sm text-gray-400 text-center py-4">Loading…</p>
+        ) : !stockOutCost || stockOutCost.categories.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-4">Nothing issued by Store on this date</p>
+        ) : (
+          <div className="space-y-2">
+            {stockOutCost.categories.map((cat: any) => (
+              <div key={cat.category} className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-3">
+                <div className="flex justify-between items-center mb-1.5">
+                  <span className="text-xs font-bold text-gray-600 dark:text-gray-300">{cat.category}</span>
+                  <span className="text-xs font-bold text-brand-green">KES {cat.totalKes.toLocaleString()}</span>
+                </div>
+                <div className="space-y-1">
+                  {cat.lines.map((l: any) => (
+                    <div key={l.id} className="flex justify-between text-xs text-gray-500">
+                      <span>{l.itemName} · {l.quantityOut} {l.unit?.toLowerCase?.() ?? l.unit}{l.issuedToName ? ` → ${l.issuedToName}` : ''}</span>
+                      <span>KES {l.totalCostKes.toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-2xl px-4 py-2.5 flex justify-between text-sm font-bold">
+              <span>Total issued today</span><span>KES {stockOutCost.totalKes.toLocaleString()}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const TABS = [
   { id: 'expenses',     label: 'Expenses',      icon: DollarSign },
   { id: 'invoices',     label: 'Invoices',       icon: ShoppingCart },
+  { id: 'budgets',      label: 'Budgets',        icon: TrendingUp },
   { id: 'pnl',          label: 'P&L',            icon: TrendingUp },
   { id: 'sales-report', label: 'Sales Report',   icon: BarChart2 },
   { id: 'export',       label: 'Export',         icon: FileText },
@@ -838,6 +1045,7 @@ export function AccountantFinancePage() {
       </div>
       {activeTab === 'expenses'     && <ExpensesTab />}
       {activeTab === 'invoices'     && <InvoicesTab />}
+      {activeTab === 'budgets'      && <BudgetsTab />}
       {activeTab === 'pnl'          && <PnLTab />}
       {activeTab === 'sales-report' && <SalesReportTab />}
       {activeTab === 'export'       && <ExportTab />}

@@ -3,16 +3,19 @@
 // Redesigned brooder control — cage map and daily logs are unified on one page.
 // No tabs. The cage map is always visible.
 //
-// Changes from v2:
-//   • Session Log, Daily Entry, Treatment, Feed, and Mortality are now ONE
-//     combined form (<BrooderDailyLogModal>) submitted in a single action —
-//     Treatment is optional (fill if any), Feed is always logged for the
-//     whole unit, and Mortality can be logged either per row/level/cage or
-//     against the whole batch (General), whichever the farm uses.
-//   • The cage map's old "Reassign" action, and its separate Feed Log /
-//     Weighing / Mortality / Log Heat actions, have been removed. Tapping
-//     an occupied cage (or its one remaining action button) now opens the
-//     combined Daily Log form, pre-scoped to that row/level.
+// Daily log is 3 SEPARATE time-gated popups (<BrooderSessionLogModal>, one
+// per BrooderSessionKey) instead of one combined form:
+//   • Morning  (open until 9am)     — 3am+6am readings, water, vaccines/
+//     supplements/treatment, feed, mortalities.
+//   • 11am     (11am–1pm)           — one reading, water, vaccines/
+//     supplements, mortalities.
+//   • 3pm      (3pm–5pm)            — one reading, water, vaccines/
+//     supplements, feed, mortalities.
+// Which popup is open is decided server-side (farm-local time) via
+// useBrooderSessionStatus — the batch panel's buttons and the cage map's
+// tap-to-log flow both defer to it rather than the viewer's own clock.
+// Cage Reassignment is a separate, always-available action
+// (<BrooderReassignModal>) — it isn't part of the daily log any more.
 //   • Log history grouped by date with sessions shown as a compact timeline.
 
 import { useState, useMemo } from 'react';
@@ -28,10 +31,12 @@ import {
 import { BrooderCageMapGrid }        from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement }    from '../../components/shared/BrooderFeedRequirement';
 import { BrooderLevelAssignModal }   from '../../components/shared/BrooderLevelAssignModal';
-import { BrooderDailyLogModal, type BrooderLogPresetScope } from '../../components/shared/BrooderDailyLogModal';
+import { BrooderSessionLogModal, type BrooderLogPresetScope } from '../../components/shared/BrooderSessionLogModal';
+import { BrooderReassignModal }      from '../../components/shared/BrooderReassignModal';
 import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 import { useBrooderCageMap } from '../../hooks/useBrooderCageMap';
 import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
+import { useBrooderSessionStatus, type BrooderSessionKey } from '../../hooks/useBrooderSessionStatus';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -265,9 +270,11 @@ function PopulationRecordSummary({ record }: { record: PopulationRecordDay }) {
 // ── Batch panel — inline below the cage map ───────────────────────────────────
 
 function BatchPanel({ batch }: { batch: BrooderBatch }) {
-  const [showDailyLog,  setShowDailyLog]  = useState(false);
+  const [openSession,   setOpenSession]   = useState<BrooderSessionKey | null>(null);
+  const [showReassign,  setShowReassign]  = useState(false);
   const [historyOpen,   setHistoryOpen]   = useState(false);
   const [treatHistOpen, setTreatHistOpen] = useState(false);
+  const { data: sessionStatus } = useBrooderSessionStatus();
 
   const ageDays   = dayjs().diff(dayjs(batch.dateOfHatch), 'day');
   // 1-indexed HyLine week (days 0-6 = week 1, 7-13 = week 2, ...). Must match
@@ -411,13 +418,26 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
         </div>
       )}
 
-      {/* Action buttons */}
+      {/* Action buttons — 3 time-gated daily-log popups + reassign */}
       <div className="flex gap-2 flex-wrap">
-        <button onClick={() => setShowDailyLog(true)}
-          className="flex items-center gap-1.5 bg-amber-500 text-white rounded-xl px-4 py-2.5 text-xs font-semibold hover:bg-amber-600 transition-colors"
-          title="Session log, daily entry, treatment, feed & mortality — one submission">
-          <ClipboardList className="w-3.5 h-3.5" />
-          {logOverdue && daysSince !== null ? `Daily Log (${daysSince}d missed)` : 'Daily Log'}
+        {(['MORNING', 'MIDDAY', 'EVENING'] as BrooderSessionKey[]).map(key => {
+          const info = sessionStatus?.sessions.find(s => s.key === key);
+          const open = info ? info.open : false;
+          const shortLabel = key === 'MORNING' ? 'Morning' : key === 'MIDDAY' ? '11am' : '3pm';
+          return (
+            <button key={key} onClick={() => open && setOpenSession(key)} disabled={!open}
+              className={`flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-semibold transition-colors ${
+                open ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-100 dark:bg-dark-bg text-gray-400 cursor-not-allowed'
+              }`}
+              title={info ? (open ? `Open — closes ${info.closesLabel}` : `Opens ${info.opensLabel}, locks ${info.closesLabel}`) : undefined}>
+              <ClipboardList className="w-3.5 h-3.5" />
+              {shortLabel} Log{open ? '' : ' (closed)'}
+            </button>
+          );
+        })}
+        <button onClick={() => setShowReassign(true)}
+          className="flex items-center gap-1.5 border border-emerald-200 dark:border-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-xl px-4 py-2.5 text-xs font-semibold hover:bg-emerald-50 dark:hover:bg-emerald-900/10 transition-colors">
+          Reassign
         </button>
         <button onClick={() => setHistoryOpen(o => !o)}
           className="flex items-center gap-1.5 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl px-4 py-2.5 text-xs font-semibold hover:bg-gray-50 dark:hover:bg-dark-bg transition-colors">
@@ -534,8 +554,11 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
         </div>
       )}
 
-      {showDailyLog && (
-        <BrooderDailyLogModal batch={batch} onClose={() => setShowDailyLog(false)} />
+      {openSession && (
+        <BrooderSessionLogModal batch={batch} session={openSession} onClose={() => setOpenSession(null)} />
+      )}
+      {showReassign && (
+        <BrooderReassignModal batch={batch} onClose={() => setShowReassign(false)} />
       )}
     </div>
   );
@@ -556,6 +579,10 @@ export function BrooderPage() {
   const { data: cageMapData }                  = useBrooderCageMap();
   const [assignTarget, setAssignTarget]        = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
   const [logTarget,    setLogTarget]           = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
+  // Tapping a cage on the map opens whichever of the 3 daily-log popups is
+  // currently open (server-decided) — pre-scoped to that row/level.
+  const { data: sessionStatus } = useBrooderSessionStatus();
+  const openSessionKey = sessionStatus?.sessions.find(s => s.open)?.key ?? null;
 
   const assignedCountByBatch: Record<string, number> = {};
   if (cageMapData) {
@@ -629,7 +656,13 @@ export function BrooderPage() {
 
         <BrooderCageMapGrid
           onSelectLevel={handleSelectLevel}
-          onOpenLog={(level, row) => setLogTarget({ level, row })}
+          onOpenLog={(level, row) => {
+            if (!openSessionKey) {
+              alert('No daily-log popup is open right now. The Morning popup opens at 12am (closes 9am), the 11am popup opens at 11am (locks 1pm), and the 3pm popup opens at 3pm (closes 5pm).');
+              return;
+            }
+            setLogTarget({ level, row });
+          }}
         />
       </div>
 
@@ -675,9 +708,10 @@ export function BrooderPage() {
           onClose={() => setAssignTarget(null)}
         />
       )}
-      {logTarget && logTargetBatch && logTargetScope && (
-        <BrooderDailyLogModal
+      {logTarget && logTargetBatch && logTargetScope && openSessionKey && (
+        <BrooderSessionLogModal
           batch={logTargetBatch}
+          session={openSessionKey}
           presetScope={logTargetScope}
           onClose={() => setLogTarget(null)}
         />

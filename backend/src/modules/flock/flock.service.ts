@@ -9,6 +9,13 @@ import { BatchStage, BirdType, EntryStatus, Prisma } from '@prisma/client';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
 import { StoreInventoryService } from '../store/store-inventory.service';
+import {
+  BrooderSessionKey,
+  assertBrooderSessionOpen,
+  assertIsToday,
+  getBrooderSessionStatus,
+} from '../../common/brooder/brooder-session-window.util';
+import { farmTodayUtcMidnight } from '../../common/feed/feed-standard.util';
 
 dayjs.extend(isoWeek);
 
@@ -817,6 +824,10 @@ export class FlockService {
 
   // ── Brooder logs ──────────────────────────────────────────────────────────
 
+  getBrooderSessionStatus() {
+    return getBrooderSessionStatus();
+  }
+
   async listBrooderLogs(batchId: string, limit = 50, rowId?: string, levelId?: string) {
     if (!batchId) return [];
     return this.prisma.brooderLog.findMany({
@@ -831,87 +842,14 @@ export class FlockService {
     });
   }
 
-  async createBrooderLog(input: any, userId: string) {
-    if (!input?.batchId) throw new BadRequestException('batchId is required');
-
-    const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
-    if (!batch) throw new NotFoundException('Batch not found');
-
-    const logDate      = input.logDate ? new Date(input.logDate) : new Date();
-    const isSessionLog = !!(input.logSession); // MORNING | MIDDAY | EVENING
-
-    // ── SESSION LOG (temperature / humidity / light — up to 3× per day) ──────
-    //
-    // Morning / Midday / Evening are independent of one another and of the
-    // once-daily entry below — the farm now records all three sessions in
-    // one sitting rather than returning to the app at different times of
-    // day, so re-submitting the SAME session (e.g. correcting a typo, or
-    // simply re-saving the whole form) updates the existing row instead of
-    // being rejected as a duplicate. Each session is still saved as its own
-    // independent write, so one session failing never blocks the other two,
-    // or the once-daily entry, from being recorded.
-    if (isSessionLog) {
-      const existing = await this.prisma.brooderLog.findFirst({
-        where: { batchId: batch.id, logDate, logSession: input.logSession as any },
-      });
-
-      const data = {
-        batchId:           batch.id,
-        logDate,
-        logSession:        input.logSession as any,
-        temperature:       input.temperature        != null ? Number(input.temperature)        : null,
-        humidityPercent:   input.humidityPercent    != null ? Number(input.humidityPercent)    : null,
-        lightIntensityLux: input.lightIntensityLux  != null ? Number(input.lightIntensityLux)  : null,
-        lightingOk:        input.lightingOk ?? true,
-        waterConsumptionL: null,
-        vaccineGiven:      null,
-        vaccineGivenDose:  null,
-        vaccinesJson:      Prisma.JsonNull,
-        supplement:        null,
-        supplementDose:    null,
-        supplementsJson:   Prisma.JsonNull,
-        feedType:          null,
-        feedConsumedKg:    null,
-        mortalityCount:    0,
-        notes:             input.notes ?? null,
-        loggedById:        userId,
-        rowId:             input.rowId   ?? null,
-        levelId:           input.levelId ?? null,
-      };
-
-      if (existing) {
-        return this.prisma.brooderLog.update({ where: { id: existing.id }, data });
-      }
-      return this.prisma.brooderLog.create({ data });
-    }
-
-    // ── ONCE-DAILY LOG (water / vaccines / supplements — max 1× per day) ─────
-    //
-    // Accepts:
-    //   • input.vaccines    — array of { name, dose, route }  (preferred)
-    //   • input.supplements — array of { name, dose }         (preferred)
-    //   • input.vaccineGiven / input.vaccineGivenDose / input.vaccineRoute (legacy single)
-    //   • input.supplement  / input.supplementDose            (legacy single)
-    //
-    // All are collapsed into vaccinesJson / supplementsJson for storage.
-    // Legacy single fields are also populated for backward-compat read paths.
-    //
-    // Past-date (backdated) logs are allowed as long as no daily log already
-    // exists for that batch+date. The uniqueness check only rejects true
-    // duplicate submissions, not backdated entries.
-
-    const existingDaily = await this.prisma.brooderLog.findFirst({
-      where: { batchId: batch.id, logDate, logSession: null },
-    });
-    if (existingDaily) {
-      throw new BadRequestException(
-        `A daily entry has already been recorded for ${batch.batchCode} on ` +
-        `${logDate.toISOString().slice(0, 10)}. ` +
-        `To correct it, ask a manager to edit the existing record.`,
-      );
-    }
-
-    // Normalise vaccines: merge array input + legacy single-vaccine input
+  // Shared shape used by both the session-popup log and the legacy
+  // once-daily log for vaccines/supplements normalisation below.
+  private async processVaccinesAndSupplements(
+    batch: { id: string; currentBirdCount: number },
+    logDate: Date,
+    input: any,
+    userId: string,
+  ) {
     type VaccineEntry    = { name: string; dose: string; route?: string; storeItemId?: string | null; quantityUsed?: number | null; unit?: string | null };
     type SupplementEntry = { name: string; dose: string; storeItemId?: string | null; quantityUsed?: number | null; unit?: string | null };
 
@@ -996,7 +934,6 @@ export class FlockService {
       if (s.storeItemId) s.unit = unitByStoreItemId.get(s.storeItemId) ?? null;
     }
 
-
     // Auto-create VaccinationRecord for each vaccine so it appears on the
     // manager's Health/Vaccination History page without re-entry.
     if (vaccinesArr.length > 0) {
@@ -1019,9 +956,129 @@ export class FlockService {
       // allSettled — individual VaccinationRecord failures don't abort the log
     }
 
-    // Legacy single-field values for backward-compat (first vaccine/supplement only)
-    const firstVaccine    = vaccinesArr[0]    ?? null;
-    const firstSupplement = supplementsArr[0] ?? null;
+    return {
+      vaccinesArr,
+      supplementsArr,
+      firstVaccine:    vaccinesArr[0]    ?? null,
+      firstSupplement: supplementsArr[0] ?? null,
+    };
+  }
+
+  /**
+   * Attendant "3-popup" brooder daily log.
+   *
+   * MORNING / MIDDAY / EVENING are the 3 time-gated popups (see
+   * brooder-session-window.util.ts for the exact windows). Each is its own
+   * independent row (unique per batchId+logDate+logSession) — re-submitting
+   * the SAME open popup (e.g. correcting a typo) updates that row instead of
+   * being rejected as a duplicate. Unlike the old design, water and
+   * vaccines/supplements are now recorded PER POPUP (not once a day), and
+   * the MORNING popup additionally carries two environmental readings
+   * (3am + 6am) instead of one. No field is mandatory — attendants can
+   * submit a popup with only some of it filled in.
+   */
+  async createBrooderLog(input: any, userId: string) {
+    if (!input?.batchId)   throw new BadRequestException('batchId is required');
+    if (!input?.logSession) throw new BadRequestException('logSession (MORNING, MIDDAY or EVENING) is required');
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const session: BrooderSessionKey = input.logSession;
+    const logDate = input.logDate ? new Date(input.logDate) : farmTodayUtcMidnight();
+    assertIsToday(logDate);
+    assertBrooderSessionOpen(session);
+
+    const { vaccinesArr, supplementsArr, firstVaccine, firstSupplement } =
+      await this.processVaccinesAndSupplements(batch, logDate, input, userId);
+
+    const existing = await this.prisma.brooderLog.findFirst({
+      where: { batchId: batch.id, logDate, logSession: session as any },
+    });
+
+    const data: any = {
+      batchId:           batch.id,
+      logDate,
+      logSession:        session as any,
+      waterConsumptionL: input.waterConsumptionL != null ? Number(input.waterConsumptionL) : null,
+      // MIDDAY/EVENING: single reading. MORNING doesn't use these — it uses
+      // the 3am/6am pairs below instead — but they're left settable in case
+      // a future popup ever needs a single reading alongside the pair.
+      temperature:       input.temperature        != null ? Number(input.temperature)        : null,
+      humidityPercent:   input.humidityPercent    != null ? Number(input.humidityPercent)    : null,
+      lightIntensityLux: input.lightIntensityLux  != null ? Number(input.lightIntensityLux)  : null,
+      lightingOk:        input.lightingOk ?? true,
+      // MORNING only: 3am + 6am readings.
+      reading3amTemperature:       null,
+      reading3amHumidityPercent:   null,
+      reading3amLightIntensityLux: null,
+      reading3amLightingOk:        null,
+      reading6amTemperature:       null,
+      reading6amHumidityPercent:   null,
+      reading6amLightIntensityLux: null,
+      reading6amLightingOk:        null,
+      vaccineGiven:      firstVaccine?.name      ?? null,
+      vaccineGivenDose:  firstVaccine?.dose      ?? null,
+      vaccinesJson:      vaccinesArr.length    > 0 ? vaccinesArr    : Prisma.JsonNull,
+      supplement:        firstSupplement?.name   ?? null,
+      supplementDose:    firstSupplement?.dose   ?? null,
+      supplementsJson:   supplementsArr.length > 0 ? supplementsArr : Prisma.JsonNull,
+      feedType:          null,
+      feedConsumedKg:    null,
+      mortalityCount:    0,
+      notes:             input.notes ?? null,
+      loggedById:        userId,
+      rowId:             input.rowId   ?? null,
+      levelId:           input.levelId ?? null,
+    };
+
+    if (session === 'MORNING') {
+      data.reading3amTemperature       = input.reading3amTemperature       != null ? Number(input.reading3amTemperature)       : null;
+      data.reading3amHumidityPercent   = input.reading3amHumidityPercent   != null ? Number(input.reading3amHumidityPercent)   : null;
+      data.reading3amLightIntensityLux = input.reading3amLightIntensityLux != null ? Number(input.reading3amLightIntensityLux) : null;
+      data.reading3amLightingOk        = input.reading3amLightingOk        ?? null;
+      data.reading6amTemperature       = input.reading6amTemperature       != null ? Number(input.reading6amTemperature)       : null;
+      data.reading6amHumidityPercent   = input.reading6amHumidityPercent   != null ? Number(input.reading6amHumidityPercent)   : null;
+      data.reading6amLightIntensityLux = input.reading6amLightIntensityLux != null ? Number(input.reading6amLightIntensityLux) : null;
+      data.reading6amLightingOk        = input.reading6amLightingOk        ?? null;
+      // MORNING has no single reading — clear it so the two forms never collide.
+      data.temperature = null; data.humidityPercent = null; data.lightIntensityLux = null;
+    }
+
+    if (existing) {
+      return this.prisma.brooderLog.update({ where: { id: existing.id }, data });
+    }
+    return this.prisma.brooderLog.create({ data });
+  }
+
+  /**
+   * Legacy once-daily brooder log (water / vaccines / supplements, max 1×
+   * per day, logSession NULL). Superseded by the 3-popup `createBrooderLog`
+   * above for new entries — kept only so old integrations/scripts that still
+   * post a sessionless body keep working, and so historical NULL-session
+   * rows remain readable. Not used by the attendant UI any more.
+   */
+  async createBrooderDailyEntryLegacy(input: any, userId: string) {
+    if (!input?.batchId) throw new BadRequestException('batchId is required');
+
+    const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const logDate = input.logDate ? new Date(input.logDate) : new Date();
+
+    const existingDaily = await this.prisma.brooderLog.findFirst({
+      where: { batchId: batch.id, logDate, logSession: null },
+    });
+    if (existingDaily) {
+      throw new BadRequestException(
+        `A daily entry has already been recorded for ${batch.batchCode} on ` +
+        `${logDate.toISOString().slice(0, 10)}. ` +
+        `To correct it, ask a manager to edit the existing record.`,
+      );
+    }
+
+    const { vaccinesArr, supplementsArr, firstVaccine, firstSupplement } =
+      await this.processVaccinesAndSupplements(batch, logDate, input, userId);
 
     return this.prisma.brooderLog.create({
       data: {
@@ -1036,12 +1093,10 @@ export class FlockService {
         feedType:          null,
         feedConsumedKg:    null,
         mortalityCount:    0,
-        // Legacy single-field columns (first entry, for existing read paths)
         vaccineGiven:      firstVaccine?.name      ?? null,
         vaccineGivenDose:  firstVaccine?.dose      ?? null,
         supplement:        firstSupplement?.name   ?? null,
         supplementDose:    firstSupplement?.dose   ?? null,
-        // Full arrays stored as JSON (source of truth for display)
         vaccinesJson:      vaccinesArr.length    > 0 ? vaccinesArr    : Prisma.JsonNull,
         supplementsJson:   supplementsArr.length > 0 ? supplementsArr : Prisma.JsonNull,
         notes:             input.notes ?? null,
@@ -1069,6 +1124,16 @@ export class FlockService {
     if (!input?.batchId) throw new BadRequestException('batchId is required');
     if (!input?.drugName) throw new BadRequestException('drugName is required');
     if (!input?.dose)     throw new BadRequestException('dose is required');
+    // Treatment is only offered on the MORNING popup of the 3-popup daily
+    // log. logSession is only sent by that popup — other callers (manager
+    // corrections, etc.) omit it and are unaffected by this gate.
+    if (input.logSession) {
+      if (input.logSession !== 'MORNING') {
+        throw new BadRequestException('Treatment can only be logged from the Morning popup.');
+      }
+      assertIsToday(input.treatmentDate ?? farmTodayUtcMidnight());
+      assertBrooderSessionOpen(input.logSession);
+    }
     const batch = await this.prisma.batch.findUnique({ where: { id: input.batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
     const issuedItem = input.storeItemId ? await this.getIssuedStoreItemOrThrow(input.storeItemId) : null;
@@ -1087,6 +1152,7 @@ export class FlockService {
         rowId:            input.rowId       ?? null,
         levelId:          input.levelId     ?? null,
         treatmentDate:    input.treatmentDate ? new Date(input.treatmentDate) : new Date(),
+        logSession:       input.logSession ?? null,
         drugName:         String(input.drugName).trim(),
         storeItemId:      input.storeItemId || null,
         dose:             String(input.dose).trim(),

@@ -32,6 +32,12 @@ export class CreateStoreItemDto {
   @IsString() @IsNotEmpty()
   category: string;
 
+  // Free-text category name, used only when category === 'OTHER' and none
+  // of the preset options fit (e.g. "Charcoal", "Disinfectant"). Ignored
+  // for any other category.
+  @IsOptional() @IsString() @MaxLength(50, { message: 'Custom category must be 50 characters or fewer' })
+  customCategoryLabel?: string;
+
   @IsString() @IsNotEmpty() @MaxLength(30, { message: 'Unit must be 30 characters or fewer' })
   unit: string;
 
@@ -59,6 +65,11 @@ export class UpdateStoreItemDto {
 
   @IsOptional() @IsEnum(StoreItemCategory, { message: 'Invalid category value' })
   category?: string;
+
+  // Free-text category name, used only when category === 'OTHER' and none
+  // of the preset options fit. Ignored for any other category.
+  @IsOptional() @IsString() @MaxLength(50, { message: 'Custom category must be 50 characters or fewer' })
+  customCategoryLabel?: string;
 
   @IsOptional() @IsString() @IsNotEmpty({ message: 'Unit is required' }) @MaxLength(30, { message: 'Unit must be 30 characters or fewer' })
   unit?: string;
@@ -152,15 +163,62 @@ export class StoreInventoryService {
     return item;
   }
 
+  // Every non-FEED item must be stocked in the LOWEST unit of measure —
+  // kg/L are rejected in favour of g/ml, so every vaccine/supplement/
+  // treatment quantity recorded downstream (denominated in whatever unit
+  // the store item declares) is consistently in grams/millilitres, never
+  // kilograms/litres. Existing kg/L items were one-time migrated to g/ml
+  // (see migration 20260908150000); this guard only stops NEW kg/L items
+  // (via the preset dropdown or the free-text "custom unit" field) from
+  // being created going forward.
+  //
+  // FEED is exempt — kg is the base unit of the whole HyLine ration
+  // schedule / feed-wastage subsystem (feed-standard.util.ts and its many
+  // consumers, all built around kg). Converting feed's stock unit without
+  // rescaling that entire schedule/wastage engine would silently corrupt
+  // those comparisons, so it deliberately stays in kg. See the migration's
+  // own comment for the full reasoning.
+  private static readonly REJECTED_UNITS = new Set([
+    'kg', 'kgs', 'kilogram', 'kilograms', 'kilo', 'kilos',
+    'l', 'ltr', 'ltrs', 'litre', 'litres', 'liter', 'liters',
+  ]);
+  private assertLowestUnitOfMeasure(unit: string, category: string) {
+    if (category === 'FEED') return;
+    if (StoreInventoryService.REJECTED_UNITS.has(unit.trim().toLowerCase())) {
+      throw new BadRequestException(
+        `"${unit}" is not the lowest unit of measure — use grams (g) for mass or millilitres (ml) for volume instead of kilograms/litres.`,
+      );
+    }
+  }
+
+  private assertValidCategory(category: string) {
+    if (!Object.values(StoreItemCategory).includes(category as StoreItemCategory)) {
+      throw new BadRequestException(
+        `Invalid category "${category}". Pick one of the preset categories, or "OTHER" plus a custom category name.`,
+      );
+    }
+  }
+
+  /** OTHER + a custom label → keep the label; anything else → clear it, so a
+   *  stale custom name never lingers under an unrelated real category. */
+  private resolveCustomCategoryLabel(category: string, customCategoryLabel?: string | null) {
+    if (category !== 'OTHER') return null;
+    const trimmed = (customCategoryLabel ?? '').trim();
+    return trimmed || null;
+  }
+
   async createItem(dto: CreateStoreItemDto, user: RequestUser) {
     const existing = await this.prisma.storeItem.findUnique({ where: { sku: dto.sku } });
     if (existing) throw new ConflictException(`SKU "${dto.sku}" is already in use`);
+    this.assertValidCategory(dto.category);
+    this.assertLowestUnitOfMeasure(dto.unit, dto.category);
 
     return this.prisma.storeItem.create({
       data: {
         name:         dto.name,
         sku:          dto.sku,
         category:     dto.category as any,
+        customCategoryLabel: this.resolveCustomCategoryLabel(dto.category, dto.customCategoryLabel),
         unit:         dto.unit.trim(),
         description:  dto.description ?? null,
         reorderLevel: dto.reorderLevel ?? 0,
@@ -172,12 +230,17 @@ export class StoreInventoryService {
   }
 
   async updateItem(id: string, dto: UpdateStoreItemDto) {
-    await this.getItemById(id);
+    const current = await this.getItemById(id);
+    const effectiveCategory = dto.category ?? current.category;
+    if (dto.unit !== undefined) this.assertLowestUnitOfMeasure(dto.unit, effectiveCategory);
     return this.prisma.storeItem.update({
       where: { id },
       data: {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
         ...(dto.category !== undefined ? { category: dto.category as any } : {}),
+        ...((dto.category !== undefined || dto.customCategoryLabel !== undefined)
+          ? { customCategoryLabel: this.resolveCustomCategoryLabel(effectiveCategory, dto.customCategoryLabel ?? current.customCategoryLabel) }
+          : {}),
         ...(dto.unit !== undefined ? { unit: dto.unit.trim() } : {}),
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.reorderLevel !== undefined ? { reorderLevel: Number(dto.reorderLevel) } : {}),

@@ -1,6 +1,14 @@
 // src/modules/brooder/brooder.dto.ts
 import { z } from 'zod';
 
+// Attendant "3-popup" daily log session tag — MORNING (≤9am), MIDDAY (11am
+// check-in, ≤1pm) or EVENING (3pm check-in, ≤5pm). Optional on the feed/
+// mortality schemas below: when present it's just a trace of which popup the
+// entry came from and is time-window-checked server-side (see
+// brooder-session-window.util.ts); entries logged outside the 3-popup flow
+// simply omit it.
+const BrooderLogSessionTag = z.enum(['MORNING', 'MIDDAY', 'EVENING']);
+
 // ── Cage assignment (place / move a batch's chicks onto a row+level+cage) ──
 // Population, mortality, reassignment, and weighing are now tracked at the
 // individual-cage level. The parent BrooderLevel's aggregate assignment is
@@ -156,6 +164,9 @@ export const CreateLevelFeedLogSchema = z.discriminatedUnion('noFeedIssued', [
     storeItemId:          z.string().uuid().optional(),
     entryDate:            z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     quantityDispensedKg:  z.number().positive().max(5000),
+    // MORNING or EVENING only when logged from the 3-popup daily log (feed
+    // isn't part of the 11am/MIDDAY popup) — omit outside that flow.
+    logSession:           BrooderLogSessionTag.optional(),
     notes:                z.string().max(500).optional(),
   }),
   // ── Mode 2: no feed issued (carry-forward from an earlier day) ──────
@@ -168,6 +179,7 @@ export const CreateLevelFeedLogSchema = z.discriminatedUnion('noFeedIssued', [
     quantityDispensedKg:  z.literal(0).default(0),
     /** ISO date string of the dispensing day whose feed is still in the trough. */
     carryFromDate:        z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    logSession:           BrooderLogSessionTag.optional(),
     notes:                z.string().max(500).optional(),
   }),
 ]);
@@ -188,6 +200,8 @@ export const CreateLevelMortalityLogSchema = z.object({
     'DISEASE', 'INJURY', 'HEAT_STRESS', 'PREDATOR',
     'CULLED_SICK', 'CULLED_LOW_PRODUCTIVITY', 'CULLED_OVERPOPULATION', 'UNKNOWN',
   ]).optional(),
+  // Any of the 3 popups ("mortalities if any" appears on all three) — omit outside that flow.
+  logSession: BrooderLogSessionTag.optional(),
   notes: z.string().max(500).optional(),
 }).refine(
   d => d.mortalityCount + d.cullingCount > 0,
@@ -210,6 +224,9 @@ export const CreateGeneralFeedLogSchema = z.object({
   storeItemId:         z.string().uuid().optional(),
   entryDate:           z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   quantityDispensedKg: z.number().positive().max(20000),
+  // MORNING or EVENING only when logged from the 3-popup daily log (feed
+  // isn't part of the 11am/MIDDAY popup) — omit outside that flow.
+  logSession:          BrooderLogSessionTag.optional(),
   notes:               z.string().max(500).optional(),
 });
 export type CreateGeneralFeedLogDto = z.infer<typeof CreateGeneralFeedLogSchema>;
@@ -226,6 +243,8 @@ export const CreateGeneralMortalityLogSchema = z.object({
     'DISEASE', 'INJURY', 'HEAT_STRESS', 'PREDATOR',
     'CULLED_SICK', 'CULLED_LOW_PRODUCTIVITY', 'CULLED_OVERPOPULATION', 'UNKNOWN',
   ]).optional(),
+  // Any of the 3 popups ("mortalities if any" appears on all three) — omit outside that flow.
+  logSession: BrooderLogSessionTag.optional(),
   notes: z.string().max(500).optional(),
 }).refine(
   d => d.mortalityCount + d.cullingCount > 0,

@@ -43,6 +43,7 @@ import { AiReportsPage }         from './pages/owner/AiReportsPage';
 import { DataUploadPage }        from './pages/owner/DataUploadPage';
 import { ProductionReportReviewPage } from './pages/owner/ProductionReportReviewPage';
 import { OwnerSalesOrdersPage }  from './pages/owner/OwnerSalesOrdersPage';
+import BatchCostPage              from './pages/owner/BatchCostPage';
 
 // Sales pages
 import { SalesEggStockPage } from './pages/sales/SalesEggStockPage';
@@ -251,6 +252,7 @@ function AppInner() {
           <Route path="reports"           element={<AiReportsPage />} />
           <Route path="data-upload"       element={<DataUploadPage />} />
           <Route path="production-reports" element={<ProductionReportReviewPage />} />
+          <Route path="batch-cost"        element={<BatchCostPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="sales-orders"       element={<OwnerSalesOrdersPage />} />
           <Route path="lpo"               element={<OwnerIssuancePlanPage />} /> {/* legacy path, now Issuance Plans */}

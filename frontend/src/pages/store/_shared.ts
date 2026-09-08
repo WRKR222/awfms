@@ -7,6 +7,7 @@ export type StoreItem = {
   name: string;
   sku: string;
   category: string;
+  customCategoryLabel?: string | null;
   unit: string;
   description?: string | null;
   reorderLevel: number;

@@ -94,6 +94,14 @@ export class FlockController {
   @RequirePermission(Permission.FLOCK_BATCH_MANAGE)
   logCulling(@Body() body: any, @CurrentUser() user: any) { return this.svc.logCulling(body, user.id); }
 
+  // Which of the 3 attendant popups (Morning/11am/3pm) is open right now,
+  // per the FARM's clock — the frontend polls this instead of trusting the
+  // viewer's own device clock/timezone, so the UI never disagrees with what
+  // the server will actually accept.
+  @Get('brooder-session-status')
+  @RequirePermission(Permission.FLOCK_VIEW)
+  getBrooderSessionStatus() { return this.svc.getBrooderSessionStatus(); }
+
   @Get('brooder-logs')
   @RequirePermission(Permission.FLOCK_VIEW)
   listBrooderLogs(
@@ -105,9 +113,19 @@ export class FlockController {
     return this.svc.listBrooderLogs(batchId, limit ? Number(limit) : 50, rowId, levelId);
   }
 
+  // 3-popup attendant daily log — body must include logSession
+  // (MORNING/MIDDAY/EVENING); rejected outside that popup's time window.
   @Post('brooder-logs')
   @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
   createBrooderLog(@Body() body: any, @CurrentUser() user: any) { return this.svc.createBrooderLog(body, user.id); }
+
+  // Legacy once-daily entry (no logSession) — kept only for old
+  // integrations; the attendant UI no longer calls this.
+  @Post('brooder-logs/daily-entry-legacy')
+  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
+  createBrooderDailyEntryLegacy(@Body() body: any, @CurrentUser() user: any) {
+    return this.svc.createBrooderDailyEntryLegacy(body, user.id);
+  }
 
   @Get('brooder-treatment-logs')
   @RequirePermission(Permission.FLOCK_VIEW)

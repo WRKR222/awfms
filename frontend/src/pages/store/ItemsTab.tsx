@@ -12,10 +12,14 @@ export const CATEGORIES = [
   { value: 'EQUIPMENT',   label: 'Equipment' },
   { value: 'FEED',        label: 'Feed' },
   { value: 'SUPPLEMENT',  label: 'Supplement' },
+  { value: 'VACCINE',     label: 'Vaccine' },
   { value: 'PACKAGING',   label: 'Packaging' },
   { value: 'CLEANING',    label: 'Cleaning' },
   { value: 'SAFETY',      label: 'Safety' },
-  { value: 'OTHER',       label: 'Other' },
+  // Pick this when none of the above fit — the form then asks for a custom
+  // category name (e.g. "Charcoal", "Disinfectant") instead of forcing the
+  // item into a category that doesn't really describe it.
+  { value: 'OTHER',       label: 'Other (custom)…' },
 ];
 
 // Display label map — includes legacy value for existing items
@@ -25,16 +29,28 @@ export const CATEGORY_LABELS: Record<string, string> = {
   FEED:            'Feed',
   SUPPLEMENT:      'Supplement',
   FEED_SUPPLEMENT: 'Feed / Supplement (legacy)',
+  VACCINE:         'Vaccine',
   PACKAGING:       'Packaging',
   CLEANING:        'Cleaning',
   SAFETY:          'Safety',
   OTHER:           'Other',
 };
 
+/** Category label for display — a custom-named OTHER item shows its own
+ *  name instead of the generic "Other". */
+export function categoryDisplayLabel(item: { category: string; customCategoryLabel?: string | null }): string {
+  if (item.category === 'OTHER' && item.customCategoryLabel) return item.customCategoryLabel;
+  return CATEGORY_LABELS[item.category] ?? item.category;
+}
+
+// Kilograms/Litres are deliberately NOT offered for non-Feed items — every
+// item is stocked in the lowest unit of measure (grams for mass,
+// millilitres for volume) so every vaccine/supplement/treatment quantity
+// recorded against it downstream stays consistently in g/ml. The backend
+// rejects "kg"/"L" (and common spellings) for any category but Feed, even
+// if typed into the custom unit field below.
 const UNITS = [
-  { value: 'KG',     label: 'Kilograms (kg)' },
   { value: 'G',      label: 'Grams (g)' },
-  { value: 'L',      label: 'Litres (L)' },
   { value: 'ML',     label: 'Millilitres (mL)' },
   { value: 'PIECE',  label: 'Pieces' },
   { value: 'BOX',    label: 'Boxes' },
@@ -44,15 +60,26 @@ const UNITS = [
   { value: 'TRAY',   label: 'Trays' },
 ];
 
+// Feed keeps kg/L — it's the base unit of the whole HyLine feed ration
+// schedule and wastage tracking (a much larger subsystem built entirely on
+// kg), so feed items are exempt from the lowest-unit-of-measure rule the
+// other categories follow.
+const FEED_UNITS = [
+  { value: 'KG', label: 'Kilograms (kg)' },
+  { value: 'G',  label: 'Grams (g)' },
+  { value: 'BAG', label: 'Bags' },
+];
+
 // Sentinel option that reveals a free-text input for any unit not in the
 // preset list above (e.g. "Roll", "Dozen", "Pair").
 const CUSTOM_UNIT = '__CUSTOM__';
-const PRESET_UNIT_VALUES = new Set(UNITS.map(u => u.value));
+const PRESET_UNIT_VALUES = new Set([...UNITS, ...FEED_UNITS].map(u => u.value));
 
 type FormData = {
   name: string;
   sku: string;
   category: string;
+  customCategoryLabel?: string;
   unit: string;
   customUnit?: string;
   description?: string;
@@ -72,6 +99,7 @@ export function ItemsTab() {
 
   const { register, handleSubmit, reset, watch, formState: { errors } } = useForm<FormData>();
   const selectedUnit = watch('unit');
+  const selectedCategory = watch('category');
 
   const invalidateItems = () => {
     qc.invalidateQueries({ queryKey: ['store-items'] });
@@ -83,6 +111,7 @@ export function ItemsTab() {
         name:         data.name,
         sku:          data.sku,
         category:     data.category,
+        customCategoryLabel: data.category === 'OTHER' ? (data.customCategoryLabel ?? '').trim() : undefined,
         unit:         data.unit,
         description:  data.description ?? '',
         reorderLevel: Number(data.reorderLevel ?? 0),
@@ -136,6 +165,7 @@ export function ItemsTab() {
         payload: {
           name:         data.name.trim(),
           category:     data.category,
+          customCategoryLabel: data.category === 'OTHER' ? (data.customCategoryLabel ?? '').trim() : '',
           unit,
           description:  data.description?.trim() ?? '',
           reorderLevel: safeNum(data.reorderLevel),
@@ -161,6 +191,7 @@ export function ItemsTab() {
       name:         item.name,
       sku:          item.sku,
       category:     item.category,
+      customCategoryLabel: item.customCategoryLabel ?? '',
       unit:         isCustomUnit ? CUSTOM_UNIT : item.unit,
       customUnit:   isCustomUnit ? item.unit : '',
       description:  item.description ?? '',
@@ -205,7 +236,7 @@ export function ItemsTab() {
             setEditing(null);
             createMut.reset();
             updateMut.reset();
-            reset({ name: '', sku: '', category: '', unit: '', customUnit: '', description: '', reorderLevel: 0, unitCostKes: 0 });
+            reset({ name: '', sku: '', category: '', customCategoryLabel: '', unit: '', customUnit: '', description: '', reorderLevel: 0, unitCostKes: 0 });
             setShowForm(true);
           }}
           className="flex items-center gap-2 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold"
@@ -256,13 +287,32 @@ export function ItemsTab() {
                   <option value="FEED_SUPPLEMENT">Feed / Supplement (legacy)</option>
                 )}
               </select>
+              {selectedCategory === 'OTHER' && (
+                <input
+                  {...register('customCategoryLabel', {
+                    required: selectedCategory === 'OTHER' ? 'Name this category' : false,
+                    maxLength: { value: 50, message: 'Must be 50 characters or fewer' },
+                  })}
+                  placeholder="e.g. Charcoal, Disinfectant"
+                  className="input mt-2"
+                  autoFocus
+                />
+              )}
+              {errors.customCategoryLabel && (
+                <p className="text-[11px] text-red-600 mt-1">{errors.customCategoryLabel.message}</p>
+              )}
             </Field>
             <Field label="Unit *" error={errors.unit?.message}>
               <select {...register('unit', { required: 'Required' })} className="input">
                 <option value="">Select…</option>
-                {UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                {(selectedCategory === 'FEED' ? FEED_UNITS : UNITS).map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
                 <option value={CUSTOM_UNIT}>Other (custom)…</option>
               </select>
+              {selectedCategory !== 'FEED' && (
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Grams/millilitres only — the lowest unit of measure. Feed items keep kg.
+                </p>
+              )}
               {selectedUnit === CUSTOM_UNIT && (
                 <input
                   {...register('customUnit', {
@@ -396,7 +446,7 @@ export function ItemsTab() {
                       <td className="px-4 py-2 font-medium text-gray-800 dark:text-gray-100">
                         {i.name}
                       </td>
-                      <td className="px-4 py-2 text-gray-500">{CATEGORY_LABELS[i.category] ?? i.category}</td>
+                      <td className="px-4 py-2 text-gray-500">{categoryDisplayLabel(i)}</td>
                       <td className={`px-4 py-2 text-right font-semibold ${low ? 'text-orange-600' : ''}`}>
                         {low && <AlertTriangle className="w-3 h-3 inline mr-1" />}
                         {Number(i.currentStock)} {i.unit}

@@ -863,18 +863,12 @@ model EggCollectionSession {
   collectedById String      @map("collected_by_id")
 
   openingPop    Int         @map("opening_pop")
-  // `mortalities` stays the roll-up total (existing dashboards/reports read
-  // this). `mortalityMode` says how it was captured today; when PER_ROW,
-  // `mortalityRowBreakdown` carries the per-row detail — shape:
-  // [{ rowId, count, cause?, fedBeforeDeath?: "Y"|"N"|"MIXED", feedAlreadyEatenKg? }].
-  // When GENERAL, the same fed-before-death/feed-eaten detail is carried in
-  // the scalar fields below instead. Either way this is what lets Stores
-  // net the dead birds' feed out of tomorrow's issuance.
+  // `mortalities` is the roll-up total (existing dashboards/reports read
+  // this). The per-mortality "feed surplus" capture (fed-before-death /
+  // feed-already-eaten, used to net dead birds' feed out of tomorrow's
+  // issuance) was removed — mortalities no longer carry any feed-credit
+  // detail, GENERAL or PER_ROW.
   mortalities   Int         @default(0)
-  mortalityMode String      @default("GENERAL") @map("mortality_mode") // "GENERAL" | "PER_ROW"
-  mortalityRowBreakdown Json?   @map("mortality_row_breakdown")
-  mortalityFedBeforeDeath String? @map("mortality_fed_before_death") // "Y" | "N" | "MIXED" — GENERAL mode only
-  mortalityFeedAlreadyEatenKg Decimal? @map("mortality_feed_already_eaten_kg") @db.Decimal(8, 3)
   closingStock  Int         @map("closing_stock")
   rowData       Json        @map("row_data")
 
@@ -1241,6 +1235,33 @@ model ExpenseLog {
   @@map("expense_logs")
 }
 
+/// Everything consumed by the birds that the Accountant budgets for, day by
+/// day: Feed, Charcoal (brooder heating fuel), Vaccines, Supplements. One
+/// row per (date, category) — the Accountant sets/edits the day's figure,
+/// and FinanceService compares it against that day's actual StoreStockOut
+/// cost for the matching category (see FinanceService.getDailyBudgetStatus).
+enum BudgetCategory {
+  FEED
+  CHARCOAL
+  VACCINE
+  SUPPLEMENT
+}
+
+model DailyBudget {
+  id         String         @id @default(uuid())
+  budgetDate DateTime       @db.Date @map("budget_date")
+  category   BudgetCategory
+  amountKes  Decimal        @db.Decimal(12, 2) @map("amount_kes")
+  notes      String?
+  setById    String         @map("set_by_id")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  @@unique([budgetDate, category])
+  @@index([budgetDate])
+  @@map("daily_budgets")
+}
+
 // ─── AI & NOTIFICATIONS ──────────────────────────────────────────────────
 
 model AiReport {
@@ -1588,6 +1609,18 @@ model BrooderLog {
   humidityPercent   Float?   @map("humidity_percent")
   lightIntensityLux Int?     @map("light_intensity_lux")
   lightingOk        Boolean  @default(true) @map("lighting_ok")
+  // MORNING session only: two environmental readings (3am + 6am) instead of
+  // one, per the attendant's 3-popup daily log (morning popup covers both
+  // early readings; MIDDAY/EVENING sessions keep using the single
+  // temperature/humidityPercent/lightIntensityLux/lightingOk fields above).
+  reading3amTemperature       Float?   @map("reading_3am_temperature")
+  reading3amHumidityPercent   Float?   @map("reading_3am_humidity_percent")
+  reading3amLightIntensityLux Int?     @map("reading_3am_light_intensity_lux")
+  reading3amLightingOk        Boolean? @map("reading_3am_lighting_ok")
+  reading6amTemperature       Float?   @map("reading_6am_temperature")
+  reading6amHumidityPercent   Float?   @map("reading_6am_humidity_percent")
+  reading6amLightIntensityLux Int?     @map("reading_6am_light_intensity_lux")
+  reading6amLightingOk        Boolean? @map("reading_6am_lighting_ok")
   // Feed & mortality removed — tracked via BrooderLevelFeedLog / BrooderLevelMortalityLog
   feedType          String?  @map("feed_type")
   feedConsumedKg    Float?   @map("feed_consumed_kg")
@@ -1622,6 +1655,12 @@ model BrooderLog {
   // Uniqueness constraints (enforced via partial indexes — see migration 20260626000001)
   // SESSION  logs: unique (batchId, logDate, logSession) WHERE logSession IS NOT NULL  → 3×/day max
   // DAILY    logs: unique (batchId, logDate)             WHERE logSession IS NULL      → 1×/day max
+  //
+  // As of the 3-popup attendant redesign (see BrooderLog "3-popup" comment
+  // in brooder.dto.ts / flock.service.ts), new entries always use one of the
+  // 3 SESSION rows (MORNING/MIDDAY/EVENING) — the once-daily (logSession
+  // NULL) row is kept only for reading legacy pre-redesign data, the once-
+  // daily creation endpoint is no longer called by the attendant UI.
   @@index([batchId, logDate])
   @@index([rowId])
   @@index([levelId])
@@ -1635,6 +1674,9 @@ model BrooderTreatmentLog {
   rowId         String?  @map("row_id")
   levelId       String?  @map("level_id")
   treatmentDate DateTime @map("treatment_date") @db.Date
+  // Treatment is only offered on the MORNING popup of the 3-popup attendant
+  // daily log. Nullable for legacy rows and treatments logged outside that flow.
+  logSession    BrooderLogSession? @map("log_session")
   drugName      String   @map("drug_name")
   storeItemId   String?  @map("store_item_id") // links to the StoreItem actually issued via stock-out; NULL for legacy rows predating this link
   dose          String
@@ -1823,6 +1865,10 @@ model BrooderLevelFeedLog {
   storeItemId         String?  @map("store_item_id") // links to the StoreItem actually issued via stock-out; NULL for legacy rows predating this link
   unit                String?  @map("unit") // snapshot of the linked StoreItem's stock unit (e.g. "KG", "BAG") at log time — set server-side from storeItem.unit, never trusted from the client. Lets quantityDispensedKg be diffed directly against StoreStockOut.quantityOut for residual tracking.
   entryDate           DateTime @map("entry_date") @db.Date
+  // Which of the 3 attendant popups this feeding was logged from — MORNING
+  // or EVENING only (the 11am/MIDDAY popup does not include feed). Nullable
+  // for legacy rows and for feedings logged outside the 3-popup flow.
+  logSession          BrooderLogSession? @map("log_session")
   quantityDispensedKg Float    @map("quantity_dispensed_kg")
   requiredKgForWeek   Float?   @map("required_kg_for_week") // snapshot of the standard at log time
   notes               String?
@@ -1884,16 +1930,13 @@ model BrooderLevelMortalityLog {
   cageId         String?  @map("cage_id")
   batchId        String   @map("batch_id")
   logDate        DateTime @map("log_date") @db.Date
+  // Which of the 3 attendant popups these deaths were reported in — any of
+  // MORNING/MIDDAY/EVENING ("mortalities if any" is on all three). Nullable
+  // for legacy rows and for entries logged outside the 3-popup flow.
+  logSession     BrooderLogSession? @map("log_session")
   mortalityCount Int      @default(0) @map("mortality_count")
   cullingCount   Int      @default(0) @map("culling_count")
   cause          String?                                         // MortalityCause enum value
-  // Whether the dead/culled birds had already been fed that day —
-  // "Y" (fed), "N" (not yet fed), "MIXED" (some of each, for a count > 1).
-  // Feeds the feed-wastage/surplus calculation: a bird that died before
-  // being fed no longer needs that day's ration (Store issues less
-  // tomorrow); a bird that died after eating already consumed its share.
-  fedBeforeDeath     String? @map("fed_before_death")
-  feedAlreadyEatenKg Float?  @map("feed_already_eaten_kg")
   notes          String?
   loggedById     String   @map("logged_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -1923,6 +1966,10 @@ model BrooderGeneralFeedLog {
   storeItemId         String?  @map("store_item_id") // links to the StoreItem actually issued via stock-out; NULL for entries logged without a store link
   unit                String?  @map("unit")           // snapshot of the linked StoreItem's stock unit at log time
   entryDate           DateTime @map("entry_date") @db.Date
+  // Which of the 3 attendant popups this feeding was logged from — MORNING
+  // or EVENING only (the 11am/MIDDAY popup does not include feed). Nullable
+  // for legacy rows and for feedings logged outside the 3-popup flow.
+  logSession          BrooderLogSession? @map("log_session")
   quantityDispensedKg Float    @map("quantity_dispensed_kg")
   requiredKgForDay    Float?   @map("required_kg_for_day") // snapshot of the whole-batch HyLine daily ration at log time
   notes               String?
@@ -1988,13 +2035,13 @@ model BrooderGeneralMortalityLog {
   id             String   @id @default(uuid())
   batchId        String   @map("batch_id")
   logDate        DateTime @map("log_date") @db.Date
+  // Which of the 3 attendant popups these deaths were reported in — any of
+  // MORNING/MIDDAY/EVENING ("mortalities if any" is on all three). Nullable
+  // for legacy rows and for entries logged outside the 3-popup flow.
+  logSession     BrooderLogSession? @map("log_session")
   mortalityCount Int      @default(0) @map("mortality_count")
   cullingCount   Int      @default(0) @map("culling_count")
   cause          String?
-  // See BrooderLevelMortalityLog.fedBeforeDeath / feedAlreadyEatenKg — same
-  // purpose, whole-brooder scale.
-  fedBeforeDeath     String? @map("fed_before_death")
-  feedAlreadyEatenKg Float?  @map("feed_already_eaten_kg")
   notes          String?
   loggedById     String   @map("logged_by_id")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -2080,6 +2127,11 @@ model StoreItem {
   name        String
   sku         String             @unique
   category    StoreItemCategory
+  // Free-text label used only when category = OTHER and the preset list
+  // doesn't have a fitting category — lets Store name it (e.g. "Charcoal",
+  // "Disinfectant") without needing a schema/enum change for every new
+  // category. Null for every item filed under a real preset category.
+  customCategoryLabel String? @map("custom_category_label")
   unit        String
   description String?
   reorderLevel Decimal           @default(0) @map("reorder_level") @db.Decimal
