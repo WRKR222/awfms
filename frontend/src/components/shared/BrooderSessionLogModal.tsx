@@ -177,9 +177,16 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
   const [notes, setNotes] = useState('');
 
   // ── Vaccines / Supplements (every session) ──────────────────────────────
-  const [vaccines,    setVaccines]    = useState<VaccineItem[]>([]);
-  const [supplements, setSupplements] = useState<SupplementItem[]>([]);
-  function addVaccine()    { setVaccines(v => [...v, { storeItemId: '', name: '', dose: '', route: 'DRINKING_WATER', quantityUsed: '' }]); }
+  // One blank row is shown from the start — the attendant lands straight on
+  // an open field to fill in instead of having to press "Add" first. It's
+  // still fully optional: an untouched (no item selected) row is dropped
+  // silently on submit (see cleanVaccines/cleanSupplements below), so
+  // leaving it blank behaves exactly like there being nothing to log.
+  const emptyVaccine    = (): VaccineItem    => ({ storeItemId: '', name: '', dose: '', route: 'DRINKING_WATER', quantityUsed: '' });
+  const emptySupplement = (): SupplementItem => ({ storeItemId: '', name: '', dose: '', quantityUsed: '' });
+  const [vaccines,    setVaccines]    = useState<VaccineItem[]>([emptyVaccine()]);
+  const [supplements, setSupplements] = useState<SupplementItem[]>([emptySupplement()]);
+  function addVaccine()    { setVaccines(v => [...v, emptyVaccine()]); }
   function removeVaccine(i: number) { setVaccines(v => v.filter((_, j) => j !== i)); }
   function updateVaccine(i: number, field: keyof VaccineItem, val: string) {
     setVaccines(v => v.map((item, j) => {
@@ -189,7 +196,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
       return next;
     }));
   }
-  function addSupplement()    { setSupplements(s => [...s, { storeItemId: '', name: '', dose: '', quantityUsed: '' }]); }
+  function addSupplement()    { setSupplements(s => [...s, emptySupplement()]); }
   function removeSupplement(i: number) { setSupplements(s => s.filter((_, j) => j !== i)); }
   function updateSupplement(i: number, field: keyof SupplementItem, val: string) {
     setSupplements(s => s.map((item, j) => {
@@ -201,11 +208,13 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
   }
 
   // ── Treatment (MORNING only) ─────────────────────────────────────────────
+  // Same "already open" treatment as vaccines/supplements above — a blank
+  // row is there from the start on the popup that shows Treatment at all.
   const emptyTreatment = (): TreatmentEntry => ({
     storeItemId: '', drugName: '', dose: '', doseUnit: 'ml', quantityUsed: '',
     route: 'DRINKING_WATER', durationDays: '', notes: '',
   });
-  const [treatments, setTreatments] = useState<TreatmentEntry[]>([]);
+  const [treatments, setTreatments] = useState<TreatmentEntry[]>(session === 'MORNING' ? [emptyTreatment()] : []);
   function addTreatment()    { setTreatments(t => [...t, emptyTreatment()]); }
   function removeTreatment(i: number) { setTreatments(t => t.filter((_, j) => j !== i)); }
   function updateTreatment(i: number, field: keyof TreatmentEntry, val: string) {
@@ -533,16 +542,11 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
               type="number" step="0.1" min="0" className={iCls} placeholder="e.g. 45" />
           </div>
 
-          {/* Vaccines */}
+          {/* Vaccines — first row is already open; no "Add" click needed to start */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
-                <Syringe className="w-4 h-4 text-pink-500" /> Vaccines
-              </p>
-              <button type="button" onClick={addVaccine} className="flex items-center gap-1 text-xs font-semibold text-pink-600 dark:text-pink-400">
-                <Plus className="w-3.5 h-3.5" /> Add
-              </button>
-            </div>
+            <p className="text-sm font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+              <Syringe className="w-4 h-4 text-pink-500" /> Vaccines
+            </p>
             {vaccines.map((v, i) => (
               <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-3 space-y-2">
                 <div className="flex items-center gap-2">
@@ -550,7 +554,9 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                     <option value="">Select vaccine…</option>
                     {vaccineItems.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
                   </select>
-                  <button type="button" onClick={() => removeVaccine(i)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                  {vaccines.length > 1 && (
+                    <button type="button" onClick={() => removeVaccine(i)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                  )}
                 </div>
                 <div className="grid grid-cols-3 gap-2">
                   <input value={v.dose} onChange={e => updateVaccine(i, 'dose', e.target.value)} className={iCls} placeholder="Dose" />
@@ -562,18 +568,17 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                 </div>
               </div>
             ))}
+            <button type="button" onClick={addVaccine}
+              className="w-full flex items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-pink-200 dark:border-pink-900/40 text-pink-600 dark:text-pink-400 text-xs font-semibold py-2.5 hover:bg-pink-50 dark:hover:bg-pink-900/10 transition-colors">
+              <Plus className="w-3.5 h-3.5" /> Add another vaccine
+            </button>
           </div>
 
-          {/* Supplements */}
+          {/* Supplements — first row is already open; no "Add" click needed to start */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
-                <FlaskConical className="w-4 h-4 text-purple-500" /> Supplements
-              </p>
-              <button type="button" onClick={addSupplement} className="flex items-center gap-1 text-xs font-semibold text-purple-600 dark:text-purple-400">
-                <Plus className="w-3.5 h-3.5" /> Add
-              </button>
-            </div>
+            <p className="text-sm font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+              <FlaskConical className="w-4 h-4 text-purple-500" /> Supplements
+            </p>
             {supplements.map((s, i) => (
               <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-3 space-y-2">
                 <div className="flex items-center gap-2">
@@ -581,7 +586,9 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                     <option value="">Select supplement…</option>
                     {supplementItems.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
                   </select>
-                  <button type="button" onClick={() => removeSupplement(i)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                  {supplements.length > 1 && (
+                    <button type="button" onClick={() => removeSupplement(i)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <input value={s.dose} onChange={e => updateSupplement(i, 'dose', e.target.value)} className={iCls} placeholder="Dose" />
@@ -590,19 +597,18 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                 </div>
               </div>
             ))}
+            <button type="button" onClick={addSupplement}
+              className="w-full flex items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-purple-200 dark:border-purple-900/40 text-purple-600 dark:text-purple-400 text-xs font-semibold py-2.5 hover:bg-purple-50 dark:hover:bg-purple-900/10 transition-colors">
+              <Plus className="w-3.5 h-3.5" /> Add another supplement
+            </button>
           </div>
 
-          {/* Treatment — MORNING only */}
+          {/* Treatment — MORNING only. First row is already open here too. */}
           {showTreatment && (
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
-                  <Stethoscope className="w-4 h-4 text-red-500" /> Treatment
-                </p>
-                <button type="button" onClick={addTreatment} className="flex items-center gap-1 text-xs font-semibold text-red-600 dark:text-red-400">
-                  <Plus className="w-3.5 h-3.5" /> Add
-                </button>
-              </div>
+              <p className="text-sm font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+                <Stethoscope className="w-4 h-4 text-red-500" /> Treatment
+              </p>
               {treatments.map((t, i) => (
                 <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-3 space-y-2">
                   <div className="flex items-center gap-2">
@@ -610,7 +616,9 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                       <option value="">Select drug…</option>
                       {treatmentItems.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
                     </select>
-                    <button type="button" onClick={() => removeTreatment(i)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                    {treatments.length > 1 && (
+                      <button type="button" onClick={() => removeTreatment(i)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                    )}
                   </div>
                   <div className="grid grid-cols-3 gap-2">
                     <input value={t.dose} onChange={e => updateTreatment(i, 'dose', e.target.value)} className={iCls} placeholder="Dose" />
@@ -629,6 +637,10 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                   </div>
                 </div>
               ))}
+              <button type="button" onClick={addTreatment}
+                className="w-full flex items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-400 text-xs font-semibold py-2.5 hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors">
+                <Plus className="w-3.5 h-3.5" /> Add another treatment
+              </button>
             </div>
           )}
 
