@@ -5,11 +5,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { BatchStage, BirdType, EntryStatus, Prisma } from '@prisma/client';
+import { BatchStage, BirdType, EntryStatus, NotificationType, Prisma, UserRole } from '@prisma/client';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
 import { StoreInventoryService } from '../store/store-inventory.service';
+import { NotificationsService } from '../../common/notifications/notifications.service';
 import {
+  BROODER_SESSION_WINDOWS,
   BrooderSessionKey,
   assertBrooderSessionOpen,
   assertIsToday,
@@ -34,6 +36,7 @@ export class FlockService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storeInventory: StoreInventoryService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // A vaccine/supplement/treatment can be logged against any active store
@@ -1048,7 +1051,38 @@ export class FlockService {
     if (existing) {
       return this.prisma.brooderLog.update({ where: { id: existing.id }, data });
     }
-    return this.prisma.brooderLog.create({ data });
+
+    const created = await this.prisma.brooderLog.create({ data });
+
+    // First submission of this popup for the day (not a correction/edit —
+    // those hit the `existing` branch above) — let the Production Manager
+    // know it's ready to review, so it surfaces in their login pop-up the
+    // same way egg-collection verification and tally sign-off already do.
+    // Best-effort: a notification failure must never fail the attendant's
+    // save.
+    this.notifyManagerBrooderLogFilled(batch.batchCode, session, logDate).catch(err =>
+      this.logger.warn(`Failed to notify Manager of brooder log (${batch.batchCode}/${session}): ${err}`),
+    );
+
+    return created;
+  }
+
+  /** Notifies MANAGER (Production Manager) that an attendant filled a
+   *  Morning/11am/3pm brooder popup, so it's ready for their daily review
+   *  (see BrooderService.getDailyReview / the Brooder Review page). Uses the
+   *  existing VERIFICATION_PENDING type, which the login pop-up already
+   *  renders. */
+  private async notifyManagerBrooderLogFilled(
+    batchCode: string, session: BrooderSessionKey, logDate: Date,
+  ) {
+    const label = BROODER_SESSION_WINDOWS[session].label;
+    const dateStr = logDate.toISOString().slice(0, 10);
+    await this.notifications.notifyRole(
+      UserRole.MANAGER,
+      NotificationType.VERIFICATION_PENDING,
+      `Brooder Log Filled — ${batchCode}`,
+      `The ${label} popup was just recorded for ${batchCode} (${dateStr}). Review it under Brooder Review.`,
+    );
   }
 
   /**

@@ -2,6 +2,7 @@
 import { Module } from '@nestjs/common';
 import { BrooderController } from './brooder.controller';
 import { BrooderService } from './brooder.service';
+import { BrooderMissedLogCron } from './brooder-missed-log.cron';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { StoreModule } from '../store/store.module';
 import { FlockModule } from '../flock/flock.module';
@@ -12,7 +13,7 @@ import { FeedWastageModule } from '../../common/feed/feed-wastage.module';
 @Module({
   imports: [PrismaModule, StoreModule, FlockModule, FeedWastageModule],
   controllers: [BrooderController],
-  providers: [BrooderService],
+  providers: [BrooderService, BrooderMissedLogCron],
   exports: [BrooderService],
 })
 export class BrooderModule {}

@@ -39,6 +39,7 @@ const TYPE_ICONS: Record<string, { icon: any; color: string }> = {
   AI_REPORT_READY:       { icon: Zap,           color: 'text-purple-500' },
   ENTRY_RETURNED:        { icon: AlertTriangle, color: 'text-orange-500' },
   EGG_TALLY_TRIGGERED:   { icon: CheckCircle,   color: 'text-teal-500' },
+  BROODER_LOG_MISSED:    { icon: AlertTriangle, color: 'text-red-500' },
   STOCK_LOCKED_BOOKING:  { icon: Info,          color: 'text-blue-500' },
   BOOKING_CANCELLED:     { icon: AlertTriangle, color: 'text-red-500' },
   SYSTEM:                { icon: Info,          color: 'text-gray-400' },

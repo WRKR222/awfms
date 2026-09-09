@@ -13,6 +13,7 @@ const TYPE_ICONS: Record<string, { icon: any; color: string; bg: string }> = {
   AI_REPORT_READY:       { icon: Zap,           color: 'text-purple-500', bg: 'bg-purple-50 dark:bg-purple-900/20' },
   ENTRY_RETURNED:        { icon: AlertTriangle, color: 'text-orange-500', bg: 'bg-orange-50 dark:bg-orange-900/20' },
   EGG_TALLY_TRIGGERED:   { icon: CheckCircle,   color: 'text-teal-500',   bg: 'bg-teal-50 dark:bg-teal-900/20' },
+  BROODER_LOG_MISSED:    { icon: AlertTriangle, color: 'text-red-500',    bg: 'bg-red-50 dark:bg-red-900/20' },
   STOCK_LOCKED_BOOKING:  { icon: Info,          color: 'text-blue-500',   bg: 'bg-blue-50 dark:bg-blue-900/20' },
   BOOKING_CANCELLED:     { icon: AlertTriangle, color: 'text-red-500',    bg: 'bg-red-50 dark:bg-red-900/20' },
   SYSTEM:                { icon: Info,          color: 'text-gray-400',   bg: 'bg-gray-50 dark:bg-gray-900/20' },

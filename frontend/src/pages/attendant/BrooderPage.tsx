@@ -18,7 +18,7 @@
 // (<BrooderReassignModal>) — it isn't part of the daily log any more.
 //   • Log history grouped by date with sessions shown as a compact timeline.
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import dayjs from '../../lib/dayjs';
@@ -583,6 +583,57 @@ export function BrooderPage() {
   // currently open (server-decided) — pre-scoped to that row/level.
   const { data: sessionStatus } = useBrooderSessionStatus();
   const openSessionKey = sessionStatus?.sessions.find(s => s.open)?.key ?? null;
+  const today = sessionStatus?.farmDate ?? dayjs().format('YYYY-MM-DD');
+
+  // ── Auto-pop the current time-slot's daily log ──────────────────────────
+  // The attendant shouldn't have to hunt for the right button — as soon as
+  // this page opens (e.g. from the "Brooder Management" card), whichever
+  // popup is open right now (Morning/11am/3pm) should already be on screen
+  // for any batch that hasn't had it recorded yet today. One batch's popup
+  // is shown at a time; closing/submitting it advances to the next batch
+  // still missing that same popup, if any.
+  const batchIdsKey = brooderBatches.map(b => b.id).join(',');
+  const { data: sessionCoverage } = useQuery<Record<string, boolean>>({
+    queryKey: ['brooder-session-coverage', openSessionKey, today, batchIdsKey],
+    queryFn: async () => {
+      const entries = await Promise.all(brooderBatches.map(async (b) => {
+        const rows: BrooderLog[] = await api.get(`/flock/brooder-logs?batchId=${b.id}&limit=5`)
+          .then(r => r.data).catch(() => []);
+        const logged = rows.some(l =>
+          l.logSession === openSessionKey && dayjs(l.logDate).format('YYYY-MM-DD') === today
+        );
+        return [b.id, logged] as const;
+      }));
+      return Object.fromEntries(entries);
+    },
+    enabled: !!openSessionKey && brooderBatches.length > 0,
+    staleTime: 15_000,
+  });
+
+  const [autoLogState, setAutoLogState] = useState<{
+    session: BrooderSessionKey; queue: BrooderBatch[]; index: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!openSessionKey || !sessionCoverage) return;
+    setAutoLogState(prev => {
+      // Already built the queue for whichever popup is open right now —
+      // don't clobber the attendant's progress through it just because this
+      // effect re-ran (e.g. sessionCoverage refetched).
+      if (prev && prev.session === openSessionKey) return prev;
+      const pending = brooderBatches.filter(b => sessionCoverage[b.id] === false);
+      return { session: openSessionKey, queue: pending, index: 0 };
+    });
+  }, [openSessionKey, sessionCoverage, brooderBatches]);
+
+  const autoLogBatch =
+    autoLogState && autoLogState.session === openSessionKey
+      ? autoLogState.queue[autoLogState.index] ?? null
+      : null;
+
+  const handleAutoLogClose = () => {
+    setAutoLogState(prev => (prev ? { ...prev, index: prev.index + 1 } : prev));
+  };
 
   const assignedCountByBatch: Record<string, number> = {};
   if (cageMapData) {
@@ -714,6 +765,18 @@ export function BrooderPage() {
           session={openSessionKey}
           presetScope={logTargetScope}
           onClose={() => setLogTarget(null)}
+        />
+      )}
+
+      {/* Auto-popped current time-slot log — shown on top, first thing the
+          attendant sees, for the first active batch still missing today's
+          open popup. Suppressed while the attendant has deliberately opened
+          a cage-map-scoped log (logTarget) so the two never stack. */}
+      {!logTarget && autoLogBatch && openSessionKey && (
+        <BrooderSessionLogModal
+          batch={autoLogBatch}
+          session={openSessionKey}
+          onClose={handleAutoLogClose}
         />
       )}
     </div>

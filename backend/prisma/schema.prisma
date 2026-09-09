@@ -172,6 +172,8 @@ enum NotificationType {
   // Production-stage bird weight vs. HyLine standard band (§ ProductionWeightAlert)
   WEIGHT_BELOW_STANDARD  // recorded average weight (report row or Farm Event weighing) is below the HyLine minimum for the batch's age — Director-facing
   WEIGHT_ABOVE_STANDARD  // recorded average weight is above the HyLine maximum for the batch's age — Director-facing
+  // Brooder 3-popup daily log — attendant accountability
+  BROODER_LOG_MISSED  // a Morning/11am/3pm popup closed for the day and at least one active brooder batch still has no log for it — Director-facing
 }
 
 enum IssuancePlanType {
