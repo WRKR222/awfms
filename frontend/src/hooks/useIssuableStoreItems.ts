@@ -38,12 +38,14 @@ export interface IssuableStoreItem {
 
 export const FEED_CATEGORIES = ['FEED', 'FEED_SUPPLEMENT'] as const;
 
-// Deprecated: kept only so older code that hasn't been migrated yet still
-// compiles. Do NOT use this for new vaccine/supplement/treatment pickers —
-// it lumps all three together, which is exactly what attendants must never
-// see (a vaccine picker showing supplements, etc). Use the three category
-// sets below instead.
-export const MEDICATION_CATEGORIES = ['MEDICATION', 'SUPPLEMENT', 'VACCINE'] as const;
+// Deprecated: kept only so older code (e.g. Store's issuance-plan residual
+// summary) that hasn't been migrated yet still compiles/works. Do NOT use
+// this for new vaccine/supplement/treatment pickers — it lumps all four
+// together, which is exactly what attendants must never see (a vaccine
+// picker showing supplements, etc). Use the three category sets below
+// instead. Includes legacy MEDICATION too, since not every pre-existing
+// MEDICATION item has been re-tagged into VACCINE/TREATMENT yet.
+export const MEDICATION_CATEGORIES = ['MEDICATION', 'SUPPLEMENT', 'VACCINE', 'TREATMENT'] as const;
 
 // Vaccines only — Store items tagged under the dedicated VACCINE category.
 export const VACCINE_CATEGORIES = ['VACCINE'] as const;
@@ -52,9 +54,12 @@ export const VACCINE_CATEGORIES = ['VACCINE'] as const;
 // supplement rather than a medical treatment).
 export const SUPPLEMENT_CATEGORIES = ['SUPPLEMENT'] as const;
 
-// Treatments/medication only (antibiotics, dewormers, other medical
-// treatments) — explicitly excludes VACCINE and SUPPLEMENT.
-export const TREATMENT_CATEGORIES = ['MEDICATION'] as const;
+// Treatments only — Store items tagged under the dedicated TREATMENT
+// category (antibiotics, dewormers, other medical treatments), split out
+// of MEDICATION the same way VACCINE was. Existing MEDICATION items that
+// are really treatments are NOT auto-migrated — Store/PM re-tags them into
+// TREATMENT by hand, same as the VACCINE split.
+export const TREATMENT_CATEGORIES = ['TREATMENT'] as const;
 
 export function useIssuableStoreItems(
   categories: readonly string[],

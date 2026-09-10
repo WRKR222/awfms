@@ -167,6 +167,7 @@ function SectionData({ section, data }: { section: ReviewRow['section']; data: u
           <span className="font-semibold text-gray-700 dark:text-gray-200">{r.drugName}</span>
           {' — '}{r.dose}{r.doseUnit ? ` ${r.doseUnit}` : ''} via {r.route?.replace(/_/g, ' ').toLowerCase() ?? '—'}
           {r.durationDays ? ` · ${r.durationDays}d` : ''}
+          {r.quantityUsed != null ? ` · ${r.quantityUsed}${r.quantityUsedUnit ? ` ${r.quantityUsedUnit}` : ''} used from store` : ''}
         </li>
       ))}
     </ul>

@@ -9,6 +9,9 @@ export type StoreItem = {
   category: string;
   customCategoryLabel?: string | null;
   unit: string;
+  // Solid (grams) vs Liquid (millilitres) — only set for MEDICATION/
+  // SUPPLEMENT/VACCINE/TREATMENT items; null/undefined for everything else.
+  physicalForm?: 'SOLID' | 'LIQUID' | null;
   description?: string | null;
   reorderLevel: number;
   unitCostKes: number;

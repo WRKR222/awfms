@@ -786,6 +786,7 @@ export function EggCollectionPage() {
           )}
           {vaccines.map((v, i) => {
             const kindItems = itemsForKind(v.kind);
+            const selectedItem = kindItems.find(m => m.id === v.storeItemId);
             return (
             <div key={i} className="grid grid-cols-12 gap-2 items-end mb-2">
               <div className="col-span-2">
@@ -835,13 +836,15 @@ export function EggCollectionPage() {
                 />
               </div>
               <div className="col-span-3">
-                <label className="block text-[11px] text-gray-500 mb-1">Qty used</label>
+                <label className="block text-[11px] text-gray-500 mb-1">
+                  Qty used{selectedItem ? ` (${selectedItem.unit})` : ''}
+                </label>
                 <input
                   type="number" min="0" step="any" inputMode="decimal"
                   value={v.quantityUsed}
                   onChange={e => setVaccines(prev => prev.map((p, j) => j === i ? { ...p, quantityUsed: e.target.value } : p))}
                   className={inputCls + ' py-2 text-sm'}
-                  placeholder="e.g. 0.532"
+                  placeholder={selectedItem ? `e.g. 0.532 ${selectedItem.unit}` : 'e.g. 0.532'}
                 />
               </div>
               <div className="col-span-1 flex justify-end">

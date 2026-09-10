@@ -10,7 +10,7 @@
 //   MORNING  (open until  9:00am) — 3am AND 6am environmental readings,
 //            water, vaccines/supplements/treatment, feed, mortalities.
 //   MIDDAY   (11:00am–1:00pm)     — one environmental reading, water,
-//            vaccines/supplements, mortalities. No feed, no treatment.
+//            vaccines/supplements/treatment, mortalities. No feed.
 //   EVENING  (3:00pm–5:00pm)      — one environmental reading, water,
 //            vaccines/supplements, feed, mortalities. No treatment.
 //
@@ -19,11 +19,17 @@
 // textboxes in fixed positions) rather than the old collapsible/checkbox
 // panels, per spec.
 //
+// Vaccine/supplement/treatment "Qty used" fields are labelled with the
+// selected store item's own stock unit (grams for a Solid item, millilitres
+// for a Liquid one — see StoreItem.physicalForm on the backend) so the
+// figure entered is always denominated the same way Store issued it, which
+// is what the residual (issued − dispensed) ledger compares it against.
+//
 // On Save, one request per non-empty piece fires (partial-failure tolerant,
 // same pattern the old combined modal used — one section's error never
 // blocks the others):
 //   POST /flock/brooder-logs            (environmental + water + vaccines/supplements)
-//   POST /flock/brooder-treatment-logs  (MORNING only, one per filled row)
+//   POST /flock/brooder-treatment-logs  (MORNING/MIDDAY only, one per filled row)
 //   POST /brooder/general-feed-logs     (MORNING/EVENING only)
 //   POST /brooder/general-mortality-logs  OR  POST /brooder/mortality-logs
 
@@ -160,7 +166,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
   const feedItems = (feedItemsRaw ?? []).filter(i => deriveFeedType(i) !== null);
 
   const showFeed      = session === 'MORNING' || session === 'EVENING';
-  const showTreatment = session === 'MORNING';
+  const showTreatment = session === 'MORNING' || session === 'MIDDAY';
   const showDualReadings = session === 'MORNING';
 
   // ── Environmental readings ─────────────────────────────────────────────
@@ -207,14 +213,14 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
     }));
   }
 
-  // ── Treatment (MORNING only) ─────────────────────────────────────────────
+  // ── Treatment (MORNING/MIDDAY only) ──────────────────────────────────────
   // Same "already open" treatment as vaccines/supplements above — a blank
   // row is there from the start on the popup that shows Treatment at all.
   const emptyTreatment = (): TreatmentEntry => ({
     storeItemId: '', drugName: '', dose: '', doseUnit: 'ml', quantityUsed: '',
     route: 'DRINKING_WATER', durationDays: '', notes: '',
   });
-  const [treatments, setTreatments] = useState<TreatmentEntry[]>(session === 'MORNING' ? [emptyTreatment()] : []);
+  const [treatments, setTreatments] = useState<TreatmentEntry[]>(showTreatment ? [emptyTreatment()] : []);
   function addTreatment()    { setTreatments(t => [...t, emptyTreatment()]); }
   function removeTreatment(i: number) { setTreatments(t => t.filter((_, j) => j !== i)); }
   function updateTreatment(i: number, field: keyof TreatmentEntry, val: string) {
@@ -307,7 +313,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
         errors.push(`${meta.title}: ${errMsg(err)}`);
       }
 
-      // 2) Treatment — MORNING only, one request per filled row.
+      // 2) Treatment — MORNING/MIDDAY only, one request per filled row.
       if (showTreatment) {
         const cleanTreatments = treatments.filter(t => t.storeItemId && t.drugName.trim());
         for (const t of cleanTreatments) {
@@ -547,7 +553,9 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
             <p className="text-sm font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
               <Syringe className="w-4 h-4 text-pink-500" /> Vaccines
             </p>
-            {vaccines.map((v, i) => (
+            {vaccines.map((v, i) => {
+              const selectedItem = vaccineItems.find(m => m.id === v.storeItemId);
+              return (
               <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-3 space-y-2">
                 <div className="flex items-center gap-2">
                   <select value={v.storeItemId} onChange={e => updateVaccine(i, 'storeItemId', e.target.value)} className={`${iCls} flex-1`}>
@@ -564,10 +572,12 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                     {VACCINE_ROUTES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
                   </select>
                   <input value={v.quantityUsed} onChange={e => updateVaccine(i, 'quantityUsed', e.target.value)}
-                    type="number" step="0.01" className={iCls} placeholder="Qty used" />
+                    type="number" step="0.01" min="0" className={iCls}
+                    placeholder={selectedItem ? `Qty used (${selectedItem.unit})` : 'Qty used'} />
                 </div>
               </div>
-            ))}
+              );
+            })}
             <button type="button" onClick={addVaccine}
               className="w-full flex items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-pink-200 dark:border-pink-900/40 text-pink-600 dark:text-pink-400 text-xs font-semibold py-2.5 hover:bg-pink-50 dark:hover:bg-pink-900/10 transition-colors">
               <Plus className="w-3.5 h-3.5" /> Add another vaccine
@@ -579,7 +589,9 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
             <p className="text-sm font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
               <FlaskConical className="w-4 h-4 text-purple-500" /> Supplements
             </p>
-            {supplements.map((s, i) => (
+            {supplements.map((s, i) => {
+              const selectedItem = supplementItems.find(m => m.id === s.storeItemId);
+              return (
               <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-3 space-y-2">
                 <div className="flex items-center gap-2">
                   <select value={s.storeItemId} onChange={e => updateSupplement(i, 'storeItemId', e.target.value)} className={`${iCls} flex-1`}>
@@ -593,23 +605,27 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                 <div className="grid grid-cols-2 gap-2">
                   <input value={s.dose} onChange={e => updateSupplement(i, 'dose', e.target.value)} className={iCls} placeholder="Dose" />
                   <input value={s.quantityUsed} onChange={e => updateSupplement(i, 'quantityUsed', e.target.value)}
-                    type="number" step="0.01" className={iCls} placeholder="Qty used" />
+                    type="number" step="0.01" min="0" className={iCls}
+                    placeholder={selectedItem ? `Qty used (${selectedItem.unit})` : 'Qty used'} />
                 </div>
               </div>
-            ))}
+              );
+            })}
             <button type="button" onClick={addSupplement}
               className="w-full flex items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-purple-200 dark:border-purple-900/40 text-purple-600 dark:text-purple-400 text-xs font-semibold py-2.5 hover:bg-purple-50 dark:hover:bg-purple-900/10 transition-colors">
               <Plus className="w-3.5 h-3.5" /> Add another supplement
             </button>
           </div>
 
-          {/* Treatment — MORNING only. First row is already open here too. */}
+          {/* Treatment — MORNING/MIDDAY only. First row is already open here too. */}
           {showTreatment && (
             <div className="space-y-2">
               <p className="text-sm font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
                 <Stethoscope className="w-4 h-4 text-red-500" /> Treatment
               </p>
-              {treatments.map((t, i) => (
+              {treatments.map((t, i) => {
+                const selectedItem = treatmentItems.find(m => m.id === t.storeItemId);
+                return (
                 <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-3 space-y-2">
                   <div className="flex items-center gap-2">
                     <select value={t.storeItemId} onChange={e => updateTreatment(i, 'storeItemId', e.target.value)} className={`${iCls} flex-1`}>
@@ -631,12 +647,14 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <input value={t.quantityUsed} onChange={e => updateTreatment(i, 'quantityUsed', e.target.value)}
-                      type="number" step="0.01" className={iCls} placeholder="Qty used" />
+                      type="number" step="0.01" min="0" className={iCls}
+                      placeholder={selectedItem ? `Qty used from store (${selectedItem.unit})` : 'Qty used from store'} />
                     <input value={t.durationDays} onChange={e => updateTreatment(i, 'durationDays', e.target.value)}
                       type="number" min="0" className={iCls} placeholder="Duration (days)" />
                   </div>
                 </div>
-              ))}
+                );
+              })}
               <button type="button" onClick={addTreatment}
                 className="w-full flex items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-400 text-xs font-semibold py-2.5 hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors">
                 <Plus className="w-3.5 h-3.5" /> Add another treatment

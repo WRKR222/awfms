@@ -5,9 +5,11 @@
 //   MORNING — 3am + 6am environmental readings, feed, water, vaccines/
 //             supplements/treatment, mortalities. Open all day up to 9:00am.
 //   MIDDAY  — the "11am" check-in — environmental data, water, vaccines,
-//             supplements, mortalities. Opens 11:00am, locked at 1:00pm.
+//             supplements, treatment, mortalities. Opens 11:00am, locked at
+//             1:00pm.
 //   EVENING — the "3pm" check-in — environmental data, water, vaccines,
-//             supplements, feed, mortalities. Opens 3:00pm, closed by 5:00pm.
+//             supplements, feed, mortalities. No treatment. Opens 3:00pm,
+//             closed by 5:00pm.
 //
 // This is intentionally the single source of truth for those windows so the
 // backend and frontend never disagree about when a popup is open. Windows

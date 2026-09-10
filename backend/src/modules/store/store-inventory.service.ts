@@ -14,11 +14,17 @@ import { IssuancePlanService } from './issuance-plan.service';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
 import {
-  IsString, IsOptional, IsNumber, IsBoolean, Min, IsNotEmpty, IsEnum, MaxLength,
+  IsString, IsOptional, IsNumber, IsBoolean, Min, IsNotEmpty, IsEnum, IsIn, MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
 dayjs.extend(isoWeek);
+
+// Categories whose items must declare a PhysicalForm (Solid → grams,
+// Liquid → millilitres) — see StoreInventoryService.resolvePhysicalForm.
+// Covers legacy MEDICATION too, since not every existing MEDICATION item
+// has been re-tagged into VACCINE/TREATMENT yet.
+const MEDICATION_TYPE_CATEGORIES = new Set(['MEDICATION', 'SUPPLEMENT', 'VACCINE', 'TREATMENT']);
 
 // ─── DTOs ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +46,13 @@ export class CreateStoreItemDto {
 
   @IsString() @IsNotEmpty() @MaxLength(30, { message: 'Unit must be 30 characters or fewer' })
   unit: string;
+
+  // Required for MEDICATION/SUPPLEMENT/VACCINE/TREATMENT items — SOLID
+  // items must be stocked in grams (unit 'G'), LIQUID items in millilitres
+  // (unit 'ML'). See resolvePhysicalForm. Ignored (must be omitted/null)
+  // for every other category.
+  @IsOptional() @IsIn(['SOLID', 'LIQUID'], { message: 'Physical form must be SOLID or LIQUID' })
+  physicalForm?: string;
 
   @IsOptional() @IsString()
   description?: string;
@@ -73,6 +86,10 @@ export class UpdateStoreItemDto {
 
   @IsOptional() @IsString() @IsNotEmpty({ message: 'Unit is required' }) @MaxLength(30, { message: 'Unit must be 30 characters or fewer' })
   unit?: string;
+
+  // See CreateStoreItemDto above.
+  @IsOptional() @IsIn(['SOLID', 'LIQUID'], { message: 'Physical form must be SOLID or LIQUID' })
+  physicalForm?: string;
 
   @IsOptional() @IsString()
   description?: string;
@@ -179,10 +196,47 @@ export class StoreInventoryService {
     return trimmed || null;
   }
 
+  /**
+   * Vaccine/supplement/treatment(/legacy medication) items must declare
+   * Solid (→ grams) or Liquid (→ millilitres) and be stocked in exactly
+   * that unit. This is what keeps the residual ledger (issued − dispensed,
+   * see getIssuableStoreItems/getResidualForItem) unit-consistent once an
+   * attendant's quantityUsed is recorded in grams/millilitres against it —
+   * every quantity on both sides of that subtraction is guaranteed to
+   * share the same base unit.
+   *
+   * Every other category keeps free-text units (as before) and never
+   * carries a physical form — any physicalForm value sent for one of
+   * those categories is silently dropped, not validated, so switching an
+   * item's category away from a medication-type one clears a stale value.
+   */
+  private resolvePhysicalForm(
+    category: string,
+    physicalForm: string | null | undefined,
+    unit: string | undefined,
+  ): 'SOLID' | 'LIQUID' | null {
+    if (!MEDICATION_TYPE_CATEGORIES.has(category)) return null;
+    if (physicalForm !== 'SOLID' && physicalForm !== 'LIQUID') {
+      throw new BadRequestException(
+        'Select whether this item is Solid (tracked in grams) or Liquid (tracked in millilitres).',
+      );
+    }
+    const expectedUnit = physicalForm === 'SOLID' ? 'G' : 'ML';
+    if ((unit ?? '').trim().toUpperCase() !== expectedUnit) {
+      throw new BadRequestException(
+        physicalForm === 'SOLID'
+          ? 'Solid items must be stocked in grams (unit = G) so quantity used can be recorded in grams against what Store issues.'
+          : 'Liquid items must be stocked in millilitres (unit = ML) so quantity used can be recorded in millilitres against what Store issues.',
+      );
+    }
+    return physicalForm;
+  }
+
   async createItem(dto: CreateStoreItemDto, user: RequestUser) {
     const existing = await this.prisma.storeItem.findUnique({ where: { sku: dto.sku } });
     if (existing) throw new ConflictException(`SKU "${dto.sku}" is already in use`);
     this.assertValidCategory(dto.category);
+    const physicalForm = this.resolvePhysicalForm(dto.category, dto.physicalForm, dto.unit);
 
     return this.prisma.storeItem.create({
       data: {
@@ -191,6 +245,7 @@ export class StoreInventoryService {
         category:     dto.category as any,
         customCategoryLabel: this.resolveCustomCategoryLabel(dto.category, dto.customCategoryLabel),
         unit:         dto.unit.trim(),
+        physicalForm: physicalForm as any,
         description:  dto.description ?? null,
         reorderLevel: dto.reorderLevel ?? 0,
         unitCostKes:  dto.unitCostKes ?? 0,
@@ -203,6 +258,22 @@ export class StoreInventoryService {
   async updateItem(id: string, dto: UpdateStoreItemDto) {
     const current = await this.getItemById(id);
     const effectiveCategory = dto.category ?? current.category;
+
+    // Only re-resolve physicalForm when something that affects it is
+    // actually being touched — a plain edit (description, reorder level,
+    // cost, …) on an existing medication-type item must not suddenly
+    // demand a physical form it never required before.
+    const touchesPhysicalForm = dto.category !== undefined || dto.unit !== undefined || dto.physicalForm !== undefined;
+    const physicalFormUpdate = touchesPhysicalForm
+      ? {
+          physicalForm: this.resolvePhysicalForm(
+            effectiveCategory,
+            dto.physicalForm !== undefined ? dto.physicalForm : (current as any).physicalForm,
+            dto.unit !== undefined ? dto.unit.trim() : current.unit,
+          ) as any,
+        }
+      : {};
+
     return this.prisma.storeItem.update({
       where: { id },
       data: {
@@ -212,6 +283,7 @@ export class StoreInventoryService {
           ? { customCategoryLabel: this.resolveCustomCategoryLabel(effectiveCategory, dto.customCategoryLabel ?? current.customCategoryLabel) }
           : {}),
         ...(dto.unit !== undefined ? { unit: dto.unit.trim() } : {}),
+        ...physicalFormUpdate,
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.reorderLevel !== undefined ? { reorderLevel: Number(dto.reorderLevel) } : {}),
         ...(dto.unitCostKes !== undefined ? { unitCostKes: Number(dto.unitCostKes) } : {}),

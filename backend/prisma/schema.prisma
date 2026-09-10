@@ -226,10 +226,29 @@ enum StoreItemCategory {
   // Store/PM re-tags them into VACCINE by hand after this ships (see
   // migration 20260907090000_add_vaccine_category).
   VACCINE
+  // Split out of MEDICATION the same way VACCINE was above — so the
+  // attendant's Treatment picker (brooder + egg collection) only ever
+  // shows items Store has actually filed as a treatment, never vaccines
+  // or supplements. Existing MEDICATION items that are really treatments
+  // are NOT auto-migrated — Store/PM re-tags them into TREATMENT by hand
+  // (see migration 20260910060000_treatment_category_physical_form).
+  TREATMENT
   PACKAGING
   CLEANING
   SAFETY
   OTHER
+}
+
+/// Whether a vaccine/supplement/treatment StoreItem is a solid (tracked and
+/// dispensed in grams) or a liquid (tracked and dispensed in millilitres).
+/// Only meaningful for MEDICATION/SUPPLEMENT/VACCINE/TREATMENT items — see
+/// StoreItem.physicalForm and StoreInventoryService.resolvePhysicalForm,
+/// which enforces unit = 'G' for SOLID and unit = 'ML' for LIQUID so the
+/// residual ledger (issued − dispensed) stays unit-consistent once an
+/// attendant's quantityUsed is recorded in grams/millilitres against it.
+enum PhysicalForm {
+  SOLID
+  LIQUID
 }
 
 /// Which section of a brooder day's record a Production Manager is
@@ -1676,14 +1695,15 @@ model BrooderTreatmentLog {
   rowId         String?  @map("row_id")
   levelId       String?  @map("level_id")
   treatmentDate DateTime @map("treatment_date") @db.Date
-  // Treatment is only offered on the MORNING popup of the 3-popup attendant
-  // daily log. Nullable for legacy rows and treatments logged outside that flow.
+  // Treatment is offered on the MORNING and MIDDAY (11am) popups of the
+  // 3-popup attendant daily log — not EVENING. Nullable for legacy rows and
+  // treatments logged outside that flow.
   logSession    BrooderLogSession? @map("log_session")
   drugName      String   @map("drug_name")
   storeItemId   String?  @map("store_item_id") // links to the StoreItem actually issued via stock-out; NULL for legacy rows predating this link
   dose          String
   doseUnit      String   @default("ml") @map("dose_unit")
-  quantityUsed  Float?   @map("quantity_used") // amount deducted from the store item's stock unit (for residual tracking) — distinct from `dose`, which is the per-bird/per-litre clinical dosage description
+  quantityUsed  Float?   @map("quantity_used") // amount deducted from the store item's stock unit (for residual tracking) — distinct from `dose`, which is the per-bird/per-litre clinical dosage description. In the item's stock unit — grams for a SOLID item, millilitres for a LIQUID one (see PhysicalForm).
   quantityUsedUnit String? @map("quantity_used_unit") // snapshot of the linked StoreItem's stock unit at log time — set server-side from storeItem.unit, never trusted from the client
   route         String   @default("DRINKING_WATER")
   durationDays  Int?     @map("duration_days")
@@ -2148,6 +2168,10 @@ model StoreItem {
   // category. Null for every item filed under a real preset category.
   customCategoryLabel String? @map("custom_category_label")
   unit        String
+  // Solid (grams) vs Liquid (millilitres) — only set for MEDICATION/
+  // SUPPLEMENT/VACCINE/TREATMENT items; null for every other category.
+  // See PhysicalForm's own doc comment for why this exists.
+  physicalForm PhysicalForm?    @map("physical_form")
   description String?
   reorderLevel Decimal           @default(0) @map("reorder_level") @db.Decimal
   currentStock Decimal           @default(0) @map("current_stock") @db.Decimal

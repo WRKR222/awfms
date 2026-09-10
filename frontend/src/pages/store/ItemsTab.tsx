@@ -13,6 +13,7 @@ export const CATEGORIES = [
   { value: 'FEED',        label: 'Feed' },
   { value: 'SUPPLEMENT',  label: 'Supplement' },
   { value: 'VACCINE',     label: 'Vaccine' },
+  { value: 'TREATMENT',   label: 'Treatment' },
   { value: 'PACKAGING',   label: 'Packaging' },
   { value: 'CLEANING',    label: 'Cleaning' },
   { value: 'SAFETY',      label: 'Safety' },
@@ -30,6 +31,7 @@ export const CATEGORY_LABELS: Record<string, string> = {
   SUPPLEMENT:      'Supplement',
   FEED_SUPPLEMENT: 'Feed / Supplement (legacy)',
   VACCINE:         'Vaccine',
+  TREATMENT:       'Treatment',
   PACKAGING:       'Packaging',
   CLEANING:        'Cleaning',
   SAFETY:          'Safety',
@@ -61,6 +63,14 @@ const UNITS = [
 const CUSTOM_UNIT = '__CUSTOM__';
 const PRESET_UNIT_VALUES = new Set(UNITS.map(u => u.value));
 
+// Categories whose items are given to attendants as vaccines/supplements/
+// treatments — these must declare a Physical Form (Solid → grams, Liquid →
+// millilitres) instead of picking a unit freely, so the quantity an
+// attendant later records is always denominated the way Store issues it.
+// Includes legacy MEDICATION items not yet re-tagged into VACCINE/TREATMENT.
+const MEDICATION_TYPE_CATEGORIES = new Set(['MEDICATION', 'SUPPLEMENT', 'VACCINE', 'TREATMENT']);
+const PHYSICAL_FORM_UNIT: Record<'SOLID' | 'LIQUID', string> = { SOLID: 'G', LIQUID: 'ML' };
+
 type FormData = {
   name: string;
   sku: string;
@@ -68,6 +78,7 @@ type FormData = {
   customCategoryLabel?: string;
   unit: string;
   customUnit?: string;
+  physicalForm?: 'SOLID' | 'LIQUID' | '';
   description?: string;
   reorderLevel?: number;
   unitCostKes?: number;
@@ -86,19 +97,21 @@ export function ItemsTab() {
   const { register, handleSubmit, reset, watch, formState: { errors } } = useForm<FormData>();
   const selectedUnit = watch('unit');
   const selectedCategory = watch('category');
+  const isMedicationType = MEDICATION_TYPE_CATEGORIES.has(selectedCategory);
 
   const invalidateItems = () => {
     qc.invalidateQueries({ queryKey: ['store-items'] });
   };
 
   const createMut = useMutation({
-    mutationFn: (data: FormData) =>
+    mutationFn: (data: FormData & { unit: string }) =>
       api.post('/store/inventory/items', {
         name:         data.name,
         sku:          data.sku,
         category:     data.category,
         customCategoryLabel: data.category === 'OTHER' ? (data.customCategoryLabel ?? '').trim() : undefined,
         unit:         data.unit,
+        physicalForm: MEDICATION_TYPE_CATEGORIES.has(data.category) ? (data.physicalForm || undefined) : undefined,
         description:  data.description ?? '',
         reorderLevel: Number(data.reorderLevel ?? 0),
         unitCostKes:  Number(data.unitCostKes ?? 0),
@@ -140,8 +153,15 @@ export function ItemsTab() {
     return isNaN(n) ? 0 : n;
   };
 
+  // For a vaccine/supplement/treatment(/legacy medication) item, the unit
+  // isn't picked from the free-text dropdown at all — it's derived from
+  // the required Physical Form choice (Solid -> grams, Liquid ->
+  // millilitres), so Store can never save one of these items with a unit
+  // that doesn't match what attendants will later record quantity used in.
   const resolveUnit = (data: FormData) =>
-    data.unit === CUSTOM_UNIT ? (data.customUnit ?? '').trim() : data.unit;
+    MEDICATION_TYPE_CATEGORIES.has(data.category) && data.physicalForm
+      ? PHYSICAL_FORM_UNIT[data.physicalForm]
+      : data.unit === CUSTOM_UNIT ? (data.customUnit ?? '').trim() : data.unit;
 
   const onSubmit = (data: FormData) => {
     const unit = resolveUnit(data);
@@ -153,6 +173,7 @@ export function ItemsTab() {
           category:     data.category,
           customCategoryLabel: data.category === 'OTHER' ? (data.customCategoryLabel ?? '').trim() : '',
           unit,
+          physicalForm: MEDICATION_TYPE_CATEGORIES.has(data.category) ? (data.physicalForm || undefined) : undefined,
           description:  data.description?.trim() ?? '',
           reorderLevel: safeNum(data.reorderLevel),
           unitCostKes:  safeNum(data.unitCostKes),
@@ -180,6 +201,11 @@ export function ItemsTab() {
       customCategoryLabel: item.customCategoryLabel ?? '',
       unit:         isCustomUnit ? CUSTOM_UNIT : item.unit,
       customUnit:   isCustomUnit ? item.unit : '',
+      // Legacy medication-type item saved before Physical Form existed —
+      // leave blank so Store is prompted to pick one (and confirm/switch
+      // the unit to G/ML) the next time they save this item, rather than
+      // guessing from whatever the item's current unit happens to be.
+      physicalForm: (item.physicalForm as 'SOLID' | 'LIQUID' | null | undefined) ?? '',
       description:  item.description ?? '',
       reorderLevel: item.reorderLevel,
       unitCostKes:  Number(item.unitCostKes),
@@ -222,7 +248,7 @@ export function ItemsTab() {
             setEditing(null);
             createMut.reset();
             updateMut.reset();
-            reset({ name: '', sku: '', category: '', customCategoryLabel: '', unit: '', customUnit: '', description: '', reorderLevel: 0, unitCostKes: 0 });
+            reset({ name: '', sku: '', category: '', customCategoryLabel: '', unit: '', customUnit: '', physicalForm: '', description: '', reorderLevel: 0, unitCostKes: 0 });
             setShowForm(true);
           }}
           className="flex items-center gap-2 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold"
@@ -288,27 +314,46 @@ export function ItemsTab() {
                 <p className="text-[11px] text-red-600 mt-1">{errors.customCategoryLabel.message}</p>
               )}
             </Field>
-            <Field label="Unit *" error={errors.unit?.message}>
-              <select {...register('unit', { required: 'Required' })} className="input">
-                <option value="">Select…</option>
-                {UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
-                <option value={CUSTOM_UNIT}>Other (custom)…</option>
-              </select>
-              {selectedUnit === CUSTOM_UNIT && (
-                <input
-                  {...register('customUnit', {
-                    required: selectedUnit === CUSTOM_UNIT ? 'Enter a custom unit' : false,
-                    maxLength: { value: 30, message: 'Must be 30 characters or fewer' },
-                  })}
-                  placeholder="e.g. Roll, Dozen, Pair"
-                  className="input mt-2"
-                  autoFocus
-                />
-              )}
-              {errors.customUnit && (
-                <p className="text-[11px] text-red-600 mt-1">{errors.customUnit.message}</p>
-              )}
-            </Field>
+            {isMedicationType ? (
+              // Vaccine/supplement/treatment(/legacy medication) items don't
+              // pick a unit freely — Physical Form decides it (Solid = grams,
+              // Liquid = millilitres), so an attendant's later quantity-used
+              // entry is always denominated the way Store issued the item.
+              <Field label="Physical Form *" error={errors.physicalForm?.message}>
+                <select {...register('physicalForm', { required: isMedicationType ? 'Select Solid or Liquid' : false })} className="input">
+                  <option value="">Select…</option>
+                  <option value="SOLID">Solid — tracked &amp; issued in grams (g)</option>
+                  <option value="LIQUID">Liquid — tracked &amp; issued in millilitres (mL)</option>
+                </select>
+                <p className="text-xs text-gray-400 mt-1">
+                  Quantity used will be recorded in {' '}
+                  {watch('physicalForm') === 'LIQUID' ? 'millilitres (mL)' : watch('physicalForm') === 'SOLID' ? 'grams (g)' : 'grams or millilitres, once chosen'}
+                  {' '}against what Store has issued.
+                </p>
+              </Field>
+            ) : (
+              <Field label="Unit *" error={errors.unit?.message}>
+                <select {...register('unit', { required: 'Required' })} className="input">
+                  <option value="">Select…</option>
+                  {UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                  <option value={CUSTOM_UNIT}>Other (custom)…</option>
+                </select>
+                {selectedUnit === CUSTOM_UNIT && (
+                  <input
+                    {...register('customUnit', {
+                      required: selectedUnit === CUSTOM_UNIT ? 'Enter a custom unit' : false,
+                      maxLength: { value: 30, message: 'Must be 30 characters or fewer' },
+                    })}
+                    placeholder="e.g. Roll, Dozen, Pair"
+                    className="input mt-2"
+                    autoFocus
+                  />
+                )}
+                {errors.customUnit && (
+                  <p className="text-[11px] text-red-600 mt-1">{errors.customUnit.message}</p>
+                )}
+              </Field>
+            )}
             <Field label="Reorder Level">
               <input type="number" step="any" {...register('reorderLevel')} className="input" />
               <p className="text-xs text-gray-400 mt-1">
@@ -427,7 +472,12 @@ export function ItemsTab() {
                       <td className="px-4 py-2 font-medium text-gray-800 dark:text-gray-100">
                         {i.name}
                       </td>
-                      <td className="px-4 py-2 text-gray-500">{categoryDisplayLabel(i)}</td>
+                      <td className="px-4 py-2 text-gray-500">
+                        {categoryDisplayLabel(i)}
+                        {i.physicalForm && (
+                          <span className="text-[11px] text-gray-400"> · {i.physicalForm === 'SOLID' ? 'Solid (g)' : 'Liquid (mL)'}</span>
+                        )}
+                      </td>
                       <td className={`px-4 py-2 text-right font-semibold ${low ? 'text-orange-600' : ''}`}>
                         {low && <AlertTriangle className="w-3 h-3 inline mr-1" />}
                         {Number(i.currentStock)} {i.unit}

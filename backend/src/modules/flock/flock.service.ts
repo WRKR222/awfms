@@ -1158,12 +1158,13 @@ export class FlockService {
     if (!input?.batchId) throw new BadRequestException('batchId is required');
     if (!input?.drugName) throw new BadRequestException('drugName is required');
     if (!input?.dose)     throw new BadRequestException('dose is required');
-    // Treatment is only offered on the MORNING popup of the 3-popup daily
-    // log. logSession is only sent by that popup — other callers (manager
-    // corrections, etc.) omit it and are unaffected by this gate.
+    // Treatment is offered on the MORNING and MIDDAY (11am) popups of the
+    // 3-popup daily log — not EVENING. logSession is only sent by those
+    // popups — other callers (manager corrections, etc.) omit it and are
+    // unaffected by this gate.
     if (input.logSession) {
-      if (input.logSession !== 'MORNING') {
-        throw new BadRequestException('Treatment can only be logged from the Morning popup.');
+      if (input.logSession !== 'MORNING' && input.logSession !== 'MIDDAY') {
+        throw new BadRequestException('Treatment can only be logged from the Morning or 11am popup.');
       }
       assertIsToday(input.treatmentDate ?? farmTodayUtcMidnight());
       assertBrooderSessionOpen(input.logSession);
