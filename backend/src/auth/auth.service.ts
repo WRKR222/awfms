@@ -25,8 +25,14 @@ export class AuthService {
   ) {}
 
   async login(dto: LoginDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { username: dto.username },
+    // Case-insensitive username match: some mobile keyboards/browsers
+    // auto-capitalize the first letter of a text input regardless of the
+    // form's autoCapitalize="none" hint, so "James.attendant" and
+    // "james.attendant" must both resolve to the same account rather than
+    // failing with "Invalid credentials" purely because of which device
+    // (and keyboard) the person typed it on.
+    const user = await this.prisma.user.findFirst({
+      where: { username: { equals: dto.username, mode: 'insensitive' } },
       select: {
         id: true, username: true, email: true, passwordHash: true,
         role: true, fullName: true, houseIds: true, isActive: true,

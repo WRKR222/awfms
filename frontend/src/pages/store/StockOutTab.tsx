@@ -152,7 +152,7 @@ export function StockOutTab() {
   const selectedBatch = watchedBatchId ? batches.find(b => b.id === watchedBatchId) : null;
   const derivedDestination = destinationForStage(selectedBatch?.stage);
 
-  const { data: list = [], isLoading } = useQuery({
+  const { data: list = [], isLoading, isError, error, refetch } = useQuery({
     queryKey: ['store-stock-out'],
     queryFn: async () => (await api.get('/store/inventory/stock-out')).data as any[],
   });
@@ -406,6 +406,17 @@ export function StockOutTab() {
 
       <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border overflow-hidden">
         {isLoading ? <div className="p-6 text-center text-gray-500 text-sm">Loading…</div>
+        : isError ? (
+          <div className="p-6 text-center space-y-2">
+            <p className="text-sm text-red-600 font-medium">
+              Couldn't load stock-out history — {(error as any)?.response?.data?.message ?? 'a connection or server problem occurred'}.
+            </p>
+            <p className="text-xs text-gray-400">Your records are safe on the server; this screen just failed to fetch them.</p>
+            <button onClick={() => refetch()} className="text-xs font-semibold text-brand-green hover:underline">
+              Retry
+            </button>
+          </div>
+        )
         : list.length === 0 ? <div className="p-6 text-center text-gray-500 text-sm">No stock-out records yet.</div>
         : (
           <div className="overflow-x-auto">

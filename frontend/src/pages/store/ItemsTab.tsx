@@ -86,7 +86,7 @@ type FormData = {
 
 export function ItemsTab() {
   const qc = useQueryClient();
-  const { data: items = [], isLoading } = useStoreItems(true);
+  const { data: items = [], isLoading, isError, error, refetch } = useStoreItems(true);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<StoreItem | null>(null);
   const [search, setSearch] = useState('');
@@ -444,6 +444,19 @@ export function ItemsTab() {
       <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border overflow-hidden">
         {isLoading ? (
           <div className="p-6 text-center text-gray-500 text-sm">Loading items…</div>
+        ) : isError ? (
+          <div className="p-6 text-center space-y-2">
+            <p className="text-sm text-red-600 font-medium">
+              Couldn't load store items — {(error as any)?.response?.data?.message ?? 'a connection or server problem occurred'}.
+            </p>
+            <p className="text-xs text-gray-400">Your inventory data is safe on the server; this screen just failed to fetch it.</p>
+            <button
+              onClick={() => refetch()}
+              className="text-xs font-semibold text-brand-green hover:underline"
+            >
+              Retry
+            </button>
+          </div>
         ) : filtered.length === 0 ? (
           <div className="p-6 text-center text-gray-500 text-sm">No items found.</div>
         ) : (

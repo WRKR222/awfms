@@ -1,7 +1,27 @@
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
+import { AxiosError } from 'axios';
 import { useLogin } from '../hooks/useAuth';
+
+// The login endpoint only ever returns 401 for a genuinely wrong username/
+// password. Anything else (no response at all, a timeout, a 5xx, a CORS
+// failure on a device hitting a different/stale frontend build) is a
+// connectivity or server problem, not a credentials problem — showing
+// "Invalid username or password" for those masks the real issue and sends
+// people on a wild goose chase re-typing a password that was never wrong.
+function loginErrorMessage(error: unknown): string {
+  if (error instanceof AxiosError) {
+    if (error.response?.status === 401) {
+      return 'Invalid username or password. Please try again.';
+    }
+    if (error.response) {
+      return error.response.data?.message ?? 'Sign-in failed. Please try again.';
+    }
+    return 'Unable to reach the server. Check your internet connection and try again.';
+  }
+  return 'Sign-in failed. Please try again.';
+}
 
 const schema = z.object({
   username: z.string().min(3, 'Username required'),
@@ -63,7 +83,7 @@ export function LoginPage() {
 
           {login.error && (
             <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-700 text-sm">
-              Invalid username or password. Please try again.
+              {loginErrorMessage(login.error)}
             </div>
           )}
 
