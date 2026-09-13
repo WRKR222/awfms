@@ -222,6 +222,9 @@ function TimeLockedPanel({ shift, closesLabel, reopenNote }: { shift: 'AM' | 'PM
       <div className="mt-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-xl px-4 py-2 max-w-xs">
         <p className="text-xs text-blue-600 dark:text-blue-400">{reopenNote}</p>
       </div>
+      <p className="text-xs text-amber-600 dark:text-amber-400 mt-3 max-w-xs">
+        A missed {shift} session is reported to the Director automatically.
+      </p>
       <button
         onClick={() => navigate('/attendant')}
         className="mt-6 bg-brand-green text-white rounded-xl px-8 py-3 font-semibold"
