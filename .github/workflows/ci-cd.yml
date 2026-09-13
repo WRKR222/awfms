@@ -147,13 +147,13 @@ jobs:
         run: npm install -g @railway/cli
 
       - name: Deploy to Railway
-        run: railway up --service awfms-backend
+        run: railway up --service awfms
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         working-directory: backend
 
       - name: Run production migrations
-        run: railway run --service awfms-backend -- npm run db:migrate
+        run: railway run --service awfms -- npm run db:migrate
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
