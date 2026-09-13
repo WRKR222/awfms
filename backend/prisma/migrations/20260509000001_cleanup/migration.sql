@@ -21,7 +21,14 @@ DROP TABLE IF EXISTS "egg_price_tiers"      CASCADE;
 DROP TABLE IF EXISTS "store_vet_visit_logs" CASCADE;
 
 -- ── 2. Drop EggGrade enum ─────────────────────────────────────────────────
-DROP TYPE IF EXISTS "EggGrade";
+-- CASCADE: egg_breakage_adjustments.grade (added by 20260508000000) still
+-- depends on this type at the point this migration runs — plain DROP TYPE
+-- aborts the whole transaction (current transaction is aborted, commands
+-- ignored...) on any database replaying migration history from scratch.
+-- The dependent column is dropped for good by 20260616000001 anyway, so
+-- cascading here just does that removal a bit earlier; every other
+-- statement in this file is already IF EXISTS/IF NOT EXISTS-guarded.
+DROP TYPE IF EXISTS "EggGrade" CASCADE;
 
 -- ── 3. EggCollectionSession: drop duplicate tally columns + soft delete ───
 ALTER TABLE "egg_collection_sessions"
