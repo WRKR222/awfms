@@ -34,7 +34,7 @@ export function StockInTab() {
   const watchedQtyIn  = useWatch({ control, name: 'quantityIn' });
   const selectedItem  = items.find(i => i.id === watchedItemId);
 
-  const { data: list = [], isLoading } = useQuery({
+  const { data: list = [], isLoading, isError, error, refetch } = useQuery({
     queryKey: ['store-stock-in'],
     queryFn: async () => (await api.get('/store/inventory/stock-in')).data as any[],
   });
@@ -298,6 +298,16 @@ export function StockInTab() {
       <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border overflow-hidden">
         {isLoading ? (
           <div className="p-6 text-center text-gray-500 text-sm">Loading…</div>
+        ) : isError ? (
+          <div className="p-6 text-center space-y-2">
+            <p className="text-sm text-red-600 font-medium">
+              Couldn't load stock-in history — {(error as any)?.response?.data?.message ?? 'a connection or server problem occurred'}.
+            </p>
+            <p className="text-xs text-gray-400">Your records are safe on the server; this screen just failed to fetch them.</p>
+            <button onClick={() => refetch()} className="text-xs font-semibold text-brand-green hover:underline">
+              Retry
+            </button>
+          </div>
         ) : list.length === 0 ? (
           <div className="p-6 text-center text-gray-500 text-sm">No stock-in records yet.</div>
         ) : (
