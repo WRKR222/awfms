@@ -324,7 +324,7 @@ export class SalesService {
       include: {
         reportedBy: { select: { fullName: true } },
       },
-      orderBy: { adjustmentDate: 'desc' },
+      orderBy: [{ adjustmentDate: 'desc' }, { createdAt: 'desc' }],
       take: 100,
     });
   }
@@ -612,8 +612,10 @@ export class SalesService {
     }
 
     // ── Latest breakage adjustment overrides broken counts ────────────────
+    // FIX: adjustmentDate is a date-only column, so same-day adjustments used
+    // to tie and findFirst could return the wrong one. Break ties by createdAt.
     const latestAdj = await this.prisma.eggBreakageAdjustment.findFirst({
-      orderBy: { adjustmentDate: 'desc' },
+      orderBy: [{ adjustmentDate: 'desc' }, { createdAt: 'desc' }],
     });
 
     const pricing = await this.prisma.dailyEggPrice.findUnique({
@@ -661,14 +663,32 @@ export class SalesService {
       include: { items: true },
     });
 
+    // FIX: latestAdj.newStandard / newConsumable are snapshots the Sales user
+    // entered AFTER already seeing stock net of sales up to that moment (the
+    // frontend pre-fills the form from the then-current /sales/stock response).
+    // So sales placed before the adjustment are already baked into those new*
+    // values — summing ALL of today's sales again double-subtracts them.
+    // Only sales placed after the latest adjustment was recorded should be
+    // subtracted from the adjusted baseline; starter eggs have no adjustment
+    // override, so they always subtract every sale since soldFrom.
+    const adjCreatedAt = latestAdj?.createdAt ?? null;
+
     let soldStandard = 0, soldStarter = 0, soldConsumable = 0;
+    let soldStandardSinceAdj = 0, soldConsumableSinceAdj = 0;
     for (const order of soldOrders) {
+      const isAfterAdj = !adjCreatedAt || order.createdAt >= adjCreatedAt;
       for (const item of order.items) {
         const qty =
           (item as any).quantityEggs ?? ((item as any).quantityTrays ?? 0) * 30;
-        if (item.itemType === 'STANDARD_EGGS')          soldStandard  += qty;
-        else if (item.itemType === 'STARTER_EGGS')      soldStarter   += qty;
-        else if (item.itemType === 'CONSUMABLE_BROKEN_EGGS') soldConsumable += qty;
+        if (item.itemType === 'STANDARD_EGGS') {
+          soldStandard += qty;
+          if (isAfterAdj) soldStandardSinceAdj += qty;
+        } else if (item.itemType === 'STARTER_EGGS') {
+          soldStarter += qty;
+        } else if (item.itemType === 'CONSUMABLE_BROKEN_EGGS') {
+          soldConsumable += qty;
+          if (isAfterAdj) soldConsumableSinceAdj += qty;
+        }
       }
     }
 
@@ -688,13 +708,20 @@ export class SalesService {
     const currentNonConsumable =
       latestAdj?.newNonConsumable ?? baseNonConsumableEggs;
 
+    // FIX: only subtract sales made SINCE the latest breakage adjustment from
+    // the adjusted baseline — sales before it are already reflected in
+    // newStandard/newConsumable. When there's no adjustment yet, fall back to
+    // subtracting every sale since soldFrom, as before.
+    const standardSoldToSubtract   = latestAdj ? soldStandardSinceAdj   : soldStandard;
+    const consumableSoldToSubtract = latestAdj ? soldConsumableSinceAdj : soldConsumable;
+
     const stockResult = {
       // FIX: standard egg stock now also reflects the latest breakage
       // adjustment's newStandard value, so a standard egg breaking into
       // consumable/non-consumable correctly removes it from standard stock.
-      standardEggs:      Math.max(0, currentStandard - soldStandard - lockedEggs),
+      standardEggs:      Math.max(0, currentStandard - standardSoldToSubtract - lockedEggs),
       starterEggs:       Math.max(0, baseStarterEggs  - soldStarter),
-      consumableEggs:    Math.max(0, currentConsumable - soldConsumable),
+      consumableEggs:    Math.max(0, currentConsumable - consumableSoldToSubtract),
       nonConsumableEggs: currentNonConsumable,
     };
 
