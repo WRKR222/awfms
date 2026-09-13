@@ -61,7 +61,7 @@ jobs:
         run: npm run lint
 
       - name: Run unit tests
-        run: npm test -- --forceExit
+        run: npm test
         env:
           DATABASE_URL: postgresql://awfms_test:testpassword@localhost:5432/awfms_test
           JWT_SECRET: ci-test-secret-key-minimum-32-chars
