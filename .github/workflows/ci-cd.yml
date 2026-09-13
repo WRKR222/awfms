@@ -147,15 +147,26 @@ jobs:
         run: npm install -g @railway/cli
 
       - name: Deploy to Railway
+        # No working-directory here on purpose: the Railway service's own
+        # "Root Directory" setting is already "backend", so Nixpacks
+        # resolves the app path itself from the repo root. Adding our own
+        # working-directory: backend on top made it look for backend/backend
+        # ("Failed to read app source directory... No such file or directory") —
+        # same class of bug as the Vercel deploy step above.
         run: railway up --service awfms
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        working-directory: backend
 
       - name: Run production migrations
+        # working-directory needed here (unlike the deploy step above):
+        # `npm run db:migrate` needs backend/package.json on disk in the
+        # runner's own checkout to know what script to run — this is
+        # separate from Railway's Root Directory, which only applies to
+        # what `railway up` uploads as the app's build/deploy context.
         run: railway run --service awfms -- npm run db:migrate
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        working-directory: backend
 
   # ─── Deploy Frontend to Vercel ───────────────────────────────────────────────
   deploy-frontend:
