@@ -5,6 +5,7 @@ dist/
 *.log
 *.key
 *.pem
+*.tsbuildinfo
 .DS_Store
 Thumbs.db
 # Build output
