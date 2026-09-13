@@ -269,6 +269,40 @@ export function useFeedWastageSummary(period: 'daily' | 'weekly' | 'monthly' = '
   });
 }
 
+// ── Issued vs Recorded: Store's daily feed issuance vs what attendants
+// recorded feeding that day — the monitoring that replaced the old
+// per-submission Store-item gate on Egg Collection / Brooder feed logging.
+
+export interface IssuedVsRecordedBucket {
+  periodStart:  string;
+  issuedKg:     number;
+  recordedKg:   number;
+  diffKg:       number;
+  mismatchDays: number;
+}
+
+export interface IssuedVsRecordedSummaryResponse {
+  period: 'daily' | 'weekly' | 'monthly';
+  from:   string;
+  to:     string;
+  totals: {
+    issuedKg:     number;
+    recordedKg:   number;
+    diffKg:       number;
+    mismatchDays: number;
+  };
+  buckets: IssuedVsRecordedBucket[];
+}
+
+export function useIssuedVsRecordedSummary(period: 'daily' | 'weekly' | 'monthly' = 'daily') {
+  return useQuery<IssuedVsRecordedSummaryResponse>({
+    queryKey:      ['brooder-feed-issued-vs-recorded-summary', period],
+    queryFn:       () => api.get('/brooder/feed-issued-vs-recorded-summary', { params: { period } }).then(r => r.data),
+    staleTime:     60_000,
+    refetchInterval: 5 * 60_000,
+  });
+}
+
 // ── Daily feed breakdown (calendar week, for PM analysis) ───────────────────
 
 export interface DailyFeedBreakdownDay {

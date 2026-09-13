@@ -8,8 +8,8 @@
 // so every kg/cost shown here comes from the whole-brooder sheet.
 
 import { useState } from 'react';
-import { TrendingDown, Coins } from 'lucide-react';
-import { useFeedWastageSummary } from '../../hooks/useBrooderCageMap';
+import { TrendingDown, Coins, Scale } from 'lucide-react';
+import { useFeedWastageSummary, useIssuedVsRecordedSummary } from '../../hooks/useBrooderCageMap';
 import dayjs from '../../lib/dayjs';
 
 type Period = 'daily' | 'weekly' | 'monthly';
@@ -90,6 +90,103 @@ export function BrooderFeedWastagePanel() {
                 <span className="text-gray-500 dark:text-gray-400">
                   +{b.excessKg.toFixed(2)}kg · KES {b.excessCostKes.toLocaleString('en-KE', { maximumFractionDigits: 0 })}
                   {' '}· {b.eventCount} {b.eventCount === 1 ? 'entry' : 'entries'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Issued vs Recorded ────────────────────────────────────────────────────
+//
+// Egg Collection and Brooder feed logging no longer gate on a specific
+// Store-issued item — the attendant just records a feed-stage name + kg.
+// This tile is the monitoring that replaced that gate: per day, how much
+// Store actually issued to a batch (StoreStockOut) vs how much attendants
+// recorded feeding it that day. A "mismatch day" is one where the two
+// disagree by more than a small tolerance (issuance is naturally lumpier
+// than a strict daily ration, so this doesn't flag ordinary timing noise).
+export function FeedIssuedVsRecordedPanel() {
+  const [period, setPeriod] = useState<Period>('daily');
+  const { data, isLoading } = useIssuedVsRecordedSummary(period);
+
+  return (
+    <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Scale className="w-4 h-4 text-amber-500" />
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+            Feed — Issued vs Recorded
+          </span>
+        </div>
+        <div className="flex rounded-lg border border-gray-200 dark:border-dark-border overflow-hidden text-xs">
+          {(['daily', 'weekly', 'monthly'] as Period[]).map(p => (
+            <button
+              key={p}
+              onClick={() => setPeriod(p)}
+              className={`px-2.5 py-1 font-medium transition-colors ${
+                period === p
+                  ? 'bg-amber-500 text-white'
+                  : 'bg-white dark:bg-dark-card text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-dark-border'
+              }`}
+            >
+              {PERIOD_LABELS[p]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {isLoading ? (
+        <p className="text-xs text-gray-400">Loading…</p>
+      ) : !data || (data.totals.issuedKg === 0 && data.totals.recordedKg === 0) ? (
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          No feed issued or recorded in this window yet.
+        </p>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 gap-3 mb-3">
+            <div className="bg-gray-50 dark:bg-dark-border/40 rounded-xl p-3">
+              <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">Store Issued</p>
+              <p className="text-lg font-bold text-gray-800 dark:text-gray-100">
+                {data.totals.issuedKg.toFixed(2)} kg
+              </p>
+            </div>
+            <div className="bg-gray-50 dark:bg-dark-border/40 rounded-xl p-3">
+              <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">Recorded Fed</p>
+              <p className="text-lg font-bold text-gray-800 dark:text-gray-100">
+                {data.totals.recordedKg.toFixed(2)} kg
+              </p>
+            </div>
+            <div className={`rounded-xl p-3 ${data.totals.mismatchDays > 0 ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-green-50 dark:bg-green-900/20'}`}>
+              <p className={`text-xs font-medium ${data.totals.mismatchDays > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-green-600 dark:text-green-400'}`}>
+                Mismatch Days
+              </p>
+              <p className={`text-lg font-bold ${data.totals.mismatchDays > 0 ? 'text-amber-700 dark:text-amber-400' : 'text-green-700 dark:text-green-400'}`}>
+                {data.totals.mismatchDays}
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-1.5 max-h-56 overflow-y-auto">
+            {data.buckets.slice().reverse().map(b => (
+              <div
+                key={b.periodStart}
+                className="flex items-center justify-between text-xs bg-gray-50 dark:bg-dark-border/40 rounded-lg px-3 py-2"
+              >
+                <span className="font-medium text-gray-700 dark:text-gray-300">
+                  {period === 'monthly'
+                    ? dayjs(`${b.periodStart}-01`).format('MMM YYYY')
+                    : dayjs(b.periodStart).format('ddd D MMM')}
+                </span>
+                <span className="text-gray-500 dark:text-gray-400">
+                  Issued {b.issuedKg.toFixed(2)}kg · Recorded {b.recordedKg.toFixed(2)}kg
+                  {' '}· {b.diffKg > 0 ? `+${b.diffKg.toFixed(2)}` : b.diffKg.toFixed(2)}kg diff
+                  {b.mismatchDays > 0 && (
+                    <span className="text-amber-600 dark:text-amber-400 font-semibold"> · mismatch</span>
+                  )}
                 </span>
               </div>
             ))}

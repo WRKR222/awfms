@@ -2141,6 +2141,18 @@ export class BrooderService {
     };
   }
 
+  // Delegates to FeedWastageService — see there for what "issued vs
+  // recorded" actually compares now that feed logging no longer gates on a
+  // specific Store item.
+  async getIssuedVsRecordedSummary(params: {
+    period?: 'daily' | 'weekly' | 'monthly';
+    from?: string;
+    to?: string;
+    batchId?: string;
+  } = {}) {
+    return this.feedWastage.getIssuedVsRecordedSummary(params);
+  }
+
   async listGeneralFeedLogs(batchId: string, limit = 30) {
     return this.prisma.brooderGeneralFeedLog.findMany({
       where:   { batchId },

@@ -129,22 +129,6 @@ export class ProductionService {
     }
   }
 
-  // Derives a FeedType enum value from the store item's SKU/name — mirrors
-  // BrooderDailyLogModal's deriveFeedType on the frontend, kept here too
-  // since FeedIntakeLog.feedType is a non-nullable enum column.
-  private deriveFeedTypeFromItem(item: { sku?: string | null; name: string }): string {
-    const haystack = `${item.sku ?? ''} ${item.name}`.toUpperCase();
-    if (haystack.includes('KIENYEJI')) {
-      if (haystack.includes('STARTER'))  return 'KIENYEJI_STARTER';
-      if (haystack.includes('GROWER'))   return 'KIENYEJI_GROWER';
-      if (haystack.includes('FINISHER')) return 'KIENYEJI_FINISHER';
-    }
-    if (haystack.includes('CHICK'))  return 'CHICK_MASH';
-    if (haystack.includes('GROWER')) return 'GROWER_MASH';
-    if (haystack.includes('LAYER'))  return 'LAYER_MASH';
-    return 'LAYER_MASH'; // production-house default — birds here are always layers
-  }
-
   getEggCollectionSessionStatus() {
     return getEggCollectionSessionStatus();
   }
@@ -206,29 +190,21 @@ export class ProductionService {
       throw new ConflictException('Tally for this session is locked. No further submissions accepted.');
     }
 
-    // ── Validate feed store item(s) + residual BEFORE writing anything ─────
-    // Primary line first (backward-compat), then any additional lines for a
-    // same-day feed transition (e.g. Growers Mash -> Developer's Mash).
-    // Two lines against the same item within one submission are reserved
-    // against each other, same pattern as the vaccine reservation below.
-    const feedItem = await this.getIssuedStoreItemOrThrow(dto.sessionFeed.feedStoreItemId);
+    // ── Feed lines: fixed feed-type name, no Store-item lookup/residual gate ──
+    // Feed is no longer drawn against a specific Store-issued item at
+    // submission time — the attendant just records a feed-stage name + kg.
+    // Store's own daily issuance is compared against this separately (see
+    // FeedWastageService.checkIssuedVsRecorded) for monitoring, rather than
+    // validating or reserving anything here.
     const feedLines = [
-      { feedStoreItemId: dto.sessionFeed.feedStoreItemId, feedKg: dto.sessionFeed.feedKg, item: feedItem },
+      { feedType: dto.sessionFeed.feedType, feedStoreItemId: dto.sessionFeed.feedStoreItemId ?? null, feedKg: dto.sessionFeed.feedKg },
+      ...(dto.sessionFeed.additionalLines ?? []).map(line => ({
+        feedType: line.feedType, feedStoreItemId: line.feedStoreItemId ?? null, feedKg: line.feedKg,
+      })),
     ];
-    const feedReserved = new Map<string, number>();
-    feedReserved.set(dto.sessionFeed.feedStoreItemId, dto.sessionFeed.feedKg);
-    for (const line of dto.sessionFeed.additionalLines ?? []) {
-      const lineItem = await this.getIssuedStoreItemOrThrow(line.feedStoreItemId);
-      const already = feedReserved.get(line.feedStoreItemId) ?? 0;
-      await this.checkResidualOrWarn(line.feedStoreItemId, already + line.feedKg, lineItem.unit, 'Egg collection feed line');
-      feedReserved.set(line.feedStoreItemId, already + line.feedKg);
-      feedLines.push({ feedStoreItemId: line.feedStoreItemId, feedKg: line.feedKg, item: lineItem });
-    }
-    await this.checkResidualOrWarn(dto.sessionFeed.feedStoreItemId, dto.sessionFeed.feedKg, feedItem.unit, 'Egg collection feed');
     const totalFeedKg = feedLines.reduce((s, l) => s + l.feedKg, 0);
     const feedBreakdownJson = feedLines.map(l => ({
-      storeItemId: l.feedStoreItemId,
-      name: l.item.name,
+      feedType: l.feedType,
       kg: l.feedKg,
     }));
 
@@ -281,8 +257,8 @@ export class ProductionService {
       totalBrokenSellable: 0,
       totalBrokenUnsellable: totals.totalBroken,
       feedKg: totalFeedKg,
-      feedTypeName: this.deriveFeedTypeFromItem(feedItem as any),
-      feedStoreItemId: dto.sessionFeed.feedStoreItemId,
+      feedTypeName: dto.sessionFeed.feedType,
+      feedStoreItemId: dto.sessionFeed.feedStoreItemId ?? null,
       feedBreakdownJson: feedBreakdownJson as any,
       waterLiters: dto.environment?.waterLiters ?? null,
       houseTempC: dto.environment?.houseTempC ?? null,
@@ -302,17 +278,19 @@ export class ProductionService {
         })
       : await this.prisma.eggCollectionSession.create({ data });
 
-    // Deduct feed from stock — feed is now a required, store-item-linked
-    // field (validated above), so this always fires. One log per feed line,
-    // so a same-day transition (e.g. Growers Mash -> Developer's Mash) draws
-    // down each item's own residual correctly instead of blending them.
+    // Record each feed line to the same-day recorded-feed ledger (read back
+    // by FeedWastageService.checkIssuedVsRecorded against Store's own
+    // issuance for the day — see there for how monitoring now works without
+    // a per-submission Store-item gate). One log per feed line, so a
+    // same-day transition (e.g. Grower's Mash -> Developer's Mash) is kept
+    // distinct instead of blended into one figure.
     for (const line of feedLines) {
       try {
         await this.prisma.feedIntakeLog.create({
           data: {
             batchId: dto.batchId,
             houseId: dto.houseId,
-            feedType: this.deriveFeedTypeFromItem(line.item as any) as any,
+            feedType: line.feedType as any,
             storeItemId: line.feedStoreItemId,
             entryDate: new Date(dto.sessionDate),
             quantityDispensedKg: line.feedKg,
@@ -323,7 +301,7 @@ export class ProductionService {
             recordedById: user.id,
           },
         });
-      } catch (_) { /* best-effort feed log — residual already validated above */ }
+      } catch (_) { /* best-effort feed log */ }
     }
 
     // Forward vaccines/supplements to VaccinationRecord (store-item-linked,

@@ -100,6 +100,23 @@ export class BrooderController {
     return this.svc.getFeedWastageSummary({ period, from, to, batchId });
   }
 
+  /** GET /brooder/feed-issued-vs-recorded-summary?period=daily|weekly|monthly&from=&to=&batchId=
+   *  Director-facing comparison of Store's daily feed issuance (StoreStockOut)
+   *  against what attendants actually recorded feeding that day
+   *  (FeedIntakeLog for production, BrooderGeneralFeedLog for brooder) —
+   *  the monitoring that replaced the old per-submission Store-item gate on
+   *  Egg Collection / Brooder feed logging. */
+  @Get('feed-issued-vs-recorded-summary')
+  @RequirePermission(Permission.FINANCE_VIEW)
+  getIssuedVsRecordedSummary(
+    @Query('period') period?: 'daily' | 'weekly' | 'monthly',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('batchId') batchId?: string,
+  ) {
+    return this.svc.getIssuedVsRecordedSummary({ period, from, to, batchId });
+  }
+
   /** GET /brooder/missed-feed-alerts
    *  Flags any row/level whose required ration for YESTERDAY was not fully
    *  dispensed by the time the day rolled over. Surfaced on Lead Attendant

@@ -25,9 +25,10 @@ import { useTodayEggSessions } from '../../hooks/useEggSessions';
 import { useEggCollectionSessionStatus } from '../../hooks/useEggCollectionSessionStatus';
 import { useAttendantRealtime } from '../../hooks/useRealtime';
 import {
-  useIssuableStoreItems, FEED_CATEGORIES,
+  useIssuableStoreItems,
   VACCINE_CATEGORIES, SUPPLEMENT_CATEGORIES, TREATMENT_CATEGORIES,
 } from '../../hooks/useIssuableStoreItems';
+import { LAYER_FEED_TYPES } from '../../lib/feedTypes';
 import dayjs from '../../lib/dayjs';
 
 const inputCls  = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-base bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
@@ -68,7 +69,7 @@ interface VaccineEntry {
 }
 
 interface FeedLineEntry {
-  storeItemId: string;
+  feedType: string;
   kg: string; // string in form state — parsed on submit
 }
 
@@ -266,12 +267,6 @@ export function EggCollectionPage() {
 
   const { isOnline } = useOfflineStore();
 
-  // Feed items Store has actually issued — production-house feed only.
-  // allItems: true — list every active Store item in the category, not just
-  // ones already issued (feed and bulk-issued supplements/treatments are
-  // often handed over before Store logs the stock-out); residual/
-  // overDrawnBy still let surplus be monitored once it is logged.
-  const { data: feedItems = [] } = useIssuableStoreItems(FEED_CATEGORIES, { allItems: true });
   // Vaccines, supplements and treatments each draw from their own Store
   // category so a vaccine picker can never show a supplement, etc.
   const { data: vaccineItems    = [] } = useIssuableStoreItems(VACCINE_CATEGORIES, { allItems: true });
@@ -291,11 +286,11 @@ export function EggCollectionPage() {
   const [vaccines, setVaccines] = useState<VaccineEntry[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // ── Feed — supports a same-day transition (e.g. Growers Mash -> Developer's
-  // Mash) as separate line items, each drawn against its own Store residual,
-  // rather than one blended figure.
-  const [feedLines, setFeedLines] = useState<FeedLineEntry[]>([{ storeItemId: '', kg: '' }]);
-  function addFeedLine() { setFeedLines(f => [...f, { storeItemId: '', kg: '' }]); }
+  // ── Feed — a fixed list of feed-stage names (not tied to a specific Store
+  // item). Supports a same-day transition (e.g. Grower's Mash -> Developer's
+  // Mash) as separate line items rather than one blended figure.
+  const [feedLines, setFeedLines] = useState<FeedLineEntry[]>([{ feedType: '', kg: '' }]);
+  function addFeedLine() { setFeedLines(f => [...f, { feedType: '', kg: '' }]); }
   function removeFeedLine(i: number) { setFeedLines(f => f.filter((_, j) => j !== i)); }
   function updateFeedLine(i: number, field: keyof FeedLineEntry, val: string) {
     setFeedLines(f => f.map((line, j) => j === i ? { ...line, [field]: val } : line));
@@ -341,11 +336,11 @@ export function EggCollectionPage() {
     if (returned.houseTempC   != null) setValue('houseTempC',   returned.houseTempC);
     if (returned.remarks)               setValue('remarks',      returned.remarks);
     // Feed lines — prefer the full breakdown if present, else fall back to
-    // the single legacy feedKg/feedStoreItemId pair.
+    // the single legacy feedKg/feedTypeName pair.
     if (Array.isArray(returned.feedBreakdownJson) && returned.feedBreakdownJson.length > 0) {
-      setFeedLines(returned.feedBreakdownJson.map((l: any) => ({ storeItemId: l.storeItemId, kg: String(l.kg ?? '') })));
-    } else if (returned.feedStoreItemId) {
-      setFeedLines([{ storeItemId: returned.feedStoreItemId, kg: returned.feedKg != null ? String(returned.feedKg) : '' }]);
+      setFeedLines(returned.feedBreakdownJson.map((l: any) => ({ feedType: l.feedType ?? '', kg: String(l.kg ?? '') })));
+    } else if (returned.feedTypeName) {
+      setFeedLines([{ feedType: returned.feedTypeName, kg: returned.feedKg != null ? String(returned.feedKg) : '' }]);
     }
   }, [pageMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -397,13 +392,13 @@ export function EggCollectionPage() {
     const tempC  = Number(data.houseTempC);
 
     const cleanedFeedLines = feedLines
-      .filter(l => l.storeItemId || l.kg)
-      .map(l => ({ feedStoreItemId: l.storeItemId, feedKg: Number(l.kg) }));
-    if (cleanedFeedLines.length === 0 || !cleanedFeedLines[0].feedStoreItemId || !(cleanedFeedLines[0].feedKg > 0)) {
-      setSubmitError('Session feed consumption is required (feed type and kg dispensed, from what Store has issued).');
+      .filter(l => l.feedType || l.kg)
+      .map(l => ({ feedType: l.feedType, feedKg: Number(l.kg) }));
+    if (cleanedFeedLines.length === 0 || !cleanedFeedLines[0].feedType || !(cleanedFeedLines[0].feedKg > 0)) {
+      setSubmitError('Session feed consumption is required (feed type and kg dispensed).');
       return;
     }
-    if (cleanedFeedLines.some(l => !l.feedStoreItemId || !(l.feedKg > 0))) {
+    if (cleanedFeedLines.some(l => !l.feedType || !(l.feedKg > 0))) {
       setSubmitError('Each feed line must have a feed type and a kg dispensed greater than zero.');
       return;
     }
@@ -455,7 +450,7 @@ export function EggCollectionPage() {
         weightKg: Number(r.weightKg),
         attendantName: r.attendantName,
       })),
-      sessionFeed: { feedKg: primaryFeed.feedKg, feedStoreItemId: primaryFeed.feedStoreItemId, additionalLines: additionalFeed },
+      sessionFeed: { feedKg: primaryFeed.feedKg, feedType: primaryFeed.feedType, additionalLines: additionalFeed },
       environment: { waterLiters: waterL, houseTempC: tempC },
       vaccinesGiven: cleanedVaccines,
       remarks: data.remarks || undefined,
@@ -714,15 +709,10 @@ export function EggCollectionPage() {
             <div key={i} className="grid grid-cols-1 md:grid-cols-[1fr,1fr,auto] gap-3 items-end mt-3">
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Feed Type Given</label>
-                <select value={line.storeItemId} onChange={e => updateFeedLine(i, 'storeItemId', e.target.value)} className={inputCls}>
-                  <option value="">Select feed issued by Store...</option>
-                  {feedItems.length === 0 && (
-                    <option value="" disabled>No feed has been issued from the store yet</option>
-                  )}
-                  {feedItems.map(item => (
-                    <option key={item.id} value={item.id}>
-                      {item.name} — {item.residual.toFixed(2)} {item.unit} left
-                    </option>
+                <select value={line.feedType} onChange={e => updateFeedLine(i, 'feedType', e.target.value)} className={inputCls}>
+                  <option value="">Select feed type...</option>
+                  {LAYER_FEED_TYPES.map(ft => (
+                    <option key={ft.value} value={ft.value}>{ft.label}</option>
                   ))}
                 </select>
               </div>
@@ -739,9 +729,9 @@ export function EggCollectionPage() {
             </div>
           ))}
           <p className="text-[11px] text-gray-400 mt-2">
-            Production-house feed only, drawn against what Store has issued. Add a second line for a
-            same-day ration transition, e.g. Growers Mash (20 kg) / Developer's Mash (10 kg), instead of
-            one blended figure. Brooder feed is logged by the Production Manager.
+            Production-house feed only. Add a second line for a same-day ration transition, e.g.
+            Grower's Mash (20 kg) / Developer's Mash (10 kg), instead of one blended figure.
+            Brooder feed is logged by the Production Manager.
           </p>
         </div>
 

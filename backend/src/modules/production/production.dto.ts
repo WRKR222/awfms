@@ -7,10 +7,11 @@
 //     split — that sellable/unsellable classification happens later, at
 //     three-party tally sign-off, entered by the Production Manager) and
 //     includes starterEggs.
-//   • Session-level: feedStoreItemId + feedKg (feed is now drawn against a
-//     Store-issued item, same residual-ledger gating as the brooder module;
-//     feedKg allows any number of decimal places), waterLiters + houseTempC,
-//     optional vaccines/supplements list (each also store-item-linked).
+//   • Session-level: feedType (fixed layer feed-stage name) + feedKg (any
+//     number of decimal places) — no longer tied to a specific Store-issued
+//     item; Store's own daily issuance is compared separately for
+//     monitoring rather than gating what gets recorded. waterLiters +
+//     houseTempC, optional vaccines/supplements list (still store-item-linked).
 import { z } from 'zod';
 
 const RowDataEntrySchema = z.object({
@@ -26,21 +27,33 @@ const RowDataEntrySchema = z.object({
   attendantName: z.string().default(''),
 });
 
-// One feed line = one Store-issued feed item + the kg dispensed from it this
-// session. Most sessions have exactly one line; a ration transition (e.g.
-// Growers Mash → Developer's Mash) is recorded as two lines instead of one
-// blended figure, so each item's own residual is drawn down correctly.
+// Fixed feed-stage names for layer batches — no longer tied to a specific
+// Store-issued item. Kienyeji batches are untouched by this and keep
+// selecting their own store-item-linked feed types elsewhere.
+export const LAYER_FEED_TYPES = [
+  'CHICK_MASH', 'CHICK_CRUMBS', 'GROWER_MASH',
+  'DEVELOPER_MASH', 'PRELAYER_MASH', 'LAYER_MASH',
+] as const;
+
+// One feed line = one feed type + the kg dispensed of it this session. Most
+// sessions have exactly one line; a ration transition (e.g. Grower's Mash →
+// Developer's Mash) is recorded as two lines instead of one blended figure.
+// feedStoreItemId is optional and purely informational (Store's own
+// issuance record for the day is compared separately for monitoring — see
+// FeedWastageService — rather than gating what the attendant can record).
 const SessionFeedLineSchema = z.object({
-  feedStoreItemId: z.string().uuid('Feed type (store item) is required'),
+  feedType: z.enum(LAYER_FEED_TYPES),
+  feedStoreItemId: z.string().uuid().optional(),
   feedKg: z.number().positive('Feed kg must be greater than zero'),
 });
 
 const SessionFeedSchema = z.object({
   // Primary/first line — kept flat for backward compatibility with older
   // clients and with everything downstream that reads session.feedKg /
-  // session.feedStoreItemId directly.
+  // session.feedTypeName directly.
   feedKg: z.number().positive('Feed kg must be greater than zero'),
-  feedStoreItemId: z.string().uuid('Feed type (store item) is required'),
+  feedType: z.enum(LAYER_FEED_TYPES),
+  feedStoreItemId: z.string().uuid().optional(),
   // Extra lines for a same-day feed transition. Optional — most days have
   // just the one (primary) line above.
   additionalLines: z.array(SessionFeedLineSchema).default([]),

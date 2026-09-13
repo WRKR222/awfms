@@ -46,6 +46,7 @@ import {
   useIssuableStoreItems, FEED_CATEGORIES,
   VACCINE_CATEGORIES, SUPPLEMENT_CATEGORIES, TREATMENT_CATEGORIES,
 } from '../../hooks/useIssuableStoreItems';
+import { LAYER_FEED_TYPES } from '../../lib/feedTypes';
 
 const VACCINE_ROUTES = [
   { value: 'DRINKING_WATER', label: 'Drinking Water' },
@@ -163,7 +164,10 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
   const vaccineItems    = vaccineItemsRaw ?? [];
   const supplementItems = supplementItemsRaw ?? [];
   const treatmentItems  = treatmentItemsRaw ?? [];
-  const feedItems = (feedItemsRaw ?? []).filter(i => deriveFeedType(i) !== null);
+  // Kienyeji feed types are unchanged — still Store-item-linked, still
+  // matched by name/sku. Layer feed types no longer come from here at all
+  // (see LAYER_FEED_TYPES, a fixed list not tied to any Store item).
+  const feedItems = (feedItemsRaw ?? []).filter(i => deriveFeedType(i)?.startsWith('KIENYEJI'));
 
   const showFeed      = session === 'MORNING' || session === 'EVENING';
   const showTreatment = session === 'MORNING' || session === 'MIDDAY';
@@ -233,11 +237,13 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
   }
 
   // ── Feed (MORNING/EVENING only) ──────────────────────────────────────────
-  // Quantity is in whatever unit the selected feed item is stocked in
-  // (kg for feed items, per the store item's own `unit` field).
-  const [feedStoreItemId, setFeedStoreItemId] = useState('');
-  const [feedQuantityKg,  setFeedQuantityKg]  = useState('');
-  const selectedFeedItem = feedItems.find(i => i.id === feedStoreItemId) ?? null;
+  // feedTypeValue holds either a fixed layer feed-type value (e.g.
+  // 'CHICK_MASH', always kg) or a Kienyeji Store item id (unit per that
+  // item's own `unit` field, unchanged behavior).
+  const [feedTypeValue,  setFeedTypeValue]    = useState('');
+  const [feedQuantityKg, setFeedQuantityKg]   = useState('');
+  const isFixedFeedType = LAYER_FEED_TYPES.some(ft => ft.value === feedTypeValue);
+  const selectedFeedItem = isFixedFeedType ? null : (feedItems.find(i => i.id === feedTypeValue) ?? null);
 
   // ── Mortality (every session) ────────────────────────────────────────────
   const [mortalityScope, setMortalityScope] = useState<'GENERAL' | 'ROW_LEVEL'>(presetScope ? 'ROW_LEVEL' : 'GENERAL');
@@ -339,15 +345,15 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
       }
 
       // 3) Feed — MORNING/EVENING only.
-      if (showFeed && feedStoreItemId && Number(feedQuantityKg) > 0) {
+      if (showFeed && feedTypeValue && Number(feedQuantityKg) > 0) {
         try {
-          const item = feedItems.find(i => i.id === feedStoreItemId);
+          const item = isFixedFeedType ? null : feedItems.find(i => i.id === feedTypeValue);
           await api.post('/brooder/general-feed-logs', {
             batchId: batch.id,
             entryDate: todayStr,
             logSession: session,
-            feedType: item ? deriveFeedType(item) ?? undefined : undefined,
-            storeItemId: feedStoreItemId,
+            feedType: isFixedFeedType ? feedTypeValue : (item ? deriveFeedType(item) ?? undefined : undefined),
+            storeItemId: isFixedFeedType ? undefined : feedTypeValue,
             quantityDispensedKg: Number(feedQuantityKg),
           });
         } catch (err: any) {
@@ -426,7 +432,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
       const cleanTreatments = treatments.filter(t => t.storeItemId && t.drugName.trim());
       if (cleanTreatments.some(t => !t.dose.trim())) { setSubmitError('Each treatment entry must have a dose (or remove it).'); return; }
     }
-    if (showFeed && feedStoreItemId && !(Number(feedQuantityKg) > 0)) {
+    if (showFeed && feedTypeValue && !(Number(feedQuantityKg) > 0)) {
       setSubmitError('Enter a feed quantity greater than 0, or clear the feed item.'); return;
     }
     if (totalLost > 0) {
@@ -670,14 +676,21 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
               </p>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <FieldLabel>Feed Item</FieldLabel>
-                  <select value={feedStoreItemId} onChange={e => setFeedStoreItemId(e.target.value)} className={iCls}>
+                  <FieldLabel>Feed Type</FieldLabel>
+                  <select value={feedTypeValue} onChange={e => setFeedTypeValue(e.target.value)} className={iCls}>
                     <option value="">None</option>
-                    {feedItems.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    <optgroup label="Feed Type">
+                      {LAYER_FEED_TYPES.map(ft => <option key={ft.value} value={ft.value}>{ft.label}</option>)}
+                    </optgroup>
+                    {feedItems.length > 0 && (
+                      <optgroup label="Kienyeji">
+                        {feedItems.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                      </optgroup>
+                    )}
                   </select>
                 </div>
                 <div>
-                  <FieldLabel>Quantity{selectedFeedItem ? ` (${selectedFeedItem.unit})` : ''}</FieldLabel>
+                  <FieldLabel>Quantity{selectedFeedItem ? ` (${selectedFeedItem.unit})` : isFixedFeedType ? ' (kg)' : ''}</FieldLabel>
                   <input value={feedQuantityKg} onChange={e => setFeedQuantityKg(e.target.value)}
                     type="number" step="0.1" min="0" className={iCls}
                     placeholder={selectedFeedItem?.unit === 'g' ? 'e.g. 25000' : 'e.g. 25'} />

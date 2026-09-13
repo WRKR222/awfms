@@ -394,4 +394,177 @@ export class FeedWastageService {
 
     return created;
   }
+
+  // ── Issued vs Recorded: Store's daily issuance vs what attendants logged ──
+  //
+  // Egg Collection and Brooder feed logging no longer require picking a
+  // specific Store-issued item (see LAYER_FEED_TYPES on the frontend / the
+  // feedType-based DTOs) — the attendant just records a feed-stage name +
+  // kg, with no per-submission gate against Store's stock. This is the
+  // monitoring that replaces that gate: for each batch-day, how much did
+  // Store actually issue to that batch (StoreStockOut, category FEED or
+  // FEED_SUPPLEMENT) versus how much the attendant recorded that day
+  // (FeedIntakeLog for production-stage batches, BrooderGeneralFeedLog for
+  // brooding-stage ones). A day where the two disagree by more than the
+  // tolerance is a mismatch worth a human looking at — either Store hasn't
+  // logged an issuance yet, feed was drawn from carry-over stock, or the
+  // attendant's figure needs a second look.
+  //
+  // Deliberately NOT the same 0.05kg tolerance as the ration-based checks
+  // above: issuance is naturally lumpier day-to-day (a bulk drop can cover
+  // several days), so a much looser bar avoids flagging normal timing noise
+  // as a mismatch.
+  private static readonly ISSUED_VS_RECORDED_TOLERANCE_KG = 0.5;
+
+  async getIssuedVsRecordedSummary(params: {
+    period?: 'daily' | 'weekly' | 'monthly';
+    from?: string;
+    to?: string;
+    batchId?: string;
+  } = {}) {
+    const period = params.period ?? 'daily';
+    const to     = params.to ? dayjs(params.to) : dayjs();
+    const defaultSpan = period === 'daily' ? 30 : period === 'weekly' ? 84 : 365;
+    const from   = params.from ? dayjs(params.from) : to.subtract(defaultSpan, 'day');
+    const fromDate = from.startOf('day').toDate();
+    const toDate   = to.endOf('day').toDate();
+    const batchFilter = params.batchId ? { batchId: params.batchId } : {};
+
+    const [productionRows, brooderRows, issuedRows] = await Promise.all([
+      this.prisma.feedIntakeLog.findMany({
+        where: { entryDate: { gte: fromDate, lte: toDate }, ...batchFilter },
+        select: { batchId: true, entryDate: true, quantityDispensedKg: true },
+      }),
+      this.prisma.brooderGeneralFeedLog.findMany({
+        where: { entryDate: { gte: fromDate, lte: toDate }, ...batchFilter },
+        select: { batchId: true, entryDate: true, quantityDispensedKg: true },
+      }),
+      this.prisma.storeStockOut.findMany({
+        where: {
+          issuedDate: { gte: fromDate, lte: toDate },
+          issuedToBatchId: params.batchId ?? { not: null },
+        },
+        select: {
+          issuedToBatchId: true, issuedDate: true, quantityOut: true,
+          storeItem: { select: { category: true } },
+        },
+      }),
+    ]);
+    const feedIssuedRows = issuedRows.filter(
+      r => r.storeItem.category === 'FEED' || r.storeItem.category === 'FEED_SUPPLEMENT',
+    );
+
+    const dayStr = (d: Date) => dayjs(d).format('YYYY-MM-DD');
+    const bucketKey = (dayStrVal: string): string => {
+      if (period === 'monthly') return dayStrVal.slice(0, 7);
+      if (period === 'weekly')  return dayjs(dayStrVal).startOf('isoWeek').format('YYYY-MM-DD');
+      return dayStrVal;
+    };
+
+    type DayTotals = { recordedKg: number; issuedKg: number };
+    const perBatchDay = new Map<string, DayTotals>();
+    const keyFor = (batchId: string, d: Date) => `${batchId}|${dayStr(d)}`;
+
+    for (const r of [...productionRows, ...brooderRows]) {
+      const k = keyFor(r.batchId, r.entryDate);
+      const t = perBatchDay.get(k) ?? { recordedKg: 0, issuedKg: 0 };
+      t.recordedKg += Number(r.quantityDispensedKg ?? 0);
+      perBatchDay.set(k, t);
+    }
+    for (const r of feedIssuedRows) {
+      if (!r.issuedToBatchId) continue;
+      const k = keyFor(r.issuedToBatchId, r.issuedDate);
+      const t = perBatchDay.get(k) ?? { recordedKg: 0, issuedKg: 0 };
+      t.issuedKg += Number(r.quantityOut ?? 0);
+      perBatchDay.set(k, t);
+    }
+
+    const buckets = new Map<string, {
+      periodStart: string; issuedKg: number; recordedKg: number; diffKg: number; mismatchDays: number;
+    }>();
+    let totalIssuedKg = 0, totalRecordedKg = 0, totalMismatchDays = 0;
+
+    for (const [key, totals] of perBatchDay) {
+      const [, dStr] = key.split('|');
+      const bKey = bucketKey(dStr);
+      const bucket = buckets.get(bKey) ?? { periodStart: bKey, issuedKg: 0, recordedKg: 0, diffKg: 0, mismatchDays: 0 };
+      bucket.issuedKg   = Math.round((bucket.issuedKg + totals.issuedKg) * 100) / 100;
+      bucket.recordedKg = Math.round((bucket.recordedKg + totals.recordedKg) * 100) / 100;
+      bucket.diffKg     = Math.round((bucket.recordedKg - bucket.issuedKg) * 100) / 100;
+      if (Math.abs(totals.recordedKg - totals.issuedKg) > FeedWastageService.ISSUED_VS_RECORDED_TOLERANCE_KG) {
+        bucket.mismatchDays += 1;
+        totalMismatchDays   += 1;
+      }
+      buckets.set(bKey, bucket);
+
+      totalIssuedKg   += totals.issuedKg;
+      totalRecordedKg += totals.recordedKg;
+    }
+
+    return {
+      period,
+      from: from.format('YYYY-MM-DD'),
+      to:   to.format('YYYY-MM-DD'),
+      totals: {
+        issuedKg:     Math.round(totalIssuedKg * 100) / 100,
+        recordedKg:   Math.round(totalRecordedKg * 100) / 100,
+        diffKg:       Math.round((totalRecordedKg - totalIssuedKg) * 100) / 100,
+        mismatchDays: totalMismatchDays,
+      },
+      buckets: Array.from(buckets.values()).sort((a, b) => a.periodStart.localeCompare(b.periodStart)),
+    };
+  }
+
+  // ── Daily cron support: check yesterday's issued-vs-recorded mismatch for
+  // one batch and notify the Director if it's outside tolerance. Separate
+  // from the summary above (which is read-only for the panel) — this is the
+  // write/notify side, called once per batch per day by
+  // FeedIssuedVsRecordedCron.
+  async notifyIfIssuedVsRecordedMismatch(batch: { id: string; batchCode: string }, date: Date) {
+    const dayStart = dayjs(date).startOf('day').toDate();
+    const dayEnd   = dayjs(date).endOf('day').toDate();
+
+    const [productionAgg, brooderAgg, issuedRows] = await Promise.all([
+      this.prisma.feedIntakeLog.aggregate({
+        where: { batchId: batch.id, entryDate: { gte: dayStart, lte: dayEnd } },
+        _sum: { quantityDispensedKg: true },
+      }),
+      this.prisma.brooderGeneralFeedLog.aggregate({
+        where: { batchId: batch.id, entryDate: { gte: dayStart, lte: dayEnd } },
+        _sum: { quantityDispensedKg: true },
+      }),
+      this.prisma.storeStockOut.findMany({
+        where: { issuedToBatchId: batch.id, issuedDate: { gte: dayStart, lte: dayEnd } },
+        select: { quantityOut: true, storeItem: { select: { category: true } } },
+      }),
+    ]);
+
+    const recordedKg = Number(productionAgg._sum.quantityDispensedKg ?? 0)
+      + Number(brooderAgg._sum.quantityDispensedKg ?? 0);
+    const issuedKg = issuedRows
+      .filter(r => r.storeItem.category === 'FEED' || r.storeItem.category === 'FEED_SUPPLEMENT')
+      .reduce((s, r) => s + Number(r.quantityOut ?? 0), 0);
+
+    // Nothing recorded and nothing issued — not a mismatch, just a quiet day.
+    if (recordedKg === 0 && issuedKg === 0) return null;
+
+    const diffKg = Math.round((recordedKg - issuedKg) * 100) / 100;
+    if (Math.abs(diffKg) <= FeedWastageService.ISSUED_VS_RECORDED_TOLERANCE_KG) return null;
+
+    const dayStrLabel = dayjs(date).format('D MMM YYYY');
+    const direction = diffKg > 0
+      ? `${diffKg.toFixed(2)}kg more was recorded fed than Store issued`
+      : `${Math.abs(diffKg).toFixed(2)}kg less was recorded fed than Store issued`;
+
+    await this.notifications.notifyRole(
+      UserRole.OWNER,
+      'BROODER_FEED_WASTAGE' as any,
+      `Feed Issued vs Recorded Mismatch — ${batch.batchCode}`,
+      `${batch.batchCode} on ${dayStrLabel}: Store issued ${issuedKg.toFixed(2)}kg of feed, ` +
+      `attendants recorded ${recordedKg.toFixed(2)}kg fed — ${direction}.`,
+      { entityId: batch.id, entityType: 'Batch' },
+    );
+
+    return { batchId: batch.id, issuedKg, recordedKg, diffKg };
+  }
 }

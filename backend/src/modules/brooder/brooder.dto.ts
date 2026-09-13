@@ -160,7 +160,7 @@ export const CreateLevelFeedLogSchema = z.discriminatedUnion('noFeedIssued', [
   z.object({
     noFeedIssued:         z.literal(false).default(false),
     levelId:              z.string().uuid(),
-    feedType:             z.enum(['CHICK_MASH', 'GROWER_MASH', 'LAYER_MASH']),
+    feedType:             z.enum(['CHICK_MASH', 'CHICK_CRUMBS', 'GROWER_MASH', 'DEVELOPER_MASH', 'PRELAYER_MASH', 'LAYER_MASH']),
     storeItemId:          z.string().uuid().optional(),
     entryDate:            z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     quantityDispensedKg:  z.number().positive().max(5000),
@@ -173,7 +173,7 @@ export const CreateLevelFeedLogSchema = z.discriminatedUnion('noFeedIssued', [
   z.object({
     noFeedIssued:         z.literal(true),
     levelId:              z.string().uuid(),
-    feedType:             z.enum(['CHICK_MASH', 'GROWER_MASH', 'LAYER_MASH']),
+    feedType:             z.enum(['CHICK_MASH', 'CHICK_CRUMBS', 'GROWER_MASH', 'DEVELOPER_MASH', 'PRELAYER_MASH', 'LAYER_MASH']),
     storeItemId:          z.string().uuid().optional(),
     entryDate:            z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     quantityDispensedKg:  z.literal(0).default(0),
@@ -218,7 +218,7 @@ export type CreateLevelMortalityLogDto = z.infer<typeof CreateLevelMortalityLogS
 export const CreateGeneralFeedLogSchema = z.object({
   batchId:             z.string().uuid(),
   feedType:            z.enum([
-    'CHICK_MASH', 'GROWER_MASH', 'LAYER_MASH',
+    'CHICK_MASH', 'CHICK_CRUMBS', 'GROWER_MASH', 'DEVELOPER_MASH', 'PRELAYER_MASH', 'LAYER_MASH',
     'KIENYEJI_STARTER', 'KIENYEJI_GROWER', 'KIENYEJI_FINISHER',
   ]),
   storeItemId:         z.string().uuid().optional(),
