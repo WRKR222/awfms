@@ -153,20 +153,18 @@ jobs:
         # working-directory: backend on top made it look for backend/backend
         # ("Failed to read app source directory... No such file or directory") —
         # same class of bug as the Vercel deploy step above.
+        #
+        # No separate migration step after this: railway.json's own
+        # startCommand ("npx prisma migrate deploy && node dist/main")
+        # already runs migrations on every deploy, inside the container
+        # where node_modules is installed. A prior "Run production
+        # migrations" step here tried to redundantly re-run migrations via
+        # `railway run`, but that executes locally on the Actions runner
+        # (which never runs `npm ci` in this job) rather than inside the
+        # deployed container, so it just failed with "prisma: not found".
         run: railway up --service awfms
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-
-      - name: Run production migrations
-        # working-directory needed here (unlike the deploy step above):
-        # `npm run db:migrate` needs backend/package.json on disk in the
-        # runner's own checkout to know what script to run — this is
-        # separate from Railway's Root Directory, which only applies to
-        # what `railway up` uploads as the app's build/deploy context.
-        run: railway run --service awfms -- npm run db:migrate
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        working-directory: backend
 
   # ─── Deploy Frontend to Vercel ───────────────────────────────────────────────
   deploy-frontend:
