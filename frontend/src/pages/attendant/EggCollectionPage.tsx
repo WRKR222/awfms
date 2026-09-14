@@ -97,7 +97,6 @@ type PageMode =
   | 'AM_FORM'
   | 'AM_PENDING'
   | 'AM_RETURNED'
-  | 'AM_TIME_LOCKED'
   | 'PM_FORM'
   | 'PM_PENDING'
   | 'PM_RETURNED'
@@ -114,21 +113,34 @@ function resolvePageMode(
   amWindowOpen: boolean | undefined,
   pmWindowOpen: boolean | undefined,
 ): PageMode {
-  if (!amSession || amSession.status === 'RETURNED') {
+  const amReturned = amSession?.status === 'RETURNED';
+  // AM was "missed" — never submitted at all, and its window has already
+  // closed for today. Once that happens AM is never coming, so it must not
+  // permanently block PM (mirrors the backend gate in
+  // production.service.ts::createEggCollection). A RETURNED AM session is
+  // NOT missed — the Production Manager is waiting on a correction, so it
+  // stays open past the cutoff instead of falling through to PM.
+  const amMissed = !amSession && amWindowOpen === false;
+
+  if (!amMissed && (!amSession || amReturned)) {
     if (localSubmitPending) return 'AM_PENDING';
-    if (amWindowOpen === false) return 'AM_TIME_LOCKED';
-    return amSession?.status === 'RETURNED' ? 'AM_RETURNED' : 'AM_FORM';
+    // Note: a never-submitted AM session with its window closed falls under
+    // amMissed above, not this branch — so there is no "AM time-locked" dead
+    // end here; it always resolves to a submittable AM_FORM or, once the
+    // window truly has closed with nothing recorded, PM_FORM below.
+    return amReturned ? 'AM_RETURNED' : 'AM_FORM';
   }
-  if (amSession.status === 'PENDING') return 'AM_PENDING';
-  if (amSession.status === 'APPROVED') {
-    if (!pmSession || pmSession.status === 'RETURNED') {
-      if (localSubmitPending) return 'PM_PENDING';
-      if (pmWindowOpen === false) return 'PM_TIME_LOCKED';
-      return pmSession?.status === 'RETURNED' ? 'PM_RETURNED' : 'PM_FORM';
-    }
-    if (pmSession.status === 'PENDING') return 'PM_PENDING';
-    if (pmSession.status === 'APPROVED') return 'DAY_LOCKED';
+  if (!amMissed && amSession.status === 'PENDING') return 'AM_PENDING';
+
+  // Reached once AM is APPROVED, or AM was missed outright.
+  if (!pmSession || pmSession.status === 'RETURNED') {
+    if (localSubmitPending) return 'PM_PENDING';
+    const pmReturned = pmSession?.status === 'RETURNED';
+    if (!pmReturned && pmWindowOpen === false) return 'PM_TIME_LOCKED';
+    return pmReturned ? 'PM_RETURNED' : 'PM_FORM';
   }
+  if (pmSession.status === 'PENDING') return 'PM_PENDING';
+  if (pmSession.status === 'APPROVED') return 'DAY_LOCKED';
   return 'AM_FORM';
 }
 
@@ -166,22 +178,32 @@ function ReturnAlert({ reason }: { reason: string }) {
 
 function DayLockedPanel({ amSession, pmSession }: { amSession: any; pmSession: any }) {
   const navigate = useNavigate();
-  const sessionDateLabel = amSession?.sessionDate
-    ? dayjs(amSession.sessionDate).format('dddd, D MMMM YYYY')
+  const referenceDate = amSession?.sessionDate ?? pmSession?.sessionDate;
+  const sessionDateLabel = referenceDate
+    ? dayjs(referenceDate).format('dddd, D MMMM YYYY')
     : dayjs().format('dddd, D MMMM YYYY');
-  const nextDay = dayjs(amSession?.sessionDate ?? undefined).add(1, 'day').format('dddd, D MMMM');
+  const nextDay = dayjs(referenceDate ?? undefined).add(1, 'day').format('dddd, D MMMM');
+  // AM may be missing here — its cutoff can pass with nothing recorded, and
+  // the day still locks once PM is approved (see resolvePageMode's amMissed).
   return (
     <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
       <Lock className="w-16 h-16 text-gray-400 mb-4" />
       <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Day Locked</h2>
       <p className="text-sm text-gray-400 mt-1">{sessionDateLabel}</p>
       <p className="text-gray-500 dark:text-gray-400 mt-2 max-w-sm">
-        Both AM and PM sessions have been approved and locked. No further submissions are accepted for this day.
+        {amSession
+          ? 'Both AM and PM sessions have been approved and locked. No further submissions are accepted for this day.'
+          : 'AM was not recorded and its window closed. PM has been approved and locked. No further submissions are accepted for this day.'}
       </p>
       <div className="mt-4 grid grid-cols-2 gap-3 w-full max-w-xs">
-        <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl p-3 text-center">
-          <p className="text-xs font-bold text-green-600 dark:text-green-400">AM</p>
-          <p className="text-sm font-semibold text-green-700 dark:text-green-300 mt-1">✓ Approved</p>
+        <div className={`rounded-xl p-3 text-center border ${amSession
+          ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-700'
+          : 'bg-gray-50 dark:bg-dark-bg/40 border-gray-200 dark:border-dark-border'}`}
+        >
+          <p className={`text-xs font-bold ${amSession ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'}`}>AM</p>
+          <p className={`text-sm font-semibold mt-1 ${amSession ? 'text-green-700 dark:text-green-300' : 'text-gray-500 dark:text-gray-400'}`}>
+            {amSession ? '✓ Approved' : 'Not Recorded'}
+          </p>
           {amSession?.totalGoodEggs != null && (
             <p className="text-[11px] text-green-600/70 mt-0.5">{amSession.totalGoodEggs.toLocaleString()} eggs</p>
           )}
@@ -305,7 +327,6 @@ export function EggCollectionPage() {
   const amWindowOpen = windowStatus?.shifts.find(s => s.shift === 'AM')?.open;
   const pmWindowOpen = windowStatus?.shifts.find(s => s.shift === 'PM')?.open;
   const pmClosesLabel = windowStatus?.shifts.find(s => s.shift === 'PM')?.closesLabel;
-  const amClosesLabel = windowStatus?.shifts.find(s => s.shift === 'AM')?.closesLabel;
 
   const pageMode = resolvePageMode(amSession, pmSession, localSubmitPending, amWindowOpen, pmWindowOpen);
 
@@ -314,6 +335,10 @@ export function EggCollectionPage() {
     pageMode === 'PM_FORM' || pageMode === 'PM_PENDING' || pageMode === 'PM_RETURNED'
       ? 'PM'
       : 'AM';
+
+  // In a PM_* mode, AM is either APPROVED or was never recorded at all
+  // (missed cutoff) — see resolvePageMode. Used to pick the right banner copy.
+  const amWasMissed = activeShift === 'PM' && !amSession;
 
   // Clear localSubmitPending once server catches up
   useEffect(() => {
@@ -385,7 +410,7 @@ export function EggCollectionPage() {
     });
   }
 
-  function onSubmit(data: any) {
+  async function onSubmit(data: any) {
     setSubmitError(null);
 
     const waterL = Number(data.waterLiters);
@@ -430,47 +455,48 @@ export function EggCollectionPage() {
 
     const [primaryFeed, ...additionalFeed] = cleanedFeedLines;
 
-    offlineMutate({
-      batchId: data.batchId,
-      houseId: selectedBatch?.houseId,
-      sessionDate: dayjs().format('YYYY-MM-DD'),
-      shift: activeShift,  // hardcoded from pageMode — no user-controlled radio
-      openingPop: Number(data.openingPop),
-      mortalities: totalMortalities,
-      block: 'BLOCK1',
-      rowData: allRows.map(r => ({
-        rowCode: r.rowCode,
-        totalBirds: Number(r.totalBirds),
-        totalEggs: Number(r.totalEggs),
-        starterEggs: Number(r.starterEggs),
-        broken: Number(r.broken),
-        damaged: Number(r.damaged),
-        softShell: Number(r.softShell),
-        deformed: Number(r.deformed),
-        weightKg: Number(r.weightKg),
-        attendantName: r.attendantName,
-      })),
-      sessionFeed: { feedKg: primaryFeed.feedKg, feedType: primaryFeed.feedType, additionalLines: additionalFeed },
-      environment: { waterLiters: waterL, houseTempC: tempC },
-      vaccinesGiven: cleanedVaccines,
-      remarks: data.remarks || undefined,
-    });
+    try {
+      await offlineMutate({
+        batchId: data.batchId,
+        houseId: selectedBatch?.houseId,
+        sessionDate: dayjs().format('YYYY-MM-DD'),
+        shift: activeShift,  // hardcoded from pageMode — no user-controlled radio
+        openingPop: Number(data.openingPop),
+        mortalities: totalMortalities,
+        block: 'BLOCK1',
+        rowData: allRows.map(r => ({
+          rowCode: r.rowCode,
+          totalBirds: Number(r.totalBirds),
+          totalEggs: Number(r.totalEggs),
+          starterEggs: Number(r.starterEggs),
+          broken: Number(r.broken),
+          damaged: Number(r.damaged),
+          softShell: Number(r.softShell),
+          deformed: Number(r.deformed),
+          weightKg: Number(r.weightKg),
+          attendantName: r.attendantName,
+        })),
+        sessionFeed: { feedKg: primaryFeed.feedKg, feedType: primaryFeed.feedType, additionalLines: additionalFeed },
+        environment: { waterLiters: waterL, houseTempC: tempC },
+        vaccinesGiven: cleanedVaccines,
+        remarks: data.remarks || undefined,
+      });
+    } catch (err: any) {
+      // Online submission failed (e.g. the window closed or the session was
+      // taken by someone else mid-fill) — without this, localSubmitPending
+      // stayed true forever with nothing actually submitted, stranding the
+      // attendant on a pending screen for a session that was never sent.
+      setLocalSubmitPending(false);
+      setSubmitError(
+        err?.response?.data?.message || err?.message || 'Submission failed — please try again.',
+      );
+    }
   }
 
   // ── Render by pageMode ────────────────────────────────────────────────────
 
   if (pageMode === 'DAY_LOCKED') {
     return <DayLockedPanel amSession={amSession} pmSession={pmSession} />;
-  }
-
-  if (pageMode === 'AM_TIME_LOCKED') {
-    return (
-      <TimeLockedPanel
-        shift="AM"
-        closesLabel={amClosesLabel}
-        reopenNote="This is a same-day cutoff, not a missed day — a Production Manager can still record this session manually if needed."
-      />
-    );
   }
 
   if (pageMode === 'PM_TIME_LOCKED') {
@@ -516,14 +542,23 @@ export function EggCollectionPage() {
         } />
       )}
 
-      {/* PM form — AM verified banner */}
-      {(pageMode === 'PM_FORM' || pageMode === 'PM_RETURNED') && pageMode !== 'PM_RETURNED' && (
-        <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-2xl p-4 flex items-center gap-3">
-          <CheckCircle className="w-5 h-5 text-green-600 shrink-0" />
-          <p className="text-sm font-semibold text-green-700 dark:text-green-400">
-            AM session verified ✓ — You may now record the PM session.
-          </p>
-        </div>
+      {/* PM form — AM status banner */}
+      {pageMode === 'PM_FORM' && (
+        amWasMissed ? (
+          <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-2xl p-4 flex items-center gap-3">
+            <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+            <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+              AM session was not recorded and its window has closed — you may still record the PM session.
+            </p>
+          </div>
+        ) : (
+          <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-2xl p-4 flex items-center gap-3">
+            <CheckCircle className="w-5 h-5 text-green-600 shrink-0" />
+            <p className="text-sm font-semibold text-green-700 dark:text-green-400">
+              AM session verified ✓ — You may now record the PM session.
+            </p>
+          </div>
+        )
       )}
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
@@ -546,7 +581,7 @@ export function EggCollectionPage() {
           </select>
           <p className="mt-2 text-xs text-gray-400">
             Recording <span className="font-semibold text-brand-green">{activeShift} session</span>
-            {activeShift === 'PM' && ' · AM session has been approved'}
+            {activeShift === 'PM' && (amWasMissed ? ' · AM session was not recorded' : ' · AM session has been approved')}
           </p>
         </div>
 

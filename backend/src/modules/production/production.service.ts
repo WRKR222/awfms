@@ -146,11 +146,27 @@ export class ProductionService {
     });
     if (!batch) throw new NotFoundException('Batch not found or closed');
 
+    const existing = await this.prisma.eggCollectionSession.findFirst({
+      where: {
+        batchId: dto.batchId,
+        houseId: dto.houseId,
+        sessionDate: new Date(dto.sessionDate),
+        shift: dto.shift,
+        deletedAt: null,
+      },
+      include: { tally: true },
+    });
+
     // Daily submission deadline: AM locks at 12:00pm, PM locks at 4:30pm
     // (farm-local time) — past that, the shift is closed until tomorrow's
     // AM window opens at midnight. Only applies to TODAY's sessionDate; a
-    // backdated correction is exempt (see the util's own comment).
-    assertEggCollectionSessionOpen(dto.shift, dto.sessionDate);
+    // backdated correction is exempt (see the util's own comment) — and so
+    // is resubmitting a session the Production Manager RETURNED for
+    // correction: the Manager explicitly asked for a fix, so the same clock
+    // that produced the original window must not then block delivering it.
+    if (!existing || existing.status !== EntryStatus.RETURNED) {
+      assertEggCollectionSessionOpen(dto.shift, dto.sessionDate);
+    }
 
     // FIX-2: Block same-day recording if both sessions are already approved (day is locked)
     if (dto.shift === 'PM') {
@@ -163,23 +179,20 @@ export class ProductionService {
           deletedAt: null,
         },
       });
-      if (!amSession || amSession.status !== EntryStatus.APPROVED) {
+      // AM must be approved before PM can be recorded — UNLESS AM was never
+      // recorded at all for this date. A missed AM session must not
+      // permanently lock out PM: by the time a PM submission can reach this
+      // point the AM window has already closed for today (the two windows
+      // never overlap), or this is a backdated date where "today" no longer
+      // applies — either way AM is never coming, so it can't gate PM. An AM
+      // session that IS in flight (PENDING review, or RETURNED for
+      // correction) still must resolve to APPROVED first.
+      if (amSession && amSession.status !== EntryStatus.APPROVED) {
         throw new ConflictException(
           'AM session must be approved by the Production Manager before PM data can be recorded.',
         );
       }
     }
-
-    const existing = await this.prisma.eggCollectionSession.findFirst({
-      where: {
-        batchId: dto.batchId,
-        houseId: dto.houseId,
-        sessionDate: new Date(dto.sessionDate),
-        shift: dto.shift,
-        deletedAt: null,
-      },
-      include: { tally: true },
-    });
 
     if (existing && existing.status !== EntryStatus.RETURNED) {
       throw new ConflictException(
