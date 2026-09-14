@@ -63,10 +63,34 @@ const hydrationPromise: Promise<void> = hydrated
       });
     });
 
+// ── Network-error retry (with backoff) for GET requests ──────────────────────
+// A device on a weak/intermittent connection (e.g. a rural site vs. a fast
+// office connection) can throw a plain network error/timeout on a request
+// that would have succeeded a second later. Without this, that one blip
+// permanently looks like "no data" to any caller that does
+// `.catch(() => [])` on the request (very common in this codebase) — React
+// Query's own retry never engages for those, because the queryFn "succeeds"
+// with an empty value instead of rejecting. Retrying a couple of times here,
+// below that swallowing, gives transient failures a chance to self-heal
+// before the caller ever sees them. Only GETs — POST/PATCH are not safely
+// retryable without idempotency handling.
+const MAX_NETWORK_RETRIES = 2;
+const NETWORK_RETRY_DELAY_MS = 1000;
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
-    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean; _networkRetryCount?: number };
+
+    if (!error.response && originalRequest && (originalRequest.method ?? 'get').toLowerCase() === 'get') {
+      originalRequest._networkRetryCount = originalRequest._networkRetryCount ?? 0;
+      if (originalRequest._networkRetryCount < MAX_NETWORK_RETRIES) {
+        originalRequest._networkRetryCount += 1;
+        await delay(NETWORK_RETRY_DELAY_MS * originalRequest._networkRetryCount);
+        return apiClient(originalRequest);
+      }
+    }
 
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (!hydrated) await hydrationPromise;
@@ -101,10 +125,23 @@ apiClient.interceptors.response.use(
         return apiClient(originalRequest);
       } catch (refreshError) {
         processQueue(refreshError as Error);
+
+        // No `response` on the error means the refresh request never made it
+        // to the server (or back) — a network blip, not the server actually
+        // rejecting the token. On a flaky connection this can happen often;
+        // logging the user out over it was wiping perfectly valid sessions
+        // (this is what made devices on a poor connection look permanently
+        // broken/blank while a fast connection rarely hit this path at all).
+        // Leave the session intact — the next request gets another chance to
+        // refresh once connectivity recovers.
+        if (!(refreshError as AxiosError)?.response) {
+          return Promise.reject(refreshError);
+        }
+
         useAuthStore.getState().logout();
-        // A refresh token DID exist but the server rejected it (expired,
-        // revoked, or no longer recognised — e.g. after a deploy that
-        // reset the database). Tag the redirect so the login page can
+        // A refresh token DID exist and the server actively rejected it
+        // (expired, revoked, or no longer recognised — e.g. after a deploy
+        // that reset the database). Tag the redirect so the login page can
         // show a clear "your session expired" message instead of just
         // silently dropping the user back at a blank login form with no
         // explanation of why they were logged out.

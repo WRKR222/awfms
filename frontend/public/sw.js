@@ -18,8 +18,13 @@
  * soon as they have connectivity.
  */
 
-const CACHE_NAME = 'awfms-v3'; // bumped so every client purges the old Cache-First-cached index.html on next activate
+const CACHE_NAME = 'awfms-v4'; // bumped: networkFirst now times out instead of hanging indefinitely on a weak connection
 const OFFLINE_QUEUE_KEY = 'awfms-offline-queue';
+// A stalled request on a weak/intermittent connection can otherwise hang far
+// longer than this before the browser itself gives up, leaving the UI stuck
+// showing nothing while it waits. Bounding it means a slow network falls
+// back to the cache (or the offline JSON response) quickly instead.
+const NETWORK_TIMEOUT_MS = 8000;
 
 // Files to pre-cache (offline fallback only — NOT served preferentially, see fetch handler below)
 const APP_SHELL = [
@@ -101,8 +106,10 @@ async function cacheFirst(request) {
 }
 
 async function networkFirst(request) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), NETWORK_TIMEOUT_MS);
   try {
-    const response = await fetch(request);
+    const response = await fetch(request, { signal: controller.signal });
     if (response.ok) {
       const cache = await caches.open(CACHE_NAME);
       cache.put(request, response.clone());
@@ -115,6 +122,8 @@ async function networkFirst(request) {
       status: 503,
       headers: { 'Content-Type': 'application/json' },
     });
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
