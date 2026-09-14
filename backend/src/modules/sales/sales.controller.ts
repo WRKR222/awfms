@@ -73,6 +73,18 @@ export class SalesController {
   @RequirePermission(Permission.SALES_VIEW)
   getSummary(@Query('days') days?: number) { return this.salesService.getSummary(days ?? 30); }
 
+  @Patch('orders/:id')
+  @RequirePermission(Permission.SALES_ORDER_MANAGE)
+  updateOrder(@Param('id') id: string, @Body() body: any) {
+    return this.salesService.updateOrder(id, body);
+  }
+
+  @Patch('orders/:id/cancel')
+  @RequirePermission(Permission.SALES_ORDER_MANAGE)
+  cancelOrder(@Param('id') id: string, @Body('reason') reason: string, @CurrentUser() user: any) {
+    return this.salesService.cancelOrder(id, reason, user);
+  }
+
   @Patch('orders/:id/confirm')
   @RequirePermission(Permission.SALES_ORDER_MANAGE)
   confirmOrder(@Param('id') id: string, @CurrentUser() user: any) {

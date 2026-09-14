@@ -15,6 +15,7 @@ import {
   FinanceService,
   CreateInvoiceFromOrderDto,
   LogPaymentDto,
+  LogSplitPaymentDto,
   CreateExpenseCategoryDto,
   LogExpenseDto,
 } from './finance.service';
@@ -102,12 +103,24 @@ export class FinanceController {
     return this.svc.getInvoiceById(id);
   }
 
+  @Get('invoices/:id/pdf')
+  @RequirePermission(Permission.INVOICE_VIEW)
+  async getInvoicePdf(@Param('id') id: string, @Res() res: Response) {
+    await this.svc.streamInvoicePdf(id, res);
+  }
+
   // ── Payments ──────────────────────────────────────────────────────────────
 
   @Post('invoices/payments')
   @RequirePermission(Permission.INVOICE_PAYMENT_LOG)
   logPayment(@Body() dto: LogPaymentDto, @Request() req: any) {
     return this.svc.logPayment(dto, req.user);
+  }
+
+  @Post('invoices/payments/split')
+  @RequirePermission(Permission.INVOICE_PAYMENT_LOG)
+  logSplitPayment(@Body() dto: LogSplitPaymentDto, @Request() req: any) {
+    return this.svc.logSplitPayment(dto, req.user);
   }
 
   // ── AR ────────────────────────────────────────────────────────────────────

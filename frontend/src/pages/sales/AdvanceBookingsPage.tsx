@@ -38,11 +38,18 @@ const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl p
 const STANDARD_BULK_THRESHOLD = 330;
 function fmtKES(n?: number | string | null) { return `KES ${Number(n ?? 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 
+const FULFILL_PAYMENT_METHODS = [
+  { value: 'CASH',  label: 'Cash'    },
+  { value: 'MPESA', label: 'M-Pesa'  },
+  { value: 'BANK',  label: 'Bank'    },
+  { value: 'CREDIT',label: 'Credit'  },
+];
+
 function BookingCard({ booking, onConfirm, onCancel, onFulfill }: {
   booking: any;
   onConfirm: (id: string) => void;
   onCancel: (id: string, reason: string) => void;
-  onFulfill: (id: string, deliveryAddress?: string, notes?: string) => void;
+  onFulfill: (id: string, opts: { deliveryAddress?: string; notes?: string; paymentMethod: string }) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showCancel, setShowCancel] = useState(false);
@@ -53,11 +60,8 @@ function BookingCard({ booking, onConfirm, onCancel, onFulfill }: {
   const statusCfg = STATUS_CONFIG[booking.status as BookingStatus] ?? STATUS_CONFIG.PENDING;
   const StatusIcon = statusCfg.icon;
   const canAct = booking.status === 'PENDING' || booking.status === 'CONFIRMED';
-  // Extract egg type from notes
-  const notesStr: string = booking.notes ?? '';
-  let eggLabel = 'Standard Eggs';
-  if      (notesStr.includes('Starter Eggs'))           eggLabel = 'Starter Eggs';
-  else if (notesStr.includes('Consumable Broken Eggs')) eggLabel = 'Consumable Broken Eggs';
+  const eggLabel = EGG_TYPE_LABELS[booking.eggType as EggItemType] ?? 'Standard Eggs';
+  const [fulfillPaymentMethod, setFulfillPaymentMethod] = useState('CASH');
 
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border overflow-hidden">
@@ -104,10 +108,20 @@ function BookingCard({ booking, onConfirm, onCancel, onFulfill }: {
           {showFulfill && (
             <div className="space-y-2 bg-green-50 dark:bg-green-900/10 rounded-xl p-3">
               <p className="text-xs font-semibold text-green-700 dark:text-green-400">Fulfil → Creates a confirmed sales order</p>
+              <div><label className="text-xs text-gray-500 mb-1 block">Payment Method</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {FULFILL_PAYMENT_METHODS.map(pm => (
+                    <button key={pm.value} type="button" onClick={() => setFulfillPaymentMethod(pm.value)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${fulfillPaymentMethod === pm.value ? 'bg-brand-green text-white border-brand-green' : 'bg-white dark:bg-dark-bg text-gray-600 dark:text-gray-400 border-gray-200 dark:border-dark-border'}`}>
+                      {pm.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div><label className="text-xs text-gray-500 mb-1 block">Delivery Address (if delivering)</label><input value={fulfillAddr} onChange={e => setFulfillAddr(e.target.value)} placeholder="Leave blank if customer collects" className={iCls} /></div>
               <div><label className="text-xs text-gray-500 mb-1 block">Notes</label><input value={fulfillNotes} onChange={e => setFulfillNotes(e.target.value)} className={iCls} /></div>
               <div className="flex gap-2">
-                <button onClick={() => { onFulfill(booking.id, fulfillAddr || undefined, fulfillNotes || undefined); setShowFulfill(false); }} className="flex-1 bg-brand-green text-white py-2 rounded-xl text-xs font-semibold">Create Order & Fulfil</button>
+                <button onClick={() => { onFulfill(booking.id, { deliveryAddress: fulfillAddr || undefined, notes: fulfillNotes || undefined, paymentMethod: fulfillPaymentMethod }); setShowFulfill(false); }} className="flex-1 bg-brand-green text-white py-2 rounded-xl text-xs font-semibold">Create Order & Fulfil</button>
                 <button onClick={() => setShowFulfill(false)} className="px-4 py-2 rounded-xl text-xs border border-gray-200 dark:border-dark-border text-gray-500">Back</button>
               </div>
             </div>
@@ -221,7 +235,7 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
           {error && <p className="text-xs text-red-600 flex items-center gap-1 bg-red-50 dark:bg-red-900/20 px-3 py-2 rounded-xl"><AlertCircle className="w-3 h-3" /> {error}</p>}
           <div className="flex gap-3">
             <button type="submit" disabled={createMutation.isPending} className="flex-1 bg-brand-green text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
-              {createMutation.isPending && <RefreshCw className="w-4 h-4 animate-spin" />}{createMutation.isPending ? 'Saving…' : 'Lock Stock & Save'}
+              {createMutation.isPending && <RefreshCw className="w-4 h-4 animate-spin" />}{createMutation.isPending ? 'Saving…' : 'Save Booking'}
             </button>
             <button type="button" onClick={onClose} className="px-5 py-2.5 rounded-xl text-sm border border-gray-200 dark:border-dark-border text-gray-500">Cancel</button>
           </div>
@@ -239,7 +253,11 @@ export default function AdvanceBookingsPage() {
   const { data: lockedStock } = useQuery({ queryKey: ['locked-stock'], queryFn: () => api.get('/bookings/locked-stock').then(r => r.data).catch(() => null), staleTime: 60_000 });
   const confirmMutation = useMutation({ mutationFn: (id: string) => api.patch(`/bookings/${id}/confirm`), onSuccess: () => qc.invalidateQueries({ queryKey: ['bookings'] }) });
   const cancelMutation  = useMutation({ mutationFn: ({ id, reason }: { id: string; reason: string }) => api.patch(`/bookings/${id}/cancel`, { cancellationReason: reason }), onSuccess: () => { qc.invalidateQueries({ queryKey: ['bookings'] }); qc.invalidateQueries({ queryKey: ['sales-stock'] }); } });
-  const fulfillMutation = useMutation({ mutationFn: ({ id, deliveryAddress, notes }: { id: string; deliveryAddress?: string; notes?: string }) => api.patch(`/bookings/${id}/fulfill`, { deliveryAddress, notes }), onSuccess: () => { qc.invalidateQueries({ queryKey: ['bookings'] }); qc.invalidateQueries({ queryKey: ['sales-orders'] }); qc.invalidateQueries({ queryKey: ['sales-summary'] }); qc.invalidateQueries({ queryKey: ['sales-stock'] }); } });
+  const fulfillMutation = useMutation({
+    mutationFn: ({ id, deliveryAddress, notes, paymentMethod }: { id: string; deliveryAddress?: string; notes?: string; paymentMethod: string }) =>
+      api.patch(`/bookings/${id}/fulfill`, { deliveryAddress, notes, paymentMethod }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['bookings'] }); qc.invalidateQueries({ queryKey: ['sales-orders'] }); qc.invalidateQueries({ queryKey: ['sales-summary'] }); qc.invalidateQueries({ queryKey: ['sales-stock'] }); },
+  });
 
   const filters: { label: string; value: BookingStatus | '' }[] = [
     { label: 'All', value: '' }, { label: 'Pending', value: 'PENDING' }, { label: 'Confirmed', value: 'CONFIRMED' }, { label: 'Fulfilled', value: 'FULFILLED' }, { label: 'Cancelled', value: 'CANCELLED' },
@@ -248,13 +266,13 @@ export default function AdvanceBookingsPage() {
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-4xl mx-auto">
       <div className="flex items-center justify-between">
-        <div><h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2"><BookOpen className="w-5 h-5 text-amber-500" /> Advance Bookings</h1><p className="text-xs text-gray-400 mt-0.5">Lock stock for customers in advance. Fulfil as an order when ready.</p></div>
+        <div><h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2"><BookOpen className="w-5 h-5 text-amber-500" /> Advance Bookings</h1><p className="text-xs text-gray-400 mt-0.5">Record customer pre-orders for monitoring — stock is not reserved until fulfilled as an order.</p></div>
         <button onClick={() => setShowForm(true)} className="flex items-center gap-2 bg-amber-500 text-white px-4 py-2 rounded-xl text-sm font-semibold"><Plus className="w-4 h-4" /> New Booking</button>
       </div>
       {lockedStock && lockedStock.totalLockedTrays > 0 && (
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-2xl p-4">
-          <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-1 uppercase tracking-wider">Locked Stock</p>
-          <p className="text-sm text-amber-800 dark:text-amber-300"><strong>{lockedStock.totalLockedTrays}</strong> trays ({lockedStock.totalLockedEggs} eggs) reserved across <strong>{lockedStock.activeBookings?.length ?? 0}</strong> active booking{lockedStock.activeBookings?.length !== 1 ? 's' : ''}</p>
+          <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-1 uppercase tracking-wider">Booking Pipeline (Monitoring)</p>
+          <p className="text-sm text-amber-800 dark:text-amber-300"><strong>{lockedStock.totalLockedTrays}</strong> trays ({lockedStock.totalLockedEggs} eggs) booked across <strong>{lockedStock.activeBookings?.length ?? 0}</strong> active booking{lockedStock.activeBookings?.length !== 1 ? 's' : ''} — not yet reserved against stock</p>
         </div>
       )}
       <div className="flex flex-wrap gap-2">
@@ -276,7 +294,7 @@ export default function AdvanceBookingsPage() {
               <BookingCard key={b.id} booking={b}
                 onConfirm={id => confirmMutation.mutate(id)}
                 onCancel={(id, reason) => cancelMutation.mutate({ id, reason })}
-                onFulfill={(id, da, n) => fulfillMutation.mutate({ id, deliveryAddress: da, notes: n })} />
+                onFulfill={(id, opts) => fulfillMutation.mutate({ id, ...opts })} />
             ))}
           </div>
         )}

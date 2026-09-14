@@ -438,14 +438,14 @@ export function EggCollectionPage() {
     const cleanedVaccines = vaccines
       .map(v => ({
         kind: v.kind,
-        storeItemId: v.storeItemId,
+        storeItemId: v.storeItemId || undefined,
         name: v.name.trim(),
         dosage: v.dosage.trim(),
         quantityUsed: v.quantityUsed?.trim() ? Number(v.quantityUsed) : undefined,
       }))
       .filter(v => v.storeItemId || v.name || v.dosage);
-    if (cleanedVaccines.some(v => !v.storeItemId || !v.name || !v.dosage)) {
-      setSubmitError('Each vaccine/supplement/treatment entry must have an item selected, a name, and a dosage.');
+    if (cleanedVaccines.some(v => !v.name || !v.dosage)) {
+      setSubmitError('Each vaccine/supplement/treatment entry must have a name and a dosage.');
       return;
     }
 
@@ -807,82 +807,91 @@ export function EggCollectionPage() {
           </div>
           {vaccines.length === 0 && (
             <p className="text-xs text-gray-400 italic">
-              Nothing given this session. Entries here will appear in the Production Manager's Health
-              page as a historical log, and draw down what Store has issued — vaccines, supplements and
-              treatments are kept in their own separate categories.
+              Nothing given this session. Just write the name — no need to pick it from Store's list.
+              Entries here appear in the Production Manager's Health page as a historical log. Optionally
+              link a Store item to track how much of it is left; Store's own issuance is compared against
+              what's recorded regardless.
             </p>
           )}
           {vaccines.map((v, i) => {
             const kindItems = itemsForKind(v.kind);
             const selectedItem = kindItems.find(m => m.id === v.storeItemId);
             return (
-            <div key={i} className="grid grid-cols-12 gap-2 items-end mb-2">
-              <div className="col-span-2">
-                <label className="block text-[11px] text-gray-500 mb-1">Type</label>
-                <select
-                  value={v.kind}
-                  onChange={e => setVaccines(prev => prev.map((p, j) => j === i
-                    ? { ...p, kind: e.target.value as VaccineEntry['kind'], storeItemId: '', name: '' } // reset item — each kind has its own list
-                    : p))}
-                  className={inputCls + ' py-2 text-sm'}
-                >
-                  <option value="VACCINE">Vaccine</option>
-                  <option value="SUPPLEMENT">Supplement</option>
-                  <option value="TREATMENT">Treatment</option>
-                </select>
+            <div key={i} className="border border-gray-100 dark:border-dark-border rounded-xl p-3 mb-2 space-y-2">
+              <div className="grid grid-cols-12 gap-2 items-end">
+                <div className="col-span-2">
+                  <label className="block text-[11px] text-gray-500 mb-1">Type</label>
+                  <select
+                    value={v.kind}
+                    onChange={e => setVaccines(prev => prev.map((p, j) => j === i
+                      ? { ...p, kind: e.target.value as VaccineEntry['kind'], storeItemId: '' } // only the item link resets — kept what they typed as the name
+                      : p))}
+                    className={inputCls + ' py-2 text-sm'}
+                  >
+                    <option value="VACCINE">Vaccine</option>
+                    <option value="SUPPLEMENT">Supplement</option>
+                    <option value="TREATMENT">Treatment</option>
+                  </select>
+                </div>
+                <div className="col-span-4">
+                  <label className="block text-[11px] text-gray-500 mb-1">Name *</label>
+                  <input
+                    value={v.name}
+                    onChange={e => setVaccines(prev => prev.map((p, j) => j === i ? { ...p, name: e.target.value } : p))}
+                    className={inputCls + ' py-2 text-sm'}
+                    placeholder="e.g. Newcastle Vaccine"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-[11px] text-gray-500 mb-1">Dosage *</label>
+                  <input
+                    value={v.dosage}
+                    onChange={e => setVaccines(prev => prev.map((p, j) => j === i ? { ...p, dosage: e.target.value } : p))}
+                    className={inputCls + ' py-2 text-sm'}
+                    placeholder="e.g. 0.5 ml/bird"
+                  />
+                </div>
+                <div className="col-span-3">
+                  <label className="block text-[11px] text-gray-500 mb-1">
+                    Qty used{selectedItem ? ` (${selectedItem.unit})` : ''}
+                  </label>
+                  <input
+                    type="number" min="0" step="any" inputMode="decimal"
+                    value={v.quantityUsed}
+                    onChange={e => setVaccines(prev => prev.map((p, j) => j === i ? { ...p, quantityUsed: e.target.value } : p))}
+                    className={inputCls + ' py-2 text-sm'}
+                    placeholder={selectedItem ? `e.g. 0.532 ${selectedItem.unit}` : 'e.g. 0.532'}
+                  />
+                </div>
+                <div className="col-span-1 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setVaccines(prev => prev.filter((_, j) => j !== i))}
+                    className="p-2 text-gray-400 hover:text-red-500"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
-              <div className="col-span-4">
-                <label className="block text-[11px] text-gray-500 mb-1">Item (issued by Store)</label>
+              <div>
+                <label className="block text-[11px] text-gray-500 mb-1">Link to Store item (optional — tracks remaining stock)</label>
                 <select
                   value={v.storeItemId}
                   onChange={e => {
                     const item = kindItems.find(m => m.id === e.target.value);
                     setVaccines(prev => prev.map((p, j) => j === i
-                      ? { ...p, storeItemId: e.target.value, name: item ? item.name : p.name }
+                      ? { ...p, storeItemId: e.target.value, name: item && !p.name.trim() ? item.name : p.name }
                       : p));
                   }}
                   className={inputCls + ' py-2 text-sm'}
                 >
-                  <option value="">Select item...</option>
-                  {kindItems.length === 0 && (
-                    <option value="" disabled>No {v.kind.toLowerCase()}s issued yet</option>
-                  )}
+                  <option value="">Not linked</option>
                   {kindItems.map(item => (
                     <option key={item.id} value={item.id}>
                       {item.name} — {item.residual.toFixed(2)} {item.unit} left
                     </option>
                   ))}
                 </select>
-              </div>
-              <div className="col-span-2">
-                <label className="block text-[11px] text-gray-500 mb-1">Dosage</label>
-                <input
-                  value={v.dosage}
-                  onChange={e => setVaccines(prev => prev.map((p, j) => j === i ? { ...p, dosage: e.target.value } : p))}
-                  className={inputCls + ' py-2 text-sm'}
-                  placeholder="e.g. 0.5 ml/bird"
-                />
-              </div>
-              <div className="col-span-3">
-                <label className="block text-[11px] text-gray-500 mb-1">
-                  Qty used{selectedItem ? ` (${selectedItem.unit})` : ''}
-                </label>
-                <input
-                  type="number" min="0" step="any" inputMode="decimal"
-                  value={v.quantityUsed}
-                  onChange={e => setVaccines(prev => prev.map((p, j) => j === i ? { ...p, quantityUsed: e.target.value } : p))}
-                  className={inputCls + ' py-2 text-sm'}
-                  placeholder={selectedItem ? `e.g. 0.532 ${selectedItem.unit}` : 'e.g. 0.532'}
-                />
-              </div>
-              <div className="col-span-1 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => setVaccines(prev => prev.filter((_, j) => j !== i))}
-                  className="p-2 text-gray-400 hover:text-red-500"
-                >
-                  <X className="w-4 h-4" />
-                </button>
               </div>
             </div>
             );

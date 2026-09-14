@@ -111,11 +111,82 @@ export class SalesService {
     });
   }
 
+  /** >= this many trays in one order → TIER_2 pricing tier (see SalesTier enum). */
+  private static readonly TIER_2_TRAY_THRESHOLD = 11;
+
+  /**
+   * Resolves today's per-egg-type price map from the accountant's DailyEggPrice,
+   * throwing if none is set. Shared by createOrder/updateOrder so both price
+   * items identically.
+   */
+  private async _resolvePriceMap(): Promise<Record<EggItemType, number | null>> {
+    const today = dayjs().startOf('day').toDate();
+    const pricing = await this.prisma.dailyEggPrice.findUnique({
+      where: { priceDate: today },
+    });
+    if (!pricing) {
+      throw new BadRequestException(
+        'No pricing set for today. Accountant must set daily prices before orders can be created.',
+      );
+    }
+    return {
+      STANDARD_EGGS:          Number(pricing.pricePerEgg),
+      STARTER_EGGS:           (pricing as any).pricePerEggStarter != null
+                                ? Number((pricing as any).pricePerEggStarter)
+                                : null,
+      CONSUMABLE_BROKEN_EGGS: (pricing as any).pricePerEggBroken != null
+                                ? Number((pricing as any).pricePerEggBroken)
+                                : null,
+    };
+  }
+
+  private _priceItems(
+    items: Array<{ eggType: EggItemType; quantityEggs: number }>,
+    priceMap: Record<EggItemType, number | null>,
+  ) {
+    return items.map(i => {
+      const unitPrice = priceMap[i.eggType];
+      // FIX: was throwing even when CONSUMABLE_BROKEN_EGGS had a price because
+      // the null-check was applied before reading the price correctly.
+      if (unitPrice == null) {
+        throw new BadRequestException(
+          `No price set for ${i.eggType}. Ask the accountant to set it.`,
+        );
+      }
+      const quantityTrays = Math.ceil(i.quantityEggs / 30);
+      return {
+        itemType:     i.eggType,
+        grade:        null as string | null,
+        quantityTrays,
+        quantityEggs: i.quantityEggs,
+        unitPrice,
+        subtotal:     i.quantityEggs * unitPrice,
+      };
+    });
+  }
+
+  /** TIER_1 (1-10 trays) vs TIER_2 (11+ trays), from the order's total tray count. */
+  private _resolveTier(items: Array<{ quantityTrays: number }>): 'TIER_1' | 'TIER_2' {
+    const totalTrays = items.reduce((s, i) => s + i.quantityTrays, 0);
+    return totalTrays >= SalesService.TIER_2_TRAY_THRESHOLD ? 'TIER_2' : 'TIER_1';
+  }
+
+  /** MPESA → mpesaRef, BANK → bankRef — these columns existed but were never
+   *  populated; a payment reference is now captured whenever one is given. */
+  private _resolvePaymentRefs(paymentMethod: string, reference?: string) {
+    if (!reference) return { mpesaRef: null, bankRef: null };
+    return {
+      mpesaRef: paymentMethod === 'MPESA' ? reference : null,
+      bankRef:  paymentMethod === 'BANK'  ? reference : null,
+    };
+  }
+
   async createOrder(
     dto: {
       customerId: string;
       orderDate: string;
       paymentMethod: 'CASH' | 'MPESA' | 'BANK' | 'CREDIT';
+      paymentReference?: string;
       deliveryAddress?: string;
       deliveryDate?: string;
       deliveryTime?: string;
@@ -128,72 +199,147 @@ export class SalesService {
     const count = await this.prisma.salesOrder.count();
     const orderNumber = `SO-${dayjs().format('YYYYMMDD')}-${String(count + 1).padStart(4, '0')}`;
 
-    // Auto-fetch today's pricing (set by accountant)
-    const today = dayjs().startOf('day').toDate();
-    const pricing = await this.prisma.dailyEggPrice.findUnique({
-      where: { priceDate: today },
-    });
-    if (!pricing) {
-      throw new BadRequestException(
-        'No pricing set for today. Accountant must set daily prices before orders can be created.',
-      );
-    }
-
-    const priceMap: Record<EggItemType, number | null> = {
-      STANDARD_EGGS:          Number(pricing.pricePerEgg),
-      STARTER_EGGS:           (pricing as any).pricePerEggStarter != null
-                                ? Number((pricing as any).pricePerEggStarter)
-                                : null,
-      CONSUMABLE_BROKEN_EGGS: (pricing as any).pricePerEggBroken != null
-                                ? Number((pricing as any).pricePerEggBroken)
-                                : null,
-    };
-
-    const items = dto.items.map(i => {
-      const unitPrice = priceMap[i.eggType];
-      // FIX: was throwing even when CONSUMABLE_BROKEN_EGGS had a price because
-      // the null-check was applied before reading the price correctly.
-      if (unitPrice == null) {
-        throw new BadRequestException(
-          `No price set for ${i.eggType}. Ask the accountant to set it.`,
-        );
-      }
-
-      // Validate there is enough stock available for consumable broken eggs
-      if (i.eggType === 'CONSUMABLE_BROKEN_EGGS') {
-        // Stock check is best-effort; hard enforcement is done by getSalesStock
-      }
-
-      const quantityTrays = Math.ceil(i.quantityEggs / 30);
-      return {
-        itemType:     i.eggType,
-        grade:        null as string | null,
-        quantityTrays,
-        quantityEggs: i.quantityEggs,
-        unitPrice,
-        subtotal:     i.quantityEggs * unitPrice,
-      };
-    });
-
+    const priceMap = await this._resolvePriceMap();
+    const items = this._priceItems(dto.items, priceMap);
     const subtotal = items.reduce((s, i) => s + i.subtotal, 0);
+    const paymentMethod = (dto.paymentMethod ?? 'CASH') as PaymentMethod;
+    const { mpesaRef, bankRef } = this._resolvePaymentRefs(paymentMethod, dto.paymentReference);
 
     return this.prisma.salesOrder.create({
       data: {
         orderNumber,
         customerId:      dto.customerId,
         orderDate:       new Date(dto.orderDate),
-        paymentMethod:   (dto.paymentMethod ?? 'CASH') as PaymentMethod,
+        paymentMethod,
+        mpesaRef,
+        bankRef,
         subtotal,
         deliveryAddress: dto.requiresDelivery ? (dto.deliveryAddress ?? null) : null,
+        deliveryDate:    dto.requiresDelivery && dto.deliveryDate ? new Date(dto.deliveryDate) : null,
         notes:           dto.notes,
         createdById,
-        tier:            'TIER_1' as any,
+        tier:            this._resolveTier(items),
         items:           { create: items },
       },
       include: {
         customer: { select: { id: true, name: true, phone: true } },
         items: true,
       },
+    });
+  }
+
+  /**
+   * Full edit of an existing order — customer, items/pricing, payment method,
+   * delivery info and notes. Only allowed while the order is still PENDING:
+   * once confirmed, an invoice/AR entry has already been generated off its
+   * current items and subtotal, and mutating those in place would silently
+   * desync the invoice from the order. A CONFIRMED+ order can still be
+   * cancelled (see cancelOrder) — a real correction after confirmation goes
+   * through cancel-and-recreate instead.
+   */
+  async updateOrder(
+    id: string,
+    dto: {
+      customerId?: string;
+      orderDate?: string;
+      paymentMethod?: 'CASH' | 'MPESA' | 'BANK' | 'CREDIT';
+      paymentReference?: string;
+      deliveryAddress?: string;
+      deliveryDate?: string;
+      requiresDelivery?: boolean;
+      notes?: string;
+      items?: Array<{ eggType: EggItemType; quantityEggs: number }>;
+    },
+  ) {
+    const order = await this.prisma.salesOrder.findUnique({ where: { id }, include: { items: true } });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.status !== ('PENDING' as OrderStatus)) {
+      throw new BadRequestException(
+        `Only PENDING orders can be edited (this order is ${order.status}). Cancel it instead if it needs to change.`,
+      );
+    }
+
+    const paymentMethod = (dto.paymentMethod ?? order.paymentMethod) as PaymentMethod;
+    const { mpesaRef, bankRef } = dto.paymentReference !== undefined
+      ? this._resolvePaymentRefs(paymentMethod, dto.paymentReference)
+      : { mpesaRef: order.mpesaRef, bankRef: order.bankRef };
+
+    let itemsUpdate: any = undefined;
+    let subtotal = Number(order.subtotal);
+    let tier: 'TIER_1' | 'TIER_2' | undefined;
+    if (dto.items) {
+      const priceMap = await this._resolvePriceMap();
+      const items = this._priceItems(dto.items, priceMap);
+      subtotal = items.reduce((s, i) => s + i.subtotal, 0);
+      tier = this._resolveTier(items);
+      // Replace the item set atomically — simplest way to keep quantities/
+      // pricing/subtotal internally consistent on an edit.
+      itemsUpdate = { deleteMany: {}, create: items };
+    }
+
+    const requiresDelivery = dto.requiresDelivery ?? (order.deliveryAddress != null);
+
+    return this.prisma.salesOrder.update({
+      where: { id },
+      data: {
+        customerId:      dto.customerId ?? undefined,
+        orderDate:       dto.orderDate ? new Date(dto.orderDate) : undefined,
+        paymentMethod,
+        mpesaRef,
+        bankRef,
+        subtotal,
+        tier,
+        deliveryAddress: requiresDelivery ? (dto.deliveryAddress ?? order.deliveryAddress ?? null) : null,
+        deliveryDate:    requiresDelivery && dto.deliveryDate ? new Date(dto.deliveryDate) : (requiresDelivery ? undefined : null),
+        notes:           dto.notes ?? undefined,
+        items:           itemsUpdate,
+      },
+      include: {
+        customer: { select: { id: true, name: true, phone: true } },
+        items: true,
+      },
+    });
+  }
+
+  /**
+   * Cancels an order — PENDING (no invoice yet) or CONFIRMED (invoice exists
+   * but nothing has been paid against it). Once any payment has been logged,
+   * or the order has moved past CONFIRMED, cancellation is refused: that
+   * needs a real refund/return process, not a silent status flip.
+   */
+  async cancelOrder(id: string, reason: string, _user: RequestUser) {
+    const order = await this.prisma.salesOrder.findUnique({
+      where: { id },
+      include: { invoices: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.status === 'CANCELLED' || order.status === 'DELIVERING' || order.status === 'DELIVERED') {
+      throw new BadRequestException(`A ${order.status} order cannot be cancelled here.`);
+    }
+
+    const invoice = order.invoices[0];
+    if (invoice && Number(invoice.paidAmount) > 0) {
+      throw new BadRequestException(
+        `Invoice ${invoice.invoiceNumber} already has payments logged against it — this needs a refund/return, not a cancellation.`,
+      );
+    }
+
+    return this.prisma.$transaction(async tx => {
+      // The invoice/AR entry (if any) never reflected real money — remove
+      // them rather than leaving a dangling UNPAID invoice for an order that
+      // no longer exists in any meaningful sense.
+      if (invoice) {
+        await tx.arEntry.deleteMany({ where: { invoiceId: invoice.id } });
+        await tx.invoice.delete({ where: { id: invoice.id } });
+      }
+      return tx.salesOrder.update({
+        where: { id },
+        data: {
+          status: 'CANCELLED' as OrderStatus,
+          notes:  order.notes ? `${order.notes}\n[Cancelled] ${reason}` : `[Cancelled] ${reason}`,
+        },
+        include: { customer: { select: { id: true, name: true, phone: true } }, items: true },
+      });
     });
   }
 
@@ -210,6 +356,9 @@ export class SalesService {
   async markOrderAsDelivering(id: string, user: any) {
     const order = await this.prisma.salesOrder.findUnique({ where: { id } });
     if (!order) throw new NotFoundException('Order not found');
+    if (order.status !== ('CONFIRMED' as OrderStatus)) {
+      throw new BadRequestException('Only CONFIRMED orders can be marked as out for delivery');
+    }
     return this.prisma.salesOrder.update({
       where: { id },
       data: { status: 'DELIVERING' as any },
@@ -692,14 +841,10 @@ export class SalesService {
       }
     }
 
-    // ── Subtract locked advance bookings ──────────────────────────────────
-    const lockedBookings = await this.prisma.advanceBooking.findMany({
-      where: { stockLocked: true, status: { not: 'CANCELLED' as any } },
-    });
-    let lockedEggs = 0;
-    for (const b of lockedBookings) {
-      lockedEggs += (b as any).quantityEggs ?? ((b as any).quantityTrays ?? 0) * 30;
-    }
+    // NOTE: advance bookings no longer reserve/subtract from this figure —
+    // they're monitored separately (see BookingsService.getBookingPipelineSummary)
+    // rather than reducing what Sales sees as available before a booking is
+    // actually fulfilled into a real order.
 
     const currentStandard =
       latestAdj?.newStandard ?? baseStandardEggs;
@@ -719,7 +864,7 @@ export class SalesService {
       // FIX: standard egg stock now also reflects the latest breakage
       // adjustment's newStandard value, so a standard egg breaking into
       // consumable/non-consumable correctly removes it from standard stock.
-      standardEggs:      Math.max(0, currentStandard - standardSoldToSubtract - lockedEggs),
+      standardEggs:      Math.max(0, currentStandard - standardSoldToSubtract),
       starterEggs:       Math.max(0, baseStarterEggs  - soldStarter),
       consumableEggs:    Math.max(0, currentConsumable - consumableSoldToSubtract),
       nonConsumableEggs: currentNonConsumable,

@@ -9,6 +9,14 @@ import { Cron } from '@nestjs/schedule';
 import { InvoiceStatus, UserRole } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
 import dayjs from 'dayjs';
+import PDFDocument from 'pdfkit';
+import type { Response } from 'express';
+
+const EGG_ITEM_LABELS: Record<string, string> = {
+  STANDARD_EGGS:          'Standard Eggs',
+  STARTER_EGGS:           'Starter Eggs',
+  CONSUMABLE_BROKEN_EGGS: 'Consumable Broken Eggs',
+};
 
 // ── DTOs ──────────────────────────────────────────────────────────────────────
 
@@ -40,6 +48,20 @@ export interface LogPaymentDto {
   paymentMethod: 'CASH' | 'MPESA' | 'BANK_TRANSFER';
   reference?: string;
   notes?: string;
+}
+
+/** A payment can be split across more than one method in a single
+ *  submission — e.g. part cash, part M-Pesa — settling one invoice with
+ *  several InvoicePayment rows created together instead of one call at a time. */
+export interface LogSplitPaymentDto {
+  invoiceId: string;
+  paymentDate: string;
+  payments: Array<{
+    amount: number;
+    paymentMethod: string;
+    reference?: string;
+    notes?: string;
+  }>;
 }
 
 export interface CreateExpenseCategoryDto {
@@ -191,60 +213,258 @@ export class FinanceService {
     return inv;
   }
 
+  // ── Invoice PDF ───────────────────────────────────────────────────────────
+
+  /**
+   * Streams a one-page, print-ready invoice PDF — company header, bill-to,
+   * dates, a line-items table sized to the printable page width (so columns
+   * never run off the edge), totals, and any payments already logged against
+   * it (including split multi-method payments). Line items come from the
+   * linked SalesOrder — every real invoice today is generated off one (see
+   * generateInvoiceForOrder); CreateManualInvoiceDto exists but has no
+   * implementation yet, so a manual-invoice fallback just shows one
+   * "Invoice Total" line instead of a per-item breakdown.
+   */
+  async streamInvoicePdf(id: string, res: Response) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: {
+        customer: true,
+        salesOrder: { include: { items: true } },
+        payments: { orderBy: { paymentDate: 'asc' } },
+      },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+
+    const doc = new PDFDocument({ margin: 50, size: 'A4', bufferPages: true });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="Invoice-${invoice.invoiceNumber}.pdf"`);
+    doc.pipe(res);
+
+    const brand   = '#2d7a4f';
+    const gray    = '#6b7280';
+    const dark    = '#111827';
+    const light   = '#f3f4f6';
+    const border  = '#e5e7eb';
+    const left    = doc.page.margins.left;
+    const pageWidth  = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const pageBottom = doc.page.height - doc.page.margins.bottom;
+    const kes = (n: number) => `KES ${n.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    // ── Header ──
+    doc.fillColor(brand).font('Helvetica-Bold').fontSize(20).text('Anza Whole Foods', left, 50);
+    doc.fillColor(gray).font('Helvetica').fontSize(9).text('Commercial Egg & Poultry Farm — Kenya', left, 73);
+
+    doc.fillColor(dark).font('Helvetica-Bold').fontSize(22).text('INVOICE', left, 48, { width: pageWidth, align: 'right' });
+    doc.fillColor(gray).font('Helvetica').fontSize(10).text(invoice.invoiceNumber, left, 74, { width: pageWidth, align: 'right' });
+
+    doc.moveTo(left, 100).lineTo(left + pageWidth, 100).strokeColor(border).lineWidth(1).stroke();
+
+    // ── Bill To (left) / dates (right) ──
+    const topY = 115;
+    doc.fillColor(gray).font('Helvetica-Bold').fontSize(8).text('BILL TO', left, topY);
+    doc.fillColor(dark).font('Helvetica-Bold').fontSize(11).text(invoice.customer.name, left, topY + 13);
+    let billY = topY + 30;
+    doc.font('Helvetica').fontSize(9).fillColor(gray);
+    if (invoice.customer.phone)   { doc.text(invoice.customer.phone, left, billY); billY += 13; }
+    if (invoice.customer.email)   { doc.text(invoice.customer.email, left, billY); billY += 13; }
+    if (invoice.customer.address) { doc.text(invoice.customer.address, left, billY, { width: 260 }); billY += 13; }
+
+    const metaColWidth = 220;
+    const metaX = left + pageWidth - metaColWidth;
+    const metaRows: [string, string][] = [];
+    if (invoice.salesOrder?.orderNumber) metaRows.push(['Order #', invoice.salesOrder.orderNumber]);
+    metaRows.push(['Invoice Date', dayjs(invoice.invoiceDate).format('D MMM YYYY')]);
+    metaRows.push(['Due Date', dayjs(invoice.dueDate).format('D MMM YYYY')]);
+    metaRows.push(['Status', invoice.status]);
+    let metaY = topY;
+    for (const [label, value] of metaRows) {
+      doc.fillColor(gray).font('Helvetica-Bold').fontSize(8).text(label.toUpperCase(), metaX, metaY, { width: metaColWidth, align: 'right' });
+      doc.fillColor(dark).font('Helvetica').fontSize(10).text(value, metaX, metaY + 11, { width: metaColWidth, align: 'right' });
+      metaY += 27;
+    }
+
+    let y = Math.max(billY, metaY) + 15;
+
+    // ── Line items table ──
+    const items = invoice.salesOrder?.items ?? [];
+    const colFractions = [0.46, 0.16, 0.19, 0.19]; // Description | Qty | Unit Price | Amount — sums to 1
+    const colWidths = colFractions.map(f => f * pageWidth);
+    const colX = [left, left + colWidths[0], left + colWidths[0] + colWidths[1], left + colWidths[0] + colWidths[1] + colWidths[2]];
+    const headers = ['Description', 'Qty', 'Unit Price', 'Amount'];
+
+    const drawTableHeader = (headerY: number) => {
+      doc.rect(left, headerY, pageWidth, 22).fill(brand);
+      headers.forEach((h, i) => {
+        doc.fillColor('#fff').font('Helvetica-Bold').fontSize(9)
+          .text(h, colX[i] + 6, headerY + 6, { width: colWidths[i] - 12, align: i === 0 ? 'left' : 'right' });
+      });
+      return headerY + 22;
+    };
+    y = drawTableHeader(y);
+
+    const ensureRowSpace = (rowY: number, rowHeight: number) => {
+      if (rowY + rowHeight > pageBottom - 120) { // leave room for totals block
+        doc.addPage();
+        return drawTableHeader(50);
+      }
+      return rowY;
+    };
+
+    const rows = items.length > 0
+      ? items.map(item => {
+          const label = EGG_ITEM_LABELS[item.itemType] ?? item.itemType;
+          const qty = item.quantityEggs ?? (item.quantityTrays ? item.quantityTrays * 30 : 0);
+          const qtyLabel = item.quantityTrays ? `${qty} eggs (${item.quantityTrays} trays)` : `${qty} eggs`;
+          return { label, qtyLabel, unitPrice: Number(item.unitPrice), amount: Number(item.subtotal) };
+        })
+      : [{ label: 'Invoice Total', qtyLabel: '—', unitPrice: Number(invoice.subtotal), amount: Number(invoice.subtotal) }];
+
+    rows.forEach((row, i) => {
+      const rowHeight = 22;
+      y = ensureRowSpace(y, rowHeight);
+      if (i % 2 === 1) doc.rect(left, y, pageWidth, rowHeight).fill(light);
+      doc.fillColor(dark).font('Helvetica').fontSize(9);
+      doc.text(row.label,               colX[0] + 6, y + 6, { width: colWidths[0] - 12, align: 'left' });
+      doc.text(row.qtyLabel,            colX[1] + 6, y + 6, { width: colWidths[1] - 12, align: 'right' });
+      doc.text(kes(row.unitPrice),      colX[2] + 6, y + 6, { width: colWidths[2] - 12, align: 'right' });
+      doc.text(kes(row.amount),         colX[3] + 6, y + 6, { width: colWidths[3] - 12, align: 'right' });
+      y += rowHeight;
+    });
+    doc.moveTo(left, y).lineTo(left + pageWidth, y).strokeColor(border).stroke();
+    y += 12;
+
+    // ── Totals ──
+    y = ensureRowSpace(y, 110);
+    const totalsColWidth = 220;
+    const totalsX = left + pageWidth - totalsColWidth;
+    const totalLine = (label: string, value: string, opts?: { bold?: boolean; color?: string }) => {
+      doc.font(opts?.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(opts?.bold ? 11 : 9.5)
+        .fillColor(opts?.color ?? dark)
+        .text(label, totalsX, y, { width: totalsColWidth - 100, align: 'left' })
+        .text(value, totalsX + totalsColWidth - 100, y, { width: 100, align: 'right' });
+      y += opts?.bold ? 20 : 16;
+    };
+    totalLine('Subtotal', kes(Number(invoice.subtotal)));
+    if (Number(invoice.taxAmount) > 0) totalLine('Tax', kes(Number(invoice.taxAmount)));
+    totalLine('Total', kes(Number(invoice.totalAmount)), { bold: true });
+    totalLine('Paid', kes(Number(invoice.paidAmount)), { color: '#16a34a' });
+    totalLine('Balance Due', kes(Number(invoice.balanceDue)), { bold: true, color: Number(invoice.balanceDue) > 0 ? '#dc2626' : '#16a34a' });
+
+    // ── Payments received ──
+    if (invoice.payments.length > 0) {
+      y += 15;
+      y = ensureRowSpace(y, 30 + invoice.payments.length * 16);
+      doc.fillColor(dark).font('Helvetica-Bold').fontSize(10).text('Payments Received', left, y);
+      y += 16;
+      for (const p of invoice.payments) {
+        y = ensureRowSpace(y, 16);
+        const line = `${dayjs(p.paymentDate).format('D MMM YYYY')} · ${p.paymentMethod}` +
+          (p.reference ? ` (Ref: ${p.reference})` : '');
+        doc.fillColor(gray).font('Helvetica').fontSize(9)
+          .text(line, left, y, { width: pageWidth - 100 })
+          .text(kes(Number(p.amount)), left + pageWidth - 100, y, { width: 100, align: 'right' });
+        y += 16;
+      }
+    }
+
+    // ── Footer ──
+    const footerY = pageBottom - 30;
+    doc.fillColor(gray).font('Helvetica').fontSize(8)
+      .text(`Generated ${dayjs().format('D MMM YYYY, h:mm A')} · Anza Whole Foods Farm Management System`, left, footerY, { width: pageWidth, align: 'center' });
+
+    doc.end();
+  }
+
   // ── Payment Logging ───────────────────────────────────────────────────────
 
+  /** Single-method payment — thin wrapper around logSplitPayment (one line). */
   async logPayment(dto: LogPaymentDto, user: RequestUser) {
+    const result = await this.logSplitPayment({
+      invoiceId:   dto.invoiceId,
+      paymentDate: dto.paymentDate,
+      payments: [{
+        amount: dto.amount, paymentMethod: dto.paymentMethod,
+        reference: dto.reference, notes: dto.notes,
+      }],
+    }, user);
+    return { payment: result.payments[0], newStatus: result.newStatus, newBalanceDue: result.newBalanceDue };
+  }
+
+  /**
+   * Logs a payment that may be split across multiple methods in one
+   * submission — e.g. KES 2,000 cash + KES 3,000 M-Pesa against the same
+   * invoice. All lines are created together and the invoice/AR balance is
+   * updated once off their combined total, rather than requiring the caller
+   * to submit N separate payments (which would also fire N "invoice paid"
+   * notifications instead of one).
+   */
+  async logSplitPayment(dto: LogSplitPaymentDto, user: RequestUser) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id: dto.invoiceId },
       include: { customer: true, arEntry: true },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
-    if (invoice.status === InvoiceStatus.PAID)
+    if (invoice.status === InvoiceStatus.PAID) {
       throw new BadRequestException('Invoice is already fully paid');
+    }
 
-    const paymentAmount = Number(dto.amount);
-    const newPaidAmount = Number(invoice.paidAmount) + paymentAmount;
+    const lines = (dto.payments ?? []).filter(p => Number(p.amount) > 0);
+    if (lines.length === 0) {
+      throw new BadRequestException('At least one payment line with a positive amount is required');
+    }
+
+    const totalAmount = lines.reduce((s, p) => s + Number(p.amount), 0);
+    const newPaidAmount = Number(invoice.paidAmount) + totalAmount;
     const newBalanceDue = Number(invoice.totalAmount) - newPaidAmount;
-    if (newBalanceDue < -0.01)
+    if (newBalanceDue < -0.01) {
       throw new BadRequestException('Payment amount exceeds invoice balance');
-
+    }
     const newStatus: InvoiceStatus = newBalanceDue <= 0.01
       ? InvoiceStatus.PAID : InvoiceStatus.PARTIAL;
 
-    const payment = await this.prisma.invoicePayment.create({
-      data: {
-        invoiceId:     dto.invoiceId,
-        paymentDate:   new Date(dto.paymentDate),
-        amount:        paymentAmount,
-        paymentMethod: dto.paymentMethod,
-        reference:     dto.reference ?? null,
-        notes:         dto.notes ?? null,
-        recordedById:  user.id,
-      },
-    });
+    const payments = await this.prisma.$transaction(async tx => {
+      const created = [];
+      for (const line of lines) {
+        created.push(await tx.invoicePayment.create({
+          data: {
+            invoiceId:     dto.invoiceId,
+            paymentDate:   new Date(dto.paymentDate),
+            amount:        Number(line.amount),
+            paymentMethod: line.paymentMethod,
+            reference:     line.reference ?? null,
+            notes:         line.notes ?? null,
+            recordedById:  user.id,
+          },
+        }));
+      }
 
-    await this.prisma.invoice.update({
-      where: { id: dto.invoiceId },
-      data: { paidAmount: newPaidAmount, balanceDue: Math.max(0, newBalanceDue), status: newStatus },
-    });
-
-    if (invoice.arEntry) {
-      await this.prisma.arEntry.update({
-        where: { id: invoice.arEntry.id },
-        data: { currentBalance: Math.max(0, newBalanceDue) },
+      await tx.invoice.update({
+        where: { id: dto.invoiceId },
+        data: { paidAmount: newPaidAmount, balanceDue: Math.max(0, newBalanceDue), status: newStatus },
       });
-    }
+
+      if (invoice.arEntry) {
+        await tx.arEntry.update({
+          where: { id: invoice.arEntry.id },
+          data: { currentBalance: Math.max(0, newBalanceDue) },
+        });
+      }
+
+      return created;
+    });
 
     if (newStatus === InvoiceStatus.PAID) {
       await this.notifications.notifyRole(
         UserRole.OWNER, 'SYSTEM' as any,
         `Invoice ${invoice.invoiceNumber} Paid`,
-        `Full payment from ${invoice.customer.name} — KES ${Number(invoice.totalAmount).toLocaleString()}.`,
+        `Full payment from ${invoice.customer.name} — KES ${Number(invoice.totalAmount).toLocaleString()}` +
+        (payments.length > 1 ? ` (split across ${payments.length} payment methods).` : '.'),
         { entityId: invoice.id, entityType: 'Invoice' },
       );
     }
 
-    return { payment, newStatus, newBalanceDue: Math.max(0, newBalanceDue) };
+    return { payments, newStatus, newBalanceDue: Math.max(0, newBalanceDue) };
   }
 
   // ── AR Summary ────────────────────────────────────────────────────────────

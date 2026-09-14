@@ -19,11 +19,13 @@
 // textboxes in fixed positions) rather than the old collapsible/checkbox
 // panels, per spec.
 //
-// Vaccine/supplement/treatment "Qty used" fields are labelled with the
-// selected store item's own stock unit (grams for a Solid item, millilitres
-// for a Liquid one — see StoreItem.physicalForm on the backend) so the
-// figure entered is always denominated the same way Store issued it, which
-// is what the residual (issued − dispensed) ledger compares it against.
+// Vaccine/supplement/treatment name is free text — no longer required to be
+// picked from a Store-issued item. Linking a store item is optional and
+// purely for residual tracking: when linked, "Qty used" is labelled with
+// that item's own stock unit (grams for a Solid item, millilitres for a
+// Liquid one — see StoreItem.physicalForm on the backend) so the figure
+// entered is always denominated the same way Store issued it, which is what
+// the residual (issued − dispensed) ledger compares it against.
 //
 // On Save, one request per non-empty piece fires (partial-failure tolerant,
 // same pattern the old combined modal used — one section's error never
@@ -189,7 +191,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
   // ── Vaccines / Supplements (every session) ──────────────────────────────
   // One blank row is shown from the start — the attendant lands straight on
   // an open field to fill in instead of having to press "Add" first. It's
-  // still fully optional: an untouched (no item selected) row is dropped
+  // still fully optional: an untouched (no name typed) row is dropped
   // silently on submit (see cleanVaccines/cleanSupplements below), so
   // leaving it blank behaves exactly like there being nothing to log.
   const emptyVaccine    = (): VaccineItem    => ({ storeItemId: '', name: '', dose: '', route: 'DRINKING_WATER', quantityUsed: '' });
@@ -202,7 +204,12 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
     setVaccines(v => v.map((item, j) => {
       if (j !== i) return item;
       const next = { ...item, [field]: val };
-      if (field === 'storeItemId') next.name = vaccineItems.find(m => m.id === val)?.name ?? '';
+      // Linking a store item only suggests a name when the attendant hasn't
+      // already typed one — free text is the primary field now, the link is
+      // just an optional aid for residual tracking.
+      if (field === 'storeItemId' && !item.name.trim()) {
+        next.name = vaccineItems.find(m => m.id === val)?.name ?? '';
+      }
       return next;
     }));
   }
@@ -212,7 +219,9 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
     setSupplements(s => s.map((item, j) => {
       if (j !== i) return item;
       const next = { ...item, [field]: val };
-      if (field === 'storeItemId') next.name = supplementItems.find(m => m.id === val)?.name ?? '';
+      if (field === 'storeItemId' && !item.name.trim()) {
+        next.name = supplementItems.find(m => m.id === val)?.name ?? '';
+      }
       return next;
     }));
   }
@@ -231,7 +240,9 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
     setTreatments(t => t.map((item, j) => {
       if (j !== i) return item;
       const next = { ...item, [field]: val };
-      if (field === 'storeItemId') next.drugName = treatmentItems.find(m => m.id === val)?.name ?? '';
+      if (field === 'storeItemId' && !item.drugName.trim()) {
+        next.drugName = treatmentItems.find(m => m.id === val)?.name ?? '';
+      }
       return next;
     }));
   }
@@ -281,8 +292,8 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
       // the attendant opened this specific popup to record it, and no
       // field within it is mandatory (a mostly-empty save still records
       // "checked in, nothing unusual").
-      const cleanVaccines    = vaccines.filter(v => v.storeItemId && v.name.trim());
-      const cleanSupplements = supplements.filter(s => s.storeItemId && s.name.trim());
+      const cleanVaccines    = vaccines.filter(v => v.name.trim());
+      const cleanSupplements = supplements.filter(s => s.name.trim());
       try {
         await api.post('/flock/brooder-logs', {
           batchId: batch.id,
@@ -321,7 +332,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
 
       // 2) Treatment — MORNING/MIDDAY only, one request per filled row.
       if (showTreatment) {
-        const cleanTreatments = treatments.filter(t => t.storeItemId && t.drugName.trim());
+        const cleanTreatments = treatments.filter(t => t.drugName.trim());
         for (const t of cleanTreatments) {
           try {
             await api.post('/flock/brooder-treatment-logs', {
@@ -429,7 +440,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
     if (cleanVaccines.some(v => !v.dose.trim()))    { setSubmitError('Each vaccine entry must have a dose (or remove it).'); return; }
     if (cleanSupplements.some(s => !s.dose.trim())) { setSubmitError('Each supplement entry must have a dose (or remove it).'); return; }
     if (showTreatment) {
-      const cleanTreatments = treatments.filter(t => t.storeItemId && t.drugName.trim());
+      const cleanTreatments = treatments.filter(t => t.drugName.trim());
       if (cleanTreatments.some(t => !t.dose.trim())) { setSubmitError('Each treatment entry must have a dose (or remove it).'); return; }
     }
     if (showFeed && feedTypeValue && !(Number(feedQuantityKg) > 0)) {
@@ -564,10 +575,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
               return (
               <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-3 space-y-2">
                 <div className="flex items-center gap-2">
-                  <select value={v.storeItemId} onChange={e => updateVaccine(i, 'storeItemId', e.target.value)} className={`${iCls} flex-1`}>
-                    <option value="">Select vaccine…</option>
-                    {vaccineItems.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-                  </select>
+                  <input value={v.name} onChange={e => updateVaccine(i, 'name', e.target.value)} className={`${iCls} flex-1`} placeholder="Vaccine name" />
                   {vaccines.length > 1 && (
                     <button type="button" onClick={() => removeVaccine(i)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                   )}
@@ -581,6 +589,10 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                     type="number" step="0.01" min="0" className={iCls}
                     placeholder={selectedItem ? `Qty used (${selectedItem.unit})` : 'Qty used'} />
                 </div>
+                <select value={v.storeItemId} onChange={e => updateVaccine(i, 'storeItemId', e.target.value)} className={`${iCls} text-xs`}>
+                  <option value="">Link to store item (optional)</option>
+                  {vaccineItems.map(item => <option key={item.id} value={item.id}>{item.name} — {item.residual.toFixed(2)} {item.unit} left</option>)}
+                </select>
               </div>
               );
             })}
@@ -600,10 +612,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
               return (
               <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-3 space-y-2">
                 <div className="flex items-center gap-2">
-                  <select value={s.storeItemId} onChange={e => updateSupplement(i, 'storeItemId', e.target.value)} className={`${iCls} flex-1`}>
-                    <option value="">Select supplement…</option>
-                    {supplementItems.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-                  </select>
+                  <input value={s.name} onChange={e => updateSupplement(i, 'name', e.target.value)} className={`${iCls} flex-1`} placeholder="Supplement name" />
                   {supplements.length > 1 && (
                     <button type="button" onClick={() => removeSupplement(i)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                   )}
@@ -614,6 +623,10 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                     type="number" step="0.01" min="0" className={iCls}
                     placeholder={selectedItem ? `Qty used (${selectedItem.unit})` : 'Qty used'} />
                 </div>
+                <select value={s.storeItemId} onChange={e => updateSupplement(i, 'storeItemId', e.target.value)} className={`${iCls} text-xs`}>
+                  <option value="">Link to store item (optional)</option>
+                  {supplementItems.map(item => <option key={item.id} value={item.id}>{item.name} — {item.residual.toFixed(2)} {item.unit} left</option>)}
+                </select>
               </div>
               );
             })}
@@ -634,10 +647,7 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                 return (
                 <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-3 space-y-2">
                   <div className="flex items-center gap-2">
-                    <select value={t.storeItemId} onChange={e => updateTreatment(i, 'storeItemId', e.target.value)} className={`${iCls} flex-1`}>
-                      <option value="">Select drug…</option>
-                      {treatmentItems.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-                    </select>
+                    <input value={t.drugName} onChange={e => updateTreatment(i, 'drugName', e.target.value)} className={`${iCls} flex-1`} placeholder="Drug name" />
                     {treatments.length > 1 && (
                       <button type="button" onClick={() => removeTreatment(i)} className="p-2 text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                     )}
@@ -658,6 +668,10 @@ export function BrooderSessionLogModal({ batch, session, presetScope, onClose }:
                     <input value={t.durationDays} onChange={e => updateTreatment(i, 'durationDays', e.target.value)}
                       type="number" min="0" className={iCls} placeholder="Duration (days)" />
                   </div>
+                  <select value={t.storeItemId} onChange={e => updateTreatment(i, 'storeItemId', e.target.value)} className={`${iCls} text-xs`}>
+                    <option value="">Link to store item (optional)</option>
+                    {treatmentItems.map(item => <option key={item.id} value={item.id}>{item.name} — {item.residual.toFixed(2)} {item.unit} left</option>)}
+                  </select>
                 </div>
                 );
               })}

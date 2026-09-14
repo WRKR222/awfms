@@ -11,7 +11,8 @@
 //     number of decimal places) — no longer tied to a specific Store-issued
 //     item; Store's own daily issuance is compared separately for
 //     monitoring rather than gating what gets recorded. waterLiters +
-//     houseTempC, optional vaccines/supplements list (still store-item-linked).
+//     houseTempC, optional vaccines/supplements/treatments list — free-text
+//     name, Store item link now optional too (same pattern as feed).
 import { z } from 'zod';
 
 const RowDataEntrySchema = z.object({
@@ -79,8 +80,13 @@ const VaccineGivenSchema = z.object({
   // Three distinct kinds — kept separate end to end so a vaccine item can
   // never be logged (or shown) under supplement/treatment and vice versa.
   kind: z.enum(['VACCINE', 'SUPPLEMENT', 'TREATMENT']),
-  storeItemId: z.string().uuid('Item must be selected from issued store items'),
-  name: z.string().min(1),
+  // The attendant just writes the vaccine/supplement/treatment name — no
+  // longer required to pick it from a Store-issued item. storeItemId stays
+  // optional/informational: linking one still lets Store's residual ledger
+  // (getIssuableStoreItems) track what's left of that specific item, but
+  // nothing here gates on it — see checkResidualOrWarn in production.service.ts.
+  storeItemId: z.string().uuid().optional(),
+  name: z.string().min(1, 'Enter the vaccine/supplement/treatment name'),
   dosage: z.string().min(1),
   quantityUsed: z.number().positive().optional(), // allows any number of decimal places
 });

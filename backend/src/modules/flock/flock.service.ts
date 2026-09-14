@@ -937,19 +937,30 @@ export class FlockService {
       if (s.storeItemId) s.unit = unitByStoreItemId.get(s.storeItemId) ?? null;
     }
 
-    // Auto-create VaccinationRecord for each vaccine so it appears on the
-    // manager's Health/Vaccination History page without re-entry.
-    if (vaccinesArr.length > 0) {
+    // Auto-create VaccinationRecord for each vaccine AND supplement so both
+    // appear on the manager's Health/Vaccination History page without
+    // re-entry, and so the store residual ledger (getIssuableStoreItems)
+    // reflects what was dispensed whenever a storeItemId link was made —
+    // FIX: this previously dropped storeItemId/quantityUsed entirely (so a
+    // store-linked brooder vaccine never showed up in that residual figure)
+    // and never forwarded supplements to VaccinationRecord at all.
+    const vaccinationEntries = [
+      ...vaccinesArr.map(v => ({ ...v, prefix: '' })),
+      ...supplementsArr.map(s => ({ ...s, prefix: '[Supplement] ' })),
+    ];
+    if (vaccinationEntries.length > 0) {
       await Promise.allSettled(
-        vaccinesArr.map(v =>
+        vaccinationEntries.map(v =>
           this.prisma.vaccinationRecord.create({
             data: {
               batchId:          batch.id,
-              vaccineName:      v.name,
+              vaccineName:      `${v.prefix}${v.name}`,
               administeredDate: logDate,
-              route:            (v.route ?? 'DRINKING_WATER') as any,
+              route:            ('route' in v ? (v.route ?? 'DRINKING_WATER') : 'OTHER') as any,
               batchSize:        batch.currentBirdCount,
               dosageUnits:      v.dose || undefined,
+              storeItemId:      v.storeItemId ?? undefined,
+              quantityUsed:     v.quantityUsed ?? undefined,
               notes:            input.notes ?? undefined,
               recordedById:     userId,
             },

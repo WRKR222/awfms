@@ -104,6 +104,14 @@ export default function SalesHome() {
     queryKey: ['delivery-count'],
     queryFn: () => api.get('/sales/orders?status=DELIVERING&days=90').then(r => (r.data as any[]).length).catch(() => 0),
   });
+  // Advance bookings no longer lock stock — this is purely the monitoring
+  // count of what's still in the pipeline (not yet fulfilled or cancelled).
+  const { data: bookingPipeline } = useQuery({
+    queryKey: ['locked-stock'],
+    queryFn: () => api.get('/bookings/locked-stock').then(r => r.data).catch(() => null),
+    staleTime: 60_000,
+  });
+  const pendingBookingCount = bookingPipeline?.activeBookings?.length ?? 0;
 
   const todaySold = (todayOrders as any[])
     .filter((o: any) => o.status !== 'CANCELLED')
@@ -158,7 +166,7 @@ export default function SalesHome() {
 
   const tasks = [
     { label: 'Orders',            sub: 'Create and manage egg sales orders',       icon: ShoppingCart, color: 'bg-brand-green', route: '/sales/orders',   badge: null },
-    { label: 'Advance Bookings',  sub: 'Manage pre-orders and stock reservations', icon: BookOpen,     color: 'bg-brand-teal',  route: '/sales/bookings', badge: null },
+    { label: 'Advance Bookings',  sub: 'Monitor pre-orders and fulfil when ready', icon: BookOpen,     color: 'bg-brand-teal',  route: '/sales/bookings', badge: pendingBookingCount > 0 ? pendingBookingCount : null },
     { label: 'Egg Breakage',      sub: 'Log broken egg reclassifications',         icon: EggOff,       color: 'bg-red-500',     route: '/sales/breakage', badge: null },
     { label: 'Delivery Tracking', sub: 'Track orders out for delivery',            icon: Truck,        color: 'bg-blue-500',    route: '/sales/delivery', badge: (deliveryCount as number) > 0 ? deliveryCount : null },
     { label: 'Clients',           sub: 'View and manage customer records',         icon: Users,        color: 'bg-purple-500',  route: '/sales/clients',  badge: null },

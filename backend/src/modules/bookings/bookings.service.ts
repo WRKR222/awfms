@@ -17,6 +17,13 @@ export interface CreateBookingDto {
   // pricePerEggKes is intentionally NOT accepted from client — auto-resolved from DailyEggPrice
 }
 
+export interface FulfillBookingDto {
+  deliveryAddress?: string;
+  notes?: string;
+  paymentMethod?: 'CASH' | 'MPESA' | 'BANK' | 'CREDIT';
+  paymentReference?: string;
+}
+
 export interface CancelBookingDto {
   cancellationReason: string;
 }
@@ -58,29 +65,35 @@ export class BookingsService {
     const estimatedTotal = quantityEggs * pricePerEggKes;
     const bookingRef    = await this.generateRef();
 
+    // Bookings no longer reserve/lock stock against the live sales-stock
+    // figure — they're purely a monitored pipeline of what customers have
+    // asked for (see getLockedStockSummary → getBookingPipelineSummary and
+    // sales.service.ts::getSalesStock, which no longer subtracts these).
+    // stockLocked/lockedAt are kept at their default-false/no-op shape
+    // rather than removed, so nothing reading them breaks.
     const booking = await this.prisma.advanceBooking.create({
       data: {
         bookingRef,
         customerId:    dto.customerId,
         createdById:   user.id,
         requestedDate: new Date(dto.requestedDate),
+        eggType,
         quantityTrays: dto.quantityTrays,
         quantityEggs,
         pricePerEggKes,   // auto-resolved from accountant's DailyEggPrice
         estimatedTotal,
-        stockLocked: true,
-        lockedAt:    new Date(),
+        stockLocked: false,
         status:      'PENDING',
         notes:       dto.notes ?? null,
       },
       include: { customer: { select: { name: true, phone: true } } },
     });
 
-    await this._notifyStockLocked(booking);
+    await this._notifyBookingCreated(booking);
     return booking;
   }
 
-  private async _notifyStockLocked(booking: any) {
+  private async _notifyBookingCreated(booking: any) {
     const targets = await this.prisma.user.findMany({
       where: { role: { in: ['STORE'] }, isActive: true },
       select: { id: true },
@@ -91,8 +104,8 @@ export class BookingsService {
         data: {
           userId: t.id,
           type: 'STOCK_LOCKED_BOOKING' as any,
-          title: `Stock Locked — ${booking.bookingRef}`,
-          message: `${booking.customer.name} has booked ${booking.quantityTrays} trays (${booking.quantityEggs} eggs) for ${new Date(booking.requestedDate).toLocaleDateString('en-KE')}. Stock is now locked for this booking.`,
+          title: `New Advance Booking — ${booking.bookingRef}`,
+          message: `${booking.customer.name} has booked ${booking.quantityTrays} trays (${booking.quantityEggs} eggs) for ${new Date(booking.requestedDate).toLocaleDateString('en-KE')}. This does not reserve stock — monitor it under Advance Bookings.`,
           entityId: booking.id,
           entityType: 'AdvanceBooking',
         },
@@ -170,7 +183,7 @@ export class BookingsService {
     return updated;
   }
 
-  async fulfillBooking(id: string, dto: { deliveryAddress?: string; notes?: string }, user: RequestUser) {
+  async fulfillBooking(id: string, dto: FulfillBookingDto, user: RequestUser) {
     const booking = await this.prisma.advanceBooking.findUnique({
       where: { id },
       include: { customer: { select: { name: true, phone: true } } },
@@ -191,14 +204,19 @@ export class BookingsService {
     const totalEggs = (booking as any).quantityEggs ?? (totalTrays * 30);
     const unitPrice = Number(booking.pricePerEggKes);
     const subtotal = totalEggs * unitPrice;
+    const paymentMethod = dto.paymentMethod ?? 'CASH';
+    const mpesaRef = paymentMethod === 'MPESA' && dto.paymentReference ? dto.paymentReference : null;
+    const bankRef  = paymentMethod === 'BANK'  && dto.paymentReference ? dto.paymentReference : null;
 
     // Create the SalesOrder and link it to the booking in a transaction
     const [salesOrder] = await this.prisma.$transaction([
       this.prisma.salesOrder.create({
         data: {
           orderNumber,
-          tier: 'TIER_1' as any,
-          paymentMethod: 'CASH' as any,
+          tier: totalTrays >= 11 ? ('TIER_2' as any) : ('TIER_1' as any),
+          paymentMethod: paymentMethod as any,
+          mpesaRef,
+          bankRef,
           customerId: booking.customerId,
           orderDate: today,
           subtotal,
@@ -207,7 +225,11 @@ export class BookingsService {
           createdById: user.id,
           items: {
             create: [{
-              itemType: 'EGGS',
+              // FIX: was hardcoded 'EGGS', which matched none of the
+              // STANDARD_EGGS/STARTER_EGGS/CONSUMABLE_BROKEN_EGGS branches
+              // that getSalesStock/getStockHistory switch on — a booking's
+              // fulfilled order silently never reduced displayed stock.
+              itemType: (booking as any).eggType ?? 'STANDARD_EGGS',
               grade: null,
               quantityTrays: totalTrays,
               quantityEggs: totalEggs,
@@ -235,7 +257,7 @@ export class BookingsService {
       include: { customer: { select: { name: true } } },
     });
 
-    // Notify Manager and Owner
+    // Notify Store
     const targets = await this.prisma.user.findMany({
       where: { role: { in: ['STORE'] }, isActive: true },
       select: { id: true },
@@ -246,7 +268,7 @@ export class BookingsService {
           userId: t.id,
           type: 'BOOKING_FULFILLED' as any,
           title: `Booking Fulfilled — ${booking.bookingRef}`,
-          message: `Advance booking for ${booking.customer.name} (${booking.quantityTrays} trays) has been fulfilled. Sales order ${orderNumber} created. Stock unlocked.`,
+          message: `Advance booking for ${booking.customer.name} (${booking.quantityTrays} trays) has been fulfilled. Sales order ${orderNumber} created.`,
           entityId: booking.id,
           entityType: 'AdvanceBooking',
         },
@@ -256,9 +278,15 @@ export class BookingsService {
     return { booking: updatedBooking, salesOrder };
   }
 
-  async getLockedStockSummary() {
+  /**
+   * Advance bookings no longer lock stock — this is purely a monitoring
+   * summary of what's in the pipeline (PENDING/CONFIRMED, not yet fulfilled
+   * or cancelled), so Sales/Store can see upcoming demand without any of it
+   * being reserved against the live stock figure.
+   */
+  async getBookingPipelineSummary() {
     const active = await this.prisma.advanceBooking.findMany({
-      where: { stockLocked: true, status: { in: ['PENDING', 'CONFIRMED'] } },
+      where: { status: { in: ['PENDING', 'CONFIRMED'] } },
       include: { customer: { select: { name: true } } },
       orderBy: { requestedDate: 'asc' },
     });

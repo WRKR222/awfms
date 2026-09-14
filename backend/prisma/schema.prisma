@@ -179,6 +179,8 @@ enum NotificationType {
   BROODER_LOG_MISSED  // a Morning/11am/3pm popup closed for the day and at least one active brooder batch still has no log for it — Director-facing
   // Egg collection AM/PM cutoff — attendant accountability
   EGG_COLLECTION_SESSION_MISSED  // the AM (noon) or PM (4:30pm) egg collection cutoff passed and at least one active production-stage batch still has no session for it — Director-facing
+  // Advance bookings
+  BOOKING_FULFILLED  // an advance booking was converted into a sales order — Store-facing
 }
 
 enum IssuancePlanType {
@@ -1028,6 +1030,12 @@ model AdvanceBooking {
   createdById        String        @map("created_by_id")
   requestedDate      DateTime      @map("requested_date") @db.Date
   bookingDate        DateTime      @default(now()) @map("booking_date")
+  // STANDARD_EGGS | STARTER_EGGS | CONSUMABLE_BROKEN_EGGS — same free-form
+  // convention as SalesOrderItem.itemType. Previously only used transiently
+  // for price lookup at creation and never persisted, which meant
+  // fulfillBooking() had no way to know what was actually booked and wrote
+  // a placeholder 'EGGS' onto the resulting SalesOrderItem (see fix there).
+  eggType            String        @default("STANDARD_EGGS") @map("egg_type")
   quantityTrays      Int           @map("quantity_trays")
   quantityEggs       Int           @map("quantity_eggs")
   pricePerEggKes     Decimal       @map("price_per_egg_kes") @db.Decimal(8, 4)

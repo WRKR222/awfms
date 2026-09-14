@@ -6,7 +6,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
-import { BookingsService, CreateBookingDto, CancelBookingDto } from './bookings.service';
+import { BookingsService, CreateBookingDto, CancelBookingDto, FulfillBookingDto } from './bookings.service';
 
 @ApiTags('bookings')
 @ApiBearerAuth()
@@ -27,10 +27,12 @@ export class BookingsController {
     return this.svc.getAllBookings(status);
   }
 
+  // Route kept as "locked-stock" for frontend/API compatibility, though
+  // bookings no longer lock stock — see getBookingPipelineSummary.
   @Get('locked-stock')
   @RequirePermission(Permission.INVENTORY_VIEW)
   lockedStock() {
-    return this.svc.getLockedStockSummary();
+    return this.svc.getBookingPipelineSummary();
   }
 
   @Get(':id')
@@ -59,7 +61,7 @@ export class BookingsController {
   @RequirePermission(Permission.SALES_ORDER_MANAGE)
   fulfill(
     @Param('id') id: string,
-    @Body() dto: { deliveryAddress?: string; notes?: string },
+    @Body() dto: FulfillBookingDto,
     @Request() req: any,
   ) {
     return this.svc.fulfillBooking(id, dto, req.user);

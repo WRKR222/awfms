@@ -13,8 +13,8 @@ import {
   ShoppingCart, Plus, X, ChevronDown, ChevronUp, CheckCircle, Clock,
   XCircle, Truck, Package, AlertCircle, TrendingUp, Trash2,
   MapPin, RefreshCw, FileText, CreditCard, AlertTriangle, ChevronRight, DollarSign,
+  Pencil, Download,
 } from 'lucide-react';
-import { useForm } from 'react-hook-form';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 type OrderStatus = 'PENDING' | 'CONFIRMED' | 'DELIVERING' | 'DELIVERED' | 'CANCELLED';
@@ -33,9 +33,10 @@ const EGG_TYPE_LABELS: Record<EggItemType, string> = {
 };
 
 const PAYMENT_METHODS = [
-  { value: 'MPESA',  label: 'M-Pesa'        },
-  { value: 'CASH',   label: 'Cash'           },
-  { value: 'BANK',   label: 'Bank Transfer'  },
+  { value: 'MPESA',  label: 'M-Pesa'          },
+  { value: 'CASH',   label: 'Cash'            },
+  { value: 'BANK',   label: 'Bank Transfer'   },
+  { value: 'CREDIT', label: 'Credit (Invoice)' },
 ];
 
 const STATUS_CONFIG: Record<OrderStatus, { label: string; color: string; icon: any }> = {
@@ -90,6 +91,11 @@ interface DailyPrice {
   expectedRevenue: number | null;
 }
 interface OrderItem  { eggType: EggItemType; quantityEggs: number; }
+interface OrderFormState {
+  customerId: string; orderDate: string; paymentMethod: string; paymentReference: string;
+  requiresDelivery: boolean; deliveryAddress: string; deliveryDate: string; deliveryTime: string;
+  notes: string; items: OrderItem[];
+}
 
 function fmtKES(n?: number | string | null) {
   return `KES ${Number(n ?? 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -158,17 +164,25 @@ function RevenueBanner({ summary }: { summary: any }) {
 }
 
 // ── Order Card ─────────────────────────────────────────────────────────────────
-function OrderCard({ order, onConfirm, onMarkDelivering, onMarkDelivered }: {
+function OrderCard({ order, onConfirm, onMarkDelivering, onMarkDelivered, onEdit, onCancel }: {
   order: any;
   onConfirm: (id: string) => void;
   onMarkDelivering: (id: string) => void;
   onMarkDelivered: (id: string, notes: string) => void;
+  onEdit: (order: any) => void;
+  onCancel: (id: string, reason: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [deliveryNotes, setDeliveryNotes] = useState('');
   const [showDeliverForm, setShowDeliverForm] = useState(false);
+  const [showCancelForm, setShowCancelForm] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
   const statusCfg = STATUS_CONFIG[order.status as OrderStatus] ?? STATUS_CONFIG.PENDING;
   const StatusIcon = statusCfg.icon;
+  // Editing is only safe pre-invoice (see sales.service.ts::updateOrder); a
+  // CONFIRMED/PENDING order can still be cancelled instead of edited.
+  const canEdit = order.status === 'PENDING';
+  const canCancel = order.status === 'PENDING' || order.status === 'CONFIRMED';
 
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border overflow-hidden">
@@ -213,43 +227,71 @@ function OrderCard({ order, onConfirm, onMarkDelivering, onMarkDelivered }: {
               <span>{order.deliveryAddress}{order.deliveryDate && ` (${dayjs(order.deliveryDate).format('D MMM YYYY')})`}</span>
             </div>
           )}
-          <div className="flex flex-wrap gap-2 pt-1">
-            {order.status === 'PENDING' && (
-              <button onClick={() => onConfirm(order.id)} className="flex items-center gap-1 bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold">
-                <CheckCircle className="w-3 h-3" /> Confirm Order
-              </button>
-            )}
-            {order.status === 'CONFIRMED' && order.deliveryAddress && (
-              <button onClick={() => onMarkDelivering(order.id)} className="flex items-center gap-1 bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold">
-                <Truck className="w-3 h-3" /> Mark as Out for Delivery
-              </button>
-            )}
-            {order.status === 'DELIVERING' && (
-              showDeliverForm ? (
-                <div className="w-full space-y-2">
-                  <input value={deliveryNotes} onChange={e => setDeliveryNotes(e.target.value)} placeholder="Delivery notes (optional)" className={iCls} />
-                  <div className="flex gap-2">
-                    <button onClick={() => { onMarkDelivered(order.id, deliveryNotes); setShowDeliverForm(false); }} className="flex-1 bg-brand-green text-white py-2 rounded-xl text-xs font-semibold">Confirm Delivered</button>
-                    <button onClick={() => setShowDeliverForm(false)} className="px-3 py-2 rounded-xl text-xs border border-gray-200 dark:border-dark-border text-gray-500">Cancel</button>
-                  </div>
-                </div>
-              ) : (
-                <button onClick={() => setShowDeliverForm(true)} className="flex items-center gap-1 bg-brand-green text-white px-3 py-1.5 rounded-lg text-xs font-semibold">
-                  <CheckCircle className="w-3 h-3" /> Mark as Delivered
+          {!showCancelForm && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {order.status === 'PENDING' && (
+                <button onClick={() => onConfirm(order.id)} className="flex items-center gap-1 bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold">
+                  <CheckCircle className="w-3 h-3" /> Confirm Order
                 </button>
-              )
-            )}
-          </div>
-          {order.notes && <p className="text-xs text-gray-400 italic border-t border-gray-100 dark:border-dark-border pt-2">{order.notes}</p>}
+              )}
+              {order.status === 'CONFIRMED' && order.deliveryAddress && (
+                <button onClick={() => onMarkDelivering(order.id)} className="flex items-center gap-1 bg-indigo-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold">
+                  <Truck className="w-3 h-3" /> Mark as Out for Delivery
+                </button>
+              )}
+              {order.status === 'DELIVERING' && (
+                showDeliverForm ? (
+                  <div className="w-full space-y-2">
+                    <input value={deliveryNotes} onChange={e => setDeliveryNotes(e.target.value)} placeholder="Delivery notes (optional)" className={iCls} />
+                    <div className="flex gap-2">
+                      <button onClick={() => { onMarkDelivered(order.id, deliveryNotes); setShowDeliverForm(false); }} className="flex-1 bg-brand-green text-white py-2 rounded-xl text-xs font-semibold">Confirm Delivered</button>
+                      <button onClick={() => setShowDeliverForm(false)} className="px-3 py-2 rounded-xl text-xs border border-gray-200 dark:border-dark-border text-gray-500">Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button onClick={() => setShowDeliverForm(true)} className="flex items-center gap-1 bg-brand-green text-white px-3 py-1.5 rounded-lg text-xs font-semibold">
+                    <CheckCircle className="w-3 h-3" /> Mark as Delivered
+                  </button>
+                )
+              )}
+              {canEdit && (
+                <button onClick={() => onEdit(order)} className="flex items-center gap-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300 px-3 py-1.5 rounded-lg text-xs font-semibold">
+                  <Pencil className="w-3 h-3" /> Edit
+                </button>
+              )}
+              {canCancel && (
+                <button onClick={() => setShowCancelForm(true)} className="flex items-center gap-1 border border-red-200 text-red-500 px-3 py-1.5 rounded-lg text-xs font-semibold">
+                  <XCircle className="w-3 h-3" /> Cancel Order
+                </button>
+              )}
+            </div>
+          )}
+          {showCancelForm && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-gray-600 dark:text-gray-400">Reason for cancellation *</p>
+              <textarea rows={2} value={cancelReason} onChange={e => setCancelReason(e.target.value)} placeholder="e.g. Customer changed mind" className={iCls} />
+              <div className="flex gap-2">
+                <button onClick={() => { if (!cancelReason.trim()) return; onCancel(order.id, cancelReason); setShowCancelForm(false); setCancelReason(''); }} className="flex-1 bg-red-500 text-white py-2 rounded-xl text-xs font-semibold">Confirm Cancel</button>
+                <button onClick={() => { setShowCancelForm(false); setCancelReason(''); }} className="px-4 py-2 rounded-xl text-xs border border-gray-200 dark:border-dark-border text-gray-500">Back</button>
+              </div>
+            </div>
+          )}
+          {order.notes && <p className="text-xs text-gray-400 italic border-t border-gray-100 dark:border-dark-border pt-2 whitespace-pre-line">{order.notes}</p>}
         </div>
       )}
     </div>
   );
 }
 
-// ── New Order Modal ────────────────────────────────────────────────────────────
-function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: DailyPrice | null }) {
+// ── New / Edit Order Modal ───────────────────────────────────────────────────
+// Same form for both: passing `editOrder` switches it into edit mode (PATCH
+// instead of POST, pre-filled from the order). The backend only allows
+// editing PENDING orders (see sales.service.ts::updateOrder) — OrderCard
+// only ever shows the Edit button for PENDING orders, so this never even
+// gets a chance to open on a non-editable order.
+function NewOrderModal({ onClose, pricing, editOrder }: { onClose: () => void; pricing: DailyPrice | null; editOrder?: any }) {
   const qc = useQueryClient();
+  const isEdit = !!editOrder;
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: () => api.get('/sales/customers').then(r => r.data) });
   // Fetch live stock so we can warn when consumable broken eggs are available
   // and should be sold before newer standard stock (FIFO).
@@ -258,9 +300,22 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
     queryFn: () => api.get('/sales/stock').then(r => r.data).catch(() => null),
     staleTime: 30_000,
   });
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<OrderFormState>(() => editOrder ? {
+    customerId: editOrder.customerId ?? editOrder.customer?.id ?? '',
+    orderDate: dayjs(editOrder.orderDate).format('YYYY-MM-DD'),
+    paymentMethod: editOrder.paymentMethod ?? 'CASH',
+    paymentReference: editOrder.mpesaRef ?? editOrder.bankRef ?? '',
+    requiresDelivery: !!editOrder.deliveryAddress,
+    deliveryAddress: editOrder.deliveryAddress ?? '',
+    deliveryDate: editOrder.deliveryDate ? dayjs(editOrder.deliveryDate).format('YYYY-MM-DD') : '',
+    deliveryTime: '', notes: editOrder.notes ?? '',
+    items: (editOrder.items ?? []).map((it: any): OrderItem => ({
+      eggType: it.itemType as EggItemType,
+      quantityEggs: Number(it.quantityEggs ?? (it.quantityTrays ?? 0) * 30),
+    })),
+  } : {
     customerId: '', orderDate: dayjs().format('YYYY-MM-DD'),
-    paymentMethod: 'CASH', requiresDelivery: false,
+    paymentMethod: 'CASH', paymentReference: '', requiresDelivery: false,
     deliveryAddress: '', deliveryDate: '', deliveryTime: '', notes: '',
     items: [{ eggType: 'STANDARD_EGGS' as EggItemType, quantityEggs: 30 }],
   });
@@ -273,24 +328,29 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
 
   const orderTotal = form.items.reduce((s, it) => s + calcSubtotal(it.eggType, it.quantityEggs, pricing), 0);
 
+  const buildPayload = (d: typeof form) => ({
+    customerId: d.customerId, orderDate: d.orderDate, paymentMethod: d.paymentMethod,
+    paymentReference: d.paymentReference || undefined,
+    requiresDelivery: d.requiresDelivery,
+    deliveryAddress:  d.requiresDelivery ? d.deliveryAddress : undefined,
+    deliveryDate:     d.requiresDelivery && d.deliveryDate ? d.deliveryDate : undefined,
+    deliveryTime:     d.requiresDelivery && d.deliveryTime ? d.deliveryTime : undefined,
+    notes: d.notes || undefined,
+    // Items use eggType — backend maps to itemType; no grade field sent
+    items: d.items.map(it => ({ eggType: it.eggType, quantityEggs: Number(it.quantityEggs) })),
+  });
+
   const createMutation = useMutation({
-    mutationFn: (d: typeof form) => api.post('/sales/orders', {
-      customerId: d.customerId, orderDate: d.orderDate, paymentMethod: d.paymentMethod,
-      requiresDelivery: d.requiresDelivery,
-      deliveryAddress:  d.requiresDelivery ? d.deliveryAddress : undefined,
-      deliveryDate:     d.requiresDelivery && d.deliveryDate ? d.deliveryDate : undefined,
-      deliveryTime:     d.requiresDelivery && d.deliveryTime ? d.deliveryTime : undefined,
-      notes: d.notes || undefined,
-      // Items use eggType — backend maps to itemType; no grade field sent
-      items: d.items.map(it => ({ eggType: it.eggType, quantityEggs: Number(it.quantityEggs) })),
-    }),
+    mutationFn: (d: typeof form) => isEdit
+      ? api.patch(`/sales/orders/${editOrder.id}`, buildPayload(d))
+      : api.post('/sales/orders', buildPayload(d)),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sales-orders'] });
       qc.invalidateQueries({ queryKey: ['sales-summary'] });
       qc.invalidateQueries({ queryKey: ['sales-stock'] });
       onClose();
     },
-    onError: (err: any) => setError(err?.response?.data?.message ?? 'Failed to create order.'),
+    onError: (err: any) => setError(err?.response?.data?.message ?? `Failed to ${isEdit ? 'save' : 'create'} order.`),
   });
 
   function validate(): string | null {
@@ -321,7 +381,7 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
       <div className="bg-white dark:bg-dark-card rounded-2xl w-full max-w-2xl shadow-2xl my-4">
         <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-dark-border">
-          <h2 className="font-bold text-gray-800 dark:text-gray-100">New Sales Order</h2>
+          <h2 className="font-bold text-gray-800 dark:text-gray-100">{isEdit ? `Edit Order — ${editOrder.orderNumber}` : 'New Sales Order'}</h2>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
         <div className="px-5 pt-4">
@@ -366,6 +426,14 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
                 </button>
               ))}
             </div>
+            {(form.paymentMethod === 'MPESA' || form.paymentMethod === 'BANK') && (
+              <input
+                value={form.paymentReference}
+                onChange={e => setForm(f => ({ ...f, paymentReference: e.target.value }))}
+                placeholder={form.paymentMethod === 'MPESA' ? 'M-Pesa code (optional)' : 'Bank reference (optional)'}
+                className={`${iCls} mt-2`}
+              />
+            )}
           </div>
           {/* Items */}
           <div>
@@ -438,7 +506,7 @@ function NewOrderModal({ onClose, pricing }: { onClose: () => void; pricing: Dai
           <div className="flex gap-3">
             <button type="submit" disabled={createMutation.isPending} className="flex-1 bg-brand-green text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
               {createMutation.isPending && <RefreshCw className="w-4 h-4 animate-spin" />}
-              {createMutation.isPending ? 'Creating…' : 'Create Order'}
+              {createMutation.isPending ? (isEdit ? 'Saving…' : 'Creating…') : (isEdit ? 'Save Changes' : 'Create Order')}
             </button>
             <button type="button" onClick={onClose} className="px-5 py-2.5 rounded-xl text-sm border border-gray-200 dark:border-dark-border text-gray-500">Cancel</button>
           </div>
@@ -471,14 +539,36 @@ function useArSummary() {
   });
 }
 
+// A payment can be made up of more than one method — e.g. part cash, rest
+// M-Pesa. Each line is its own {amount, paymentMethod, reference} and all
+// lines submit together as one split payment (POST /finance/invoices/payments/split),
+// so the invoice flips to PAID/PARTIAL off their combined total rather than
+// one line at a time. Mirrors the Accountant's Finance page PaymentForm.
+interface PaymentLine { amount: string; paymentMethod: string; reference: string; }
+function emptyLine(amount = ''): PaymentLine { return { amount, paymentMethod: 'CASH', reference: '' }; }
+
 function PaymentForm({ invoiceId, balanceDue, onClose }: { invoiceId: string; balanceDue: number; onClose: () => void }) {
   const qc = useQueryClient();
-  const { register, handleSubmit, formState: { errors } } = useForm<any>({
-    defaultValues: { amount: balanceDue, paymentDate: dayjs().format('YYYY-MM-DD'), paymentMethod: 'CASH' },
-  });
+  const [paymentDate, setPaymentDate] = useState(dayjs().format('YYYY-MM-DD'));
+  const [notes, setNotes] = useState('');
+  const [lines, setLines] = useState<PaymentLine[]>([emptyLine(String(balanceDue))]);
+
+  const totalEntered = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+
+  function addLine() { setLines(ls => [...ls, emptyLine()]); }
+  function removeLine(i: number) { setLines(ls => ls.filter((_, j) => j !== i)); }
+  function updateLine(i: number, field: keyof PaymentLine, val: string) {
+    setLines(ls => ls.map((l, j) => j === i ? { ...l, [field]: val } : l));
+  }
 
   const log = useMutation({
-    mutationFn: (d: any) => api.post('/finance/invoices/payments', { ...d, invoiceId, amount: Number(d.amount) }),
+    mutationFn: () => api.post('/finance/invoices/payments/split', {
+      invoiceId,
+      paymentDate,
+      payments: lines
+        .filter(l => Number(l.amount) > 0)
+        .map(l => ({ amount: Number(l.amount), paymentMethod: l.paymentMethod, reference: l.reference || undefined, notes: notes || undefined })),
+    }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['finance-invoices'] });
       qc.invalidateQueries({ queryKey: ['ar-summary'] });
@@ -494,43 +584,76 @@ function PaymentForm({ invoiceId, balanceDue, onClose }: { invoiceId: string; ba
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white dark:bg-dark-card rounded-2xl p-5 w-full max-w-sm space-y-3" onClick={e => e.stopPropagation()}>
+      <div className="bg-white dark:bg-dark-card rounded-2xl p-5 w-full max-w-md space-y-3 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-gray-800 dark:text-gray-100">Log Payment</h3>
           <button onClick={onClose}><X className="w-5 h-5 text-gray-400" /></button>
         </div>
-        <form onSubmit={handleSubmit(d => log.mutate(d))} className="space-y-3">
-          <Fld label="Amount (KES) *">
-            <input type="number" step="0.01" min="0.01" {...register('amount', { required: true })} className={inp} />
-          </Fld>
-          <Fld label="Payment Date *">
-            <input type="date" {...register('paymentDate', { required: true })} className={inp} />
-          </Fld>
-          <Fld label="Payment Method *">
-            <select {...register('paymentMethod', { required: true })} className={inp}>
-              <option value="CASH">Cash</option>
-              <option value="MPESA">M-Pesa</option>
-              <option value="BANK_TRANSFER">Bank Transfer</option>
-            </select>
-          </Fld>
-          <Fld label="Reference (optional)">
-            <input {...register('reference')} className={inp} placeholder="Transaction ID, cheque no." />
-          </Fld>
-          <Fld label="Notes">
-            <input {...register('notes')} className={inp} />
-          </Fld>
-          <button type="submit" disabled={log.isPending}
-            className="w-full bg-brand-green text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
-            <CreditCard className="w-4 h-4" />
-            {log.isPending ? 'Logging…' : 'Log Payment'}
-          </button>
-          {log.isError && (
-            <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 px-3 py-2 rounded-xl flex items-center gap-1.5">
-              <AlertCircle className="w-3 h-3 flex-shrink-0" />
-              {(log.error as any)?.response?.data?.message ?? 'Failed to log payment. Please try again.'}
-            </p>
-          )}
-        </form>
+        <p className="text-xs text-gray-400">Balance due: KES {balanceDue.toLocaleString()}. Add another line below to split this payment across more than one method (e.g. part cash, rest M-Pesa).</p>
+
+        <Fld label="Payment Date *">
+          <input type="date" value={paymentDate} onChange={e => setPaymentDate(e.target.value)} className={inp} />
+        </Fld>
+
+        <div className="space-y-2">
+          {lines.map((l, i) => (
+            <div key={i} className="rounded-xl border border-gray-200 dark:border-dark-border p-2.5 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-gray-500">Payment {i + 1}</span>
+                {lines.length > 1 && (
+                  <button type="button" onClick={() => removeLine(i)} className="text-gray-400 hover:text-red-500">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Fld label="Amount (KES) *">
+                  <input type="number" step="0.01" min="0.01" value={l.amount}
+                    onChange={e => updateLine(i, 'amount', e.target.value)} className={inp} />
+                </Fld>
+                <Fld label="Method *">
+                  <select value={l.paymentMethod} onChange={e => updateLine(i, 'paymentMethod', e.target.value)} className={inp}>
+                    <option value="CASH">Cash</option>
+                    <option value="MPESA">M-Pesa</option>
+                    <option value="BANK_TRANSFER">Bank Transfer</option>
+                  </select>
+                </Fld>
+              </div>
+              <Fld label="Reference (optional)">
+                <input value={l.reference} onChange={e => updateLine(i, 'reference', e.target.value)}
+                  className={inp} placeholder="Transaction ID, cheque no." />
+              </Fld>
+            </div>
+          ))}
+        </div>
+        <button type="button" onClick={addLine}
+          className="w-full border border-dashed border-gray-300 dark:border-dark-border text-gray-500 rounded-xl py-2 text-xs font-semibold hover:bg-gray-50 dark:hover:bg-dark-bg">
+          + Split into another payment method
+        </button>
+
+        <Fld label="Notes">
+          <input value={notes} onChange={e => setNotes(e.target.value)} className={inp} />
+        </Fld>
+
+        <div className="flex items-center justify-between text-xs text-gray-500 px-1">
+          <span>Total entered:</span>
+          <span className={`font-bold ${totalEntered > balanceDue + 0.01 ? 'text-red-500' : 'text-gray-700 dark:text-gray-300'}`}>
+            KES {totalEntered.toLocaleString()}
+          </span>
+        </div>
+
+        <button type="button" disabled={log.isPending || totalEntered <= 0}
+          onClick={() => log.mutate()}
+          className="w-full bg-brand-green text-white py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2">
+          <CreditCard className="w-4 h-4" />
+          {log.isPending ? 'Logging…' : lines.length > 1 ? `Log Split Payment (${lines.filter(l => Number(l.amount) > 0).length} methods)` : 'Log Payment'}
+        </button>
+        {log.isError && (
+          <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 px-3 py-2 rounded-xl flex items-center gap-1.5">
+            <AlertCircle className="w-3 h-3 flex-shrink-0" />
+            {(log.error as any)?.response?.data?.message ?? 'Failed to log payment. Please try again.'}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -539,8 +662,23 @@ function PaymentForm({ invoiceId, balanceDue, onClose }: { invoiceId: string; ba
 function InvoicesTab() {
   const [statusFilter, setStatusFilter] = useState('');
   const [payingInvoice, setPayingInvoice] = useState<any>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const { data: invoices = [], isLoading } = useInvoices(statusFilter || undefined);
   const { data: ar } = useArSummary();
+
+  async function downloadInvoice(inv: any) {
+    setDownloadingId(inv.id);
+    try {
+      const res = await api.get(`/finance/invoices/${inv.id}/pdf`, { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = `Invoice-${inv.invoiceNumber}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // Best-effort — a failed download just leaves the button clickable again.
+    }
+    setDownloadingId(null);
+  }
 
   return (
     <div className="space-y-4">
@@ -612,14 +750,22 @@ function InvoicesTab() {
                     <p className="text-xs text-red-500">Bal: KES {Number(inv.balanceDue).toLocaleString()}</p>
                   )}
                 </div>
-                {/* GAP-09 FIX: payment logging button */}
-                {canPay && (
+                <div className="flex flex-col gap-1.5 flex-shrink-0">
+                  {/* GAP-09 FIX: payment logging button */}
+                  {canPay && (
+                    <button
+                      onClick={() => setPayingInvoice(inv)}
+                      className="bg-brand-green text-white text-xs px-3 py-1.5 rounded-lg font-semibold hover:bg-green-700 flex items-center gap-1 justify-center">
+                      <CreditCard className="w-3 h-3" /> Pay
+                    </button>
+                  )}
                   <button
-                    onClick={() => setPayingInvoice(inv)}
-                    className="flex-shrink-0 bg-brand-green text-white text-xs px-3 py-1.5 rounded-lg font-semibold hover:bg-green-700 flex items-center gap-1">
-                    <CreditCard className="w-3 h-3" /> Pay
+                    onClick={() => downloadInvoice(inv)}
+                    disabled={downloadingId === inv.id}
+                    className="border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300 text-xs px-3 py-1.5 rounded-lg font-semibold hover:bg-gray-50 dark:hover:bg-dark-bg flex items-center gap-1 justify-center disabled:opacity-60">
+                    <Download className="w-3 h-3" /> {downloadingId === inv.id ? 'Preparing…' : 'PDF'}
                   </button>
-                )}
+                </div>
               </div>
             );
           })}
@@ -642,6 +788,7 @@ export default function SalesOrders() {
   const qc = useQueryClient();
   const [pageView, setPageView] = useState<'orders' | 'invoices'>('orders');
   const [showOrderForm, setShowOrderForm] = useState(false);
+  const [editingOrder, setEditingOrder] = useState<any>(null);
   const [statusFilter, setStatusFilter] = useState<OrderStatus | ''>('');
   const [days, setDays] = useState(30);
 
@@ -664,6 +811,18 @@ export default function SalesOrders() {
   const confirmMutation    = useMutation({ mutationFn: (id: string) => api.patch(`/sales/orders/${id}/confirm`), onSuccess: () => { qc.invalidateQueries({ queryKey: ['sales-orders'] }); qc.invalidateQueries({ queryKey: ['sales-summary'] }); } });
   const deliveringMutation = useMutation({ mutationFn: (id: string) => api.patch(`/sales/orders/${id}/delivering`), onSuccess: () => qc.invalidateQueries({ queryKey: ['sales-orders'] }) });
   const deliveredMutation  = useMutation({ mutationFn: ({ id, notes }: { id: string; notes: string }) => api.patch(`/sales/orders/${id}/deliver`, { notes }), onSuccess: () => { qc.invalidateQueries({ queryKey: ['sales-orders'] }); qc.invalidateQueries({ queryKey: ['sales-summary'] }); } });
+  const [cancelError, setCancelError] = useState('');
+  const cancelMutation     = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason: string }) => api.patch(`/sales/orders/${id}/cancel`, { reason }),
+    onSuccess: () => {
+      setCancelError('');
+      qc.invalidateQueries({ queryKey: ['sales-orders'] });
+      qc.invalidateQueries({ queryKey: ['sales-summary'] });
+      qc.invalidateQueries({ queryKey: ['finance-invoices'] });
+      qc.invalidateQueries({ queryKey: ['ar-summary'] });
+    },
+    onError: (err: any) => setCancelError(err?.response?.data?.message ?? 'Failed to cancel order.'),
+  });
 
   const filters: { label: string; value: OrderStatus | '' }[] = [
     { label: 'All', value: '' }, { label: 'Pending', value: 'PENDING' }, { label: 'Confirmed', value: 'CONFIRMED' },
@@ -690,6 +849,11 @@ export default function SalesOrders() {
         </button>
       </div>
       <RevenueBanner summary={summary} />
+      {cancelError && (
+        <p className="text-xs text-red-600 flex items-center gap-1 bg-red-50 dark:bg-red-900/20 px-3 py-2 rounded-xl">
+          <AlertCircle className="w-3 h-3 flex-shrink-0" /> {cancelError}
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         {filters.map(({ label, value }) => (
           <button key={value} onClick={() => setStatusFilter(value)}
@@ -719,11 +883,14 @@ export default function SalesOrders() {
             <OrderCard key={order.id} order={order}
               onConfirm={id => confirmMutation.mutate(id)}
               onMarkDelivering={id => deliveringMutation.mutate(id)}
-              onMarkDelivered={(id, notes) => deliveredMutation.mutate({ id, notes })} />
+              onMarkDelivered={(id, notes) => deliveredMutation.mutate({ id, notes })}
+              onEdit={o => setEditingOrder(o)}
+              onCancel={(id, reason) => cancelMutation.mutate({ id, reason })} />
           ))}
         </div>
       )}
       {showOrderForm && <NewOrderModal onClose={() => setShowOrderForm(false)} pricing={todayPricing ?? null} />}
+      {editingOrder && <NewOrderModal onClose={() => setEditingOrder(null)} pricing={todayPricing ?? null} editOrder={editingOrder} />}
       </>
       }
     </div>

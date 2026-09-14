@@ -221,13 +221,16 @@ export class ProductionService {
       kg: l.feedKg,
     }));
 
-    // ── Validate each vaccine/supplement store item + residual up front too,
-    // reserving quantities against each other within this same request (two
-    // vaccine entries drawing on the same bottle can't both pass residual
-    // checks independently and then overdraw once both are written).
+    // ── Vaccines/supplements/treatments: free-text name, no Store-item
+    // requirement — the attendant just writes what was given. Linking a
+    // Store item is now optional; when one IS linked, its residual is still
+    // validated/reserved exactly as before (two entries drawing on the same
+    // bottle can't both pass independently and then overdraw once both are
+    // written). Items with no link skip this entirely, same as feed.
     const vaccinesGiven = dto.vaccinesGiven ?? [];
     const reserved = new Map<string, number>();
     for (const v of vaccinesGiven) {
+      if (!v.storeItemId) continue;
       const item = await this.getIssuedStoreItemOrThrow(v.storeItemId);
       const qty = v.quantityUsed ?? 0;
       if (qty > 0) {
@@ -317,10 +320,12 @@ export class ProductionService {
       } catch (_) { /* best-effort feed log */ }
     }
 
-    // Forward vaccines/supplements to VaccinationRecord (store-item-linked,
-    // residual already validated above) so the Production Manager Health
-    // page surfaces them as a historical log AND the store residual ledger
-    // (getIssuableStoreItems) reflects what was actually dispensed.
+    // Forward vaccines/supplements/treatments to VaccinationRecord (free-text
+    // name; storeItemId only present when the attendant chose to link one,
+    // residual already validated above for that case) so the Production
+    // Manager Health page surfaces them as a historical log, and the store
+    // residual ledger (getIssuableStoreItems) reflects what was dispensed
+    // whenever a link exists.
     for (const v of vaccinesGiven) {
       await this.prisma.vaccinationRecord.create({
         data: {
