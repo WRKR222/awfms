@@ -5,8 +5,28 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Loader2, Eye, EyeOff, User, Lock, Info } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
+import { AxiosError } from 'axios';
 import { authApi } from '../../lib/api/auth.api';
 import { useAuthStore } from '../../stores/auth.store';
+
+// FIX: this always fell back to "Invalid username or password" for ANY
+// error, including a network failure with no response at all — so a device
+// that can't reach the server (weak/blocked connection) saw the exact same
+// message as someone who genuinely typed the wrong password, sending them
+// on a wild goose chase re-entering credentials that were never wrong. Only
+// a real 401 from the server means the credentials were rejected.
+function loginErrorMessage(error: unknown): string {
+  if (error instanceof AxiosError) {
+    if (error.response?.status === 401) {
+      return 'Invalid username or password. Please try again.';
+    }
+    if (error.response) {
+      return error.response.data?.message ?? 'Sign-in failed. Please try again.';
+    }
+    return 'Unable to reach the server. Check your internet connection and try again.';
+  }
+  return 'Sign-in failed. Please try again.';
+}
 
 const loginSchema = z.object({
   username: z.string().min(1, 'Enter your username'),
@@ -209,7 +229,7 @@ export default function LoginPage() {
             {/* Error */}
             {loginMutation.isError && (
               <div className="mb-6 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm">
-                {(loginMutation.error as any)?.response?.data?.message ?? 'Invalid username or password'}
+                {loginErrorMessage(loginMutation.error)}
               </div>
             )}
 
