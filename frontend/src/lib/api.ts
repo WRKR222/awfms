@@ -64,8 +64,9 @@ const hydrationPromise: Promise<void> = hydrated
 // without a retry here, that blip permanently looks like "no data" to any
 // caller that does `.catch(() => [])` (common in this codebase), since
 // React Query's own retry never engages for a queryFn that "succeeds" with
-// an empty value.
-const MAX_NETWORK_RETRIES = 2;
+// an empty value. Single retry, deliberately — see client.ts for why (React
+// Query's own retry is disabled globally, so this is the only retry layer).
+const MAX_NETWORK_RETRIES = 1;
 const NETWORK_RETRY_DELAY_MS = 1000;
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 

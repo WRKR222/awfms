@@ -51,9 +51,13 @@ export function SalesEggStockPage() {
   const [range, setRange] = useState<RangeType>('day');
 
   // ── Current live stock ────────────────────────────────────────────────────
-  const { data: stock, isLoading, refetch, dataUpdatedAt } = useQuery({
+  // FIX: this and the queries below used to `.catch(() => null/[])` — a
+  // failed fetch then rendered as "No stock data available" (see the
+  // !stock branch below), indistinguishable from a genuinely-empty state,
+  // on this page whose entire purpose is showing that number correctly.
+  const { data: stock, isLoading, isError: stockError, refetch, dataUpdatedAt } = useQuery({
     queryKey: ['sales-stock', range],
-    queryFn:  () => api.get(`/sales/stock`).then(r => r.data).catch(() => null),
+    queryFn:  () => api.get(`/sales/stock`).then(r => r.data),
     staleTime:       30_000,
     refetchInterval: 30_000,       // poll every 30 s for invoice-paid deductions
     refetchOnWindowFocus: true,    // re-check when tab regains focus
@@ -63,7 +67,7 @@ export function SalesEggStockPage() {
   const { data: history = [] } = useQuery({
     queryKey: ['stock-history', range],
     queryFn:  () =>
-      api.get(`/sales/stock/history?range=${range}`).then(r => r.data).catch(() => []),
+      api.get(`/sales/stock/history?range=${range}`).then(r => r.data),
     staleTime: 60_000,
   });
 
@@ -73,8 +77,7 @@ export function SalesEggStockPage() {
     queryFn:  () =>
       api
         .get(`/production/daily-aggregate?date=${dayjs().format('YYYY-MM-DD')}`)
-        .then(r => r.data)
-        .catch(() => null),
+        .then(r => r.data),
     staleTime: 2 * 60_000,
   });
 
@@ -82,21 +85,21 @@ export function SalesEggStockPage() {
   const { data: tallyHistory = [] } = useQuery({
     queryKey: ['tally-history'],
     queryFn:  () =>
-      api.get('/tally-verifications/history?days=7').then(r => r.data).catch(() => []),
+      api.get('/tally-verifications/history?days=7').then(r => r.data),
     staleTime: 2 * 60_000,
   });
 
   // ── Summary ───────────────────────────────────────────────────────────────
   const { data: summary } = useQuery({
     queryKey: ['sales-summary'],
-    queryFn:  () => api.get('/sales/summary').then(r => r.data).catch(() => null),
+    queryFn:  () => api.get('/sales/summary').then(r => r.data),
     staleTime: 60_000,
   });
 
   // ── Breakage adjustments ──────────────────────────────────────────────────
   const { data: breakages = [] } = useQuery({
     queryKey: ['breakage-adjustments'],
-    queryFn:  () => api.get('/sales/breakage-adjustments').then(r => r.data).catch(() => []),
+    queryFn:  () => api.get('/sales/breakage-adjustments').then(r => r.data),
     staleTime: 2 * 60_000,
   });
 
@@ -257,6 +260,11 @@ export function SalesEggStockPage() {
         </p>
         {isLoading ? (
           <p className="text-sm text-gray-400 text-center py-4">Loading…</p>
+        ) : stockError ? (
+          <div className="py-4 text-center space-y-2">
+            <p className="text-sm text-red-600 font-medium">Couldn't load stock — connection or server problem.</p>
+            <button onClick={() => refetch()} className="text-xs font-semibold text-brand-green hover:underline">Retry</button>
+          </div>
         ) : !stock ? (
           <p className="text-sm text-gray-400 text-center py-4">No stock data available</p>
         ) : (

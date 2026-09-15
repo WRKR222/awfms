@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle, TrendingUp, DollarSign, Calendar, Info } from 'lucide-react';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
+import { LoadErrorNote } from '../../components/shared/LoadErrorNote';
 
 const inputCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-4 py-3 text-base bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
 const cardCls  = 'bg-white dark:bg-dark-card rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-dark-border';
@@ -31,14 +32,18 @@ interface PriceFormData {
 function useTallyTotals(date: string) {
   return useQuery({
     queryKey: ['tally-totals', date],
-    queryFn: () => api.get(`/tally-verifications/totals?date=${date}`).then(r => r.data).catch(() => null),
+    queryFn: () => api.get(`/tally-verifications/totals?date=${date}`).then(r => r.data),
     staleTime: 60_000,
   });
 }
 function useTodayPrice() {
+  // FIX: used to `.catch(() => null)` — a failed fetch looked exactly like
+  // "no price set today yet", which could make the accountant re-submit a
+  // price that's actually already set (risking a duplicate/conflict on
+  // save) and mislabels the form "Set" instead of "Update" below.
   return useQuery({
     queryKey: ['daily-price', 'today'],
-    queryFn: () => api.get('/pricing/daily/today').then(r => r.data).catch(() => null),
+    queryFn: () => api.get('/pricing/daily/today').then(r => r.data),
   });
 }
 function usePriceHistory() {
@@ -51,7 +56,7 @@ function usePriceHistory() {
 export function AccountantPricingPage() {
   const qc = useQueryClient();
   const today = dayjs().format('YYYY-MM-DD');
-  const { data: todayPrice } = useTodayPrice();
+  const { data: todayPrice, isError: todayPriceError, refetch: refetchTodayPrice } = useTodayPrice();
   const { data: history = [] } = usePriceHistory();
   const { data: tallyTotals } = useTallyTotals(today);
 
@@ -128,6 +133,9 @@ export function AccountantPricingPage() {
           <h2 className="text-base font-semibold text-gray-800 dark:text-gray-100 mb-4 flex items-center gap-2">
             <Calendar className="w-4 h-4 text-brand-green" /> {todayPrice ? 'Update' : 'Set'} Today's Prices
           </h2>
+          {todayPriceError && (
+            <LoadErrorNote label="whether today's price is already set" onRetry={() => refetchTodayPrice()} />
+          )}
 
           {todayPrice && (
             <div className="mb-4 bg-green-50 dark:bg-green-900/20 rounded-xl p-3 border border-green-200">

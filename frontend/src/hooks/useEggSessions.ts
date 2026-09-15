@@ -29,8 +29,17 @@ export function useTodayEggSessions() {
   const today = dayjs().format('YYYY-MM-DD');
   return useQuery({
     queryKey: todayEggSessionsKey(today),
+    // FIX: this used to `.catch(() => [])` — a failed fetch (network blip,
+    // server error) then looked IDENTICAL to "no session submitted yet",
+    // since both resolve to []. AttendantHome/EggCollectionPage derive their
+    // whole page state from this array, so a transient failure made an
+    // attendant who'd already submitted today's session see the form as if
+    // nothing had been sent — indistinguishable from actually-blank data.
+    // Letting the fetch reject lets callers tell "still loading" / "failed,
+    // retry" / "genuinely empty" apart via isLoading/isError instead of
+    // silently guessing empty on any failure.
     queryFn: () =>
-      api.get(`/production/sessions?sessionDate=${today}`).then(r => r.data).catch(() => []),
+      api.get(`/production/sessions?sessionDate=${today}`).then(r => r.data),
     refetchInterval: 30_000,
     staleTime: 0,
   });

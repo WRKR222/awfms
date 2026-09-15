@@ -15,6 +15,7 @@ import { useForm } from 'react-hook-form';
 import { Plus, EggOff, AlertTriangle, Info, ChevronDown, ChevronUp } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import { api } from '../../lib/api/client';
+import { LoadErrorNote } from '../../components/shared/LoadErrorNote';
 
 const iCls =
   'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green disabled:opacity-60 disabled:bg-gray-50 dark:disabled:bg-gray-900';
@@ -118,9 +119,15 @@ export default function SalesBreakagePage() {
   }, [sourceType, setValue]);
 
   // ── Queries ───────────────────────────────────────────────────────────────
-  const { data: stock } = useQuery({
+  // FIX: `stock` used to `.catch(() => null)`, so a failed fetch fell back
+  // to 0 for every "before" quantity below — an attendant could then submit
+  // a breakage adjustment recording a real, permanent audit entry against a
+  // false zero baseline instead of the actual stock. This one gets blocked
+  // at submission (see the disabled-submit check), not just a note, given
+  // what's actually at stake.
+  const { data: stock, isError: stockError, refetch: refetchStock } = useQuery({
     queryKey: ['sales-stock'],
-    queryFn: () => api.get('/sales/stock').then(r => r.data).catch(() => null),
+    queryFn: () => api.get('/sales/stock').then(r => r.data),
   });
 
   const { data: records = [], isLoading } = useQuery<BreakageRecord[]>({
@@ -132,7 +139,7 @@ export default function SalesBreakagePage() {
   const { data: tallyAggregate } = useQuery({
     queryKey: ['tally-aggregate', selectedDate],
     queryFn: () =>
-      api.get(`/sales/tally-aggregate?date=${selectedDate}`).then(r => r.data).catch(() => null),
+      api.get(`/sales/tally-aggregate?date=${selectedDate}`).then(r => r.data),
     enabled: !!selectedDate,
   });
 
@@ -592,9 +599,14 @@ export default function SalesBreakagePage() {
             />
           </div>
 
+          {stockError && (
+            <LoadErrorNote label="current stock — cannot submit until this loads" onRetry={() => refetchStock()} />
+          )}
+
           <button
             type="submit"
-            disabled={create.isPending}
+            disabled={create.isPending || stockError}
+            title={stockError ? "Couldn't load current stock — retry above before submitting" : undefined}
             className="bg-brand-green text-white px-5 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60"
           >
             {create.isPending ? 'Submitting…' : 'Submit Adjustment'}

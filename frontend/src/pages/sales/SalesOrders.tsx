@@ -15,6 +15,7 @@ import {
   MapPin, RefreshCw, FileText, CreditCard, AlertTriangle, ChevronRight, DollarSign,
   Pencil, Download,
 } from 'lucide-react';
+import { LoadErrorNote } from '../../components/shared/LoadErrorNote';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 type OrderStatus = 'PENDING' | 'CONFIRMED' | 'DELIVERING' | 'DELIVERED' | 'CANCELLED';
@@ -297,7 +298,7 @@ function NewOrderModal({ onClose, pricing, editOrder }: { onClose: () => void; p
   // and should be sold before newer standard stock (FIFO).
   const { data: stock } = useQuery({
     queryKey: ['sales-stock'],
-    queryFn: () => api.get('/sales/stock').then(r => r.data).catch(() => null),
+    queryFn: () => api.get('/sales/stock').then(r => r.data),
     staleTime: 30_000,
   });
   const [form, setForm] = useState<OrderFormState>(() => editOrder ? {
@@ -792,9 +793,13 @@ export default function SalesOrders() {
   const [statusFilter, setStatusFilter] = useState<OrderStatus | ''>('');
   const [days, setDays] = useState(30);
 
-  const { data: todayPricing } = useQuery<DailyPrice | null>({
+  // FIX: used to `.catch(() => null)` — a failed fetch then looked exactly
+  // like "accountant hasn't set pricing today", incorrectly disabling order
+  // creation for the whole Sales team over a connection blip rather than an
+  // actual missing-pricing state. isError now distinguishes the two.
+  const { data: todayPricing, isError: pricingError, refetch: refetchPricing } = useQuery<DailyPrice | null>({
     queryKey: ['daily-price-today'],
-    queryFn: () => api.get('/pricing/daily/today').then(r => r.data).catch(() => null),
+    queryFn: () => api.get('/pricing/daily/today').then(r => r.data),
     staleTime: 5 * 60_000, refetchInterval: 5 * 60_000,
   });
   const { data: summary } = useQuery({
@@ -844,10 +849,11 @@ export default function SalesOrders() {
         </div>
         <button onClick={() => setShowOrderForm(true)} disabled={!todayPricing}
           className="flex items-center gap-2 bg-brand-green text-white px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-          title={!todayPricing ? "Accountant must set today's pricing first" : 'Create new order'}>
+          title={pricingError ? "Couldn't check today's pricing" : !todayPricing ? "Accountant must set today's pricing first" : 'Create new order'}>
           <Plus className="w-4 h-4" /> New Order
         </button>
       </div>
+      {pricingError && <LoadErrorNote label="today's pricing" onRetry={() => refetchPricing()} />}
       <RevenueBanner summary={summary} />
       {cancelError && (
         <p className="text-xs text-red-600 flex items-center gap-1 bg-red-50 dark:bg-red-900/20 px-3 py-2 rounded-xl">

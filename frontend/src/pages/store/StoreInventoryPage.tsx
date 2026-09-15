@@ -7,6 +7,7 @@ import { Package, ArrowDownToLine, ArrowUpFromLine, AlertTriangle, Clock } from 
 import { ItemsTab } from './ItemsTab';
 import { StockInTab } from './StockInTab';
 import { StockOutTab } from './StockOutTab';
+import { LoadErrorNote } from '../../components/shared/LoadErrorNote';
 
 type TabKey = 'items' | 'stock-in' | 'stock-out';
 
@@ -18,15 +19,20 @@ const TABS: { key: TabKey; label: string; icon: React.ComponentType<{ className?
 
 
 function ExpiryAlertBanner() {
-  const { data: expiring = [] } = useQuery<any[]>({
+  // FIX: used to `.catch(() => [])`, which made a failed fetch return null
+  // below exactly like "nothing is expiring" — an expiry warning silently
+  // vanishing on a connection blip is worse than most other data here, so
+  // this one gets an explicit error note rather than just disappearing.
+  const { data: expiring = [], isError, refetch } = useQuery<any[]>({
     queryKey: ['store-expiring'],
-    queryFn: () => api.get('/store/inventory/expiring').then(r => r.data).catch(() => []),
+    queryFn: () => api.get('/store/inventory/expiring').then(r => r.data),
     staleTime: 5 * 60_000,
   });
 
   const critical = expiring.filter((e: any) => e.severity === 'critical');
   const warning = expiring.filter((e: any) => e.severity === 'warning');
 
+  if (isError) return <LoadErrorNote label="expiry alerts" onRetry={() => refetch()} />;
   if (expiring.length === 0) return null;
 
   return (

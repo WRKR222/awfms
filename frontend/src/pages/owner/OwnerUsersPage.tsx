@@ -34,14 +34,18 @@ export default function OwnerUsersPage() {
   const [newPassword, setNewPassword] = useState('');
   const [tab, setTab] = useState<'users' | 'log'>('users');
 
-  const { data: users = [], isLoading } = useQuery<UserRecord[]>({
+  // FIX: used to `.catch(() => [])` — a failed fetch rendered as a plain
+  // empty user list with no loading text and no error, since isLoading is
+  // false by the time the catch resolves. On the account-management page
+  // that's a full-page blank with zero indication anything went wrong.
+  const { data: users = [], isLoading, isError: usersError, refetch: refetchUsers } = useQuery<UserRecord[]>({
     queryKey: ['owner-users'],
-    queryFn: () => api.get('/auth/users').then(r => r.data).catch(() => []).then((list: UserRecord[]) => list.filter(u => u.role !== 'OWNER')),
+    queryFn: () => api.get('/auth/users').then(r => r.data).then((list: UserRecord[]) => list.filter(u => u.role !== 'OWNER')),
   });
 
   const { data: resetLog = [] } = useQuery<ResetLog[]>({
     queryKey: ['password-reset-log'],
-    queryFn: () => api.get('/auth/password-reset-log').then(r => r.data).catch(() => []),
+    queryFn: () => api.get('/auth/password-reset-log').then(r => r.data),
     enabled: tab === 'log',
   });
 
@@ -85,6 +89,12 @@ export default function OwnerUsersPage() {
       {tab === 'users' && (
         <div className="space-y-3">
           {isLoading && <p className="text-sm text-gray-400">Loading users...</p>}
+          {usersError && (
+            <div className="text-center py-6 space-y-2">
+              <p className="text-sm text-red-600 font-medium">Couldn't load users — connection or server problem.</p>
+              <button onClick={() => refetchUsers()} className="text-xs font-semibold text-brand-green hover:underline">Retry</button>
+            </div>
+          )}
           {users.map(u => (
             <div key={u.id} className="bg-white dark:bg-dark-card rounded-2xl border border-gray-100 dark:border-dark-border p-4 flex items-center justify-between gap-4">
               <div className="flex-1 min-w-0">

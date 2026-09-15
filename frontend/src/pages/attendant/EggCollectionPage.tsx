@@ -268,7 +268,10 @@ export function EggCollectionPage() {
     queryFn: () => api.get('/flock/batches?isActive=true').then(r => r.data),
   });
 
-  const { data: todaySessions = [], refetch: refetchSessions } = useTodayEggSessions();
+  const {
+    data: todaySessions = [], refetch: refetchSessions,
+    isLoading: sessionsLoading, isError: sessionsError,
+  } = useTodayEggSessions();
   // Live-invalidates the query above the instant a PM approves/returns this
   // attendant's session, instead of waiting on the 30s poll (see the FIX
   // comment on useAttendantRealtime for the bug this closes).
@@ -494,6 +497,40 @@ export function EggCollectionPage() {
   }
 
   // ── Render by pageMode ────────────────────────────────────────────────────
+
+  // Checked before pageMode: this page's whole form/lock state is derived
+  // from today's sessions, and a FAILED fetch used to fall back to an empty
+  // array — indistinguishable from "nothing submitted yet". That could show
+  // an already-submitted session's form as blank/re-fillable, risking a
+  // confusing duplicate-submission attempt. Loading state only applies on
+  // first load (no cached data yet) — a background refetch failure keeps
+  // showing the last good data instead of blanking the screen.
+  if (sessionsLoading) {
+    return (
+      <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
+        <div className="w-10 h-10 border-4 border-gray-200 dark:border-dark-border border-t-brand-green rounded-full animate-spin mb-4" />
+        <p className="text-sm text-gray-400">Loading today's sessions…</p>
+      </div>
+    );
+  }
+
+  if (sessionsError) {
+    return (
+      <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
+        <WifiOff className="w-16 h-16 text-red-400 mb-4" />
+        <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Couldn't Load Today's Sessions</h2>
+        <p className="text-gray-500 dark:text-gray-400 mt-2 max-w-sm">
+          This is a connection or server problem, not lost data — your submissions are safe on the server.
+        </p>
+        <button
+          onClick={() => refetchSessions()}
+          className="mt-6 bg-brand-green text-white rounded-xl px-8 py-3 font-semibold"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (pageMode === 'DAY_LOCKED') {
     return <DayLockedPanel amSession={amSession} pmSession={pmSession} />;

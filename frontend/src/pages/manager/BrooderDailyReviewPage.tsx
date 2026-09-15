@@ -298,7 +298,7 @@ export function BrooderDailyReviewPage() {
 
   const { data: outstanding = [] } = useQuery<{ logDate: string; sections: { section: string; returnReason: string | null; reviewedAt: string | null }[] }[]>({
     queryKey: ['brooder-outstanding-returns', batchId],
-    queryFn: () => api.get(`/brooder/batches/${batchId}/outstanding-returns`, { params: { days: 30 } }).then(r => r.data).catch(() => []),
+    queryFn: () => api.get(`/brooder/batches/${batchId}/outstanding-returns`, { params: { days: 30 } }).then(r => r.data),
     enabled: !!batchId,
   });
 

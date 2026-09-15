@@ -16,6 +16,7 @@ import {
   Info,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
+import { LoadErrorNote } from '../../components/shared/LoadErrorNote';
 
 const EGG_TYPE_LABELS: Record<string, string> = {
   STANDARD_EGGS:          'Standard Eggs',
@@ -68,7 +69,7 @@ export default function SalesHome() {
   const { data: aggregate } = useQuery({
     queryKey: ['daily-aggregate'],
     queryFn: () =>
-      api.get(`/production/daily-aggregate?date=${dayjs().format('YYYY-MM-DD')}`).then(r => r.data).catch(() => null),
+      api.get(`/production/daily-aggregate?date=${dayjs().format('YYYY-MM-DD')}`).then(r => r.data),
     staleTime: 2 * 60_000,
     refetchInterval: 60_000,
   });
@@ -77,41 +78,52 @@ export default function SalesHome() {
   // (newStandard / newConsumable / newNonConsumable), sold orders, and
   // locked advance bookings. Polled so the dashboard updates shortly after
   // a breakage adjustment is submitted on the Egg Breakage page.
-  const { data: stock, isLoading: stockLoading } = useQuery({
+  //
+  // FIX: this and the queries below used to `.catch(() => null/[])`, so a
+  // failed fetch rendered identically to "genuinely zero stock/sales" —
+  // showing the Sales team a false all-zeros dashboard instead of a clear
+  // "couldn't load, retry" state. stock/summary/todayOrders are the
+  // headline numbers on this page, so their failures get one combined
+  // banner + retry; aggregate/adjustments/deliveryCount/bookingPipeline are
+  // fallback or secondary badges and just need to stop swallowing so
+  // React Query tracks and recovers them normally.
+  const { data: stock, isLoading: stockLoading, isError: stockError, refetch: refetchStock } = useQuery({
     queryKey: ['sales-stock'],
-    queryFn: () => api.get('/sales/stock').then(r => r.data).catch(() => null),
+    queryFn: () => api.get('/sales/stock').then(r => r.data),
     staleTime: 30_000,
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
   });
 
-  const { data: summary } = useQuery({
+  const { data: summary, isError: summaryError, refetch: refetchSummary } = useQuery({
     queryKey: ['sales-summary'],
-    queryFn: () => api.get('/sales/summary').then(r => r.data).catch(() => null),
+    queryFn: () => api.get('/sales/summary').then(r => r.data),
     staleTime: 60_000,
   });
-  const { data: todayOrders = [] } = useQuery({
+  const { data: todayOrders = [], isError: todayOrdersError, refetch: refetchTodayOrders } = useQuery({
     queryKey: ['sales-orders-today'],
-    queryFn: () => api.get('/sales/orders?days=1').then(r => r.data).catch(() => []),
+    queryFn: () => api.get('/sales/orders?days=1').then(r => r.data),
     staleTime: 60_000,
   });
   const { data: adjustments = [] } = useQuery({
     queryKey: ['breakage-adjustments'],
-    queryFn: () => api.get('/sales/breakage-adjustments').then(r => r.data).catch(() => []),
+    queryFn: () => api.get('/sales/breakage-adjustments').then(r => r.data),
     staleTime: 2 * 60_000,
   });
   const { data: deliveryCount = 0 } = useQuery({
     queryKey: ['delivery-count'],
-    queryFn: () => api.get('/sales/orders?status=DELIVERING&days=90').then(r => (r.data as any[]).length).catch(() => 0),
+    queryFn: () => api.get('/sales/orders?status=DELIVERING&days=90').then(r => (r.data as any[]).length),
   });
   // Advance bookings no longer lock stock — this is purely the monitoring
   // count of what's still in the pipeline (not yet fulfilled or cancelled).
   const { data: bookingPipeline } = useQuery({
     queryKey: ['locked-stock'],
-    queryFn: () => api.get('/bookings/locked-stock').then(r => r.data).catch(() => null),
+    queryFn: () => api.get('/bookings/locked-stock').then(r => r.data),
     staleTime: 60_000,
   });
   const pendingBookingCount = bookingPipeline?.activeBookings?.length ?? 0;
+  const headlineDataError = stockError || summaryError || todayOrdersError;
+  const retryHeadlineData = () => { refetchStock(); refetchSummary(); refetchTodayOrders(); };
 
   const todaySold = (todayOrders as any[])
     .filter((o: any) => o.status !== 'CANCELLED')
@@ -157,7 +169,7 @@ export default function SalesHome() {
 
   const { data: pendingTallies = [] } = useQuery({
     queryKey: ['tally-pending'],
-    queryFn: () => api.get('/tally-verifications/pending').then(r => r.data as any[]).catch(() => []),
+    queryFn: () => api.get('/tally-verifications/pending').then(r => r.data as any[]),
     staleTime: 30_000,
   });
   const pendingTallyCount = (pendingTallies as any[]).filter(
@@ -177,6 +189,8 @@ export default function SalesHome() {
 
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-5xl mx-auto">
+
+      {headlineDataError && <LoadErrorNote label="today's stock/sales figures" onRetry={retryHeadlineData} />}
 
       {/* Revenue Progress */}
       {summary && summary.expectedRevenue != null && summary.expectedRevenue > 0 && (() => {

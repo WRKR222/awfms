@@ -70,11 +70,17 @@ const hydrationPromise: Promise<void> = hydrated
 // permanently looks like "no data" to any caller that does
 // `.catch(() => [])` on the request (very common in this codebase) — React
 // Query's own retry never engages for those, because the queryFn "succeeds"
-// with an empty value instead of rejecting. Retrying a couple of times here,
-// below that swallowing, gives transient failures a chance to self-heal
-// before the caller ever sees them. Only GETs — POST/PATCH are not safely
-// retryable without idempotency handling.
-const MAX_NETWORK_RETRIES = 2;
+// with an empty value instead of rejecting. Retrying once here, below that
+// swallowing, gives a transient blip a chance to self-heal before the
+// caller ever sees them. Only GETs — POST/PATCH are not safely retryable
+// without idempotency handling.
+//
+// Kept to a SINGLE retry deliberately: with the request's own timeout (30s
+// below) this bounds the worst case for a request that's genuinely failing
+// (not just blipping) to roughly 2x that timeout instead of compounding
+// further — React Query's own retry is disabled globally (see App.tsx) for
+// the same reason, so this is the only retry layer left in the chain.
+const MAX_NETWORK_RETRIES = 1;
 const NETWORK_RETRY_DELAY_MS = 1000;
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 

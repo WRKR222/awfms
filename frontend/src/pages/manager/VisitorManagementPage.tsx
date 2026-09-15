@@ -7,6 +7,7 @@ import {
   ChevronDown, ChevronUp, X, Check,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
+import { LoadErrorNote } from '../../components/shared/LoadErrorNote';
 
 // ── Biosecurity checks for walk-in visitor log entry ─────────────────────────
 // changes.pdf — Production Manager → Visitors: add a "PPE" check using the
@@ -73,9 +74,9 @@ export function VisitorManagementPage() {
     queryFn: () => api.get('/health/visitors/advance').then(r => r.data),
   });
 
-  const { data: housesRaw = [] } = useQuery({
+  const { data: housesRaw = [], isError: housesError, refetch: refetchHouses } = useQuery({
     queryKey: ['houses'],
-    queryFn: () => api.get('/flock/houses').then(r => r.data).catch(() => []),
+    queryFn: () => api.get('/flock/houses').then(r => r.data),
   });
   // Deduplicate by id — prevents duplicate 'Brooder House' entries
   const houses = (housesRaw as any[]).filter(
@@ -244,6 +245,9 @@ export function VisitorManagementPage() {
                 </div>
               ))}
 
+              {housesError && (
+                <LoadErrorNote label="the list of houses" onRetry={() => refetchHouses()} />
+              )}
               {houses.length > 0 && (
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Houses to be visited</label>

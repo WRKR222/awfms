@@ -11,7 +11,7 @@
 import { useNavigate } from 'react-router-dom';
 import {
   Egg, Clock, AlertCircle, ChevronRight, Sun, Moon,
-  CheckCircle, Lock, Flame, RefreshCw, ClipboardCheck,
+  CheckCircle, Lock, Flame, RefreshCw, ClipboardCheck, WifiOff,
 } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth.store';
 import { useQuery } from '@tanstack/react-query';
@@ -50,7 +50,10 @@ export function AttendantHome() {
   // a PM approving/returning a session while the attendant is on either
   // screen is reflected on both, instead of this page's own copy going
   // stale for up to its old (uncapped) default staleTime.
-  const { data: todaySessions = [] } = useTodayEggSessions();
+  const {
+    data: todaySessions = [], isLoading: sessionsLoading,
+    isError: sessionsError, refetch: refetchSessions,
+  } = useTodayEggSessions();
   useAttendantRealtime();
 
   const amSession = (todaySessions as any[]).find((s: any) => s.shift === 'AM');
@@ -59,10 +62,13 @@ export function AttendantHome() {
 
   // Fetch pending tallies so we can show "awaiting next-morning tally" vs
   // "awaiting PM verification" as distinct states on the dashboard cards.
+  // Secondary/derived — no dedicated error UI: a failure just means the
+  // purple "awaiting tally" distinction doesn't show for one 60s poll
+  // cycle, not a wrong core state (unlike todaySessions above).
   const { data: pendingTallies = [] } = useQuery({
     queryKey: ['attendant', 'pending-tallies'],
     queryFn: () =>
-      api.get('/tally-verifications/pending').then(r => r.data).catch(() => []),
+      api.get('/tally-verifications/pending').then(r => r.data),
     refetchInterval: 60_000,
   });
   const tallySessionIds = new Set(
@@ -295,10 +301,40 @@ export function AttendantHome() {
         <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">
           Today's Tasks
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <AMCard />
-          <PMCard />
-        </div>
+        {sessionsLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {[1, 2].map(i => (
+              <div key={i} className="h-24 rounded-2xl bg-gray-100 dark:bg-dark-card animate-pulse" />
+            ))}
+          </div>
+        ) : sessionsError ? (
+          // Don't guess: showing the cards below as if nothing were
+          // submitted yet (the old .catch(() => []) behavior) could tell an
+          // attendant who already submitted today's session that they
+          // hadn't — worse than just saying the load failed.
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-2xl p-5 flex items-center gap-4">
+            <WifiOff className="w-8 h-8 text-red-500 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-red-700 dark:text-red-400">
+                Couldn't load today's sessions
+              </p>
+              <p className="text-xs text-red-500 dark:text-red-500 mt-0.5">
+                This is a connection or server problem, not lost data — your submissions are safe. Tap retry.
+              </p>
+            </div>
+            <button
+              onClick={() => refetchSessions()}
+              className="flex-shrink-0 bg-red-600 text-white text-xs font-semibold px-3 py-2 rounded-xl"
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <AMCard />
+            <PMCard />
+          </div>
+        )}
         <p className="text-[11px] text-gray-400 mt-3 leading-relaxed">
           Each session bundles egg collection, session feed consumption, environmental data
           and any vaccines/supplements given — they are submitted together and locked once verified.

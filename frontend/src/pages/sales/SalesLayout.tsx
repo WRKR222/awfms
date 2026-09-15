@@ -37,7 +37,7 @@ export default function SalesLayout() {
   // matching what Sales sees in their queue — same as PM/Store roles.
   const { data: pendingTallies = [] } = useQuery({
     queryKey: ['tally-pending'],
-    queryFn: () => api.get('/tally-verifications/pending').then(r => r.data as any[]).catch(() => []),
+    queryFn: () => api.get('/tally-verifications/pending').then(r => r.data as any[]),
     staleTime: 30_000,
     refetchInterval: 30_000,
   });

@@ -34,6 +34,7 @@ import { BrooderLevelAssignModal }   from '../../components/shared/BrooderLevelA
 import { BrooderSessionLogModal, type BrooderLogPresetScope } from '../../components/shared/BrooderSessionLogModal';
 import { BrooderReassignModal }      from '../../components/shared/BrooderReassignModal';
 import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
+import { LoadErrorNote } from '../../components/shared/LoadErrorNote';
 import { useBrooderCageMap } from '../../hooks/useBrooderCageMap';
 import type { BrooderLevelData, BrooderRowData } from '../../hooks/useBrooderCageMap';
 import { useBrooderSessionStatus, type BrooderSessionKey } from '../../hooks/useBrooderSessionStatus';
@@ -284,16 +285,16 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
     ? ((batch.currentBirdCount / batch.quantityReceived) * 100).toFixed(1)
     : '—';
 
-  const { data: logs = [] } = useQuery<BrooderLog[]>({
+  const { data: logs = [], isError: logsError, refetch: refetchLogs } = useQuery<BrooderLog[]>({
     queryKey: ['brooder-logs', batch.id],
-    queryFn:  () => api.get(`/flock/brooder-logs?batchId=${batch.id}&limit=30`).then(r => r.data).catch(() => []),
+    queryFn:  () => api.get(`/flock/brooder-logs?batchId=${batch.id}&limit=30`).then(r => r.data),
     enabled:  historyOpen,
     staleTime: 30_000,
   });
 
-  const { data: treatments = [] } = useQuery<TreatmentLog[]>({
+  const { data: treatments = [], isError: treatmentsError, refetch: refetchTreatments } = useQuery<TreatmentLog[]>({
     queryKey: ['brooder-treatments', batch.id],
-    queryFn:  () => api.get(`/flock/brooder-treatment-logs?batchId=${batch.id}`).then(r => r.data).catch(() => []),
+    queryFn:  () => api.get(`/flock/brooder-treatment-logs?batchId=${batch.id}`).then(r => r.data),
     enabled:  treatHistOpen,
     staleTime: 30_000,
   });
@@ -305,31 +306,35 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
   // one place on the backend instead of being re-derived in the UI.
   const { data: populationSheet = [] } = useQuery<PopulationRecordDay[]>({
     queryKey: ['brooder-population-record-sheet', batch.id],
-    queryFn:  () => api.get(`/brooder/batches/${batch.id}/population-record-sheet?days=30`).then(r => r.data).catch(() => []),
+    queryFn:  () => api.get(`/brooder/batches/${batch.id}/population-record-sheet?days=30`).then(r => r.data),
     enabled:  historyOpen,
     staleTime: 30_000,
   });
 
   // Last log for header summary
-  const { data: lastArr = [] } = useQuery<BrooderLog[]>({
+  const { data: lastArr = [], isError: lastLogError } = useQuery<BrooderLog[]>({
     queryKey: ['brooder-last-log', batch.id],
-    queryFn:  () => api.get(`/flock/brooder-logs?batchId=${batch.id}&limit=1`).then(r => r.data).catch(() => []),
+    queryFn:  () => api.get(`/flock/brooder-logs?batchId=${batch.id}&limit=1`).then(r => r.data),
     staleTime: 60_000,
   });
   const lastLog     = lastArr[0];
   const today       = dayjs().format('YYYY-MM-DD');
   const daysSince   = lastLog ? dayjs(today).diff(dayjs(lastLog.logDate).format('YYYY-MM-DD'), 'day') : null;
-  const logOverdue  = daysSince === null || daysSince > 0;
+  // FIX: a failed fetch used to default lastArr to [] the same as
+  // "genuinely no logs yet", which made logOverdue fire as a false alarm
+  // ("No logs yet"/overdue) purely because the request failed, not because
+  // a log is actually missing. Only claim overdue from real data now.
+  const logOverdue  = !lastLogError && (daysSince === null || daysSince > 0);
 
   // Sections the Production Manager has returned for re-recording — surfaced
   // here so the attendant knows exactly what to fix without re-doing the
   // whole day's entry.
-  const { data: outstandingReturns = [] } = useQuery<{
+  const { data: outstandingReturns = [], isError: returnsError, refetch: refetchReturns } = useQuery<{
     logDate: string;
     sections: { section: string; returnReason: string | null }[];
   }[]>({
     queryKey: ['brooder-outstanding-returns', batch.id],
-    queryFn: () => api.get(`/brooder/batches/${batch.id}/outstanding-returns?days=14`).then(r => r.data).catch(() => []),
+    queryFn: () => api.get(`/brooder/batches/${batch.id}/outstanding-returns?days=14`).then(r => r.data),
     staleTime: 30_000,
   });
 
@@ -378,6 +383,11 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
                 {daysSince === null ? 'No logs yet' : `${daysSince}d overdue`}
               </span>
             )}
+            {lastLogError && (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 font-semibold">
+                Couldn't check log status
+              </span>
+            )}
           </div>
           <p className="text-xs text-gray-400 mt-0.5">
             {batch.supplier?.name ?? batch.supplierName ?? 'Unknown supplier'} · wk {ageWeeks} ({ageDays}d)
@@ -388,6 +398,8 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
           <p className="text-[10px] text-gray-400">live · {survival}% survival</p>
         </div>
       </div>
+
+      {returnsError && <LoadErrorNote label="returned-for-correction status" onRetry={() => refetchReturns()} />}
 
       {/* Sections the Production Manager returned for re-recording */}
       {outstandingReturns.length > 0 && (
@@ -455,6 +467,7 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
       {historyOpen && (
         <div className="border-t border-gray-100 dark:border-dark-border pt-3 space-y-4">
           <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Environment Log History</p>
+          {logsError && <LoadErrorNote label="log history" onRetry={() => refetchLogs()} />}
           {allDates.length === 0
             ? <p className="text-xs text-gray-400 text-center py-4">No logs yet.</p>
             : allDates.map(date => {
@@ -530,6 +543,7 @@ function BatchPanel({ batch }: { batch: BrooderBatch }) {
       {treatHistOpen && (
         <div className="border-t border-gray-100 dark:border-dark-border pt-3 space-y-2">
           <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Treatment History</p>
+          {treatmentsError && <LoadErrorNote label="treatment history" onRetry={() => refetchTreatments()} />}
           {treatments.length === 0
             ? <p className="text-xs text-gray-400 text-center py-4">No treatments recorded.</p>
             : treatments.map(t => (
@@ -597,6 +611,12 @@ export function BrooderPage() {
     queryKey: ['brooder-session-coverage', openSessionKey, today, batchIdsKey],
     queryFn: async () => {
       const entries = await Promise.all(brooderBatches.map(async (b) => {
+        // Intentional per-batch catch: this runs inside Promise.all over
+        // every brooder batch — without it, one batch's failed fetch would
+        // reject the whole coverage computation for every batch instead of
+        // just that one. Worst case on a real failure: that batch's popup
+        // auto-pops again even though it was already logged (a redundant
+        // prompt, not data loss — the backend still rejects a real dupe).
         const rows: BrooderLog[] = await api.get(`/flock/brooder-logs?batchId=${b.id}&limit=5`)
           .then(r => r.data).catch(() => []);
         const logged = rows.some(l =>

@@ -95,7 +95,18 @@ import { OfflineBanner }    from './components/shared/OfflineBanner';
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 1,
+      // Network-error retries for GETs already happen at the axios layer
+      // (see lib/api/client.ts / lib/api.ts) — a React Query retry on top of
+      // that re-runs the ENTIRE axios attempt-plus-its-own-retries cycle
+      // again, which on a sustained failure (not just a blip) compounds
+      // into a multi-minute wait before a query ever settles into isError.
+      // That's exactly what "stuck on Loading…forever" looks like from the
+      // outside, even though it does eventually resolve. Retrying here too
+      // is also cruder than the axios layer: it retries ANY error,
+      // including a real 4xx the server will just reject identically every
+      // time (e.g. "no pricing set today"). Leave retries to the layer
+      // that's actually scoped to the failure mode retrying can fix.
+      retry: 0,
       staleTime: 2 * 60 * 1000,
       gcTime: 10 * 60 * 1000,
     },

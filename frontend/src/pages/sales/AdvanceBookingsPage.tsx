@@ -136,7 +136,11 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [error, setError] = useState('');
   const { data: customers = [] } = useQuery({ queryKey: ['customers'], queryFn: () => api.get('/sales/customers').then(r => r.data) });
-  const { data: pricing } = useQuery({ queryKey: ['daily-price-today'], queryFn: () => api.get('/pricing/daily/today').then(r => r.data).catch(() => null) });
+  // Note: a failed fetch here only affects this modal's displayed estimate —
+  // the actual price is always re-resolved server-side when the booking is
+  // created (see BookingsService.createBooking), so this doesn't risk
+  // recording wrong data, just a possibly-misleading "no pricing" estimate.
+  const { data: pricing, isError: pricingError, refetch: refetchPricing } = useQuery({ queryKey: ['daily-price-today'], queryFn: () => api.get('/pricing/daily/today').then(r => r.data) });
   const [form, setForm] = useState({ customerId: '', eggType: 'STANDARD_EGGS' as EggItemType, requestedDate: dayjs().add(1, 'day').format('YYYY-MM-DD'), quantityTrays: 1, quantityEggs: 1, requiresDelivery: false, deliveryAddress: '', deliveryDate: '', notes: '' });
 
   /**
@@ -218,6 +222,11 @@ function NewBookingModal({ onClose }: { onClose: () => void }) {
                 </p>
               )}
             </div>
+          ) : pricingError ? (
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start justify-between gap-2">
+              <span className="flex items-start gap-2"><AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />Couldn't check today's pricing — actual price is still resolved correctly when you fulfil the booking.</span>
+              <button type="button" onClick={() => refetchPricing()} className="font-semibold hover:underline flex-shrink-0">Retry</button>
+            </div>
           ) : (
             <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
               <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" /><span>No pricing today — estimate saved as KES 0. Confirmed at fulfilment.</span>
@@ -250,7 +259,7 @@ export default function AdvanceBookingsPage() {
   const [showForm, setShowForm] = useState(false);
   const [statusFilter, setStatusFilter] = useState<BookingStatus | ''>('');
   const { data: bookings = [], isLoading } = useQuery({ queryKey: ['bookings', statusFilter], queryFn: () => api.get(`/bookings${statusFilter ? `?status=${statusFilter}` : ''}`).then(r => r.data), staleTime: 30_000 });
-  const { data: lockedStock } = useQuery({ queryKey: ['locked-stock'], queryFn: () => api.get('/bookings/locked-stock').then(r => r.data).catch(() => null), staleTime: 60_000 });
+  const { data: lockedStock } = useQuery({ queryKey: ['locked-stock'], queryFn: () => api.get('/bookings/locked-stock').then(r => r.data), staleTime: 60_000 });
   const confirmMutation = useMutation({ mutationFn: (id: string) => api.patch(`/bookings/${id}/confirm`), onSuccess: () => qc.invalidateQueries({ queryKey: ['bookings'] }) });
   const cancelMutation  = useMutation({ mutationFn: ({ id, reason }: { id: string; reason: string }) => api.patch(`/bookings/${id}/cancel`, { cancellationReason: reason }), onSuccess: () => { qc.invalidateQueries({ queryKey: ['bookings'] }); qc.invalidateQueries({ queryKey: ['sales-stock'] }); } });
   const fulfillMutation = useMutation({

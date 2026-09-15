@@ -144,9 +144,9 @@ export function ManagerCullingPage() {
   const { data: batches = [] } = useBatches({ isActive: true });
   const role = useAuthStore(s => s.user?.role);
 
-  const { data: logs = [], isLoading } = useQuery({
+  const { data: logs = [], isLoading, isError: logsError, refetch: refetchLogs } = useQuery({
     queryKey: ['health-events'],
-    queryFn: () => api.get('/health/events?limit=50').then(r => r.data).catch(() => []),
+    queryFn: () => api.get('/health/events?limit=50').then(r => r.data),
   });
 
   const { register, handleSubmit, watch, reset, setValue, formState: { errors } } = useForm<EventForm>({
@@ -206,7 +206,7 @@ export function ManagerCullingPage() {
   const { data: cageAssignments = [] } = useQuery({
     queryKey: ['cage-assignments', selectedBatchId],
     queryFn: () => isProductionHouse && selectedBatchId
-      ? api.get(`/cage-map/assignments?batchId=${selectedBatchId}`).then(r => r.data).catch(() => [])
+      ? api.get(`/cage-map/assignments?batchId=${selectedBatchId}`).then(r => r.data)
       : Promise.resolve([]),
     enabled: isProductionHouse && !!selectedBatchId,
   });
@@ -481,6 +481,11 @@ export function ManagerCullingPage() {
         </div>
         {isLoading ? (
           <div className="p-8 text-center text-sm text-gray-400">Loading…</div>
+        ) : logsError ? (
+          <div className="p-8 text-center space-y-2">
+            <p className="text-sm text-red-600 font-medium">Couldn't load event history — connection or server problem.</p>
+            <button onClick={() => refetchLogs()} className="text-xs font-semibold text-brand-green hover:underline">Retry</button>
+          </div>
         ) : (logs as any[]).length === 0 ? (
           <div className="p-8 text-center text-sm text-gray-400">No events logged yet.</div>
         ) : (

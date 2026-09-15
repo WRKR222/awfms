@@ -114,7 +114,7 @@ export function OwnerSalesOrdersPage() {
   // figure, not the accountant's manually entered estimate on DailyEggPrice.
   const { data: stock } = useQuery({
     queryKey: ['sales-stock'],
-    queryFn: () => api.get('/sales/stock').then(r => r.data).catch(() => null),
+    queryFn: () => api.get('/sales/stock').then(r => r.data),
     staleTime: 60_000,
   });
 

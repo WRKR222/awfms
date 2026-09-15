@@ -6,6 +6,7 @@ import { api } from '../../lib/api/client';
 import { useAuthStore } from '../../stores/auth.store';
 import { CheckCircle, XCircle, Clock, User, CalendarDays, Info } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
+import { LoadErrorNote } from '../../components/shared/LoadErrorNote';
 
 interface AdvanceNotice {
   id: string;
@@ -30,10 +31,13 @@ export default function OwnerVisitorPage() {
   const qc = useQueryClient();
   const { user } = useAuthStore();
 
-  const { data: notices = [], isLoading } = useQuery<AdvanceNotice[]>({
+  // FIX: used to `.catch(() => [])` — a failed fetch rendered identically
+  // to "no pending visitor notices" (see the pending.length === 0 branch
+  // below), silently hiding whatever's actually awaiting approval.
+  const { data: notices = [], isLoading, isError: noticesError, refetch: refetchNotices } = useQuery<AdvanceNotice[]>({
     queryKey: ['owner-advance-notices'],
     queryFn: () =>
-      api.get('/health/visitors/advance?days=30').then(r => r.data).catch(() => []),
+      api.get('/health/visitors/advance?days=30').then(r => r.data),
     refetchInterval: 60_000,
   });
 
@@ -67,7 +71,8 @@ export default function OwnerVisitorPage() {
           <Clock className="w-4 h-4" /> Pending Approval ({pending.length})
         </h2>
         {isLoading && <p className="text-gray-400 text-sm">Loading...</p>}
-        {!isLoading && pending.length === 0 && (
+        {noticesError && <LoadErrorNote label="pending visitor notices" onRetry={() => refetchNotices()} />}
+        {!isLoading && !noticesError && pending.length === 0 && (
           <p className="text-sm text-gray-400 dark:text-gray-500 italic">No pending visitor notices.</p>
         )}
         {pending.map(notice => (

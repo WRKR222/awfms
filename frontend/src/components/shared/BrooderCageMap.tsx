@@ -66,7 +66,7 @@ function BatchCard({ batch }: { batch: BrooderBatch }) {
   const { data: logs = [] } = useQuery<BrooderLog[]>({
     queryKey: ['brooder-logs', batch.id, 'latest'],
     queryFn: () =>
-      api.get(`/flock/brooder-logs?batchId=${batch.id}&limit=1`).then(r => r.data).catch(() => []),
+      api.get(`/flock/brooder-logs?batchId=${batch.id}&limit=1`).then(r => r.data),
     staleTime: 60_000,
     refetchInterval: 120_000,
   });
