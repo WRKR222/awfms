@@ -147,7 +147,11 @@ export function FeedIssuedVsRecordedPanel() {
         </p>
       ) : (
         <>
-          <div className="grid grid-cols-3 gap-3 mb-3">
+          {/* FIX: was a fixed 3-column grid, which squeezed "Store Issued" /
+              "Recorded Fed" / "Mismatch Days" and their values into unreadably
+              narrow tiles on a phone screen. Stacks to 1 column below the sm
+              breakpoint, 3 columns from sm up. */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
             <div className="bg-gray-50 dark:bg-dark-border/40 rounded-xl p-3">
               <p className="text-xs text-gray-500 dark:text-gray-400 font-medium">Store Issued</p>
               <p className="text-lg font-bold text-gray-800 dark:text-gray-100">
@@ -170,11 +174,14 @@ export function FeedIssuedVsRecordedPanel() {
             </div>
           </div>
 
+          {/* FIX: was a single flex row forcing the date label and the long
+              "Issued/Recorded/diff" string onto one line, causing the same
+              squeeze on mobile. Stacks the two below sm. */}
           <div className="space-y-1.5 max-h-56 overflow-y-auto">
             {data.buckets.slice().reverse().map(b => (
               <div
                 key={b.periodStart}
-                className="flex items-center justify-between text-xs bg-gray-50 dark:bg-dark-border/40 rounded-lg px-3 py-2"
+                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 sm:gap-2 text-xs bg-gray-50 dark:bg-dark-border/40 rounded-lg px-3 py-2"
               >
                 <span className="font-medium text-gray-700 dark:text-gray-300">
                   {period === 'monthly'

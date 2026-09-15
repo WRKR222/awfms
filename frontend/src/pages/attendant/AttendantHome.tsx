@@ -19,25 +19,45 @@ import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
 import { useTodayEggSessions } from '../../hooks/useEggSessions';
 import { useAttendantRealtime } from '../../hooks/useRealtime';
+import { useEggCollectionSessionStatus } from '../../hooks/useEggCollectionSessionStatus';
 
-// ── Mirrors resolvePageMode in EggCollectionPage exactly ──────────────────────
+// FIX: this used to ignore the farm-time session windows entirely (AM locks
+// at 12:00pm, PM at 4:30pm — see useEggCollectionSessionStatus), so the
+// dashboard cards stayed stuck showing AM as open/PM as blocked-on-AM long
+// after EggCollectionPage itself had already time-locked AM (nothing
+// submitted) or opened PM automatically. Now mirrors that logic exactly,
+// including the AM-missed fallthrough and the PM_TIME_LOCKED state.
 type PageMode =
   | 'AM_FORM' | 'AM_PENDING' | 'AM_RETURNED'
   | 'PM_FORM' | 'PM_PENDING' | 'PM_RETURNED'
+  | 'PM_TIME_LOCKED'
   | 'DAY_LOCKED';
 
-function resolvePageMode(amSession: any, pmSession: any): PageMode {
-  if (!amSession || amSession.status === 'RETURNED') {
-    return amSession?.status === 'RETURNED' ? 'AM_RETURNED' : 'AM_FORM';
+function resolvePageMode(
+  amSession: any,
+  pmSession: any,
+  amWindowOpen: boolean | undefined,
+  pmWindowOpen: boolean | undefined,
+): PageMode {
+  const amReturned = amSession?.status === 'RETURNED';
+  // AM was never submitted and its window has already closed — it's never
+  // coming, so it must not permanently block PM. A RETURNED AM session is
+  // NOT missed — the PM is waiting on a correction, so it stays open.
+  const amMissed = !amSession && amWindowOpen === false;
+
+  if (!amMissed && (!amSession || amReturned)) {
+    return amReturned ? 'AM_RETURNED' : 'AM_FORM';
   }
-  if (amSession.status === 'PENDING') return 'AM_PENDING';
-  if (amSession.status === 'APPROVED') {
-    if (!pmSession || pmSession.status === 'RETURNED') {
-      return pmSession?.status === 'RETURNED' ? 'PM_RETURNED' : 'PM_FORM';
-    }
-    if (pmSession.status === 'PENDING') return 'PM_PENDING';
-    if (pmSession.status === 'APPROVED') return 'DAY_LOCKED';
+  if (!amMissed && amSession.status === 'PENDING') return 'AM_PENDING';
+
+  // Reached once AM is APPROVED, or AM was missed outright.
+  if (!pmSession || pmSession.status === 'RETURNED') {
+    const pmReturned = pmSession?.status === 'RETURNED';
+    if (!pmReturned && pmWindowOpen === false) return 'PM_TIME_LOCKED';
+    return pmReturned ? 'PM_RETURNED' : 'PM_FORM';
   }
+  if (pmSession.status === 'PENDING') return 'PM_PENDING';
+  if (pmSession.status === 'APPROVED') return 'DAY_LOCKED';
   return 'AM_FORM';
 }
 
@@ -58,7 +78,18 @@ export function AttendantHome() {
 
   const amSession = (todaySessions as any[]).find((s: any) => s.shift === 'AM');
   const pmSession = (todaySessions as any[]).find((s: any) => s.shift === 'PM');
-  const pageMode  = resolvePageMode(amSession, pmSession);
+
+  // Farm-time-aware session windows — same server-computed source as
+  // EggCollectionPage (AM closes 12:00pm, PM closes 4:30pm), so the
+  // dashboard cards unlock/lock in step with the actual form.
+  const { data: windowStatus } = useEggCollectionSessionStatus();
+  const amWindowOpen  = windowStatus?.shifts.find(s => s.shift === 'AM')?.open;
+  const pmWindowOpen  = windowStatus?.shifts.find(s => s.shift === 'PM')?.open;
+  const amClosesLabel = windowStatus?.shifts.find(s => s.shift === 'AM')?.closesLabel;
+  const pmClosesLabel = windowStatus?.shifts.find(s => s.shift === 'PM')?.closesLabel;
+  const amMissed = !amSession && amWindowOpen === false;
+
+  const pageMode = resolvePageMode(amSession, pmSession, amWindowOpen, pmWindowOpen);
 
   // Fetch pending tallies so we can show "awaiting next-morning tally" vs
   // "awaiting PM verification" as distinct states on the dashboard cards.
@@ -97,7 +128,8 @@ export function AttendantHome() {
   function AMCard() {
     const isReturned = pageMode === 'AM_RETURNED';
     const isPending  = pageMode === 'AM_PENDING';
-    const isApproved = ['PM_FORM', 'PM_PENDING', 'PM_RETURNED', 'DAY_LOCKED'].includes(pageMode);
+    const isApproved = ['PM_FORM', 'PM_PENDING', 'PM_RETURNED', 'PM_TIME_LOCKED', 'DAY_LOCKED'].includes(pageMode) && !amMissed;
+    const isMissed    = amMissed;
     const isClickable = pageMode === 'AM_FORM' || isReturned;
 
     let iconBg   = 'bg-amber-500';
@@ -128,6 +160,13 @@ export function AttendantHome() {
       subText = amSession?.returnReason
         ? `Returned: ${amSession.returnReason}`
         : 'Returned for correction — tap to resubmit';
+    } else if (isMissed) {
+      iconBg   = 'bg-gray-200 dark:bg-dark-bg';
+      IconComp = <Lock className="w-7 h-7 text-gray-400" />;
+      statusTag = <span className="text-xs font-normal text-gray-400 ml-1">· Missed</span>;
+      subText = amClosesLabel
+        ? `Nothing was recorded before AM closed at ${amClosesLabel} — moved on to PM.`
+        : 'Nothing was recorded in time — moved on to PM.';
     }
 
     const cardBase = `w-full rounded-2xl p-5 shadow-sm border flex items-center gap-4 text-left transition-all`;
@@ -138,6 +177,8 @@ export function AttendantHome() {
           ? 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800 cursor-default'
           : isPending
             ? 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-700 cursor-default'
+            : isMissed
+              ? 'bg-gray-50 dark:bg-dark-bg/60 border-gray-200 dark:border-dark-border opacity-60 cursor-not-allowed'
             : isReturned
               ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-700 hover:shadow-md active:scale-[0.98] cursor-pointer group'
               : 'bg-white dark:bg-dark-card border-gray-100 dark:border-dark-border hover:shadow-md active:scale-[0.98] cursor-pointer group';
@@ -175,21 +216,31 @@ export function AttendantHome() {
   // ── PM card ───────────────────────────────────────────────────────────────
   function PMCard() {
     const amApproved = amSession?.status === 'APPROVED';
+    // PM opens once AM is approved OR AM was missed outright (its window
+    // closed with nothing submitted) — matches resolvePageMode exactly, so
+    // PM no longer stays falsely "blocked" all afternoon after AM's window
+    // has already closed on its own.
+    const amGatePassed = amApproved || amMissed;
 
-    const isBlocked  = !amApproved;
-    const isReturned = pageMode === 'PM_RETURNED';
-    const isPending  = pageMode === 'PM_PENDING';
-    const isApproved = pageMode === 'DAY_LOCKED';
-    const isClickable = (pageMode === 'PM_FORM' || isReturned) && amApproved;
+    const isBlocked    = !amGatePassed;
+    const isTimeLocked = pageMode === 'PM_TIME_LOCKED';
+    const isReturned   = pageMode === 'PM_RETURNED';
+    const isPending    = pageMode === 'PM_PENDING';
+    const isApproved   = pageMode === 'DAY_LOCKED';
+    const isClickable  = (pageMode === 'PM_FORM' || isReturned) && amGatePassed;
 
-    let iconBg   = isBlocked ? 'bg-gray-200 dark:bg-dark-bg' : 'bg-indigo-600';
-    let IconComp: React.ReactNode = isBlocked
+    let iconBg   = (isBlocked || isTimeLocked) ? 'bg-gray-200 dark:bg-dark-bg' : 'bg-indigo-600';
+    let IconComp: React.ReactNode = (isBlocked || isTimeLocked)
       ? <Lock className="w-7 h-7 text-gray-400" />
       : <Moon className="w-7 h-7 text-white" />;
     let statusTag: React.ReactNode = null;
-    let subText = isBlocked
-      ? 'Available once AM session is approved'
-      : 'Egg counts · Feed · Environment · Vaccines';
+    let subText = isTimeLocked
+      ? (pmClosesLabel ? `PM collection closed for today at ${pmClosesLabel}.` : 'PM collection closed for today.')
+      : isBlocked
+        ? (amClosesLabel
+            ? `Unlocks once AM is approved, or automatically after ${amClosesLabel}.`
+            : 'Unlocks once AM is approved, or automatically once AM\'s window closes.')
+        : 'Egg counts · Feed · Environment · Vaccines';
 
     if (isApproved && pmAwaitingTally) {
       iconBg   = 'bg-purple-100 dark:bg-purple-900/30';
@@ -216,7 +267,7 @@ export function AttendantHome() {
     }
 
     const cardBase = `w-full rounded-2xl p-5 shadow-sm border flex items-center gap-4 text-left transition-all`;
-    const cardVariant = isBlocked
+    const cardVariant = (isBlocked || isTimeLocked)
       ? 'bg-gray-50 dark:bg-dark-bg/60 border-gray-200 dark:border-dark-border opacity-60 cursor-not-allowed'
       : (isApproved && pmAwaitingTally)
         ? 'bg-purple-50 dark:bg-purple-900/10 border-purple-200 dark:border-purple-700 cursor-default'
@@ -246,7 +297,7 @@ export function AttendantHome() {
             isReturned ? 'text-red-500 dark:text-red-400'
             : isPending ? 'text-indigo-500 dark:text-indigo-400'
             : (isApproved && pmAwaitingTally) ? 'text-purple-600 dark:text-purple-400'
-            : isBlocked ? 'text-gray-400 dark:text-gray-500'
+            : (isBlocked || isTimeLocked) ? 'text-gray-400 dark:text-gray-500'
             : 'text-gray-500 dark:text-gray-400'
           }`}>
             {subText}
