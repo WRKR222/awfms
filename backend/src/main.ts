@@ -3,6 +3,7 @@ import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -12,6 +13,14 @@ async function bootstrap() {
 
   // Security
   app.use(helmet());
+
+  // Trust Railway's proxy so req.ip / x-forwarded-for reflect the real client
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
+  // FIX: log every request (method, path, status, duration, user, IP) — this
+  // interceptor previously existed but was never registered, so no request
+  // from any account ever showed up in Railway logs.
+  app.useGlobalInterceptors(new LoggingInterceptor());
 
   // CORS — restrict to your Vercel frontend in production
   app.enableCors({
