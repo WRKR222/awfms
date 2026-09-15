@@ -279,7 +279,8 @@ export class HealthService {
   }
 
   async getVisitors(days = 30) {
-    const from = dayjs().subtract(days, 'day').toDate();
+    const safeDays = Number(days) > 0 ? Number(days) : 30;
+    const from = dayjs().subtract(safeDays, 'day').toDate();
     return this.prisma.visitorLog.findMany({
       where: { checkInAt: { gte: from } },
       orderBy: { checkInAt: 'desc' },
@@ -366,7 +367,8 @@ export class HealthService {
   }
 
   async getAdvanceNotices(days = 30) {
-    const from = dayjs().subtract(days, 'day').toDate();
+    const safeDays = Number(days) > 0 ? Number(days) : 30;
+    const from = dayjs().subtract(safeDays, 'day').toDate();
     const until = dayjs().add(30, 'day').toDate();
     return this.prisma.visitorAdvanceNotice.findMany({
       where: { expectedDate: { gte: from, lte: until } },
@@ -441,7 +443,8 @@ export class HealthService {
   }
 
   async getBiosecurityLogs(days = 30, checkpointType?: string) {
-    const from = dayjs().subtract(days, 'day').toDate();
+    const safeDays = Number(days) > 0 ? Number(days) : 30;
+    const from = dayjs().subtract(safeDays, 'day').toDate();
     return this.prisma.biosecurityLog.findMany({
       where: {
         logDate: { gte: from },

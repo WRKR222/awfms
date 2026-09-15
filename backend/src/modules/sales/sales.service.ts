@@ -385,7 +385,14 @@ export class SalesService {
   // ── Summary ───────────────────────────────────────────────────────────────
 
   async getSummary(days = 30) {
-    const from = dayjs().subtract(days, 'day').toDate();
+    // FIX: the global ValidationPipe's `enableImplicitConversion` casts a
+    // non-numeric `?days=` query value to NaN rather than leaving it
+    // undefined, so the `days = 30` default param never kicks in (defaults
+    // only apply to a literal undefined) — dayjs().subtract(NaN, 'day')
+    // produces an Invalid Date, which Prisma throws on. Same guard already
+    // used in getOrders() below.
+    const safeDays = Number(days) > 0 ? Number(days) : 30;
+    const from = dayjs().subtract(safeDays, 'day').toDate();
     const orders = await this.prisma.salesOrder.findMany({
       where: {
         deletedAt: null,

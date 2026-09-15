@@ -2284,7 +2284,8 @@ export class BrooderService {
   // Attendant can see, at a glance, which days already have data and by
   // which method — useful for spotting gaps before backdating an entry.
   async getPopulationRecordSheet(batchId: string, days = 30) {
-    const since = dayjs().subtract(days, 'day').startOf('day').toDate();
+    const safeDays = Number(days) > 0 ? Number(days) : 30;
+    const since = dayjs().subtract(safeDays, 'day').startOf('day').toDate();
 
     const levelIds = await this.getBatchLevelIds(batchId);
 
@@ -3522,7 +3523,11 @@ export class BrooderService {
    *  polls to know which of their own past entries need re-recording. A
    *  section flips back to PENDING/APPROVED (via setDailyReviewStatus) once
    *  they've fixed it and a PM re-reviews it — this never clears itself. */
-  async getOutstandingReturns(batchId: string, days = 30) {
+  async getOutstandingReturns(batchId: string, daysRaw = 30) {
+    // Same NaN-from-implicit-conversion guard as getPopulationRecordSheet
+    // above — since.setDate(NaN) silently produces an Invalid Date rather
+    // than throwing here, which then crashes the Prisma query below.
+    const days = Number(daysRaw) > 0 ? Number(daysRaw) : 30;
     const since = new Date();
     since.setDate(since.getDate() - days);
     const rows = await this.prisma.brooderDailyReview.findMany({

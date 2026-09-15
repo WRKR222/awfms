@@ -45,7 +45,8 @@ export class FeedService {
   }
 
   async getDeliveries(feedType?: FeedType, days = 30) {
-    const from = dayjs().subtract(days, 'day').toDate();
+    const safeDays = Number(days) > 0 ? Number(days) : 30;
+    const from = dayjs().subtract(safeDays, 'day').toDate();
     return this.prisma.feedDelivery.findMany({
       where: {
         ...(feedType && { feedType }),

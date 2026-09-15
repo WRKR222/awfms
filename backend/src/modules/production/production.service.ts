@@ -680,7 +680,12 @@ export class ProductionService {
     return returned;
   }
 
-  async getHenDayTrend(batchId: string, days = 14) {
+  async getHenDayTrend(batchId: string, daysRaw = 14) {
+    // A non-numeric ?days= query value is cast to NaN by the global
+    // ValidationPipe's implicit conversion rather than left undefined, so
+    // the `= 14` default never kicks in (defaults only apply to a literal
+    // undefined) — NaN * 3 below would make Prisma's `take` invalid.
+    const days = Number(daysRaw) > 0 ? Number(daysRaw) : 14;
     // FIX: this used to only read PM sessions and return their per-shift
     // henDayPercent / totalGoodEggs — i.e. just one shift's good eggs divided
     // by that shift's own closing stock. That silently drops every AM
