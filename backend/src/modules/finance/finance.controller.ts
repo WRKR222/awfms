@@ -215,4 +215,16 @@ export class FinanceController {
     const today = new Date().toISOString().split('T')[0];
     return this.svc.getSalesReport(from ?? today, to ?? today);
   }
+
+  // ── Batch Daily Cost ──────────────────────────────────────────────────────
+
+  @Get('batches/:batchId/daily-cost')
+  @RequirePermission(Permission.FINANCE_REPORT_VIEW)
+  getBatchDailyCost(
+    @Param('batchId') batchId: string,
+    @Query('from') from?: string,
+    @Query('to')   to?:   string,
+  ) {
+    return this.svc.getBatchDailyCost(batchId, from, to);
+  }
 }

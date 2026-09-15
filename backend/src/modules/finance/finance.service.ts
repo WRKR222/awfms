@@ -728,6 +728,65 @@ export class FinanceService {
     };
   }
 
+  // ── Batch Daily Cost ──────────────────────────────────────────────────────
+  // Feed/vaccine-supplement/treatment cost per day for a batch, sourced from
+  // StoreStockOut — the actual store issuance record (unitCostKes locked in
+  // at issuance time) — rather than the individual attendant logs, since
+  // vaccine/supplement/treatment logging can be free-text with no linked
+  // store item at all and therefore no reliable cost of its own.
+
+  async getBatchDailyCost(batchId: string, from?: string, to?: string) {
+    const batch = await this.prisma.batch.findUnique({
+      where: { id: batchId },
+      select: { id: true, batchCode: true },
+    });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const toDate   = to && dayjs(to).isValid()   ? dayjs(to).endOf('day')     : dayjs().endOf('day');
+    const fromDate = from && dayjs(from).isValid() ? dayjs(from).startOf('day') : toDate.subtract(29, 'day').startOf('day');
+
+    const stockOuts = await this.prisma.storeStockOut.findMany({
+      where: {
+        issuedToBatchId: batchId,
+        issuedDate: { gte: fromDate.toDate(), lte: toDate.toDate() },
+      },
+      include: { storeItem: { select: { category: true } } },
+    });
+
+    const FEED_CATEGORIES  = new Set(['FEED', 'FEED_SUPPLEMENT']);
+    const VACC_CATEGORIES  = new Set(['VACCINE', 'SUPPLEMENT']);
+    const TREAT_CATEGORIES = new Set(['TREATMENT', 'MEDICATION']);
+
+    const byDay: Record<string, { feedCostKes: number; vaccineSupplementCostKes: number; treatmentCostKes: number; totalCostKes: number }> = {};
+
+    for (const so of stockOuts) {
+      const key = dayjs(so.issuedDate).format('YYYY-MM-DD');
+      if (!byDay[key]) {
+        byDay[key] = { feedCostKes: 0, vaccineSupplementCostKes: 0, treatmentCostKes: 0, totalCostKes: 0 };
+      }
+      const cost = Number(so.totalCostKes);
+      const category = so.storeItem.category as string;
+      if (FEED_CATEGORIES.has(category)) byDay[key].feedCostKes += cost;
+      else if (VACC_CATEGORIES.has(category)) byDay[key].vaccineSupplementCostKes += cost;
+      else if (TREAT_CATEGORIES.has(category)) byDay[key].treatmentCostKes += cost;
+      byDay[key].totalCostKes += cost;
+    }
+
+    const days = Object.entries(byDay)
+      .map(([date, costs]) => ({ date, ...costs }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    const totalCostKes = days.reduce((s, d) => s + d.totalCostKes, 0);
+
+    return {
+      batch: { id: batch.id, batchCode: batch.batchCode },
+      from: fromDate.format('YYYY-MM-DD'),
+      to: toDate.format('YYYY-MM-DD'),
+      days,
+      totalCostKes,
+    };
+  }
+
   // ── Overdue Invoice Cron ─────────────────────────────────────────────────
 
   @Cron('0 1 * * *')
