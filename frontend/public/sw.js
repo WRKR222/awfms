@@ -18,13 +18,23 @@
  * soon as they have connectivity.
  */
 
-const CACHE_NAME = 'awfms-v4'; // bumped: networkFirst now times out instead of hanging indefinitely on a weak connection
+const CACHE_NAME = 'awfms-v5'; // bumped: NETWORK_TIMEOUT_MS raised 8s -> 20s (see below)
 const OFFLINE_QUEUE_KEY = 'awfms-offline-queue';
 // A stalled request on a weak/intermittent connection can otherwise hang far
 // longer than this before the browser itself gives up, leaving the UI stuck
 // showing nothing while it waits. Bounding it means a slow network falls
 // back to the cache (or the offline JSON response) quickly instead.
-const NETWORK_TIMEOUT_MS = 8000;
+//
+// FIX: this used to be 8000ms, which is far too aggressive for a genuinely
+// slow-but-working connection (e.g. a high-latency rural WiFi/satellite
+// backhaul) — confirmed by a report that the SAME device, at the SAME
+// location, works fine on mobile data but fails on that site's WiFi. A
+// request that would have succeeded in 10-15s was being cut off at 8s and
+// reported as a failure, indistinguishable from a genuinely dead
+// connection. Raised to 20s — still well under the axios client's own 30s
+// timeout (lib/api/client.ts), so this SW timeout stays the first thing to
+// fire on a truly dead connection, but no longer fires on a merely slow one.
+const NETWORK_TIMEOUT_MS = 20000;
 
 // Files to pre-cache (offline fallback only — NOT served preferentially, see fetch handler below)
 const APP_SHELL = [

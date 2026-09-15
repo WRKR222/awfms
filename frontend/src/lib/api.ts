@@ -12,7 +12,11 @@ const BASE_URL = `${(import.meta.env.VITE_API_URL ?? 'http://localhost:3000').re
 
 export const api: AxiosInstance = axios.create({
   baseURL: BASE_URL,
-  timeout: 15000,
+  // FIX: was 15000 — shorter than the service worker's own network timeout
+  // (20000ms, see public/sw.js), so this client would give up before the SW
+  // even had a chance to. Matched to lib/api/client.ts's 30000ms so a
+  // slow-but-working connection isn't cut off by either layer prematurely.
+  timeout: 30000,
   headers: { 'Content-Type': 'application/json' },
 });
 
