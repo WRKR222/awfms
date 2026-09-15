@@ -29,6 +29,7 @@ type Employee = {
   assignment?: string | null;
   status: string;
   hireDate: string;
+  terminationReason?: string | null;
   nextOfKinName?: string | null;
   nextOfKinPhone?: string | null;
   nextOfKinRelation?: string | null;
@@ -109,7 +110,8 @@ function EmployeesTab() {
     queryFn: async () => (await api.get('/farm-hr/employees', { params: statusFilter ? { status: statusFilter } : {} })).data as Employee[],
   });
 
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<EmpFormData>();
+  const { register, handleSubmit, reset, watch, formState: { errors } } = useForm<EmpFormData>();
+  const watchedStatus = watch('status');
 
   const createMut = useMutation({
     mutationFn: (data: EmpFormData) => api.post('/farm-hr/employees', data),
@@ -119,7 +121,18 @@ function EmployeesTab() {
   const updateMut = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<EmpFormData> }) =>
       api.patch(`/farm-hr/employees/${id}`, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['farm-employees'] }); setEditing(null); setShowForm(false); },
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['farm-employees'] });
+      setEditing(null);
+      setShowForm(false);
+      // FIX: terminating an employee while viewing a filtered list (e.g.
+      // "Active") made that record vanish immediately — the status no
+      // longer matched the filter. Switch to "All" so the record Store just
+      // changed stays visible instead of disappearing right after the edit.
+      if (res.data?.status === 'TERMINATED' && statusFilter && statusFilter !== 'TERMINATED') {
+        setStatusFilter('');
+      }
+    },
   });
 
   const startEdit = (emp: Employee) => {
@@ -130,6 +143,7 @@ function EmployeesTab() {
       workPhone: emp.workPhone ?? '', mobilePhone: emp.mobilePhone ?? emp.phone ?? '',
       email: emp.email ?? '', role: emp.role, assignment: emp.assignment ?? '',
       hireDate: dayjs(emp.hireDate).format('YYYY-MM-DD'), status: emp.status,
+      terminationReason: emp.terminationReason ?? '',
       nextOfKinName: emp.nextOfKinName ?? '', nextOfKinPhone: emp.nextOfKinPhone ?? '',
       nextOfKinRelation: emp.nextOfKinRelation ?? '', notes: emp.notes ?? '',
     });
@@ -143,11 +157,12 @@ function EmployeesTab() {
 
   // CSV export
   const exportCSV = () => {
-    const headers = ['Employee Number', 'Full Name', 'National ID', 'Address', 'Work Phone', 'Mobile Phone', 'Email', 'Role', 'Assigned To', 'Hire Date', 'Status', 'Next of Kin', 'Next of Kin Phone'];
+    const headers = ['Employee Number', 'Full Name', 'National ID', 'Address', 'Work Phone', 'Mobile Phone', 'Email', 'Role', 'Assigned To', 'Hire Date', 'Status', 'Termination Reason', 'Next of Kin', 'Next of Kin Phone'];
     const rows = list.map(e => [
       e.employeeNumber ?? '', e.fullName, e.nationalId ?? '', e.address ?? '',
       e.workPhone ?? '', e.mobilePhone ?? e.phone ?? '', e.email ?? '',
       e.role, e.assignment ?? '', dayjs(e.hireDate).format('YYYY-MM-DD'), e.status,
+      e.terminationReason ?? '',
       e.nextOfKinName ?? '', e.nextOfKinPhone ?? '',
     ]);
     const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -222,6 +237,18 @@ function EmployeesTab() {
                 </select>
               </Fld>
             )}
+            {editing && watchedStatus === 'TERMINATED' && (
+              <div className="md:col-span-2 lg:col-span-3">
+                <Fld label="Reason for Termination *" err={errors.terminationReason?.message}>
+                  <textarea
+                    rows={2}
+                    {...register('terminationReason', { required: 'Required when status is Terminated' })}
+                    className="input"
+                    placeholder="e.g. Resigned, contract ended, misconduct..."
+                  />
+                </Fld>
+              </div>
+            )}
             <Fld label="Next of Kin Name">
               <input {...register('nextOfKinName')} className="input" />
             </Fld>
@@ -285,6 +312,11 @@ function EmployeesTab() {
                         e.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-700' :
                         e.status === 'TERMINATED' ? 'bg-red-100 text-red-700' : 'bg-gray-200 text-gray-600'
                       }`}>{e.status}</span>
+                      {e.status === 'TERMINATED' && e.terminationReason && (
+                        <p className="text-[11px] text-gray-400 mt-1 max-w-[14rem] mx-auto truncate" title={e.terminationReason}>
+                          {e.terminationReason}
+                        </p>
+                      )}
                     </td>
                     <td className="px-4 py-2 text-right">
                       <button onClick={() => startEdit(e)} className="text-brand-green hover:underline text-xs inline-flex items-center gap-1">

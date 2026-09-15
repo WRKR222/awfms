@@ -1,5 +1,5 @@
 // src/modules/store/farm-hr.service.ts
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 export interface CreateEmployeeDto {
@@ -40,6 +40,7 @@ export interface UpdateEmployeeDto {
   hireDate?: string;         // ← added: allow editing hire date
   status?: string;
   terminatedDate?: string;
+  terminationReason?: string;
   nextOfKinName?: string;
   nextOfKinPhone?: string;
   nextOfKinRelation?: string;
@@ -135,7 +136,18 @@ export class FarmHRService {
   }
 
   async updateEmployee(id: string, dto: UpdateEmployeeDto) {
-    await this.getEmployeeById(id);
+    const existing = await this.getEmployeeById(id);
+
+    // A record can't end up TERMINATED with no reason on file — required
+    // either on this same request or already saved from an earlier one
+    // (e.g. re-editing other fields on an already-terminated employee).
+    if (dto.status === 'TERMINATED') {
+      const reason = dto.terminationReason?.trim() ?? existing.terminationReason?.trim();
+      if (!reason) {
+        throw new BadRequestException('A reason for termination is required when setting an employee\'s status to Terminated.');
+      }
+    }
+
     return this.prisma.farmEmployee.update({
       where: { id },
       data: {
@@ -157,6 +169,7 @@ export class FarmHRService {
         ...(dto.status            !== undefined ? { status:            dto.status as any }                     : {}),
         ...(dto.terminatedDate    !== undefined && safeDate(dto.terminatedDate) !== undefined
             ? { terminatedDate: safeDate(dto.terminatedDate)! } : {}),
+        ...(dto.terminationReason !== undefined ? { terminationReason: dto.terminationReason }                 : {}),
         ...(dto.nextOfKinName     !== undefined ? { nextOfKinName:     dto.nextOfKinName }                     : {}),
         ...(dto.nextOfKinPhone    !== undefined ? { nextOfKinPhone:    dto.nextOfKinPhone }                    : {}),
         ...(dto.nextOfKinRelation !== undefined ? { nextOfKinRelation: dto.nextOfKinRelation }                 : {}),

@@ -2699,6 +2699,10 @@ model FarmEmployee {
   payPeriod         String         @default("MONTHLY") @map("pay_period")
   hireDate          DateTime       @map("hire_date") @db.Date
   terminatedDate    DateTime?      @map("terminated_date") @db.Date
+  // Required whenever status is set to TERMINATED — enforced in
+  // FarmHRService.updateEmployee, not just the form, so the record can't
+  // silently end up terminated with no reason on file.
+  terminationReason String?        @map("termination_reason")
   status            EmployeeStatus @default(ACTIVE)
   nextOfKinName     String?        @map("next_of_kin_name")
   nextOfKinPhone    String?        @map("next_of_kin_phone")
