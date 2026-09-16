@@ -182,7 +182,7 @@ function EmployeesTab() {
           className="rounded-xl text-sm border border-gray-200 dark:border-dark-border bg-white dark:bg-gray-800 px-3 py-2">
           <option value="">All</option>
           <option value="ACTIVE">Active</option>
-          <option value="INACTIVE">Inactive</option>
+          <option value="ON_LEAVE">On Leave</option>
           <option value="TERMINATED">Terminated</option>
         </select>
         <button onClick={exportCSV}
@@ -232,7 +232,7 @@ function EmployeesTab() {
               <Fld label="Status">
                 <select {...register('status')} className="input">
                   <option value="ACTIVE">Active</option>
-                  <option value="INACTIVE">Inactive</option>
+                  <option value="ON_LEAVE">On Leave</option>
                   <option value="TERMINATED">Terminated</option>
                 </select>
               </Fld>

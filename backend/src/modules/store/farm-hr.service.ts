@@ -1,6 +1,23 @@
 // src/modules/store/farm-hr.service.ts
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { EmployeeStatus } from '@prisma/client';
+
+const VALID_EMPLOYEE_STATUSES = Object.values(EmployeeStatus) as string[];
+
+// FIX: `status` used to go straight from the query string / request body
+// into Prisma with an `as any` cast — any value that isn't a real
+// EmployeeStatus (e.g. the frontend's old "INACTIVE", which was never a
+// real enum member; the real one is "ON_LEAVE") reached the DB layer and
+// crashed with an unhandled PrismaClientValidationError (500) instead of a
+// clean, actionable 400.
+function assertValidEmployeeStatus(status: string): void {
+  if (!VALID_EMPLOYEE_STATUSES.includes(status)) {
+    throw new BadRequestException(
+      `Invalid employee status "${status}". Must be one of: ${VALID_EMPLOYEE_STATUSES.join(', ')}.`,
+    );
+  }
+}
 
 export interface CreateEmployeeDto {
   fullName: string;
@@ -98,6 +115,7 @@ export class FarmHRService {
   constructor(private readonly prisma: PrismaService) {}
 
   async listEmployees(status?: string) {
+    if (status) assertValidEmployeeStatus(status);
     return this.prisma.farmEmployee.findMany({
       where: status ? { status: status as any } : {},
       orderBy: [{ status: 'asc' }, { fullName: 'asc' }],
@@ -136,6 +154,7 @@ export class FarmHRService {
   }
 
   async updateEmployee(id: string, dto: UpdateEmployeeDto) {
+    if (dto.status !== undefined) assertValidEmployeeStatus(dto.status);
     const existing = await this.getEmployeeById(id);
 
     // A record can't end up TERMINATED with no reason on file — required
