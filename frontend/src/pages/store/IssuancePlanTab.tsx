@@ -505,22 +505,37 @@ function PlanCard({
 function CreatePlanForm({
   type,
   editingPlan,
+  existingPlans = [],
   onClose,
   onCreated,
 }: {
   type: 'WEEKLY' | 'EMERGENCY';
   editingPlan?: any;
+  existingPlans?: any[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const qc = useQueryClient();
   const isEditing = !!editingPlan;
-  // For a new plan, Store chooses whether this targets the CURRENT farm week
-  // (a catch-up plan, e.g. she missed last Saturday's submission) or the
-  // NEXT one (the normal advance plan, submittable only this coming
-  // Saturday). Editing an existing plan keeps its original week.
-  const [weekChoice, setWeekChoice] = useState<'CURRENT' | 'NEXT'>('NEXT');
-  const mon = editingPlan ? dayjs(editingPlan.weekStartDate) : (weekChoice === 'CURRENT' ? thisMonday() : nextMonday());
+  // For a new plan, Store chooses the CURRENT farm week (a catch-up plan,
+  // e.g. she missed last Saturday's submission), the NEXT one (the normal
+  // advance plan, submittable only this coming Saturday), or OTHER — any
+  // earlier week that never got a plan created for it at all, not just the
+  // two most recent. Editing an existing plan keeps its original week.
+  const [weekChoice, setWeekChoice] = useState<'CURRENT' | 'NEXT' | 'OTHER'>('NEXT');
+  const [otherDate, setOtherDate] = useState(() => thisMonday().format('YYYY-MM-DD'));
+  const mon = editingPlan
+    ? dayjs(editingPlan.weekStartDate)
+    : weekChoice === 'CURRENT' ? thisMonday()
+    : weekChoice === 'NEXT'    ? nextMonday()
+    : dayjs(otherDate).isoWeekday(1);
+
+  // Heads-up (not a hard block — the backend doesn't forbid a second plan
+  // for the same week either) when a plan of this same type already exists
+  // for the chosen week, so Store notices before drafting a duplicate.
+  const existingPlanForWeek = !isEditing
+    ? existingPlans.find(p => p.type === type && dayjs(p.weekStartDate).isSame(mon, 'day'))
+    : undefined;
   const [notes, setNotes] = useState(editingPlan?.notes ?? '');
   const [emergencyReason, setEmergencyReason] = useState(editingPlan?.emergencyReason ?? '');
   const [items, setItems] = useState<
@@ -677,6 +692,7 @@ function CreatePlanForm({
                 Week of {mon.format('D MMM')} – {mon.add(6, 'day').format('D MMM YYYY')}
                 {!isEditing && weekChoice === 'CURRENT' && ' · Current week (catch-up)'}
                 {!isEditing && weekChoice === 'NEXT' && ' · Next week'}
+                {!isEditing && weekChoice === 'OTHER' && ' · Selected week'}
               </p>
             </div>
           </div>
@@ -686,11 +702,13 @@ function CreatePlanForm({
         </div>
 
         <div className="p-5 space-y-5">
-          {/* Target week — Store picks current (catch-up) or next week */}
+          {/* Target week — Store picks current (catch-up), next, or any
+              other week (e.g. one that was missed entirely and never got a
+              plan created for it) */}
           {!isEditing && (
             <div>
               <label className={lCls}>Target Week</label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <button
                   type="button"
                   onClick={() => setWeekChoice('CURRENT')}
@@ -719,6 +737,20 @@ function CreatePlanForm({
                     {nextMonday().format('D MMM')} – {nextMonday().add(6, 'day').format('D MMM')}
                   </span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setWeekChoice('OTHER')}
+                  className={`rounded-xl px-3 py-2 text-xs font-semibold border text-left transition-colors ${
+                    weekChoice === 'OTHER'
+                      ? 'bg-brand-green/10 border-brand-green text-brand-green'
+                      : 'border-gray-200 dark:border-dark-border text-gray-500 dark:text-gray-400'
+                  }`}
+                >
+                  Other Week
+                  <span className="block font-normal text-[11px] mt-0.5">
+                    A week that was missed
+                  </span>
+                </button>
               </div>
               {type === 'WEEKLY' && weekChoice === 'CURRENT' && (
                 <p className="text-xs text-amber-600 dark:text-amber-400 mt-1.5 flex items-start gap-1">
@@ -731,6 +763,28 @@ function CreatePlanForm({
                   {isTodaySaturday()
                     ? 'It\'s Saturday — you can submit this plan today.'
                     : 'This plan can only be submitted this coming Saturday.'}
+                </p>
+              )}
+              {weekChoice === 'OTHER' && (
+                <div className="mt-2">
+                  <input
+                    type="date"
+                    value={otherDate}
+                    onChange={e => setOtherDate(e.target.value)}
+                    className={iCls}
+                  />
+                  <p className="text-xs text-gray-400 mt-1.5">
+                    Pick any date — the plan is created for that date's full week
+                    (Mon {mon.format('D MMM')} – Sun {mon.add(6, 'day').format('D MMM YYYY')}).
+                  </p>
+                </div>
+              )}
+              {existingPlanForWeek && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1.5 flex items-start gap-1">
+                  <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                  A {type === 'EMERGENCY' ? 'emergency' : 'weekly'} plan already exists for this week
+                  ({existingPlanForWeek.planRef}, {PHASE_LABEL[existingPlanForWeek.phase] ?? existingPlanForWeek.phase}) —
+                  consider editing that one instead of creating a duplicate.
                 </p>
               )}
             </div>
@@ -1059,6 +1113,7 @@ export function IssuancePlanTab() {
       {showCreate && (
         <CreatePlanForm
           type={showCreate}
+          existingPlans={plans}
           onClose={() => setShowCreate(null)}
           onCreated={() => refetch()}
         />
@@ -1069,6 +1124,7 @@ export function IssuancePlanTab() {
         <CreatePlanForm
           type={editingPlan.type}
           editingPlan={editingPlan}
+          existingPlans={plans}
           onClose={() => setEditingPlan(null)}
           onCreated={() => refetch()}
         />
