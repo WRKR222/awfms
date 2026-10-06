@@ -6,7 +6,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { ProductionReportParserService } from './production-report-parser.service';
-import { ProductionReportReconciliationService, normaliseText, AppliedChangeInput } from './production-report-reconciliation.service';
+import { ProductionReportReconciliationService, normaliseText, AppliedChangeInput, changedFeedDates } from './production-report-reconciliation.service';
 import { ProductionReportRollbackService, RollbackResult } from './production-report-rollback.service';
 import { ProductionReportTemplateService, TemplateAnalysis } from './production-report-template.service';
 import { AiService } from '../ai/ai.service';
@@ -138,7 +138,11 @@ export class ProductionReportService {
    * exposing the button after preview succeeds). Parses + reconciles
    * immediately: anything that doesn't conflict with existing data is
    * applied right away; only genuine conflicts wait on the Director.
-   * Re-uploading a batch's report replaces the previous one.
+   *
+   * Only the newest upload is kept: re-uploading first undoes everything the
+   * previous version applied (restoring the attendants' original records),
+   * then applies the new version onto them, and the stored report, its
+   * flags and its change log describe the new version alone.
    */
   async submit(
     batchId: string,
@@ -164,14 +168,21 @@ export class ProductionReportService {
     await this.acquireProcessingLock(batchId);
     let reconciled: Awaited<ReturnType<ProductionReportReconciliationService['reconcile']>>;
     try {
-      reconciled = await this.reconciler.reconcile(batchId, parsedRows, user.id, fileName);
+      const previous = await this.prisma.storeProductionReport.findUnique({
+        where: { batchId }, select: { id: true, rolledBackAt: true, rawRows: true },
+      });
+      let notifyDates: Set<string> | undefined;
+      if (previous) {
+        await this.undoPreviousVersion(previous.id, previous.rolledBackAt, user);
+        notifyDates = changedFeedDates((previous.rawRows ?? []) as any, parsedRows);
+      }
+      reconciled = await this.reconciler.reconcile(batchId, parsedRows, user.id, fileName, { notifyDates });
     } finally {
       await this.releaseProcessingLock(batchId);
     }
     const { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage } = reconciled;
 
     const status = discrepancies.length > 0 ? 'PENDING' : 'APPROVED';
-    const existing = await this.prisma.storeProductionReport.findUnique({ where: { batchId } });
     const now = new Date();
 
     const report = await this.prisma.$transaction(async (tx) => {
@@ -220,10 +231,10 @@ export class ProductionReportService {
 
       // Applied-change ledger — every write reconcile() just made, so this
       // report's effects can be rolled back later (see
-      // ProductionReportRollbackService). Accumulates across resubmissions
-      // of the same batch's report (the report row's id is stable across
-      // re-uploads), which is what makes "roll back my current report"
-      // undo everything it has ever auto-filled, not just the latest pass.
+      // ProductionReportRollbackService). Previous versions' entries were
+      // already undone in undoPreviousVersion(), so they're dropped: the
+      // ledger only ever describes the newest upload.
+      await tx.productionReportAppliedChange.deleteMany({ where: { reportId: saved.id } });
       if (appliedChanges.length) {
         await tx.productionReportAppliedChange.createMany({ data: toLedgerRows(saved.id, appliedChanges) });
       }
@@ -250,6 +261,19 @@ export class ProductionReportService {
       discrepancyCount: discrepancies.length,
       stage,
     };
+  }
+
+  /** Undoes everything the previous version of this batch's report applied,
+   *  so a re-upload is applied onto the attendants' original records rather
+   *  than on top of the old version's. Skipped if that version was already
+   *  rolled back (e.g. rejected). Entries the rollback can't undo because
+   *  someone has edited that record since are left as they are — the new
+   *  version still replaces each day's figures with its own. */
+  private async undoPreviousVersion(reportId: string, rolledBackAt: Date | null, user: RequestUser) {
+    if (rolledBackAt) return;
+    const pending = await this.prisma.productionReportAppliedChange.count({ where: { reportId, rolledBack: false } });
+    if (pending === 0) return;
+    await this.rollbackService.rollback(reportId, user);
   }
 
   async getByBatch(batchId: string) {

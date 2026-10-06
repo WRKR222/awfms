@@ -31,6 +31,10 @@ export interface RecordFeedWastageParams {
   storeItemId: string | null;
   thisEntryKg: number;
   loggedById: string;
+  /** Default true. False records the excess without paging the Director —
+   *  used when a re-uploaded report re-applies a day whose figures didn't
+   *  change, so the same excess isn't announced twice. */
+  notify?: boolean;
 }
 
 export interface RecordProductionFeedWastageParams {
@@ -56,6 +60,8 @@ export interface RecordProductionFeedWastageParams {
   feedType: string;
   storeItemId: string | null;
   loggedById: string;
+  /** Default true — see RecordFeedWastageParams.notify. */
+  notify?: boolean;
 }
 
 @Injectable()
@@ -170,7 +176,7 @@ export class FeedWastageService {
     // anomaly, stock mismatch) this one deliberately does NOT go through
     // alertRoles(), which also notifies MANAGER. Feed cost/wastage tracking
     // is Director-facing only.
-    await this.notifications.notifyRole(
+    if (params.notify !== false) await this.notifications.notifyRole(
       UserRole.OWNER,
       'BROODER_FEED_WASTAGE' as any,
       `Feed Over-Issued — ${batch.batchCode}`,
@@ -260,7 +266,7 @@ export class FeedWastageService {
       : ' This feed entry was not linked to a store item, so no cost could be calculated.';
 
     // Director-only, same as the brooder alert.
-    await this.notifications.notifyRole(
+    if (params.notify !== false) await this.notifications.notifyRole(
       UserRole.OWNER,
       'BROODER_FEED_WASTAGE' as any,
       `Feed Over-Issued — ${batch.batchCode}`,

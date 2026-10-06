@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveReportCorrection, canonicaliseUnitWords, normaliseText,
-  planDayReplacement, feedLinesMatch, vaccineGivenNames,
+  planDayReplacement, feedLinesMatch, vaccineGivenNames, changedFeedDates,
 } from '../production-report-reconciliation.service';
 
 /** Day total after applying a plan: target takes the report value, cleared records drop to 0. */
@@ -157,5 +157,26 @@ describe('canonicaliseUnitWords / normaliseText (unit-synonym matching)', () => 
 
   it('does not merge genuinely different quantities', () => {
     expect(normaliseText('Chick Start 150G')).not.toBe(normaliseText('Chick Start 200G'));
+  });
+});
+
+describe('changedFeedDates (re-upload only re-notifies days that changed)', () => {
+  const v1 = [
+    { date: '2026-09-27', feedKg: 600, feedType: 'Layers Mash', openingStock: 5000 },
+    { date: '2026-09-28', feedKg: 385, feedType: 'Layers Mash', openingStock: 4990 },
+  ];
+
+  it('an identical re-upload changes no days', () => {
+    expect([...changedFeedDates(v1, v1.map(r => ({ ...r })))]).toEqual([]);
+  });
+
+  it('flags only the corrected day', () => {
+    const v2 = [v1[0], { ...v1[1], feedKg: 600 }];
+    expect([...changedFeedDates(v1, v2)]).toEqual(['2026-09-28']);
+  });
+
+  it('flags a day that is new in the re-upload', () => {
+    const v2 = [...v1, { date: '2026-09-29', feedKg: 610, feedType: 'Layers Mash', openingStock: 4985 }];
+    expect([...changedFeedDates(v1, v2)]).toEqual(['2026-09-29']);
   });
 });

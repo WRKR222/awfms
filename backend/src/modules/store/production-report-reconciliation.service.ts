@@ -180,6 +180,27 @@ export function feedLinesMatch(
 
 const toNum = (v: unknown): number | null => (v == null ? null : Number(v));
 
+/** Days whose feed-related figures differ between the previous version of
+ *  a report and a re-upload (including days new to the re-upload). A
+ *  re-upload re-applies every day from scratch, so this is what limits the
+ *  Director's over-feeding notifications to days that actually changed. */
+export function changedFeedDates(
+  previousRows: Pick<ParsedReportRow, 'date' | 'feedKg' | 'feedType' | 'feedSplit' | 'openingStock'>[],
+  newRows: Pick<ParsedReportRow, 'date' | 'feedKg' | 'feedType' | 'feedSplit' | 'openingStock'>[],
+): Set<string> {
+  const signatures = (rows: typeof newRows) => {
+    const byDate = new Map<string, string[]>();
+    for (const r of rows) {
+      const sig = JSON.stringify([r.feedKg ?? null, r.feedType ?? null, r.feedSplit ?? null, r.openingStock ?? null]);
+      byDate.set(r.date, [...(byDate.get(r.date) ?? []), sig]);
+    }
+    return new Map([...byDate].map(([d, sigs]) => [d, sigs.sort().join('|')]));
+  };
+  const before = signatures(previousRows);
+  const after = signatures(newRows);
+  return new Set([...after].filter(([d, sig]) => before.get(d) !== sig).map(([d]) => d));
+}
+
 /** BrooderLog columns a report's per-session reading maps onto. MIDDAY and
  *  EVENING use the single field; MORNING keeps its readings in the 3am/6am
  *  pair, so a Morning reading is matched against whichever of those holds a
@@ -346,7 +367,13 @@ export class ProductionReportReconciliationService {
    *  batch. Mutates the real brooder/production/cage-map tables for anything
    *  that can be safely auto-applied; returns the annotated rows + open
    *  discrepancies. Never issues store stock — see the header note above. */
-  async reconcile(batchId: string, rows: ParsedReportRow[], uploaderId: string, fileName: string): Promise<ReconcileOutcome> {
+  async reconcile(
+    batchId: string, rows: ParsedReportRow[], uploaderId: string, fileName: string,
+    // When set, only days in this set may page the Director about over-
+    // feeding — used for a re-upload, which re-applies every day from
+    // scratch, so days whose figures didn't change aren't announced twice.
+    opts: { notifyDates?: Set<string> } = {},
+  ): Promise<ReconcileOutcome> {
     const discrepancies: ReconcileOutcome['discrepancies'] = [];
     const appliedChanges: AppliedChangeInput[] = [];
     let autofillCount = 0;
@@ -513,7 +540,8 @@ export class ProductionReportReconciliationService {
 
         // ── Feed ───────────────────────────────────────────────────────────
         if (row.feedKg !== undefined) {
-          await this.reconcileFeed(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, aliasMap, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; });
+          const notify = !opts.notifyDates || opts.notifyDates.has(row.date);
+          await this.reconcileFeed(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, aliasMap, discrepancies, appliedChanges, () => { autofillCount++; }, () => { matchedCount++; }, notify);
         }
 
         // ── Cage reassignment / recount — per-cage rows only ────────────────
@@ -889,13 +917,14 @@ export class ProductionReportReconciliationService {
     stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER',
     batch: { batchCode: string; houseId: string; currentBirdCount: number; dateReceived: Date },
     feedItems: StoreItem[], aliasMap: Map<string, StoreItem>, discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
+    notify = true,
   ) {
     // ── Split feed cell (e.g. "chickcrumbs/growers 75:25%") ────────────────
     // Each portion is matched + reconciled against its OWN StoreItem
     // (Crumbs vs Growers), independently, since stores already issued that
     // day's stock-out split to the report's ratio — see reconcileFeedSplit.
     if (row.feedSplit && row.feedSplit.length >= 2) {
-      await this.reconcileFeedSplit(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, aliasMap, discrepancies, appliedChanges, onAutofill, onMatch);
+      await this.reconcileFeedSplit(row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch, feedItems, aliasMap, discrepancies, appliedChanges, onAutofill, onMatch, notify);
       return;
     }
 
@@ -919,7 +948,7 @@ export class ProductionReportReconciliationService {
         row.resolution.feedKg = 'MATCHED';
         onMatch();
         const holder = sessions.reduce((a, b) => ((toNum(b.feedKg) ?? 0) > (toNum(a.feedKg) ?? 0) ? b : a));
-        await this.checkProductionFeedWastage(row, batchId, batch, logDate, holder.id, daySessionIds, plan.dayTotal, matchedFeedItem, uploaderId, appliedChanges);
+        await this.checkProductionFeedWastage(row, batchId, batch, logDate, holder.id, daySessionIds, plan.dayTotal, matchedFeedItem, uploaderId, appliedChanges, notify);
         return;
       }
       const label = matchedFeedItem?.name ?? row.feedType ?? null;
@@ -927,7 +956,7 @@ export class ProductionReportReconciliationService {
         { label, breakdown: [{ feedType: label ?? 'Feed', kg: row.feedKg! }] });
       row.resolution.feedKg = 'AUTOFILLED';
       onAutofill();
-      await this.checkProductionFeedWastage(row, batchId, batch, logDate, target!.id, daySessionIds, row.feedKg!, matchedFeedItem, uploaderId, appliedChanges);
+      await this.checkProductionFeedWastage(row, batchId, batch, logDate, target!.id, daySessionIds, row.feedKg!, matchedFeedItem, uploaderId, appliedChanges, notify);
       return;
     }
 
@@ -940,14 +969,14 @@ export class ProductionReportReconciliationService {
     if (!conflict && Math.abs(systemTotal - row.feedKg!) < 0.001) {
       row.resolution.feedKg = 'MATCHED';
       onMatch();
-      if (generalLogs.length) await this.backfillBrooderWastage(batchId, batch.batchCode, logDate, row.date, dailyRationKg, uploaderId, appliedChanges);
+      if (generalLogs.length) await this.backfillBrooderWastage(batchId, batch.batchCode, logDate, row.date, dailyRationKg, uploaderId, appliedChanges, notify);
       return;
     }
 
     await this.replaceBrooderFeedDay(
       batchId, batch.batchCode, logDate, row.date,
       [{ item: matchedFeedItem, label: row.feedType, kg: row.feedKg!, note: row.feedType ? `sheet feed type: "${row.feedType}"` : undefined }],
-      generalLogs, levelLogs, systemTotal, uploaderId, noteSuffix, dailyRationKg, appliedChanges,
+      generalLogs, levelLogs, systemTotal, uploaderId, noteSuffix, dailyRationKg, appliedChanges, notify,
     );
     row.resolution.feedKg = 'AUTOFILLED';
     onAutofill();
@@ -987,6 +1016,7 @@ export class ProductionReportReconciliationService {
     lines: { item: StoreItem | null; label: string | undefined; kg: number; note?: string }[],
     generalLogs: { id: string }[], levelLogs: { id: string }[], previousTotal: number,
     uploaderId: string, noteSuffix: string, dailyRationKg: number, appliedChanges: AppliedChangeInput[],
+    notify = true,
   ) {
     await this.deleteAndLog(this.prisma.brooderGeneralFeedLog, generalLogs, 'BrooderGeneralFeedLog', batchId, rowDate, appliedChanges);
     await this.deleteAndLog(this.prisma.brooderLevelFeedLog, levelLogs, 'BrooderLevelFeedLog', batchId, rowDate, appliedChanges);
@@ -1015,7 +1045,7 @@ export class ProductionReportReconciliationService {
         const wastageLog = await this.feedWastage.recordIfOverIssued({
           batch: { id: batchId, batchCode }, entryDate: logDate, dailyRationKg,
           generalFeedLogId: created.id, feedType: created.feedType, storeItemId: line.item?.id ?? null,
-          thisEntryKg: line.kg, loggedById: uploaderId,
+          thisEntryKg: line.kg, loggedById: uploaderId, notify,
         });
         if (wastageLog) this.logChange(appliedChanges, batchId, rowDate, 'BrooderFeedWastageLog', wastageLog.id, 'CREATE', null, wastageLog);
       } catch (wastageErr: any) {
@@ -1029,11 +1059,11 @@ export class ProductionReportReconciliationService {
    *  (batch, day), so this never records the same excess twice. */
   private async backfillBrooderWastage(
     batchId: string, batchCode: string, logDate: Date, rowDate: string, dailyRationKg: number,
-    uploaderId: string, appliedChanges: AppliedChangeInput[],
+    uploaderId: string, appliedChanges: AppliedChangeInput[], notify = true,
   ) {
     try {
       const backfilled = await this.feedWastage.backfillDayIfOverIssued({
-        batch: { id: batchId, batchCode }, entryDate: logDate, dailyRationKg, loggedById: uploaderId, notify: true,
+        batch: { id: batchId, batchCode }, entryDate: logDate, dailyRationKg, loggedById: uploaderId, notify,
       });
       if (backfilled) this.logChange(appliedChanges, batchId, rowDate, 'BrooderFeedWastageLog', backfilled.id, 'CREATE', null, backfilled);
     } catch (wastageErr: any) {
@@ -1064,7 +1094,7 @@ export class ProductionReportReconciliationService {
     batch: { batchCode: string; dateReceived: Date },
     logDate: Date, sessionId: string, daySessionIds: string[], actualFeedKg: number,
     matchedFeedItem: StoreItem | null, uploaderId: string,
-    appliedChanges: AppliedChangeInput[],
+    appliedChanges: AppliedChangeInput[], notify = true,
   ) {
     if (row.openingStock == null || row.openingStock <= 0) return;
     try {
@@ -1122,6 +1152,7 @@ export class ProductionReportReconciliationService {
         feedType,
         storeItemId: matchedFeedItem?.id ?? null,
         loggedById: uploaderId,
+        notify,
       });
       if (wastageLog) {
         this.logChange(appliedChanges, batchId, row.date, 'BrooderFeedWastageLog', wastageLog.id, 'CREATE', null, wastageLog);
@@ -1153,6 +1184,7 @@ export class ProductionReportReconciliationService {
     stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER',
     batch: { batchCode: string; houseId: string; currentBirdCount: number; dateReceived: Date },
     feedItems: StoreItem[], aliasMap: Map<string, StoreItem>, discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
+    notify = true,
   ) {
     const portions = row.feedSplit!;
     const splitSummary = portions.map(p => `${p.label} ${p.percent}%`).join(' / ');
@@ -1205,13 +1237,13 @@ export class ProductionReportReconciliationService {
     if (alreadyRecorded) {
       row.resolution.feedKg = 'MATCHED';
       onMatch();
-      if (generalLogs.length) await this.backfillBrooderWastage(batchId, batch.batchCode, logDate, row.date, dailyRationKg, uploaderId, appliedChanges);
+      if (generalLogs.length) await this.backfillBrooderWastage(batchId, batch.batchCode, logDate, row.date, dailyRationKg, uploaderId, appliedChanges, notify);
       return;
     }
 
     await this.replaceBrooderFeedDay(
       batchId, batch.batchCode, logDate, row.date, lines,
-      generalLogs, levelLogs, systemTotal, uploaderId, noteSuffix, dailyRationKg, appliedChanges,
+      generalLogs, levelLogs, systemTotal, uploaderId, noteSuffix, dailyRationKg, appliedChanges, notify,
     );
     row.resolution.feedKg = 'AUTOFILLED';
     onAutofill();
