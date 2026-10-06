@@ -193,16 +193,36 @@ function useStoreItems() {
  *  service.ts). Lets Store pick which existing store item the sheet's
  *  wording actually means; saved as a reusable alias so the same wording
  *  auto-matches on every future report from then on. */
-function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
+/** Groups "doesn't match" flags by name with amounts taken out, so the
+ *  same thing written every day ("Solvita 12mls…", "Solvita 24mls…") is
+ *  one row. Display only — the server decides what a skip covers. */
+function unmatchedNameKey(text: string | null | undefined): string {
+  const t = String(text ?? '').toLowerCase();
+  return t.replace(/\d[\d,.]*\s*[a-z.%]*/g, ' ').replace(/[^a-z0-9]/g, '') || t.replace(/[^a-z0-9]/g, '');
+}
+
+function UnmatchedItemRow({ d, batchId, days = [], spellings = [] }: { d: Discrepancy; batchId: string; days?: string[]; spellings?: string[] }) {
   const { data: items = [] } = useStoreItems();
   const qc = useQueryClient();
   const [storeItemId, setStoreItemId] = useState('');
+
+  // Not a store item at all — close every open flag with this name (on
+  // every report) and stop flagging it on future uploads.
+  const skip = useMutation({
+    mutationFn: async () => (await api.post('/store/production-reports/skip-label', { rawLabel: d.reportValue })).data as {
+      resolvedCount: number; reportsTouched: number;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['production-report'] });
+      qc.invalidateQueries({ queryKey: ['production-reports-skipped-labels'] });
+    },
+  });
 
   const match = useMutation({
     // Re-reconciles the WHOLE report server-side (same per-row DB cost as
     // /submit — see that mutation's comment), so it needs the same longer
     // timeout rather than the default 30s.
-    mutationFn: async () => (await api.post(`/store/production-reports/${batchId}/match-item`, { rawLabel: d.reportValue, storeItemId, discrepancyId: d.id }, { timeout: 120_000 })).data as { matchedItem: { id: string; name: string } },
+    mutationFn: async () => (await api.post(`/store/production-reports/${batchId}/match-item`, { rawLabel: d.reportValue, storeItemId, discrepancyId: d.id, otherLabels: spellings.filter(x => x !== d.reportValue) }, { timeout: 120_000 })).data as { matchedItem: { id: string; name: string } },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['production-report', batchId] }),
   });
 
@@ -219,6 +239,16 @@ function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
     onSuccess: (result) => { if (result) setStoreItemId(result.storeItemId); },
   });
   const canSuggest = ['vaccine', 'supplement', 'treatment'].includes(d.field) && !!d.reportValue?.trim();
+
+  if (skip.isSuccess) {
+    return (
+      <div className="flex items-center gap-2 bg-gray-50 dark:bg-dark-bg border border-gray-100 dark:border-dark-border rounded-xl p-3 text-sm text-gray-600 dark:text-gray-400">
+        <CheckCircle className="w-4 h-4 flex-shrink-0" />
+        Skipped "{d.reportValue}" — {skip.data.resolvedCount} open flag{skip.data.resolvedCount === 1 ? '' : 's'} with this name closed
+        {skip.data.reportsTouched > 1 ? ` across ${skip.data.reportsTouched} reports` : ''}. It won't be flagged again.
+      </div>
+    );
+  }
 
   if (match.isSuccess) {
     return (
@@ -246,7 +276,11 @@ function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
               {kindLabel}
             </span>
             {hasRawText ? `"${d.reportValue}"` : <span className="text-gray-400 italic">(blank cell on the sheet)</span>}
-            {' — '}{dayjs(d.rowDate).format('D MMM YYYY')}{d.locationRef ? ` (${d.locationRef})` : ''}
+            {' — '}
+            {days.length > 1
+              ? `${days.length} days, ${dayjs(days[0]).format('D MMM')} – ${dayjs(days[days.length - 1]).format('D MMM YYYY')}`
+              : dayjs(d.rowDate).format('D MMM YYYY')}
+            {d.locationRef ? ` (${d.locationRef})` : ''}
           </p>
           <p className="text-xs text-gray-500">
             {hasRawText
@@ -283,6 +317,21 @@ function UnmatchedItemRow({ d, batchId }: { d: Discrepancy; batchId: string }) {
           {match.isPending ? 'Matching…' : 'Match'}
         </button>
       </div>
+      {hasRawText && (
+        <div className="pl-6 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <button
+            disabled={skip.isPending || match.isPending}
+            onClick={() => skip.mutate()}
+            className="text-xs font-semibold text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-dark-border px-3 py-1.5 rounded-lg hover:bg-white dark:hover:bg-dark-bg disabled:opacity-50"
+          >
+            {skip.isPending ? 'Skipping…' : 'Skip this name'}
+          </button>
+          <span className="text-[11px] text-gray-400">
+            Not a store item — closes every open flag for "{d.reportValue}" (any amount), on every report.
+          </span>
+        </div>
+      )}
+      {skip.isError && <p className="text-xs text-red-500 pl-6">{(skip.error as any)?.response?.data?.message ?? 'Skip failed'}</p>}
       {suggest.isSuccess && suggest.data && (
         <p className="text-[11px] text-brand-green pl-6">
           AI suggests "{suggest.data.storeItemName}" ({suggest.data.confidence} confidence) — pre-selected above, please confirm.
@@ -578,10 +627,22 @@ function CurrentReportPanel({ batchId }: { batchId: string }) {
       {report.discrepancies.filter(d => !d.resolved).length > 0 && (
         <div className="space-y-2">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Open discrepancies — resolve to finalize</p>
-          {report.discrepancies.filter(d => !d.resolved).map(d => (
-            d.notes?.includes('Could not match') ? (
-              <UnmatchedItemRow key={d.id} d={d} batchId={batchId} />
-            ) : (
+          {(() => {
+            // One row per unmatched name, however many days it appears on.
+            const groups = new Map<string, Discrepancy[]>();
+            for (const d of report.discrepancies) {
+              if (d.resolved || !d.notes?.includes('Could not match')) continue;
+              const key = `${d.field}|${unmatchedNameKey(d.reportValue) || d.id}`;
+              groups.set(key, [...(groups.get(key) ?? []), d]);
+            }
+            return [...groups.values()].map(g => {
+              const days = [...new Set(g.map(x => x.rowDate.slice(0, 10)))].sort();
+              const spellings = [...new Set(g.map(x => x.reportValue).filter((x): x is string => !!x?.trim()))];
+              return <UnmatchedItemRow key={g[0].id} d={g[0]} batchId={batchId} days={days} spellings={spellings} />;
+            });
+          })()}
+          {report.discrepancies.filter(d => !d.resolved && !d.notes?.includes('Could not match')).map(d => (
+            (
               <div key={d.id} className="flex items-start gap-2 bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/30 rounded-xl p-3 text-sm">
                 <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
                 <div>
@@ -1031,6 +1092,41 @@ function SectionsResultNote({ sections }: { sections: { weightTrack?: { saved: n
   );
 }
 
+/** Names Store has skipped as "not a store item" — with a way to undo. */
+function SkippedNamesPanel() {
+  const qc = useQueryClient();
+  const { data: labels = [] } = useQuery({
+    queryKey: ['production-reports-skipped-labels'],
+    queryFn: async () => (await api.get('/store/production-reports/skipped-labels')).data as { id: string; rawLabel: string; createdAt: string }[],
+    staleTime: 60_000,
+  });
+  const unskip = useMutation({
+    mutationFn: async (id: string) => (await api.delete(`/store/production-reports/skipped-labels/${id}`)).data,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['production-reports-skipped-labels'] }),
+  });
+  if (!labels.length) return null;
+  return (
+    <details className="text-xs text-gray-500">
+      <summary className="cursor-pointer font-semibold">Skipped names ({labels.length})</summary>
+      <p className="mt-1 text-[11px] text-gray-400">Never flagged on uploads. Stop skipping one to have it flagged again from the next upload.</p>
+      <ul className="mt-2 space-y-1">
+        {labels.map(l => (
+          <li key={l.id} className="flex items-center justify-between gap-2">
+            <span className="truncate">"{l.rawLabel}"</span>
+            <button
+              disabled={unskip.isPending}
+              onClick={() => unskip.mutate(l.id)}
+              className="flex-shrink-0 text-[11px] font-semibold text-brand-green hover:underline disabled:opacity-50"
+            >
+              Stop skipping
+            </button>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 export function StoreProductionReportPage() {
   const { data: batches = [] } = useBatches();
   const [batchId, setBatchId] = useState<string>('');
@@ -1062,6 +1158,7 @@ export function StoreProductionReportPage() {
           <CurrentReportPanel batchId={batchId} />
           <TemplatePanel batchId={batchId} />
           <UploadPanel batchId={batchId} onSubmitted={() => qc.invalidateQueries({ queryKey: ['production-report', batchId] })} />
+          <SkippedNamesPanel />
         </>
       )}
     </div>

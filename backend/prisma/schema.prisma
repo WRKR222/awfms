@@ -2220,6 +2220,21 @@ model StoreItem {
 /// wording auto-matches from then on — the sheet's spelling for an item
 /// rarely changes week to week, so this is a one-time fix per label, not a
 /// per-report chore.
+/// A report name Store chose to skip because it isn't a store item (e.g. a
+/// note, or something bought outside the store). Keyed on labelSkipKey()
+/// — the name with its amounts removed — so every day the same thing was
+/// written with a different dose is covered. Skipped names are never
+/// flagged as "doesn't match any store item" again, on any report.
+model ReportSkippedLabel {
+  id          String   @id @default(uuid())
+  skipKey     String   @unique @map("skip_key")
+  rawLabel    String   @map("raw_label") // the text Store skipped, for display
+  createdById String   @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("report_skipped_labels")
+}
+
 model StoreItemAlias {
   id              String   @id @default(uuid())
   storeItemId     String   @map("store_item_id") @db.Uuid

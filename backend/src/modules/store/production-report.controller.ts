@@ -1,6 +1,6 @@
 // src/modules/store/production-report.controller.ts
 import {
-  Controller, Get, Post, Body, Param, Query, Res, UseGuards,
+  Controller, Get, Post, Delete, Body, Param, Query, Res, UseGuards,
   UploadedFile, UseInterceptors, BadRequestException,
 } from '@nestjs/common';
 import { Response } from 'express';
@@ -97,9 +97,33 @@ export class ProductionReportController {
     @Body('rawLabel') rawLabel: string,
     @Body('storeItemId') storeItemId: string,
     @Body('discrepancyId') discrepancyId: string,
+    @Body('otherLabels') otherLabels: string[],
     @CurrentUser() user: RequestUser,
   ) {
-    return this.service.matchItem(batchId, rawLabel, storeItemId, discrepancyId, user);
+    return this.service.matchItem(batchId, rawLabel, storeItemId, discrepancyId, user, Array.isArray(otherLabels) ? otherLabels : []);
+  }
+
+  /** POST /store/production-reports/skip-label — Store marks a report name
+   *  as "not a store item": closes every open unmatched-name flag with the
+   *  same name (amounts ignored) on every report, and stops flagging it. */
+  @Post('skip-label')
+  @RequirePermission(Permission.PRODUCTION_REPORT_UPLOAD)
+  skipLabel(@Body('rawLabel') rawLabel: string, @CurrentUser() user: RequestUser) {
+    return this.service.skipLabel(rawLabel, user);
+  }
+
+  /** GET /store/production-reports/skipped-labels — names Store has skipped */
+  @Get('skipped-labels')
+  @RequirePermission(Permission.PRODUCTION_REPORT_UPLOAD)
+  listSkippedLabels() {
+    return this.service.listSkippedLabels();
+  }
+
+  /** DELETE /store/production-reports/skipped-labels/:id — stop skipping a name (future uploads only) */
+  @Delete('skipped-labels/:id')
+  @RequirePermission(Permission.PRODUCTION_REPORT_UPLOAD)
+  unskipLabel(@Param('id') id: string) {
+    return this.service.unskipLabel(id);
   }
 
   /** GET /store/production-reports/pending — queue of reports with open discrepancies still

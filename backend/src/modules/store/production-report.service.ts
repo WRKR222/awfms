@@ -6,7 +6,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { ProductionReportParserService } from './production-report-parser.service';
-import { ProductionReportReconciliationService, normaliseText, AppliedChangeInput, changedFeedDates } from './production-report-reconciliation.service';
+import { ProductionReportReconciliationService, normaliseText, labelSkipKey, AppliedChangeInput, changedFeedDates } from './production-report-reconciliation.service';
 import { ProductionReportRollbackService, RollbackResult } from './production-report-rollback.service';
 import { ProductionReportTemplateService, TemplateAnalysis } from './production-report-template.service';
 import { ProductionReportSectionsService } from './production-report-sections.service';
@@ -368,7 +368,10 @@ export class ProductionReportService {
    *  In that case `discrepancyId` closes out just that one discrepancy,
    *  recording the picked item for the audit trail without inventing an
    *  alias for empty text. */
-  async matchItem(batchId: string, rawLabel: string, storeItemId: string, discrepancyId: string | undefined, user: RequestUser) {
+  async matchItem(
+    batchId: string, rawLabel: string, storeItemId: string, discrepancyId: string | undefined, user: RequestUser,
+    otherLabels: string[] = [],
+  ) {
     const [report, storeItem] = await Promise.all([
       this.prisma.storeProductionReport.findUnique({ where: { batchId }, include: { batch: { select: { batchCode: true } } } }),
       this.prisma.storeItem.findUnique({ where: { id: storeItemId } }),
@@ -405,11 +408,18 @@ export class ProductionReportService {
     const normalisedAlias = normaliseText(rawLabel);
     if (!normalisedAlias) throw new BadRequestException('rawLabel has no matchable text');
 
-    await this.prisma.storeItemAlias.upsert({
-      where: { normalisedAlias },
-      create: { normalisedAlias, rawAlias: rawLabel, storeItemId, createdById: user.id },
-      update: { storeItemId, rawAlias: rawLabel }, // re-matching an existing label points it at a different item
-    });
+    // Other spellings of the same name on this report (e.g. a different
+    // dose each week) are matched to the same item in one go.
+    const labels = [rawLabel, ...otherLabels.filter(l => typeof l === 'string' && l.trim())];
+    for (const label of labels) {
+      const key = normaliseText(label);
+      if (!key) continue;
+      await this.prisma.storeItemAlias.upsert({
+        where: { normalisedAlias: key },
+        create: { normalisedAlias: key, rawAlias: label, storeItemId, createdById: user.id },
+        update: { storeItemId, rawAlias: label }, // re-matching an existing label points it at a different item
+      });
+    }
 
     const rows = report.rawRows as any;
     await this.acquireProcessingLock(batchId);
@@ -447,6 +457,59 @@ export class ProductionReportService {
     });
 
     return { report: updated, matchedItem: { id: storeItem.id, name: storeItem.name }, autofillCount, matchedCount, discrepancyCount: discrepancies.length };
+  }
+
+  /** Store marks a report name as "not a store item". Every open "doesn't
+   *  match any store item" flag with the same name (ignoring amounts — see
+   *  labelSkipKey) is closed, on every batch's report, and the name is
+   *  never flagged again on future uploads. */
+  async skipLabel(rawLabel: string, user: RequestUser) {
+    const skipKey = labelSkipKey(rawLabel ?? '');
+    if (!skipKey) throw new BadRequestException('There is no name to skip.');
+
+    await this.prisma.reportSkippedLabel.upsert({
+      where: { skipKey },
+      create: { skipKey, rawLabel: rawLabel.trim(), createdById: user.id },
+      update: {},
+    });
+
+    const open = await this.prisma.productionReportDiscrepancy.findMany({
+      where: { resolved: false, notes: { contains: 'Could not match' }, reportValue: { not: null } },
+      select: { id: true, reportId: true, reportValue: true, notes: true },
+    });
+    const similar = open.filter(d => labelSkipKey(d.reportValue!) === skipKey);
+    const now = new Date();
+    await this.prisma.$transaction(similar.map(d => this.prisma.productionReportDiscrepancy.update({
+      where: { id: d.id },
+      data: {
+        resolved: true, resolution: 'SKIPPED', resolvedById: user.id, resolvedAt: now,
+        notes: [d.notes, `Skipped by Store — "${rawLabel.trim()}" is not a store item.`].filter(Boolean).join(' — '),
+      },
+    })));
+
+    // A report with nothing left open is finished.
+    const reportIds = [...new Set(similar.map(d => d.reportId))];
+    for (const reportId of reportIds) {
+      const stillOpen = await this.prisma.productionReportDiscrepancy.count({ where: { reportId, resolved: false } });
+      if (stillOpen === 0) {
+        await this.prisma.storeProductionReport.update({ where: { id: reportId }, data: { status: 'APPROVED' } });
+      }
+    }
+
+    return { skipKey, rawLabel: rawLabel.trim(), resolvedCount: similar.length, reportsTouched: reportIds.length };
+  }
+
+  async listSkippedLabels() {
+    return this.prisma.reportSkippedLabel.findMany({ orderBy: { createdAt: 'desc' } });
+  }
+
+  /** Stops skipping a name. Only affects uploads from now on — flags that
+   *  were already closed stay closed. */
+  async unskipLabel(id: string) {
+    const label = await this.prisma.reportSkippedLabel.findUnique({ where: { id } });
+    if (!label) throw new NotFoundException('Skipped name not found');
+    await this.prisma.reportSkippedLabel.delete({ where: { id } });
+    return { removed: true };
   }
 
   async listPending() {

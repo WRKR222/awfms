@@ -243,6 +243,20 @@ export function normaliseText(s: string): string {
   return canonicaliseUnitWords(s).toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+/** The name in a report cell with its amounts taken out — "Solvita 12mls
+ *  per 120ltrs" and "Solvita 24mls per 240ltrs" both give "solvitaper",
+ *  "Chick start 150grms" gives "chickstart". Store's "skip this name"
+ *  choice is keyed on this, so one skip covers every day the same thing
+ *  was written with a different dose. Falls back to the whole text when
+ *  the cell is nothing but an amount. */
+export function labelSkipKey(text: string): string {
+  const stripped = String(text ?? '').replace(
+    /(\d[\d,.]*)\s*(%|[a-zA-Z][a-zA-Z.]*)?/g,
+    (_m, _n, unit?: string) => (unit && unit !== '%' && !resolveUnit(unit.replace(/\./g, '')) ? ` ${unit}` : ' '),
+  );
+  return normaliseText(stripped) || normaliseText(text ?? '');
+}
+
 /** Best-effort mapping onto the FeedType enum, which is a required column on
  *  BrooderGeneralFeedLog but currently has no separate "crumb" stage. Prefers
  *  the name of the matched StoreItem (the actual feed present in stores) over
@@ -393,6 +407,10 @@ export class ProductionReportReconciliationService {
     // re-flags as unmatched on a later report.
     const aliasRows = await this.prisma.storeItemAlias.findMany({ include: { storeItem: true } });
     const aliasMap: Map<string, StoreItem> = new Map(aliasRows.map(a => [a.normalisedAlias, a.storeItem] as [string, StoreItem]));
+    // Names Store chose to skip ("not a store item") — never flagged again.
+    const skippedKeys = new Set(
+      (await this.prisma.reportSkippedLabel.findMany({ select: { skipKey: true } })).map(l => l.skipKey),
+    );
 
     // ── Stock-count timeline (BROODING only) — reconcileStockCount's
     // "expected opening stock" is the most recent PRIOR count's closing
@@ -532,7 +550,7 @@ export class ProductionReportReconciliationService {
         await this.reconcileHealthUsages(
           row, batchId, logDate, uploaderId, noteSuffix, stageBucket, batch,
           vaccineItems, supplementItems, treatmentItems, aliasMap, discrepancies, appliedChanges,
-          () => { autofillCount++; }, () => { matchedCount++; },
+          () => { autofillCount++; }, () => { matchedCount++; }, skippedKeys,
         );
 
         // ── Temperature / humidity / lux, per session (morning/midday/
@@ -1753,6 +1771,7 @@ export class ProductionReportReconciliationService {
     batch: { batchCode: string; houseId: string },
     vaccineItems: StoreItem[], supplementItems: StoreItem[], treatmentItems: StoreItem[], aliasMap: Map<string, StoreItem>,
     discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
+    skippedKeys: Set<string> = new Set(),
   ) {
     // reconcile() can run more than once over the SAME already-parsed rows
     // — e.g. matchItem() re-reconciles the current report's saved rawRows
@@ -1829,6 +1848,10 @@ export class ProductionReportReconciliationService {
       };
       row.healthUsages.push(usage);
 
+      if (!matched && skippedKeys.has(labelSkipKey(c.text))) {
+        usage.resolution = 'SKIPPED';
+        continue;
+      }
       if (!matched) {
         usage.resolution = 'DISCREPANCY';
         // Name the exact field ("vaccine"/"supplement"/"treatment") AND

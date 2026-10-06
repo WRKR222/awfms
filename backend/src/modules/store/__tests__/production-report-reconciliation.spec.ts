@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   resolveReportCorrection, canonicaliseUnitWords, normaliseText,
   planDayReplacement, feedLinesMatch, vaccineGivenNames, changedFeedDates,
+  labelSkipKey,
 } from '../production-report-reconciliation.service';
 
 /** Day total after applying a plan: target takes the report value, cleared records drop to 0. */
@@ -178,5 +179,22 @@ describe('changedFeedDates (re-upload only re-notifies days that changed)', () =
   it('flags a day that is new in the re-upload', () => {
     const v2 = [...v1, { date: '2026-09-29', feedKg: 610, feedType: 'Layers Mash', openingStock: 4985 }];
     expect([...changedFeedDates(v1, v2)]).toEqual(['2026-09-29']);
+  });
+});
+
+describe('labelSkipKey — one skip covers the same name at any dose', () => {
+  it('ignores amounts and units', () => {
+    expect(labelSkipKey('Solvita 12mls per 120ltrs')).toBe(labelSkipKey('Solvita 24mls per 240ltrs'));
+    expect(labelSkipKey('Chick start 150grms')).toBe('chickstart');
+    expect(labelSkipKey('Vigorex 60mls')).toBe(labelSkipKey('vigorex 30 ml'));
+  });
+
+  it('keeps different names apart', () => {
+    expect(labelSkipKey('Vigorex 60mls')).not.toBe(labelSkipKey('Solvita 60mls'));
+    expect(labelSkipKey('Fowl Pox Row E & F')).toBe('fowlpoxrowef');
+  });
+
+  it('falls back to the whole text when the cell is only an amount', () => {
+    expect(labelSkipKey('150grms')).not.toBe('');
   });
 });
