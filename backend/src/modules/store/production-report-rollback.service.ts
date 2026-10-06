@@ -28,6 +28,7 @@ import { Injectable, Logger, NotFoundException, BadRequestException } from '@nes
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RequestUser } from '../../auth/types/request-user.type';
+import { LayoutCage, layoutCounts, sameLayout, writeCageLayout } from './production-report-sections.service';
 
 export interface RollbackResult {
   reportId: string;
@@ -81,6 +82,9 @@ export class ProductionReportRollbackService {
     for (const levelId of touchedLevelIds) {
       await this.recomputeLevelRollup(levelId, user.id);
     }
+
+    // The weight track belongs to the report version being undone.
+    await this.prisma.batchWeightTrackPoint.deleteMany({ where: { reportId } });
 
     await this.prisma.storeProductionReport.update({
       where: { id: reportId },
@@ -217,6 +221,20 @@ export class ProductionReportRollbackService {
         }
         const next = [...current.slice(0, idx), ...current.slice(idx + 1)];
         await tx.brooderLog.update({ where: { id: entityId }, data: { [key]: next } });
+        return;
+      }
+
+      // A whole-batch cage layout set from a report's stock-per-cage sheet.
+      // Undone only while the cage map still holds exactly what the sheet
+      // set; once anyone has changed it, it's left for manual review.
+      case 'BrooderCageLayout': {
+        if (action !== 'UPDATE' || !entityId) break;
+        const current = await tx.brooderCageAssignment.findMany({ where: { batchId: entityId } });
+        const set: LayoutCage[] = afterState?.cages ?? [];
+        if (!sameLayout(layoutCounts(current), layoutCounts(set))) {
+          throw new Error('The cage map has changed since the report set it — leaving it as it is for manual review.');
+        }
+        await writeCageLayout(tx, entityId, beforeState?.cages ?? [], 'system');
         return;
       }
 

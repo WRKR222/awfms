@@ -9,9 +9,11 @@ import { ProductionReportParserService } from './production-report-parser.servic
 import { ProductionReportReconciliationService, normaliseText, AppliedChangeInput, changedFeedDates } from './production-report-reconciliation.service';
 import { ProductionReportRollbackService, RollbackResult } from './production-report-rollback.service';
 import { ProductionReportTemplateService, TemplateAnalysis } from './production-report-template.service';
+import { ProductionReportSectionsService } from './production-report-sections.service';
 import { AiService } from '../ai/ai.service';
 import {
   CANONICAL_FIELD_LABELS, CanonicalField, ProductionReportColumnMapping, SubmitReportResult, PreviewReportResult,
+  SectionsApplyResult,
 } from './production-report.dto';
 
 // A reconcile pass over a big multi-week report can legitimately run for a
@@ -45,6 +47,7 @@ export class ProductionReportService {
     private readonly notifications: NotificationsService,
     private readonly templateService: ProductionReportTemplateService,
     private readonly ai: AiService,
+    private readonly sections: ProductionReportSectionsService,
   ) {}
 
   /** Atomic per-batch mutex around a reconcile() pass — see
@@ -108,7 +111,7 @@ export class ProductionReportService {
         .map(id => ({ storeItemId: id, storeItemName: nameById.get(id) ?? '(unknown item)', header: mapping.items[id] }));
     }
 
-    return { rows, totalRows: rows.length, presentFields, presentItemColumns, headers };
+    return { rows, totalRows: rows.length, presentFields, presentItemColumns, headers, sections: this.parser.readSections(buffer) };
   }
 
   /** Store rejects the parsed table at the verify step (§2a) before any
@@ -151,6 +154,20 @@ export class ProductionReportService {
     fileName: string,
     user: RequestUser,
   ): Promise<SubmitReportResult> {
+    return this.applyUpload(batchId, buffer, mapping, fileName, user);
+  }
+
+  /** The submit pipeline, shared with rollback(): when `restoring` is set,
+   *  the file is the previous upload being put back into effect, so it
+   *  keeps its original uploader/time and becomes the only kept version. */
+  private async applyUpload(
+    batchId: string,
+    buffer: Buffer,
+    mapping: ProductionReportColumnMapping,
+    fileName: string,
+    user: RequestUser,
+    restoring?: { uploadedById: string; uploadedAt: Date },
+  ): Promise<SubmitReportResult> {
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new NotFoundException('Batch not found');
 
@@ -161,7 +178,15 @@ export class ProductionReportService {
     // them, regardless of jsonb's key-order-losing storage of rawRows
     // itself (see StoreProductionReport.rawHeaders in schema.prisma).
     const rawHeaders = this.parser.getHeaders(buffer);
+    // Other tabs of the workbook (weight track, stock per cage).
+    const workbook = this.parser.readSections(buffer);
+    const sectionResults: SectionsApplyResult = {};
 
+    // The file in effect until now becomes the PREVIOUS version — what a
+    // rollback of this upload returns to. Read before the old version is
+    // undone below; a version that was already rolled back wasn't in
+    // effect, so it isn't kept.
+    let outgoingFile: Awaited<ReturnType<PrismaService['productionReportFile']['findUnique']>> = null;
     // See acquireProcessingLock's doc comment — closes the double-autofill
     // race where an overlapping submit (double-click, timeout retry) reads
     // the same pre-write totals and both write a full correction.
@@ -172,11 +197,21 @@ export class ProductionReportService {
         where: { batchId }, select: { id: true, rolledBackAt: true, rawRows: true },
       });
       let notifyDates: Set<string> | undefined;
+      if (previous && !previous.rolledBackAt && !restoring) {
+        outgoingFile = await this.prisma.productionReportFile.findUnique({
+          where: { reportId_slot: { reportId: previous.id, slot: 'CURRENT' } },
+        });
+      }
       if (previous) {
         await this.undoPreviousVersion(previous.id, previous.rolledBackAt, user);
         notifyDates = changedFeedDates((previous.rawRows ?? []) as any, parsedRows);
       }
       reconciled = await this.reconciler.reconcile(batchId, parsedRows, user.id, fileName, { notifyDates });
+      if (workbook.cageStock) {
+        const layout = await this.sections.applyCageLayout(batchId, workbook.cageStock, user.id);
+        reconciled.appliedChanges.push(...layout.changes);
+        sectionResults.cageStock = layout.result;
+      }
     } finally {
       await this.releaseProcessingLock(batchId);
     }
@@ -184,6 +219,8 @@ export class ProductionReportService {
 
     const status = discrepancies.length > 0 ? 'PENDING' : 'APPROVED';
     const now = new Date();
+    const uploadedById = restoring?.uploadedById ?? user.id;
+    const uploadedAt = restoring?.uploadedAt ?? now;
 
     const report = await this.prisma.$transaction(async (tx) => {
       const saved = await tx.storeProductionReport.upsert({
@@ -191,14 +228,14 @@ export class ProductionReportService {
         create: {
           batchId, fileName, columnMapping: mapping as any, rawRows: rows as any, rawHeaders,
           status, discrepancyCount: discrepancies.length, autofillCount, matchedCount,
-          uploadedById: user.id, appliedAt: now,
+          uploadedById, uploadedAt, appliedAt: now,
           storeVerifiedById: user.id, storeVerifiedAt: now,
         },
         update: {
           fileName, columnMapping: mapping as any, rawRows: rows as any, rawHeaders,
           status, discrepancyCount: discrepancies.length, autofillCount, matchedCount,
-          uploadedById: user.id, uploadedAt: now,
-          resubmissionCount: { increment: 1 },
+          uploadedById, uploadedAt,
+          resubmissionCount: { increment: restoring ? 0 : 1 },
           reviewedById: null, reviewedAt: null, rejectionReason: null,
           // A prior rejection may have rolled this report's applied changes
           // back (see reject() below) — a fresh upload starts a clean slate,
@@ -239,10 +276,28 @@ export class ProductionReportService {
         await tx.productionReportAppliedChange.createMany({ data: toLedgerRows(saved.id, appliedChanges) });
       }
 
+      await tx.productionReportFile.deleteMany({ where: { reportId: saved.id } });
+      if (outgoingFile) {
+        await tx.productionReportFile.create({
+          data: {
+            reportId: saved.id, slot: 'PREVIOUS', fileName: outgoingFile.fileName, columnMapping: outgoingFile.columnMapping as any,
+            data: outgoingFile.data, uploadedById: outgoingFile.uploadedById, uploadedAt: outgoingFile.uploadedAt,
+          },
+        });
+      }
+      await tx.productionReportFile.create({
+        data: { reportId: saved.id, slot: 'CURRENT', fileName, columnMapping: mapping as any, data: new Uint8Array(buffer), uploadedById, uploadedAt },
+      });
+
+      const savedPoints = await this.sections.saveWeightTrack(tx, batchId, saved.id, workbook.weightTrack?.points);
+      if (workbook.weightTrack) sectionResults.weightTrack = { saved: savedPoints, sheetName: workbook.weightTrack.sheetName };
+
       return saved;
     });
 
-    if (discrepancies.length === 0) {
+    if (restoring) {
+      // rollback() sends its own notice.
+    } else if (discrepancies.length === 0) {
       await this.notifications.notifyRole(
         UserRole.OWNER,
         NotificationType.PRODUCTION_REPORT_SUBMITTED,
@@ -260,6 +315,7 @@ export class ProductionReportService {
       autofillCount,
       discrepancyCount: discrepancies.length,
       stage,
+      sections: sectionResults,
     };
   }
 
@@ -288,7 +344,12 @@ export class ProductionReportService {
       },
     });
     if (!report) throw new NotFoundException('No production report has been uploaded for this batch yet');
-    return report;
+    // The upload a rollback would return to (file bytes not included).
+    const previousVersion = await this.prisma.productionReportFile.findUnique({
+      where: { reportId_slot: { reportId: report.id, slot: 'PREVIOUS' } },
+      select: { fileName: true, uploadedAt: true, uploadedById: true },
+    });
+    return { ...report, previousVersion };
   }
 
   /** Store manually matches a report label the automatic matcher couldn't
@@ -521,21 +582,48 @@ export class ProductionReportService {
    *  approve()/applyDiscrepancy() — see ProductionReportRollbackService's
    *  header comment for why that's out of scope for this action. Safe to
    *  call once; a second call on the same report is rejected. */
-  async rollback(reportId: string, user: RequestUser): Promise<RollbackResult> {
+  async rollback(reportId: string, user: RequestUser): Promise<RollbackResult & {
+    restoredPrevious: { fileName: string; uploadedAt: Date; status: string; discrepancyCount: number } | null;
+    restoreError?: string;
+  }> {
     const report = await this.prisma.storeProductionReport.findUnique({ where: { id: reportId }, include: { batch: true } });
     if (!report) throw new NotFoundException('Report not found');
+    const previousFile = await this.prisma.productionReportFile.findUnique({ where: { reportId_slot: { reportId, slot: 'PREVIOUS' } } });
 
     const result = await this.rollbackService.rollback(reportId, user);
 
+    // Put the upload that was in effect before this one back, so the batch
+    // returns to that report rather than to no report at all.
+    let restoredPrevious: { fileName: string; uploadedAt: Date; status: string; discrepancyCount: number } | null = null;
+    let restoreError: string | undefined;
+    if (previousFile) {
+      try {
+        const restored = await this.applyUpload(
+          report.batchId, Buffer.from(previousFile.data), previousFile.columnMapping as any, previousFile.fileName, user,
+          { uploadedById: previousFile.uploadedById, uploadedAt: previousFile.uploadedAt },
+        );
+        restoredPrevious = {
+          fileName: previousFile.fileName, uploadedAt: previousFile.uploadedAt,
+          status: restored.status, discrepancyCount: restored.discrepancyCount,
+        };
+      } catch (err: any) {
+        restoreError = err?.message ?? 'The previous upload could not be re-applied.';
+      }
+    }
+
+    const restoredNote = restoredPrevious
+      ? ` The previous upload (${restoredPrevious.fileName}) is back in effect.`
+      : restoreError ? ` The previous upload could not be put back: ${restoreError}` : ' There was no earlier upload to return to.';
     await this.notifications.notifyRole(
       UserRole.OWNER, NotificationType.PRODUCTION_REPORT_SUBMITTED,
       `Production report rolled back — ${report.batch.batchCode}`,
       `${result.reverted}/${result.totalChanges} auto-filled change(s) from this report were reversed.` +
-        (result.skipped.length ? ` ${result.skipped.length} could not be reversed automatically (edited since) and need a manual look.` : ''),
+        (result.skipped.length ? ` ${result.skipped.length} could not be reversed automatically (edited since) and need a manual look.` : '') +
+        restoredNote,
       { entityId: reportId, entityType: 'StoreProductionReport' },
     ).catch(() => {});
 
-    return result;
+    return { ...result, restoredPrevious, restoreError };
   }
 
   /** Director extracts the current report as a clean spreadsheet on request. */

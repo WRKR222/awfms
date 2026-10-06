@@ -23,6 +23,7 @@ import { ProductionReportParserService } from './production-report-parser.servic
 import { ProductionReportReconciliationService } from './production-report-reconciliation.service';
 import { ProductionReportRollbackService } from './production-report-rollback.service';
 import { ProductionReportService } from './production-report.service';
+import { ProductionReportSectionsService } from './production-report-sections.service';
 import { ProductionReportTemplateService } from './production-report-template.service';
 import { ProductionReportController } from './production-report.controller';
 import { WeightModule } from '../weight/weight.module';
@@ -45,6 +46,7 @@ import { AiModule } from '../ai/ai.module';
     ProductionReportRollbackService,
     ProductionReportTemplateService,
     ProductionReportService,
+    ProductionReportSectionsService,
   ],
   controllers: [
     StoreController,

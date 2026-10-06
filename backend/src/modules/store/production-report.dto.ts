@@ -66,7 +66,7 @@ export const FIELD_SYNONYMS: Record<CanonicalField, string[]> = {
   culling:       ['culling', 'culled', 'cull'],
   openingStock:  ['ostock', 'openingstock', 'opstock'],
   closingStock:  ['cstock', 'closingstock', 'clstock'],
-  avgWeight:     ['aweight', 'avgweight', 'averageweight'],
+  avgWeight:     ['aweight', 'avweight', 'avgweight', 'averageweight'],
   temperature:   ['temp', 'temperature'],
   humidity:      ['humidity', 'humid'],
   lux:           ['lux', 'light', 'lightintensity'],
@@ -225,6 +225,49 @@ export interface ParsedReportRow {
   };
 }
 
+/** One weighing from a workbook's "Weight track" tab, all weights in grams. */
+export interface WeightTrackPoint {
+  date: string; // YYYY-MM-DD
+  week?: number;
+  day?: number;
+  minExpectedG?: number;
+  maxExpectedG?: number;
+  avgExpectedG?: number;
+  avgActualG?: number;
+}
+
+/** A workbook's "Stock per cage" grid, read into one entry per cage. */
+export interface CageStockSection {
+  sheetName: string;
+  cages: { rowLabel: string; levelNumber: number; cageNumber: number; birdCount: number }[];
+  totalBirds: number;
+  sheetTotal?: number; // the sheet's own "TOTAL POPULATION" figure, when it has one
+  byRowLevel: { rowLabel: string; levelNumber: number; cages: number; birds: number }[];
+  warnings: string[];
+}
+
+/** Every tab the upload understood besides the daily log. */
+export interface WorkbookSections {
+  dailySheet: string | null;
+  weightTrack?: { sheetName: string; points: WeightTrackPoint[] };
+  cageStock?: CageStockSection;
+  ignoredSheets: string[];
+}
+
+/** What applying a workbook's extra tabs did. */
+export interface SectionsApplyResult {
+  weightTrack?: { saved: number; sheetName: string };
+  cageStock?: {
+    applied: boolean;
+    sheetName: string;
+    cagesAssigned: number;
+    totalBirds: number;
+    liveBirdCount: number;
+    note?: string;
+    warnings: string[];
+  };
+}
+
 export interface SubmitReportResult {
   reportId: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
@@ -233,6 +276,7 @@ export interface SubmitReportResult {
   autofillCount: number;
   discrepancyCount: number;
   stage: 'BROODING' | 'PRODUCTION' | 'OTHER';
+  sections?: SectionsApplyResult;
 }
 
 /** Response shape for the Step-1b verify screen — the full (uncapped) parsed
@@ -245,4 +289,5 @@ export interface PreviewReportResult {
   presentFields: CanonicalField[]; // fields with at least one non-empty value across all rows
   presentItemColumns: { storeItemId: string; storeItemName: string; header: string }[];
   headers: string[]; // original sheet column order — see StoreProductionReport.rawHeaders
+  sections: WorkbookSections; // weight track / stock-per-cage tabs found alongside the daily log
 }

@@ -10,9 +10,10 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   CanonicalField, FIELD_SYNONYMS, ProductionReportColumnMapping, ParsedReportRow, ParsedItemUsage,
   MULTI_READING_FIELDS, MultiReadingField, MAX_ENV_READINGS_PER_DAY, ENV_READING_LABELS, EnvReading,
-  FeedSplitPortion,
+  FeedSplitPortion, WorkbookSections,
 } from './production-report.dto';
 import { parseQuantityWithUnit, isNoneValue, convertToUnit } from '../../common/units/unit-conversion.util';
+import { classifySheet, coerceSheetDate, parseCageStockSheet, parseWeightTrackSheet } from './report-workbook-sections.util';
 
 function normaliseHeader(h: string): string {
   return String(h ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -295,15 +296,64 @@ export class ProductionReportParserService {
 
   // ── internals ──────────────────────────────────────────────────────────────
 
-  private readSheet(buffer: Buffer): { headers: string[]; rows: Record<string, any>[] } {
-    let wb: XLSX.WorkBook;
+  /** Reads the other tabs of the workbook — a weight track and/or a
+   *  stock-per-cage grid — recognised by their layout, whatever they're
+   *  called. Tabs that are neither (and aren't the daily log) are listed in
+   *  ignoredSheets so Store can see nothing was silently dropped. */
+  readSections(buffer: Buffer): WorkbookSections {
+    const wb = this.readWorkbook(buffer);
+    const daily = this.pickDailySheet(wb);
+    const sections: WorkbookSections = { dailySheet: daily, ignoredSheets: [] };
+    for (const name of wb.SheetNames) {
+      if (name === daily) continue;
+      const grid = this.grid(wb, name);
+      const kind = classifySheet(grid);
+      if (kind === 'WEIGHT_TRACK' && !sections.weightTrack) {
+        const points = parseWeightTrackSheet(grid);
+        if (points.length) { sections.weightTrack = { sheetName: name, points }; continue; }
+      }
+      if (kind === 'CAGE_STOCK' && !sections.cageStock) {
+        const cageStock = parseCageStockSheet(grid);
+        if (cageStock.cages.length) { sections.cageStock = { ...cageStock, sheetName: name }; continue; }
+      }
+      if (grid.some(r => (r ?? []).some(c => String(c ?? '').trim() !== ''))) sections.ignoredSheets.push(name);
+    }
+    return sections;
+  }
+
+  private readWorkbook(buffer: Buffer): XLSX.WorkBook {
     try {
-      wb = XLSX.read(buffer, { type: 'buffer', cellDates: true, sheetStubs: true });
+      return XLSX.read(buffer, { type: 'buffer', cellDates: true, sheetStubs: true });
     } catch {
       throw new BadRequestException('Could not parse file. Ensure it is a valid .xlsx, .xls, or .csv.');
     }
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const raw: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) as any[][];
+  }
+
+  private grid(wb: XLSX.WorkBook, name: string): any[][] {
+    return XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' }) as any[][];
+  }
+
+  /** The tab holding the daily log: not a weight track or cage grid, and
+   *  whose header row names the most distinct known columns (a Date column
+   *  among them). Falls back to the first tab, as before. */
+  private pickDailySheet(wb: XLSX.WorkBook): string {
+    let best = wb.SheetNames[0];
+    let bestScore = -1;
+    for (const name of wb.SheetNames) {
+      const grid = this.grid(wb, name);
+      if (classifySheet(grid) !== 'DAILY') continue;
+      for (const row of grid.slice(0, 15)) {
+        const fields = new Set((row ?? []).map(c => this.matchSynonym(String(c ?? ''))).filter(Boolean));
+        const score = fields.has('date') ? fields.size : 0;
+        if (score > bestScore) { bestScore = score; best = name; }
+      }
+    }
+    return best;
+  }
+
+  private readSheet(buffer: Buffer): { headers: string[]; rows: Record<string, any>[] } {
+    const wb = this.readWorkbook(buffer);
+    const raw: any[][] = this.grid(wb, this.pickDailySheet(wb));
 
     // The farm's sheets carry a few free-text banner rows (farm name, month,
     // supplier, year) above the real header row — find the row that actually
@@ -424,18 +474,6 @@ export class ProductionReportParserService {
   }
 
   private coerceDate(raw: any): string | null {
-    if (!raw) return null;
-    if (raw instanceof Date && !isNaN(raw.getTime())) {
-      return raw.toISOString().slice(0, 10);
-    }
-    // Excel serial date fallback (when cellDates didn't apply, e.g. some CSV paths)
-    if (typeof raw === 'number' && raw > 0) {
-      const epoch = new Date(Date.UTC(1899, 11, 30));
-      const parsed = new Date(epoch.getTime() + raw * 86400000);
-      if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-    }
-    const parsed = new Date(String(raw));
-    if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-    return null;
+    return coerceSheetDate(raw);
   }
 }

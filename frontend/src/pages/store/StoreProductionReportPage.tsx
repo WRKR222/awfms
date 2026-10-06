@@ -318,6 +318,8 @@ interface Report {
   // the backend. Empty/undefined for reports submitted before this field
   // existed; ProductionReportTable falls back gracefully in that case.
   rawHeaders?: string[];
+  // The upload a rollback returns to (null when there isn't one).
+  previousVersion?: { fileName: string; uploadedAt: string } | null;
 }
 
 /** Undoes every auto-filled/auto-corrected daily record this report has
@@ -332,8 +334,10 @@ function RollbackPanel({ report, batchId }: { report: Report; batchId: string })
   const [confirming, setConfirming] = useState(false);
 
   const rollback = useMutation({
-    mutationFn: async () => (await api.post(`/store/production-reports/${report.id}/rollback`)).data as {
+    mutationFn: async () => (await api.post(`/store/production-reports/${report.id}/rollback`, undefined, { timeout: 180_000 })).data as {
       reverted: number; totalChanges: number; skipped: { entityType: string; reason: string }[];
+      restoredPrevious: { fileName: string; uploadedAt: string; discrepancyCount: number } | null;
+      restoreError?: string;
     },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['production-report', batchId] }); setConfirming(false); },
   });
@@ -341,7 +345,8 @@ function RollbackPanel({ report, batchId }: { report: Report; batchId: string })
   if (report.rolledBackAt) {
     return <p className="text-xs text-gray-400">Rolled back {dayjs(report.rolledBackAt).format('D MMM YYYY, HH:mm')} — every auto-filled entry this report wrote has been reversed.</p>;
   }
-  if (report.autofillCount === 0) return null;
+  const previous = report.previousVersion;
+  if (report.autofillCount === 0 && !previous) return null;
 
   return (
     <div className="pt-1">
@@ -350,14 +355,17 @@ function RollbackPanel({ report, batchId }: { report: Report; batchId: string })
           onClick={() => setConfirming(true)}
           className="text-xs font-semibold text-red-600 hover:text-red-700 flex items-center gap-1"
         >
-          <RefreshCw className="w-3 h-3" /> Roll back this report's auto-filled entries
+          <RefreshCw className="w-3 h-3" /> {previous ? 'Roll back to the previous upload' : 'Roll back this report\'s auto-filled entries'}
         </button>
       ) : (
         <div className="bg-red-50 dark:bg-red-900/10 border border-red-100 dark:border-red-900/30 rounded-xl p-3 space-y-2">
           <p className="text-xs text-red-700 dark:text-red-400">
             This reverses all {report.autofillCount} auto-filled/auto-corrected entr{report.autofillCount === 1 ? 'y' : 'ies'} this
             report has written for this batch — mortality, feed, water, environmental, stock counts, cage moves. Anything an
-            attendant has hand-edited since is left alone. This can't be undone.
+            attendant has hand-edited since is left alone.
+            {previous
+              ? <> The previous upload, <span className="font-semibold">{previous.fileName}</span> (uploaded {dayjs(previous.uploadedAt).format('D MMM YYYY, HH:mm')}), is then put back into effect — its figures, weight track and cage map.</>
+              : ' There is no earlier upload kept for this batch, so the batch goes back to what the attendants recorded.'}
           </p>
           <div className="flex items-center gap-2">
             <button onClick={() => setConfirming(false)} className="flex-1 text-xs font-semibold text-gray-500 px-3 py-1.5 rounded-lg hover:bg-white dark:hover:bg-dark-bg">
@@ -377,7 +385,13 @@ function RollbackPanel({ report, batchId }: { report: Report; batchId: string })
         <p className="text-xs text-green-600 mt-1">
           Reverted {rollback.data.reverted}/{rollback.data.totalChanges}.
           {rollback.data.skipped.length ? ` ${rollback.data.skipped.length} couldn't be reversed (edited since) — check those manually.` : ''}
+          {rollback.data.restoredPrevious
+            ? ` Back to ${rollback.data.restoredPrevious.fileName}${rollback.data.restoredPrevious.discrepancyCount ? ` (${rollback.data.restoredPrevious.discrepancyCount} to resolve below)` : ''}.`
+            : ''}
         </p>
+      )}
+      {rollback.data?.restoreError && (
+        <p className="text-xs text-red-500 mt-1">The previous upload couldn't be put back: {rollback.data.restoreError}</p>
       )}
       {rollback.isError && <p className="text-xs text-red-500 mt-1">{(rollback.error as any)?.response?.data?.message ?? 'Rollback failed'}</p>}
     </div>
@@ -630,7 +644,7 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
   // Reject and go fix the mapping/sheet. submit() is only ever reachable
   // from here — there is no "submit" button back on the mapping screen.
   const [step, setStep] = useState<'mapping' | 'verify'>('mapping');
-  const [previewData, setPreviewData] = useState<{ rows: any[]; totalRows: number; presentFields: string[]; presentItemColumns: any[]; headers?: string[] } | null>(null);
+  const [previewData, setPreviewData] = useState<{ rows: any[]; totalRows: number; presentFields: string[]; presentItemColumns: any[]; headers?: string[]; sections?: WorkbookSections } | null>(null);
 
   const resetAll = () => {
     setFile(null); setHeaders([]); setMapping({ fields: {}, items: {} });
@@ -844,6 +858,7 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
           {previewData && (
             <ProductionReportTable rows={previewData.rows} headers={previewData.headers} />
           )}
+          {previewData?.sections && <WorkbookSectionsPreview sections={previewData.sections} />}
 
           <p className="text-xs text-gray-500">
             Review every row above — this is the sheet exactly as uploaded, every column and cell included, not
@@ -889,6 +904,7 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
           {submit.data.discrepancyCount > 0
             ? `, ${submit.data.discrepancyCount} discrepanc${submit.data.discrepancyCount === 1 ? 'y' : 'ies'} to resolve below.`
             : ' — applied with no discrepancies.'}
+          {(submit.data as any).sections && <SectionsResultNote sections={(submit.data as any).sections} />}
         </div>
       )}
       {submit.isError && !confirmingAfterTimeout && (
@@ -906,6 +922,111 @@ function UploadPanel({ batchId, onSubmitted }: { batchId: string; onSubmitted: (
         ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
         onChange={e => e.target.files?.[0] && handleFile(e.target.files[0])}
       />
+    </div>
+  );
+}
+
+interface WorkbookSections {
+  dailySheet: string | null;
+  weightTrack?: { sheetName: string; points: { date: string; week?: number; avgExpectedG?: number; avgActualG?: number }[] };
+  cageStock?: {
+    sheetName: string; totalBirds: number; sheetTotal?: number; warnings: string[];
+    cages: unknown[]; byRowLevel: { rowLabel: string; levelNumber: number; cages: number; birds: number }[];
+  };
+  ignoredSheets: string[];
+}
+
+/** The workbook's other tabs, as read — shown on the verify step so Store
+ *  can check them before anything is applied. */
+function WorkbookSectionsPreview({ sections }: { sections: WorkbookSections }) {
+  const { weightTrack, cageStock, ignoredSheets, dailySheet } = sections;
+  if (!weightTrack && !cageStock && !ignoredSheets.length) return null;
+  const latest = weightTrack?.points[weightTrack.points.length - 1];
+  const rowLabels = cageStock ? [...new Set(cageStock.byRowLevel.map(r => r.rowLabel))] : [];
+  const levels = cageStock ? [...new Set(cageStock.byRowLevel.map(r => r.levelNumber))].sort((a, b) => b - a) : [];
+  const cell = (row: string, level: number) => cageStock?.byRowLevel.find(r => r.rowLabel === row && r.levelNumber === level);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+        Also in this workbook{dailySheet ? ` (daily log read from "${dailySheet}")` : ''}
+      </p>
+
+      {weightTrack && (
+        <div className="border border-gray-100 dark:border-dark-border rounded-xl p-3 space-y-1">
+          <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">Weight track · "{weightTrack.sheetName}"</p>
+          <p className="text-xs text-gray-500">
+            {weightTrack.points.length} weighing{weightTrack.points.length === 1 ? '' : 's'},{' '}
+            {dayjs(weightTrack.points[0].date).format('D MMM')} – {dayjs(latest!.date).format('D MMM YYYY')}.
+            {latest?.avgActualG != null && latest?.avgExpectedG != null && (
+              <> Latest: {latest.avgActualG.toLocaleString()} g actual vs {latest.avgExpectedG.toLocaleString()} g expected.</>
+            )}
+            {' '}Saved for the weight-track graph in Analytics (PM and Director).
+          </p>
+        </div>
+      )}
+
+      {cageStock && (
+        <div className="border border-gray-100 dark:border-dark-border rounded-xl p-3 space-y-2">
+          <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">Stock per cage · "{cageStock.sheetName}"</p>
+          <p className="text-xs text-gray-500">
+            {cageStock.cages.length.toLocaleString()} cages, {cageStock.totalBirds.toLocaleString()} birds
+            {cageStock.sheetTotal != null ? ` (sheet total: ${cageStock.sheetTotal.toLocaleString()})` : ''}.
+            Submitting sets this batch's brooder cage map to exactly this layout.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="text-xs w-full">
+              <thead>
+                <tr className="text-gray-400">
+                  <th className="text-left font-semibold py-1 pr-2">Level</th>
+                  {rowLabels.map(r => <th key={r} className="text-right font-semibold py-1 px-2">Row {r}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {levels.map(level => (
+                  <tr key={level} className="border-t border-gray-100 dark:border-dark-border">
+                    <td className="py-1 pr-2 text-gray-500">{level}</td>
+                    {rowLabels.map(r => {
+                      const c = cell(r, level);
+                      return (
+                        <td key={r} className="py-1 px-2 text-right text-gray-700 dark:text-gray-300 whitespace-nowrap">
+                          {c ? <>{c.birds.toLocaleString()} <span className="text-gray-400">/ {c.cages}</span></> : '—'}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-[11px] text-gray-400 mt-1">Birds / occupied cages per row and level.</p>
+          </div>
+          {cageStock.warnings.map((w, i) => <p key={i} className="text-xs text-amber-600">{w}</p>)}
+        </div>
+      )}
+
+      {ignoredSheets.length > 0 && (
+        <p className="text-xs text-gray-400">Not read: {ignoredSheets.map(n => `"${n}"`).join(', ')} — not a layout the system recognises.</p>
+      )}
+    </div>
+  );
+}
+
+/** What submitting did with the workbook's other tabs. */
+function SectionsResultNote({ sections }: { sections: { weightTrack?: { saved: number }; cageStock?: { applied: boolean; cagesAssigned: number; totalBirds: number; note?: string; warnings: string[] } } }) {
+  const { weightTrack, cageStock } = sections;
+  if (!weightTrack && !cageStock) return null;
+  return (
+    <div className="mt-2 space-y-1 text-xs">
+      {weightTrack && <p>Weight track: {weightTrack.saved} weighing{weightTrack.saved === 1 ? '' : 's'} saved for Analytics.</p>}
+      {cageStock && (
+        <p>
+          Cage map: {cageStock.applied
+            ? `${cageStock.cagesAssigned.toLocaleString()} cages set, ${cageStock.totalBirds.toLocaleString()} birds.`
+            : 'not changed.'}
+          {cageStock.note ? ` ${cageStock.note}` : ''}
+        </p>
+      )}
+      {cageStock?.warnings.map((w, i) => <p key={i} className="text-amber-700 dark:text-amber-400">{w}</p>)}
     </div>
   );
 }

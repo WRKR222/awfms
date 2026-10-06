@@ -8,7 +8,8 @@ import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Permission } from '../../common/enums/permissions.enum';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { EntryStatus, InvoiceStatus, BookingStatus } from '@prisma/client';
+import { EntryStatus, InvoiceStatus, BookingStatus, BatchStage } from '@prisma/client';
+import { hylineStandard } from '../../common/feed/feed-standard.util';
 import dayjs from 'dayjs';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { BrooderService } from '../brooder/brooder.service';
@@ -817,6 +818,70 @@ export class DashboardController {
       revenueByCustomer: canSeeRevenue ? revenueByCustomerArr : [],
       eggCondition,
     };
+  }
+
+  /**
+   * Weight track per live batch: expected vs. actual average bird weight
+   * (grams) over time, for the PM and Director analytics graph. Uses the
+   * "Weight track" tab of the batch's production report when one was
+   * uploaded; otherwise the recorded bird-weighing samples against the
+   * HyLine band for the batch's age (expected = band midpoint).
+   */
+  @Get('analytics/weight-track')
+  @RequirePermission(Permission.PRODUCTION_VIEW)
+  async weightTrack() {
+    const batches = await this.prisma.batch.findMany({
+      where: { deletedAt: null, isActive: true, stage: { in: [BatchStage.BROODING, BatchStage.GROWER, BatchStage.PRODUCTION] } },
+      select: { id: true, batchCode: true, stage: true },
+      orderBy: { dateReceived: 'desc' },
+    });
+    const ids = batches.map(b => b.id);
+    const [trackPoints, samples] = await Promise.all([
+      this.prisma.batchWeightTrackPoint.findMany({ where: { batchId: { in: ids } }, orderBy: { sampleDate: 'asc' } }),
+      this.prisma.birdWeightSample.findMany({
+        where: { batchId: { in: ids } },
+        select: { batchId: true, sampleDate: true, averageWeightG: true, sampleCount: true, ageWeeks: true },
+        orderBy: { sampleDate: 'asc' },
+      }),
+    ]);
+    const num = (v: unknown) => (v == null ? null : Math.round(Number(v) * 10) / 10);
+
+    const result = batches.map(b => {
+      const track = trackPoints.filter(p => p.batchId === b.id);
+      if (track.length) {
+        return {
+          batchId: b.id, batchCode: b.batchCode, stage: b.stage, source: 'REPORT' as const,
+          points: track.map(p => ({
+            date: dayjs(p.sampleDate).format('YYYY-MM-DD'), week: p.weekNumber, day: p.dayNumber,
+            minExpectedG: num(p.minExpectedG), maxExpectedG: num(p.maxExpectedG),
+            avgExpectedG: num(p.avgExpectedG), avgActualG: num(p.avgActualG),
+          })),
+        };
+      }
+      // No weight-track tab: one point per weighing date, sample-size weighted.
+      const byDate = new Map<string, { total: number; count: number; ageWeeks: number }>();
+      for (const s of samples.filter(x => x.batchId === b.id)) {
+        const key = dayjs(s.sampleDate).format('YYYY-MM-DD');
+        const e = byDate.get(key) ?? { total: 0, count: 0, ageWeeks: s.ageWeeks };
+        const n = Math.max(1, s.sampleCount);
+        e.total += Number(s.averageWeightG) * n;
+        e.count += n;
+        byDate.set(key, e);
+      }
+      return {
+        batchId: b.id, batchCode: b.batchCode, stage: b.stage, source: 'SAMPLES' as const,
+        points: [...byDate.entries()].map(([date, e]) => {
+          const std = hylineStandard(e.ageWeeks);
+          return {
+            date, week: e.ageWeeks, day: null,
+            minExpectedG: std.weightMinG, maxExpectedG: std.weightMaxG,
+            avgExpectedG: (std.weightMinG + std.weightMaxG) / 2, avgActualG: num(e.total / e.count),
+          };
+        }),
+      };
+    });
+
+    return { batches: result.filter(b => b.points.length > 0) };
   }
 
   @Get('analytics/projection')

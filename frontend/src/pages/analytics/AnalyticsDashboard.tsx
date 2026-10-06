@@ -135,6 +135,153 @@ function Pill({ children, color }: { children: React.ReactNode; color: string })
   );
 }
 
+// ── Weight track ──────────────────────────────────────────────────────────────
+// Expected vs. actual average bird weight per batch, from the "Weight track"
+// tab of the batch's production report (or, without one, bird-weighing
+// samples against the HyLine band). Two series, so a legend plus a dashed
+// line for "expected" keep identity off colour alone.
+const WEIGHT = { actual: '#16a34a', expected: '#3b82f6' };
+
+interface WeightPoint {
+  date: string; week: number | null; day: number | null;
+  minExpectedG: number | null; maxExpectedG: number | null; avgExpectedG: number | null; avgActualG: number | null;
+}
+interface WeightBatch { batchId: string; batchCode: string; source: 'REPORT' | 'SAMPLES'; points: WeightPoint[] }
+
+function grams(v: number | null | undefined) {
+  return v == null ? '—' : `${Math.round(v).toLocaleString()} g`;
+}
+
+function WeightTrackCard() {
+  const [batchId, setBatchId] = useState('');
+  const [showTable, setShowTable] = useState(false);
+  const { data, isLoading } = useQuery({
+    queryKey: ['analytics-weight-track'],
+    queryFn: () => api.get('/dashboard/analytics/weight-track').then(r => r.data as { batches: WeightBatch[] }),
+    staleTime: 5 * 60 * 1000,
+  });
+  const batches = data?.batches ?? [];
+  const batch = batches.find(b => b.batchId === batchId) ?? batches[0];
+  const points = (batch?.points ?? []).map(p => ({
+    ...p,
+    band: p.minExpectedG != null && p.maxExpectedG != null ? [p.minExpectedG, p.maxExpectedG] : null,
+    // Dates, not weeks: weighing sheets often repeat a week number.
+    label: dayjs(p.date).format('D MMM'),
+    weekLabel: p.week != null ? `Week ${p.week}` : null,
+  }));
+  const latest = [...points].reverse().find(p => p.avgActualG != null && p.avgExpectedG != null);
+  const gap = latest ? latest.avgActualG! - latest.avgExpectedG! : null;
+  const gapPct = latest && latest.avgExpectedG ? (gap! / latest.avgExpectedG) * 100 : null;
+
+  return (
+    <Card
+      title="Weight Track"
+      sub={batch?.source === 'SAMPLES'
+        ? 'Average actual weight vs. HyLine expected (from bird weighings)'
+        : 'Average expected vs. average actual weight (from the production report)'}
+      action={batches.length > 1 ? (
+        <select
+          value={batch?.batchId ?? ''}
+          onChange={e => setBatchId(e.target.value)}
+          className="text-xs bg-dark-bg border border-dark-border rounded-lg px-2 py-1 text-dark-text"
+          aria-label="Batch"
+        >
+          {batches.map(b => <option key={b.batchId} value={b.batchId}>{b.batchCode}</option>)}
+        </select>
+      ) : undefined}
+    >
+      {isLoading ? (
+        <p className="text-xs text-dark-muted text-center py-8">Loading…</p>
+      ) : !batch ? (
+        <p className="text-xs text-dark-muted text-center py-8">
+          No weights yet — upload a production report with a weight-track tab, or record a bird weighing.
+        </p>
+      ) : (
+        <>
+          {latest && (
+            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-3">
+              <p className="text-2xl font-extrabold text-dark-text leading-none">{grams(latest.avgActualG)}</p>
+              <p className="text-[11px] text-dark-muted">
+                actual vs {grams(latest.avgExpectedG)} expected · {latest.weekLabel ? `${latest.weekLabel}, ` : ''}{dayjs(latest.date).format('D MMM YYYY')}
+              </p>
+              {gap != null && (
+                <Pill color={gap < 0 ? C.red : C.green}>
+                  {gap < 0 ? '↓' : '↑'} {Math.abs(Math.round(gap)).toLocaleString()} g ({Math.abs(gapPct!).toFixed(0)}%) {gap < 0 ? 'below' : 'above'}
+                </Pill>
+              )}
+            </div>
+          )}
+          <ResponsiveContainer width="100%" height={240}>
+            <ComposedChart data={points} margin={{ top: 4, right: 8, left: -8, bottom: 0 }}>
+              <XAxis dataKey="label" tick={TICK_STYLE} axisLine={false} tickLine={false} minTickGap={12} />
+              <YAxis tick={TICK_STYLE} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}`} unit=" g" width={56} />
+              <Tooltip
+                cursor={{ stroke: '#6b8f74', strokeWidth: 1 }}
+                content={({ active, payload }: any) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0].payload as typeof points[number];
+                  return (
+                    <div className="bg-dark-card border border-dark-border rounded-xl px-3 py-2 text-xs shadow-lg">
+                      <p className="text-dark-muted font-semibold mb-1">{dayjs(d.date).format('D MMM YYYY')}{d.weekLabel ? ` · ${d.weekLabel}` : ''}{d.day != null ? ` · Day ${d.day}` : ''}</p>
+                      <p className="text-dark-muted">Actual: <span className="text-dark-text font-semibold">{grams(d.avgActualG)}</span></p>
+                      <p className="text-dark-muted">Expected: <span className="text-dark-text font-semibold">{grams(d.avgExpectedG)}</span></p>
+                      {d.band && <p className="text-dark-muted">Expected range: <span className="text-dark-text font-semibold">{grams(d.minExpectedG)} – {grams(d.maxExpectedG)}</span></p>}
+                      {d.avgActualG != null && d.avgExpectedG != null && (
+                        <p className="text-dark-muted">Difference: <span className="text-dark-text font-semibold">{Math.round(d.avgActualG - d.avgExpectedG).toLocaleString()} g</span></p>
+                      )}
+                    </div>
+                  );
+                }}
+              />
+              <Area dataKey="band" name="Expected range" stroke="none" fill={WEIGHT.expected} fillOpacity={0.18} connectNulls activeDot={false} isAnimationActive={false} />
+              <Line type="monotone" dataKey="avgExpectedG" name="Average expected" stroke={WEIGHT.expected} strokeWidth={2} strokeDasharray="6 4" dot={{ r: 4, strokeWidth: 0, fill: WEIGHT.expected }} connectNulls />
+              <Line type="monotone" dataKey="avgActualG" name="Average actual" stroke={WEIGHT.actual} strokeWidth={2} dot={{ r: 4, strokeWidth: 0, fill: WEIGHT.actual }} connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Legend items={[
+              { label: 'Average actual', color: WEIGHT.actual },
+              { label: 'Average expected (dashed)', color: WEIGHT.expected },
+              { label: 'Expected range', color: `${WEIGHT.expected}33` },
+            ]} />
+            <button onClick={() => setShowTable(v => !v)} className="text-[11px] text-dark-muted hover:text-dark-text underline mt-2">
+              {showTable ? 'Hide table' : 'Show table'}
+            </button>
+          </div>
+          {showTable && (
+            <div className="overflow-x-auto mt-3">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="text-dark-muted text-left">
+                    <th className="py-1 pr-2 font-semibold">Date</th>
+                    <th className="py-1 pr-2 font-semibold">Week</th>
+                    <th className="py-1 pr-2 font-semibold text-right">Expected</th>
+                    <th className="py-1 pr-2 font-semibold text-right">Actual</th>
+                    <th className="py-1 font-semibold text-right">Difference</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {points.map(p => (
+                    <tr key={p.date} className="border-t border-dark-border text-dark-text">
+                      <td className="py-1 pr-2 whitespace-nowrap">{dayjs(p.date).format('D MMM YYYY')}</td>
+                      <td className="py-1 pr-2">{p.week ?? '—'}</td>
+                      <td className="py-1 pr-2 text-right">{grams(p.avgExpectedG)}</td>
+                      <td className="py-1 pr-2 text-right">{grams(p.avgActualG)}</td>
+                      <td className="py-1 text-right">
+                        {p.avgActualG != null && p.avgExpectedG != null ? `${Math.round(p.avgActualG - p.avgExpectedG).toLocaleString()} g` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 export function AnalyticsDashboard({ role }: Props) {
   const [range, setRange] = useState('30d');
@@ -330,6 +477,9 @@ export function AnalyticsDashboard({ role }: Props) {
           )}
         </Card>
       </div>
+
+      {/* ── Weight Track ─────────────────────────────────────────────────── */}
+      <WeightTrackCard />
 
       {/* ── Feed Consumption ─────────────────────────────────────────────── */}
       <Card title="Feed Consumption" sub="Daily kg by feed type (stacked)">

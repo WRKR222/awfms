@@ -486,6 +486,7 @@ model Batch {
   brooderStockCounts          BrooderStockCount[]
   brooderDailyReviews         BrooderDailyReview[]
   storeProductionReport       StoreProductionReport?
+  weightTrackPoints           BatchWeightTrackPoint[]
   @@index([stage])
   @@index([isActive])
   @@map("batches")
@@ -2385,6 +2386,8 @@ model StoreProductionReport {
   storeVerifiedBy User?                        @relation("ProductionReportStoreVerifiedBy", fields: [storeVerifiedById], references: [id])
   discrepancies ProductionReportDiscrepancy[]
   appliedChanges ProductionReportAppliedChange[]
+  files          ProductionReportFile[]
+  weightTrackPoints BatchWeightTrackPoint[]
   // Set once this report's applied changes have been rolled back (see
   // ProductionReportAppliedChange) — a rolled-back report can never be
   // rolled back again, and should be re-uploaded fresh rather than
@@ -2395,6 +2398,54 @@ model StoreProductionReport {
 
   @@index([status])
   @@map("store_production_reports")
+}
+
+/// The uploaded spreadsheet itself, for the CURRENT version of a batch's
+/// report and the one uploaded before it (PREVIOUS). Rolling a report back
+/// undoes the current version and re-applies the PREVIOUS file, so the
+/// batch goes back to the report that was in effect before — not to a
+/// blank slate. Kept out of StoreProductionReport so report listings never
+/// carry file bytes.
+model ProductionReportFile {
+  id            String   @id @default(uuid())
+  reportId      String   @map("report_id")
+  slot          String   // "CURRENT" | "PREVIOUS"
+  fileName      String   @map("file_name")
+  columnMapping Json     @map("column_mapping")
+  data          Bytes
+  uploadedById  String   @map("uploaded_by_id")
+  uploadedAt    DateTime @map("uploaded_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  report StoreProductionReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@unique([reportId, slot])
+  @@map("production_report_files")
+}
+
+/// One weighing from a production report's "Weight track" tab — expected
+/// band and average vs. the actual average (grams). Feeds the PM/Director
+/// weight-track graph. Only the current report version's rows are kept:
+/// replaced on every upload, removed when the report is rolled back.
+model BatchWeightTrackPoint {
+  id           String   @id @default(uuid())
+  batchId      String   @map("batch_id")
+  reportId     String   @map("report_id")
+  sampleDate   DateTime @map("sample_date") @db.Date
+  weekNumber   Int?     @map("week_number")
+  dayNumber    Int?     @map("day_number")
+  minExpectedG Decimal? @map("min_expected_g") @db.Decimal(8, 2)
+  maxExpectedG Decimal? @map("max_expected_g") @db.Decimal(8, 2)
+  avgExpectedG Decimal? @map("avg_expected_g") @db.Decimal(8, 2)
+  avgActualG   Decimal? @map("avg_actual_g") @db.Decimal(8, 2)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  batch  Batch                 @relation(fields: [batchId], references: [id])
+  report StoreProductionReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, sampleDate])
+  @@index([reportId])
+  @@map("batch_weight_track_points")
 }
 
 /// Per-batch mutex for StoreProductionReport reconciliation passes
