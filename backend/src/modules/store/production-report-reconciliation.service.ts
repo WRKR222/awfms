@@ -43,7 +43,7 @@ import {
 } from '@prisma/client';
 import { ParsedReportRow, ParsedHealthUsage, EnvReading } from './production-report.dto';
 import { splitMultiValueCell } from './production-report-parser.service';
-import { convertToUnit } from '../../common/units/unit-conversion.util';
+import { convertToUnit, resolveUnit, parseQuantityWithUnit, explainUnitMismatch } from '../../common/units/unit-conversion.util';
 import { FeedWastageService } from '../../common/feed/feed-wastage.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { batchAgeWeeks, brooderRequiredFeedKg, requiredFeedKg, checkWeightViolation, hylineGramsPerBirdPerDay, HYLINE_SCHEDULE_MAX_WEEK } from '../../common/feed/feed-standard.util';
@@ -222,24 +222,6 @@ export function vaccineGivenNames(text: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
-// Same unit-synonym set as unit-conversion.util's UNIT_TO_BASE, but keyed
-// the OTHER direction (every spelling -> one canonical short form) so it can
-// be used as a text-substitution pass, not a numeric conversion. This is
-// what makes "150G" and "150 GRAMS" (or "12ml" / "12 mls" / "12 millilitres")
-// compare as identical during ITEM NAME / free-text matching — separate
-// from, and in addition to, the numeric convertToUnit() used once an item is
-// already matched and its quantity needs converting to the stock unit.
-const UNIT_WORD_CANONICAL: Record<string, string> = {
-  milligram: 'mg', milligrams: 'mg', mgs: 'mg',
-  gram: 'g', grams: 'g', gs: 'g', gm: 'g', gms: 'g',
-  kilogram: 'kg', kilograms: 'kg', kgs: 'kg',
-  tonne: 't', tonnes: 't',
-  milliliter: 'ml', milliliters: 'ml', millilitre: 'ml', millilitres: 'ml', mls: 'ml',
-  liter: 'l', liters: 'l', litre: 'l', litres: 'l', lt: 'l', ltr: 'l', ltrs: 'l',
-  sachets: 'sachet', bags: 'bag', doses: 'dose', pieces: 'piece', pcs: 'piece', pc: 'piece',
-  rolls: 'roll', boxes: 'box',
-};
-
 /** Replaces every "<number><unit-word>" token in free text with its
  *  canonical short form (e.g. "150 Grams" / "150GRAMS" / "150g" all become
  *  "150g") before the normal alnum-only normalisation runs. Without this,
@@ -250,8 +232,10 @@ const UNIT_WORD_CANONICAL: Record<string, string> = {
  *  match instead of recognising the two report cells as the same quantity. */
 export function canonicaliseUnitWords(s: string): string {
   return s.replace(/(\d+(?:\.\d+)?)\s*([a-zA-Z]+)/g, (whole, num: string, word: string) => {
-    const canon = UNIT_WORD_CANONICAL[word.toLowerCase()];
-    return canon ? `${num}${canon}` : whole;
+    // Same unit vocabulary as quantity conversion (resolveUnit), exact
+    // spellings only — no misspelling guesses inside item names.
+    const unit = resolveUnit(word, { fuzzy: false });
+    return unit ? `${num}${unit.canonical}` : whole;
   });
 }
 
@@ -306,21 +290,11 @@ function resolveItemMatch(reportText: string | undefined, candidates: StoreItem[
   if (!reportText) return null;
   const norm = normaliseText(reportText);
   if (norm && aliasMap.has(norm)) return aliasMap.get(norm)!;
+  // Matches Store saved before more unit spellings were recognised (e.g.
+  // "1000ds", "500grms") were keyed on the plain text — still honour them.
+  const plain = reportText.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (plain && aliasMap.has(plain)) return aliasMap.get(plain)!;
   return matchInventoryItem(reportText, candidates);
-}
-
-/** Pulls the leading numeric quantity + trailing unit text out of free text
- *  like "6bags", "2 bags", "39.2mls", "Amprolium 10ml" — mirrors the parser's
- *  extractQuantity() but lives here too since health-usage text isn't run
- *  through the parser's item-column path (it's matched here, not there). */
-function extractQuantity(raw: string | undefined): { qty: number; unit?: string } | null {
-  const text = String(raw ?? '').trim();
-  if (!text) return null;
-  const m = text.match(/(\d+(?:\.\d+)?)\s*([a-zA-Z%]*)/);
-  if (!m) return null;
-  const qty = parseFloat(m[1]);
-  if (!Number.isFinite(qty)) return null;
-  return { qty, unit: m[2] || undefined };
 }
 
 /** Runs `fn` over `items` with at most `limit` in flight at once — plain
@@ -1848,7 +1822,7 @@ export class ProductionReportReconciliationService {
       // can act on if one ever slips through.
       if (!c.text || !c.text.trim()) continue;
       const matched = resolveItemMatch(c.text, c.pool, aliasMap);
-      const qty = extractQuantity(c.text);
+      const qty = parseQuantityWithUnit(c.text);
       const usage: ParsedHealthUsage = {
         kind: c.kind, rawText: c.text, storeItemId: matched?.id ?? null, storeItemName: matched?.name ?? null,
         quantity: qty?.qty, unit: qty?.unit, resolution: 'MATCHED',
@@ -2025,13 +1999,13 @@ export class ProductionReportReconciliationService {
     rawText: string, batchId: string, logDate: Date, discrepancies: ReconcileOutcome['discrepancies'],
   ): Promise<CorrectionOutcome> {
     let neededQty = reportQty;
-    if (reportUnit && reportUnit.toLowerCase() !== item.unit.toLowerCase()) {
+    if (reportUnit) {
       const converted = convertToUnit(reportQty, reportUnit, item.unit);
       if (converted === null) {
         discrepancies.push({
           rowDate: row.date, field: `item:${item.name}`, discrepancyType: ProductionReportDiscrepancyType.ITEM_ISSUANCE,
           locationRef: row.locationRef, systemValue: null, reportValue: `${reportQty} ${reportUnit}`,
-          notes: `Unit "${reportUnit}" on the report could not be reconciled against stock unit "${item.unit}" — needs manual conversion.`,
+          notes: explainUnitMismatch(reportUnit, item.unit),
         });
         return { resolution: 'DISCREPANCY', deltaToApply: 0, note: 'Unit mismatch — needs manual conversion.' };
       }
@@ -2122,14 +2096,14 @@ export class ProductionReportReconciliationService {
     setResolution: (r: 'MATCHED' | 'AUTOFILLED' | 'DISCREPANCY') => void,
   ) {
     let neededQty = reportQty;
-    if (reportUnit && reportUnit.toLowerCase() !== item.unit.toLowerCase()) {
+    if (reportUnit) {
       const converted = convertToUnit(reportQty, reportUnit, item.unit);
       if (converted === null) {
         setResolution('DISCREPANCY');
         discrepancies.push({
           rowDate: row.date, field: `item:${item.name}`, discrepancyType: ProductionReportDiscrepancyType.ITEM_ISSUANCE,
           locationRef: row.locationRef, systemValue: null, reportValue: `${reportQty} ${reportUnit}`,
-          notes: `Unit "${reportUnit}" on the report could not be reconciled against stock unit "${item.unit}" — needs manual conversion.`,
+          notes: explainUnitMismatch(reportUnit, item.unit),
         });
         return;
       }

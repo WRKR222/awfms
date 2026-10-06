@@ -12,22 +12,21 @@ import {
   MULTI_READING_FIELDS, MultiReadingField, MAX_ENV_READINGS_PER_DAY, ENV_READING_LABELS, EnvReading,
   FeedSplitPortion,
 } from './production-report.dto';
+import { parseQuantityWithUnit, isNoneValue, convertToUnit } from '../../common/units/unit-conversion.util';
 
 function normaliseHeader(h: string): string {
   return String(h ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-/** Pulls the leading numeric quantity + trailing unit text out of a cell like
- *  "6bags", "2 bags", "39.2mls" — the format the farm's paper sheets use for
- *  "amount of X used today". Returns null if no number is present. */
-function extractQuantity(raw: any): { qty: number; unit?: string } | null {
-  const text = String(raw ?? '').trim();
-  if (!text) return null;
-  const m = text.match(/(\d+(?:\.\d+)?)\s*([a-zA-Z%]*)/);
-  if (!m) return null;
-  const qty = parseFloat(m[1]);
-  if (!Number.isFinite(qty)) return null;
-  return { qty, unit: m[2] || undefined };
+/** A measured cell ("600", "600kg", "600 grms", "2 ltrs") as a number in
+ *  `targetUnit`. A unit that converts (grams -> kg, ml -> litres) is
+ *  converted; no unit, or one that can't convert (e.g. "12 bags" — a bag
+ *  has no fixed weight), keeps the number as written, same as before. */
+function measureIn(raw: unknown, targetUnit: 'kg' | 'l'): number | undefined {
+  const parsed = parseQuantityWithUnit(raw);
+  if (!parsed) return undefined;
+  if (!parsed.unit) return parsed.qty;
+  return convertToUnit(parsed.qty, parsed.unit, targetUnit) ?? parsed.qty;
 }
 
 /** Splits a single cell that packs multiple same-day readings into one
@@ -42,7 +41,7 @@ function extractQuantity(raw: any): { qty: number; unit?: string } | null {
 export function splitMultiValueCell(raw: any): string[] {
   const text = String(raw ?? '').trim();
   if (!text) return [];
-  return text.split(/[,;/]+/).map(s => s.trim()).filter(s => s !== '');
+  return text.split(/[,;/]+/).map(s => s.trim()).filter(s => s !== '' && !isNoneValue(s));
 }
 
 /** Matches a two-way "<labelA>/<labelB> <pctA>[:/-]<pctB>[%]" split cell,
@@ -171,10 +170,20 @@ export class ProductionReportParserService {
         }
       }
 
-      const numOrUndef = (v: any): number | undefined => {
+      // "None"/"Nil"/"N/A" in a column of things given, used or lost that
+      // day (feed, water, deaths, culls) means zero — nothing happened —
+      // whereas a blank cell means "not filled in" and is left alone. Stock
+      // counts aren't "given", so "None" there stays unknown.
+      const numOrUndef = (v: any, noneIsZero = false): number | undefined => {
         if (v === '' || v == null) return undefined;
+        if (isNoneValue(v)) return noneIsZero ? 0 : undefined;
         const n = parseFloat(String(v).replace(/[^\d.\-]/g, ''));
         return Number.isFinite(n) ? n : undefined;
+      };
+      const measureOrUndef = (v: any, unit: 'kg' | 'l'): number | undefined => {
+        if (v === '' || v == null) return undefined;
+        if (isNoneValue(v)) return 0;
+        return measureIn(v, unit);
       };
       // Trims before checking for emptiness — a cell containing only
       // whitespace (a stray space left over from copy/paste, a formula that
@@ -186,16 +195,19 @@ export class ProductionReportParserService {
       // "doesn't match any store item by name" discrepancy every single day
       // the sheet has that stray space — with nothing visible for Store to
       // even look at, since the "raw text" it's complaining about is blank.
+      // "None" in a text column (vaccine, treatment, feed type, ...) means
+      // nothing was given — never an item name to look up in the store.
       const strOrUndef = (v: any): string | undefined => {
         if (v === '' || v == null) return undefined;
         const s = String(v).trim();
-        return s === '' ? undefined : s;
+        return s === '' || isNoneValue(s) ? undefined : s;
       };
 
       const itemsIssued: ParsedItemUsage[] = [];
       for (const [storeItemId, col] of itemEntries) {
         const cell = row[col];
-        const parsed = extractQuantity(cell);
+        // "None" under an item's column means none of that item was used.
+        const parsed = isNoneValue(cell) ? { qty: 0, unit: undefined } : parseQuantityWithUnit(cell);
         if (!parsed) continue;
         itemsIssued.push({
           storeItemId,
@@ -221,7 +233,7 @@ export class ProductionReportParserService {
           const readings: EnvReading[] = [];
           for (let i = 0; i < Math.min(cols.length, MAX_ENV_READINGS_PER_DAY); i++) {
             const cell = row[cols[i]];
-            if (cell === '' || cell == null) continue;
+            if (cell === '' || cell == null || isNoneValue(cell)) continue;
             readings.push({ label: ENV_READING_LABELS[i], value: String(cell) });
           }
           return readings.length ? readings : undefined;
@@ -239,7 +251,7 @@ export class ProductionReportParserService {
       const humidityReadings = readEnvReadings('humidity');
       const luxReadings = readEnvReadings('lux');
 
-      const feedKgVal = numOrUndef(mapping.fields.feedKg && row[mapping.fields.feedKg]);
+      const feedKgVal = measureOrUndef(mapping.fields.feedKg && row[mapping.fields.feedKg], 'kg');
       const feedTypeVal = strOrUndef(mapping.fields.feedType && row[mapping.fields.feedType]);
 
       out.push({
@@ -251,9 +263,9 @@ export class ProductionReportParserService {
         // e.g. "chickcrumbs/growers 75:25%" -> 75% Chick Crumbs, 25% Growers,
         // each kg computed from feedKgVal. undefined for ordinary single-type cells.
         feedSplit:     buildFeedSplit(feedTypeVal, feedKgVal),
-        waterLts:      numOrUndef(mapping.fields.waterLts      && row[mapping.fields.waterLts]),
-        mortality:     numOrUndef(mapping.fields.mortality     && row[mapping.fields.mortality]),
-        culling:       numOrUndef(mapping.fields.culling       && row[mapping.fields.culling]),
+        waterLts:      measureOrUndef(mapping.fields.waterLts  && row[mapping.fields.waterLts], 'l'),
+        mortality:     numOrUndef(mapping.fields.mortality     && row[mapping.fields.mortality], true),
+        culling:       numOrUndef(mapping.fields.culling       && row[mapping.fields.culling], true),
         openingStock:  numOrUndef(mapping.fields.openingStock  && row[mapping.fields.openingStock]),
         closingStock:  numOrUndef(mapping.fields.closingStock  && row[mapping.fields.closingStock]),
         avgWeight:     strOrUndef(mapping.fields.avgWeight     && row[mapping.fields.avgWeight]),

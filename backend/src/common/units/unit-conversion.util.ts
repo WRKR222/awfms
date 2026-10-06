@@ -1,131 +1,157 @@
 // src/common/units/unit-conversion.util.ts
-// Generic unit conversion for comparing/deducting report-derived quantities
-// against a StoreItem's stock unit (e.g. report records grams, StoreItem is
-// stocked in kg). See AWFMS-Production-Report-Workflow.md §4.
-//
-// Deliberately conservative: only mass and volume are modelled numerically.
-// Count-based units (bags, sachets, doses, pcs...) have no universal
-// conversion factor between each other, so those must match the StoreItem's
-// unit exactly — convertToUnit() returns null rather than guessing, and
-// callers must treat null as "needs manual reconciliation", never as "assume
-// they're equal".
+// Understands the units written on a farm's paper sheets — "500 grms",
+// "2 Ltrs", "12 m.l.", "1.5 kilos", "6 bags" — and converts report
+// quantities into a StoreItem's stock unit (e.g. report says grams, item is
+// stocked in kg). Mass and volume convert numerically; count units (bags,
+// sachets, doses, bottles...) only ever match the same count unit, since a
+// bag or sachet has no fixed weight. convertToUnit() returns null rather
+// than guessing whenever two units can't be safely converted — callers
+// treat that as "needs manual reconciliation".
 
-export type UnitDimension = 'mass' | 'volume';
+export type UnitDimension = 'mass' | 'volume' | 'count';
 
-interface UnitDef {
+export interface ResolvedUnit {
+  /** Canonical short form: 'mg' | 'g' | 'kg' | 't' | 'ml' | 'l' | 'bag' | 'sachet' | ... */
+  canonical: string;
   dim: UnitDimension;
-  factor: number; // multiply by this to get to the dimension's base unit
+  /** Multiply by this to reach the dimension's base unit (kg, litre). 1 for count units. */
+  factor: number;
 }
 
-// Base units: mass -> kg, volume -> litre.
-const UNIT_TO_BASE: Record<string, UnitDef> = {
-  // mass
-  mg: { dim: 'mass', factor: 0.000001 },
-  mgs: { dim: 'mass', factor: 0.000001 },
-  g: { dim: 'mass', factor: 0.001 },
-  gram: { dim: 'mass', factor: 0.001 },
-  grams: { dim: 'mass', factor: 0.001 },
-  gs: { dim: 'mass', factor: 0.001 },
-  kg: { dim: 'mass', factor: 1 },
-  kgs: { dim: 'mass', factor: 1 },
-  kilogram: { dim: 'mass', factor: 1 },
-  kilograms: { dim: 'mass', factor: 1 },
-  tonne: { dim: 'mass', factor: 1000 },
-  tonnes: { dim: 'mass', factor: 1000 },
-  t: { dim: 'mass', factor: 1000 },
-
-  // volume
-  ml: { dim: 'volume', factor: 0.001 },
-  mls: { dim: 'volume', factor: 0.001 },
-  milliliter: { dim: 'volume', factor: 0.001 },
-  milliliters: { dim: 'volume', factor: 0.001 },
-  millilitre: { dim: 'volume', factor: 0.001 },
-  millilitres: { dim: 'volume', factor: 0.001 },
-  cl: { dim: 'volume', factor: 0.01 },
-  l: { dim: 'volume', factor: 1 },
-  lt: { dim: 'volume', factor: 1 },
-  ltr: { dim: 'volume', factor: 1 },
-  ltrs: { dim: 'volume', factor: 1 },
-  liter: { dim: 'volume', factor: 1 },
-  liters: { dim: 'volume', factor: 1 },
-  litre: { dim: 'volume', factor: 1 },
-  litres: { dim: 'volume', factor: 1 },
+const MASS: Record<string, { canonical: string; factor: number; aliases: string[] }> = {
+  mg: { canonical: 'mg', factor: 0.000001, aliases: ['mg', 'mgs', 'milligram', 'milligrams', 'milligramme', 'milligrammes', 'mgrm', 'mgm'] },
+  g: { canonical: 'g', factor: 0.001, aliases: ['g', 'gs', 'gm', 'gms', 'gr', 'grs', 'grm', 'grms', 'gram', 'grams', 'gramme', 'grammes'] },
+  kg: { canonical: 'kg', factor: 1, aliases: ['kg', 'kgs', 'kgm', 'kgms', 'kilo', 'kilos', 'kilogram', 'kilograms', 'kilogramme', 'kilogrammes', 'kgr'] },
+  t: { canonical: 't', factor: 1000, aliases: ['t', 'ton', 'tons', 'tonne', 'tonnes'] },
 };
 
-// Units with no numeric conversion — always require an exact match against
-// the StoreItem's unit, ONCE both sides have been folded to a single
-// canonical spelling (see COUNT_UNIT_CANONICAL below). Not exhaustive;
-// anything not present in UNIT_TO_BASE is already treated this way by
-// convertToUnit()'s null return.
-export const COUNT_UNITS = new Set(['bag', 'sachet', 'dose', 'piece', 'roll', 'box', 'unit']);
-
-// Plural (and a couple of common abbreviation) spellings of count-based
-// units, folded onto one canonical singular form. This is what makes a
-// report cell like "6 bags" reconcile cleanly against a StoreItem whose
-// `unit` column is stored as "BAG" — without this, normaliseUnit() would
-// leave them as the two different strings "bags" and "bag", the equality
-// check in convertToUnit() would fail, neither string is in UNIT_TO_BASE
-// (count-based units have no numeric factor), and the pair would
-// incorrectly fall through to "needs manual conversion" even though they
-// obviously mean the same unit. Kept separate from UNIT_WORD_CANONICAL in
-// production-report-reconciliation.service.ts, which does the equivalent
-// job for free-text ITEM NAME matching rather than a StoreItem's `unit`
-// column — the two lists happen to overlap but serve different call sites.
-const COUNT_UNIT_CANONICAL: Record<string, string> = {
-  bag: 'bag', bags: 'bag',
-  sachet: 'sachet', sachets: 'sachet',
-  dose: 'dose', doses: 'dose',
-  piece: 'piece', pieces: 'piece', pc: 'piece', pcs: 'piece',
-  roll: 'roll', rolls: 'roll',
-  box: 'box', boxes: 'box',
-  unit: 'unit', units: 'unit',
+const VOLUME: Record<string, { canonical: string; factor: number; aliases: string[] }> = {
+  ml: { canonical: 'ml', factor: 0.001, aliases: ['ml', 'mls', 'mil', 'mils', 'cc', 'milliliter', 'milliliters', 'millilitre', 'millilitres', 'mililitre', 'mililitres', 'mililiter', 'mililiters'] },
+  cl: { canonical: 'cl', factor: 0.01, aliases: ['cl', 'centiliter', 'centilitre', 'centiliters', 'centilitres'] },
+  l: { canonical: 'l', factor: 1, aliases: ['l', 'ls', 'lt', 'lts', 'ltr', 'ltrs', 'lit', 'lits', 'liter', 'liters', 'litre', 'litres'] },
 };
 
-export function normaliseUnit(u: string | undefined | null): string {
-  const base = String(u ?? '').trim().toLowerCase().replace(/[^a-z]/g, '');
-  return COUNT_UNIT_CANONICAL[base] ?? base;
+// Count units — no numeric conversion between them, only same-unit matches.
+const COUNT: Record<string, string[]> = {
+  bag: ['bag', 'bags', 'sack', 'sacks'],
+  sachet: ['sachet', 'sachets', 'satchet', 'satchets'],
+  dose: ['dose', 'doses', 'ds'],
+  piece: ['piece', 'pieces', 'pc', 'pcs'],
+  roll: ['roll', 'rolls'],
+  box: ['box', 'boxes'],
+  unit: ['unit', 'units'],
+  packet: ['packet', 'packets', 'pkt', 'pkts', 'pack', 'packs'],
+  bottle: ['bottle', 'bottles', 'btl', 'btls'],
+  tablet: ['tablet', 'tablets', 'tab', 'tabs'],
+  vial: ['vial', 'vials'],
+  tray: ['tray', 'trays'],
+};
+
+const ALIAS_TO_UNIT = new Map<string, ResolvedUnit>();
+for (const def of Object.values(MASS)) for (const a of def.aliases) ALIAS_TO_UNIT.set(a, { canonical: def.canonical, dim: 'mass', factor: def.factor });
+for (const def of Object.values(VOLUME)) for (const a of def.aliases) ALIAS_TO_UNIT.set(a, { canonical: def.canonical, dim: 'volume', factor: def.factor });
+for (const [canonical, aliases] of Object.entries(COUNT)) for (const a of aliases) ALIAS_TO_UNIT.set(a, { canonical, dim: 'count', factor: 1 });
+
+function editDistance(a: string, b: string): number {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+  }
+  return dp[a.length][b.length];
 }
 
-/** Converts `qty` from `fromUnit` to `toUnit`. Returns null when either unit
- *  is unrecognised or the two units aren't the same dimension (e.g. mass vs.
- *  volume, or two different count-based units) — callers must never guess in
- *  that case, only flag for manual reconciliation. Returns `qty` unchanged
- *  (dimension-free) when the units are already textually identical, even if
- *  neither is in the numeric table (e.g. "bags" -> "bags"). */
+/** Works out which unit a piece of sheet text means: exact abbreviations
+ *  and plurals ("grms", "Ltrs", "kgs"), dotted forms ("m.l.", "kg."), word
+ *  prefixes ("kilogrammes", "litres"), and — unless `fuzzy` is false —
+ *  small misspellings of longer unit words ("gramms", "mililitre",
+ *  "litrs"). Returns null for anything it can't place with confidence. */
+export function resolveUnit(raw: string | undefined | null, opts: { fuzzy?: boolean } = {}): ResolvedUnit | null {
+  const word = String(raw ?? '').trim().toLowerCase().replace(/[^a-z]/g, '');
+  if (!word) return null;
+  const exact = ALIAS_TO_UNIT.get(word);
+  if (exact) return exact;
+  if (opts.fuzzy === false) return null;
+
+  // Longer spellings recognised by their stem.
+  if (/^kilo/.test(word)) return ALIAS_TO_UNIT.get('kg')!;
+  if (/^mill?ig/.test(word)) return ALIAS_TO_UNIT.get('mg')!;
+  if (/^mill?il/.test(word)) return ALIAS_TO_UNIT.get('ml')!;
+  if (/^gra?m/.test(word)) return ALIAS_TO_UNIT.get('g')!;
+  if (/^lit[re]/.test(word)) return ALIAS_TO_UNIT.get('l')!;
+
+  // One stray letter in a word of 4+ letters (two in 8+): "gramms", "litrs".
+  if (word.length >= 4) {
+    const maxDist = word.length >= 8 ? 2 : 1;
+    let best: ResolvedUnit | null = null;
+    let bestDist = Infinity;
+    for (const [alias, unit] of ALIAS_TO_UNIT) {
+      if (alias.length < 4) continue;
+      const d = editDistance(word, alias);
+      if (d < bestDist) { bestDist = d; best = unit; }
+    }
+    if (best && bestDist <= maxDist) return best;
+  }
+  return null;
+}
+
+/** Converts `qty` from `fromUnit` to `toUnit` (either may be written any way
+ *  resolveUnit() understands). Returns null when either unit can't be
+ *  recognised, or the two can't be converted (mass vs. volume, or two
+ *  different count units) — callers must never guess in that case. */
 export function convertToUnit(qty: number, fromUnit: string | undefined | null, toUnit: string | undefined | null): number | null {
-  const fromNorm = normaliseUnit(fromUnit);
-  const toNorm = normaliseUnit(toUnit);
-  if (!fromNorm || !toNorm) return null;
-  if (fromNorm === toNorm) return qty; // identical unit strings — no conversion needed, count-based or not
-
-  const from = UNIT_TO_BASE[fromNorm];
-  const to = UNIT_TO_BASE[toNorm];
-  if (!from || !to || from.dim !== to.dim) return null; // incompatible or unrecognised — do NOT guess
-
+  const from = resolveUnit(fromUnit);
+  const to = resolveUnit(toUnit);
+  if (!from || !to) {
+    // Unrecognised on either side: only an identical spelling is safe.
+    const a = String(fromUnit ?? '').trim().toLowerCase();
+    const b = String(toUnit ?? '').trim().toLowerCase();
+    return a && a === b ? qty : null;
+  }
+  if (from.dim !== to.dim) return null;
+  if (from.dim === 'count') return from.canonical === to.canonical ? qty : null;
   return (qty * from.factor) / to.factor;
 }
 
-/** Convenience wrapper for the report-vs-stock comparison case: given a
- *  usage figure parsed off the report (with its own unit, possibly absent)
- *  and the StoreItem's stock unit, returns the converted quantity plus a
- *  human-readable reason when conversion wasn't possible. */
-export function reconcileUnit(
-  qty: number,
-  reportUnit: string | undefined,
-  stockUnit: string,
-): { convertedQty: number; note: string | null } | { convertedQty: null; note: string } {
-  if (!reportUnit) {
-    // No unit on the report cell — assume it was already recorded in the
-    // stock unit (matches today's behaviour for cells like "6" with no
-    // trailing unit text).
-    return { convertedQty: qty, note: null };
+/** The first quantity in a cell, with the unit written after it — "6bags",
+ *  "1,000 grms", "12 m.l.", "Amprolium 10ml". Percentages are concentrations,
+ *  not amounts, so "Amprolium 20%" has no quantity and "Amprolium 20% 5g"
+ *  gives 5 g. Returns null when there's no amount in the text. */
+export function parseQuantityWithUnit(raw: unknown): { qty: number; unit?: string } | null {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  const re = /(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*(%|[a-zA-Z][a-zA-Z.]*)?/g;
+  for (const m of text.matchAll(re)) {
+    if (m[2] === '%') continue;
+    const qty = parseFloat(m[1].replace(/,/g, ''));
+    if (!Number.isFinite(qty)) continue;
+    const unit = m[2]?.replace(/\./g, '');
+    return { qty, unit: unit || undefined };
   }
-  const converted = convertToUnit(qty, reportUnit, stockUnit);
-  if (converted === null) {
-    return {
-      convertedQty: null,
-      note: `Unit "${reportUnit}" on the report could not be reconciled against stock unit "${stockUnit}" — needs manual conversion.`,
-    };
-  }
-  return { convertedQty: converted, note: null };
+  return null;
+}
+
+// Words farm sheets use for "nothing given/issued/recorded" in a cell.
+const NONE_WORDS = new Set(['none', 'nil', 'nill', 'nothing', 'no', 'na', 'notgiven', 'notissued', 'notused', 'zero']);
+
+/** True for cells like "None", "nil", "N/A", "Not given" — meaning nothing
+ *  of that column's item was given/issued that day (not a blank cell). */
+export function isNoneValue(raw: unknown): boolean {
+  if (typeof raw !== 'string') return false;
+  return NONE_WORDS.has(raw.trim().toLowerCase().replace(/[^a-z]/g, ''));
+}
+
+const DIM_LABEL: Record<UnitDimension, string> = { mass: 'a weight', volume: 'a volume', count: 'a count' };
+
+/** Plain-language reason a report unit couldn't be converted into an item's
+ *  stock unit — shown to Store on the flagged row. */
+export function explainUnitMismatch(reportUnit: string, stockUnit: string): string {
+  const from = resolveUnit(reportUnit);
+  const to = resolveUnit(stockUnit);
+  if (!from) return `The report's unit "${reportUnit}" isn't a unit the system recognises — enter the amount in ${stockUnit} or fix the wording on the sheet.`;
+  if (!to) return `This item's stock unit "${stockUnit}" isn't a unit the system recognises — update the item's unit in Store Inventory.`;
+  if (from.dim !== to.dim) return `The report gives ${DIM_LABEL[from.dim]} ("${reportUnit}") but this item is stocked as ${DIM_LABEL[to.dim]} (${stockUnit}) — one can't be converted into the other.`;
+  return `"${reportUnit}" and ${stockUnit} are different count units (a ${from.canonical} has no fixed number of ${to.canonical}s) — enter the amount in ${stockUnit}.`;
 }
