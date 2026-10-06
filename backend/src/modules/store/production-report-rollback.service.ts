@@ -25,6 +25,7 @@
 // undoing it silently here would be a bigger, separate action than what
 // this button promises.
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RequestUser } from '../../auth/types/request-user.type';
 
@@ -141,6 +142,15 @@ export class ProductionReportRollbackService {
 
       case 'BrooderTreatmentLog':
         if (action === 'CREATE') { await this.deleteIfUnchanged(tx.brooderTreatmentLog, entityId, afterState); return; }
+        // DELETE — a report replaced the day's entries for an item with its
+        // own single entry; undoing it puts the originals back.
+        if (action === 'DELETE') { await this.recreateIfAbsent(tx.brooderTreatmentLog, entityId, beforeState); return; }
+        break;
+
+      case 'BrooderLevelFeedLog':
+        // DELETE — row/level feed entries removed so the report's whole-batch
+        // figure could replace the day without double counting.
+        if (action === 'DELETE') { await this.recreateIfAbsent(tx.brooderLevelFeedLog, entityId, beforeState); return; }
         break;
 
       case 'BrooderFeedWastageLog':
@@ -166,7 +176,8 @@ export class ProductionReportRollbackService {
         if (action === 'CREATE') { await this.deleteIfUnchanged(tx.brooderLog, entityId, afterState); return; }
         break;
 
-      case 'BrooderLog.environmental': {
+      case 'BrooderLog.environmental':
+      case 'BrooderLog.waterConsumptionL': {
         if (action !== 'UPDATE') break;
         const existing = await tx.brooderLog.findUnique({ where: { id: entityId } });
         if (!existing) throw new Error('Log entry no longer exists.');
@@ -185,6 +196,21 @@ export class ProductionReportRollbackService {
         const row = await tx.brooderLog.findUnique({ where: { id: entityId } });
         if (!row) return; // already gone — nothing to undo
         const current: any[] = Array.isArray((row as any)[key]) ? (row as any)[key] : [];
+        if (action === 'UPDATE') {
+          // A report removed this item's existing entries from the array
+          // (before replacing them with its own) — put the original array
+          // back, keeping anything appended to it since that isn't ours.
+          const after: any[] = Array.isArray(afterState?.[key]) ? afterState[key] : [];
+          const before: any[] = Array.isArray(beforeState?.[key]) ? beforeState[key] : [];
+          const extra = [...current];
+          for (const e of after) {
+            const i = extra.findIndex(x => deepEqual(x, e));
+            if (i === -1) throw new Error('Entry list has been edited since the report changed it — leaving as-is for manual review.');
+            extra.splice(i, 1);
+          }
+          await tx.brooderLog.update({ where: { id: entityId }, data: { [key]: [...before, ...extra] } });
+          return;
+        }
         const idx = current.findIndex(e => deepEqual(e, afterState));
         if (idx === -1) {
           throw new Error('Entry no longer present in the JSON array (edited since) — leaving as-is for manual review.');
@@ -217,17 +243,26 @@ export class ProductionReportRollbackService {
         break;
       }
 
+      // 'EggCollectionSession' is the whole-day replacement write (several
+      // fields at once, e.g. feedKg + dailyFeedKg + feedBreakdownJson); the
+      // '.field' forms are older single-field ledger entries. Same undo for
+      // both: every field the report set must still hold what it set, then
+      // the fields go back to their before values.
+      case 'EggCollectionSession':
       case 'EggCollectionSession.mortalities':
       case 'EggCollectionSession.feedKg':
+      case 'EggCollectionSession.waterLiters':
       case 'EggCollectionSession.vaccineGiven': {
         if (action !== 'UPDATE') break;
-        const field = entityType.split('.')[1];
         const existing = await tx.eggCollectionSession.findUnique({ where: { id: entityId } });
         if (!existing) throw new Error('Egg-collection session no longer exists.');
-        if (JSON.stringify((existing as any)[field]) !== JSON.stringify(afterState[field])) {
-          throw new Error(`${field} has changed since the report set it — leaving as-is for manual review.`);
+        if (!statesRoughlyMatch(existing, afterState)) {
+          throw new Error('Session has changed since the report set it — leaving as-is for manual review.');
         }
-        await tx.eggCollectionSession.update({ where: { id: entityId }, data: { [field]: beforeState[field] } });
+        const data = Object.fromEntries(Object.entries(beforeState ?? {}).map(([k, v]) => [
+          k, v === null && k === 'feedBreakdownJson' ? Prisma.DbNull : v,
+        ]));
+        await tx.eggCollectionSession.update({ where: { id: entityId }, data });
         return;
       }
     }

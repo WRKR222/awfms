@@ -6,7 +6,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { ProductionReportParserService } from './production-report-parser.service';
-import { ProductionReportReconciliationService, normaliseText } from './production-report-reconciliation.service';
+import { ProductionReportReconciliationService, normaliseText, AppliedChangeInput } from './production-report-reconciliation.service';
 import { ProductionReportRollbackService, RollbackResult } from './production-report-rollback.service';
 import { ProductionReportTemplateService, TemplateAnalysis } from './production-report-template.service';
 import { AiService } from '../ai/ai.service';
@@ -20,6 +20,20 @@ import {
 // one — treated as stale and silently reclaimed rather than wedging the
 // batch forever behind a lock nothing will ever release.
 const PROCESSING_LOCK_STALE_AFTER_MS = 5 * 60 * 1000;
+
+/** Ledger rows for one reconciliation pass. createMany would give every row
+ *  the same created_at (one statement), but rollback undoes them newest-first
+ *  and some pairs depend on that order (e.g. "removed the old vaccine entry"
+ *  then "added the report's entry" on the same row) — so each row gets its
+ *  own increasing timestamp, in the order the writes actually happened. */
+function toLedgerRows(reportId: string, changes: AppliedChangeInput[]) {
+  const base = Date.now();
+  return changes.map((c, i) => ({
+    reportId, batchId: c.batchId, rowDate: new Date(c.rowDate), entityType: c.entityType,
+    entityId: c.entityId, action: c.action, beforeState: c.beforeState as any, afterState: c.afterState as any,
+    createdAt: new Date(base + i),
+  }));
+}
 
 @Injectable()
 export class ProductionReportService {
@@ -211,18 +225,7 @@ export class ProductionReportService {
       // re-uploads), which is what makes "roll back my current report"
       // undo everything it has ever auto-filled, not just the latest pass.
       if (appliedChanges.length) {
-        await tx.productionReportAppliedChange.createMany({
-          data: appliedChanges.map(c => ({
-            reportId: saved.id,
-            batchId: c.batchId,
-            rowDate: new Date(c.rowDate),
-            entityType: c.entityType,
-            entityId: c.entityId,
-            action: c.action,
-            beforeState: c.beforeState as any,
-            afterState: c.afterState as any,
-          })),
-        });
+        await tx.productionReportAppliedChange.createMany({ data: toLedgerRows(saved.id, appliedChanges) });
       }
 
       return saved;
@@ -353,12 +356,7 @@ export class ProductionReportService {
         });
       }
       if (appliedChanges.length) {
-        await tx.productionReportAppliedChange.createMany({
-          data: appliedChanges.map(c => ({
-            reportId: saved.id, batchId: c.batchId, rowDate: new Date(c.rowDate), entityType: c.entityType,
-            entityId: c.entityId, action: c.action, beforeState: c.beforeState as any, afterState: c.afterState as any,
-          })),
-        });
+        await tx.productionReportAppliedChange.createMany({ data: toLedgerRows(saved.id, appliedChanges) });
       }
       return saved;
     });
@@ -389,8 +387,8 @@ export class ProductionReportService {
   }
 
   /** Store (or Director) trusts the report over the system for every
-   *  currently open discrepancy on this report — each gets an adjusting
-   *  entry applied (see ProductionReportReconciliationService.
+   *  currently open discrepancy on this report — each day's figure is
+   *  replaced with the report's (never added to; see ProductionReportReconciliationService.
    *  applyDiscrepancy), and the report moves to APPROVED once none remain
    *  unresolved. No role check here beyond the PRODUCTION_REPORT_REVIEW
    *  permission the controller already enforces — that permission is

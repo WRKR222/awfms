@@ -1,22 +1,26 @@
 // src/modules/store/production-report-reconciliation.service.ts
 // The core "verification layer" logic: for every parsed report row, compare
 // each field against whatever the system already has recorded for that
-// batch + date, and decide what happens to it:
+// batch + date — the WHOLE day (both AM and PM egg-collection sessions; all
+// of a brooder day's session rows / entries), never one record in isolation
+// — and decide what happens to it:
 //
-//   • nothing recorded yet     -> APPLY immediately (autofill)
-//   • recorded and it matches  -> no-op
-//   • recorded and it conflicts -> hold back, record a discrepancy
+//   • nothing recorded yet       -> fill the gap with the report's figure
+//   • recorded and it matches    -> no-op
+//   • recorded and it disagrees  -> REPLACE what's recorded with the
+//                                   report's figure — never add the report's
+//                                   figure on top (601 kg + 600 kg ≠ 1201 kg)
 //
-// IMPORTANT — this service only ever RECORDS, never ISSUES. Feed, vaccines,
-// supplements, treatments, and any other store item a report shows as
-// "used" are only auto-filled into the daily logs up to whatever has
-// ALREADY been issued out of the store to this batch (to the PM or an
-// Attendant) and not yet logged as used anywhere — i.e. it closes a data
-// gap between "stock left the store" and "someone logged what happened to
-// it", it never triggers a new stock-out on its own. If the report claims
-// more was used than has ever been issued, that's a discrepancy for Store
-// to resolve by actually issuing the difference (through the normal
-// Store Inventory flow) or for the Director to knowingly approve.
+// The report is the farm's daily record sheet and is authoritative, for
+// laying batches and brooder/grower batches alike. Every replaced or
+// removed record is written to the applied-change ledger, so rejecting or
+// rolling back the report restores exactly what was there before.
+// Discrepancies are only raised for what can't be resolved by replacing a
+// figure — e.g. no egg-collection session exists yet for a laying day, an
+// item name that matches nothing in the store, a unit that can't convert.
+//
+// IMPORTANT — this service only ever RECORDS, never ISSUES: it never
+// triggers a store stock-out on its own.
 //
 // STAGE-AWARE (§5): a batch in BROODING (or GROWER, which shares the same
 // brooder-style daily record sheet until the batch reaches PRODUCTION)
@@ -35,6 +39,7 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   FeedType, ProductionReportDiscrepancyType, StoreItem, BatchStage, BrooderLogSession, UserRole,
+  EggCollectionSession,
 } from '@prisma/client';
 import { ParsedReportRow, ParsedHealthUsage, EnvReading } from './production-report.dto';
 import { splitMultiValueCell } from './production-report-parser.service';
@@ -132,6 +137,68 @@ export function resolveReportCorrection(
       ? `${alreadyRecorded} ${unitLabel} was already recorded; the report shows ${reportQty} ${unitLabel} total, so ${delta.toFixed(2)} ${unitLabel} was added to match it.`
       : `${alreadyRecorded} ${unitLabel} was already recorded; the report shows only ${reportQty} ${unitLabel} total, so ${Math.abs(delta).toFixed(2)} ${unitLabel} was corrected down to match it.`,
   };
+}
+
+/** How a report's figure for one day replaces what's recorded when that day
+ *  is spread across several records (a laying batch's AM + PM sessions, or a
+ *  brooder day's session rows). The report's figure is the WHOLE day's
+ *  figure, so it's compared against the sum of every record — never just
+ *  one of them — and when it differs, the record already holding the most
+ *  (the one being corrected) takes the report's value while every other
+ *  record holding a value is cleared. The day total then equals the report
+ *  exactly: e.g. PM 601 kg + report 600 kg leaves the day at 600, not 1201;
+ *  AM 385 kg + report 600 kg replaces the 385 with 600. */
+export function planDayReplacement<T extends { id: string }>(
+  records: T[], valueOf: (r: T) => number, reportValue: number, tolerance = 0.001,
+): { matched: boolean; dayTotal: number; target: T | null; clearIds: string[] } {
+  const dayTotal = records.reduce((s, r) => s + valueOf(r), 0);
+  if (Math.abs(dayTotal - reportValue) < tolerance) {
+    return { matched: true, dayTotal, target: null, clearIds: [] };
+  }
+  let target: T | null = records[0] ?? null;
+  for (const r of records) if (target && valueOf(r) > valueOf(target)) target = r;
+  const clearIds = records.filter(r => r !== target && valueOf(r) !== 0).map(r => r.id);
+  return { matched: false, dayTotal, target, clearIds };
+}
+
+/** Whether a day's existing feed entries are exactly the report's feed
+ *  lines — same feed (key) and same kg, one entry per line, nothing extra.
+ *  Anything else (a missing line, a different amount, an extra entry) means
+ *  the day gets replaced with the report's lines. */
+export function feedLinesMatch(
+  wanted: { key: string; kg: number }[], existing: { key: string; kg: number }[], tolerance = 0.001,
+): boolean {
+  if (wanted.length !== existing.length) return false;
+  const remaining = [...existing];
+  for (const w of wanted) {
+    const i = remaining.findIndex(e => e.key === w.key && Math.abs(e.kg - w.kg) < tolerance);
+    if (i === -1) return false;
+    remaining.splice(i, 1);
+  }
+  return true;
+}
+
+const toNum = (v: unknown): number | null => (v == null ? null : Number(v));
+
+/** BrooderLog columns a report's per-session reading maps onto. MIDDAY and
+ *  EVENING use the single field; MORNING keeps its readings in the 3am/6am
+ *  pair, so a Morning reading is matched against whichever of those holds a
+ *  value (single field first, for older rows) and written into 6am if none. */
+const ENV_FIELDS = {
+  temperature: { single: 'temperature', morning: ['temperature', 'reading6amTemperature', 'reading3amTemperature'], morningDefault: 'reading6amTemperature' },
+  humidity: { single: 'humidityPercent', morning: ['humidityPercent', 'reading6amHumidityPercent', 'reading3amHumidityPercent'], morningDefault: 'reading6amHumidityPercent' },
+  lux: { single: 'lightIntensityLux', morning: ['lightIntensityLux', 'reading6amLightIntensityLux', 'reading3amLightIntensityLux'], morningDefault: 'reading6amLightIntensityLux' },
+} as const;
+
+/** Item names out of an egg-collection session's free-text vaccineGiven —
+ *  the attendant form writes "V: Newcastle (10ml); T: Amprolium (5g)", and
+ *  report-filled lines read "Amprolium 20% (5G) — …". */
+export function vaccineGivenNames(text: string | null | undefined): string[] {
+  if (!text) return [];
+  return text
+    .split(';')
+    .map(part => part.trim().replace(/^[VST]:\s*/i, '').split(' (')[0].split(' — ')[0].trim())
+    .filter(Boolean);
 }
 
 // Same unit-synonym set as unit-conversion.util's UNIT_TO_BASE, but keyed
@@ -274,23 +341,6 @@ export class ProductionReportReconciliationService {
     private readonly notifications: NotificationsService,
     private readonly weightAlerts: WeightAlertService,
   ) {}
-
-  // BROODER_MGMT_IS_READ_ONLY: Store's uploaded production reports must
-  // never auto-fill or overwrite anything an attendant records in brooder
-  // management (BrooderLog, BrooderGeneralFeedLog/BrooderLevelFeedLog,
-  // BrooderGeneralMortalityLog/BrooderLevelMortalityLog,
-  // BrooderTreatmentLog, vaccinesJson/supplementsJson, BrooderStockCount).
-  // For a BROODING/GROWER-stage batch every reconcile* method below only
-  // ever COMPARES the report's figure against what's already recorded and,
-  // on a mismatch, raises a ProductionReportDiscrepancy for the Director to
-  // review — it never creates, updates, or deletes a brooder row. This is
-  // the opposite of the PRODUCTION-stage (EggCollectionSession) behaviour
-  // in the same methods, which is unchanged and still autofills.
-  private brooderReadOnlyNote(field: string): string {
-    return `Brooder management is read-only from Store's production reports — this ${field} figure is shown ` +
-      'here for the Director to review, but the attendant\'s own brooder record was not changed. Resolve by ' +
-      'correcting either the paper/Store record or the attendant\'s brooder entry directly.';
-  }
 
   /** Run the full cross-check + autofill pass over every parsed row for a
    *  batch. Mutates the real brooder/production/cage-map tables for anything
@@ -505,31 +555,6 @@ export class ProductionReportReconciliationService {
     return { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage: stageBucket };
   }
 
-  /** Mirrors BrooderService.assertNoLevelSpecificFeedLog — the write path
-   *  here (reconcileFeed/reconcileFeedSplit) writes BrooderGeneralFeedLog
-   *  directly via Prisma rather than through BrooderService's guarded
-   *  createGeneralFeedLog(), so it never went through that clash check.
-   *  Root cause of the "feed recorded twice" bug: when a batch is being
-   *  tracked at row/level detail for a date and a production report is
-   *  then reconciled for that SAME date, this path used to create a
-   *  general-record row anyway — the two are meant to be mutually
-   *  exclusive per (batch, date) (see assertNoLevelSpecificFeedLog's
-   *  comment), but nothing enforced that here, so
-   *  getPopulationRecordSheet's rollup silently added both totals
-   *  together, doubling the figure shown in history. Called before every
-   *  BrooderGeneralFeedLog write in this file; when it returns true the
-   *  caller must hold the row back as a discrepancy instead of writing. */
-  private async hasLevelSpecificFeedLog(batchId: string, entryDate: Date): Promise<boolean> {
-    const levelIds = await this.prisma.brooderLevelAssignment.findMany({
-      where: { batchId }, select: { levelId: true },
-    });
-    if (levelIds.length === 0) return false;
-    const existing = await this.prisma.brooderLevelFeedLog.findFirst({
-      where: { levelId: { in: levelIds.map(l => l.levelId) }, entryDate },
-    });
-    return !!existing;
-  }
-
   /** Deletes every row in `rows` and logs a DELETE ledger entry (full
    *  beforeState, no afterState) for each one, so ProductionReportRollbackService
    *  can recreate them exactly if this report is later undone. Used by the
@@ -572,6 +597,78 @@ export class ProductionReportReconciliationService {
     appliedChanges.push({ batchId, rowDate, entityType, entityId, action, beforeState, afterState });
   }
 
+  /** Every live egg-collection session for a laying batch on one date, AM
+   *  first. A laying day is split across AM and PM sessions that each carry
+   *  their own feed/mortality/water, so a report's daily figure has to be
+   *  compared against both — this file used to read only AM, which made a
+   *  figure logged on PM invisible and stacked the report's value on top. */
+  private async getDaySessions(batchId: string, logDate: Date): Promise<EggCollectionSession[]> {
+    const sessions = await this.prisma.eggCollectionSession.findMany({
+      where: { batchId, sessionDate: logDate, deletedAt: null },
+    });
+    return sessions.sort((a, b) => (a.shift === b.shift ? 0 : a.shift === 'AM' ? -1 : 1));
+  }
+
+  /** Replaces one daily figure on a laying batch's sessions (see
+   *  planDayReplacement): the target session takes the report's value and
+   *  any other session holding a value is cleared. Keeps each session's
+   *  derived fields in step — dailyFeedKg/feedBreakdownJson with feedKg, and
+   *  closingStock/henDayPercent with mortalities. Returns the session now
+   *  carrying the day's figure. */
+  private async replaceProductionDayField(
+    field: 'feed' | 'mortality' | 'water', sessions: EggCollectionSession[], reportValue: number,
+    plan: { target: EggCollectionSession | null; clearIds: string[] },
+    batchId: string, rowDate: string, appliedChanges: AppliedChangeInput[],
+    feed?: { label: string | null; breakdown: { feedType: string; kg: number }[] },
+  ): Promise<EggCollectionSession | null> {
+    const target = plan.target;
+    if (!target) return null;
+
+    const buildData = (s: EggCollectionSession, value: number, isTarget: boolean): Record<string, unknown> => {
+      if (field === 'feed') {
+        const feedTypeName = feed?.label ?? s.feedTypeName;
+        return isTarget
+          ? {
+              feedKg: value, dailyFeedKg: value, feedTypeName,
+              feedBreakdownJson: feed?.breakdown?.length ? feed.breakdown : [{ feedType: feedTypeName ?? 'Feed', kg: value }],
+            }
+          : { feedKg: 0, dailyFeedKg: 0, feedBreakdownJson: [] };
+      }
+      if (field === 'water') return { waterLiters: isTarget ? value : null };
+      // mortality — closing stock and hen-day % are derived from it.
+      const closingStock = Math.max(0, s.openingPop - value);
+      const oldHdp = toNum(s.henDayPercent);
+      const hdpEggs = oldHdp != null && s.closingStock > 0 ? Math.round((oldHdp * s.closingStock) / 100) : null;
+      const henDayPercent = hdpEggs != null && closingStock > 0 ? Math.round((hdpEggs / closingStock) * 10000) / 100 : null;
+      return { mortalities: value, closingStock, henDayPercent };
+    };
+
+    const snapshot = (s: EggCollectionSession, keys: string[]) => Object.fromEntries(keys.map(k => {
+      const v = (s as any)[k];
+      return [k, v != null && typeof v === 'object' && 'toNumber' in v ? Number(v) : v];
+    }));
+
+    const writes: { session: EggCollectionSession; value: number; isTarget: boolean }[] = [
+      { session: target, value: reportValue, isTarget: true },
+      ...sessions.filter(s => plan.clearIds.includes(s.id)).map(s => ({ session: s, value: 0, isTarget: false })),
+    ];
+    for (const w of writes) {
+      const data = buildData(w.session, w.value, w.isTarget);
+      const before = snapshot(w.session, Object.keys(data));
+      await this.prisma.eggCollectionSession.update({ where: { id: w.session.id }, data: data as any });
+      this.logChange(appliedChanges, batchId, rowDate, 'EggCollectionSession', w.session.id, 'UPDATE', before, data);
+    }
+    return target;
+  }
+
+  /** Brooder levels currently assigned to this batch — the same lookup
+   *  BrooderService uses to find a batch's row/level feed entries (those
+   *  rows carry a levelId, not a batchId). */
+  private async getBatchLevelIds(batchId: string): Promise<string[]> {
+    const assignments = await this.prisma.brooderLevelAssignment.findMany({ where: { batchId }, select: { levelId: true } });
+    return assignments.map(a => a.levelId);
+  }
+
   // ── Mortality ────────────────────────────────────────────────────────────
   private async reconcileMortality(
     row: ParsedReportRow, batchId: string, logDate: Date, uploaderId: string, noteSuffix: string,
@@ -579,10 +676,8 @@ export class ProductionReportReconciliationService {
     discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
   ) {
     if (stageBucket === 'PRODUCTION') {
-      const existing = await this.prisma.eggCollectionSession.findUnique({
-        where: { batchId_houseId_sessionDate_shift: { batchId, houseId, sessionDate: logDate, shift: 'AM' } },
-      });
-      if (!existing) {
+      const sessions = await this.getDaySessions(batchId, logDate);
+      if (!sessions.length) {
         // No session recorded yet for this date — can't create a full
         // EggCollectionSession from a production report alone (it requires
         // egg-count fields this report doesn't carry), so this always needs
@@ -593,43 +688,69 @@ export class ProductionReportReconciliationService {
         discrepancies.push({
           rowDate: row.date, field: 'mortality', discrepancyType: ProductionReportDiscrepancyType.MORTALITY,
           locationRef: row.locationRef, systemValue: null, reportValue: String(row.mortality),
-          notes: 'No egg-collection session exists yet for this date — mortality can\'t be auto-filled into a session that hasn\'t been created by an attendant.',
+          notes: 'No egg-collection session (AM or PM) exists yet for this date — mortality can\'t be auto-filled into a session that hasn\'t been created by an attendant.',
         });
         return;
       }
-      if (existing.mortalities === row.mortality) {
+      const plan = planDayReplacement(sessions, s => s.mortalities, row.mortality!);
+      if (plan.matched) {
         row.resolution.mortality = 'MATCHED';
         onMatch();
         return;
       }
-      // Report is authoritative — correct the session to match it, whether
-      // that's higher or lower than what's currently recorded.
-      const before = existing.mortalities;
-      await this.prisma.eggCollectionSession.update({ where: { id: existing.id }, data: { mortalities: row.mortality! } });
-      this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.mortalities', existing.id, 'UPDATE', { mortalities: before }, { mortalities: row.mortality! });
+      await this.replaceProductionDayField('mortality', sessions, row.mortality!, plan, batchId, row.date, appliedChanges);
       row.resolution.mortality = 'AUTOFILLED';
       onAutofill();
       return;
     }
 
-    // BROODING/GROWER: brooder management is the attendant's own record.
-    // Store's production report is read-only here — compare against what's
-    // recorded and surface a discrepancy for the Director if it disagrees,
-    // but never create/update/delete a brooder mortality log from it (see
-    // file header, §5 and the class-level BROODER_MGMT_IS_READ_ONLY note).
-    const existing = await this.prisma.brooderGeneralMortalityLog.findMany({ where: { batchId, logDate } });
-    const systemTotal = existing.reduce((s, e) => s + e.mortalityCount, 0);
-    if (Math.abs(systemTotal - row.mortality!) < 0.001) {
+    // BROODING/GROWER — the report is the farm's daily record sheet, i.e.
+    // the GENERAL population sheet, so it replaces that sheet's entries for
+    // the day. Cage-map (per-level) mortality is a separate, independent
+    // track by design (see the Req 1 note in brooder.service.ts) and is left
+    // alone. "Replace, never add": every general entry for the date is
+    // removed (ledgered, so rollback restores it) and one entry carrying the
+    // report's figure is written — never a correction stacked on top.
+    const replaced = await this.replaceBrooderMortalityDay(batchId, logDate, row.date, row.mortality!, row.culling, uploaderId, noteSuffix, appliedChanges);
+    if (!replaced) {
       row.resolution.mortality = 'MATCHED';
       onMatch();
       return;
     }
-    row.resolution.mortality = 'DISCREPANCY';
-    discrepancies.push({
-      rowDate: row.date, field: 'mortality', discrepancyType: ProductionReportDiscrepancyType.MORTALITY,
-      locationRef: row.locationRef, systemValue: existing.length ? String(systemTotal) : null, reportValue: String(row.mortality),
-      notes: this.brooderReadOnlyNote('mortality'),
-    });
+    row.resolution.mortality = 'AUTOFILLED';
+    onAutofill();
+  }
+
+  /** Replaces a brooder day's general-sheet mortality with the report's
+   *  figure: every general entry for the date is removed (ledgered) and one
+   *  entry with the report's count is written. Culling is carried over from
+   *  the removed entries unless the report gives its own. Returns false
+   *  (writes nothing) when the day already matches. */
+  private async replaceBrooderMortalityDay(
+    batchId: string, logDate: Date, rowDate: string, mortality: number, culling: number | undefined,
+    uploaderId: string, noteSuffix: string, appliedChanges: AppliedChangeInput[],
+  ): Promise<boolean> {
+    const existing = await this.prisma.brooderGeneralMortalityLog.findMany({ where: { batchId, logDate } });
+    const systemTotal = existing.reduce((s, e) => s + e.mortalityCount, 0);
+    const priorCulling = existing.reduce((s, e) => s + e.cullingCount, 0);
+    if (systemTotal === mortality && (culling === undefined || culling === priorCulling)) return false;
+
+    await this.deleteAndLog(this.prisma.brooderGeneralMortalityLog, existing, 'BrooderGeneralMortalityLog', batchId, rowDate, appliedChanges);
+    const cullingCount = culling ?? priorCulling;
+    if (mortality > 0 || cullingCount > 0) {
+      const created = await this.prisma.brooderGeneralMortalityLog.create({
+        data: {
+          batchId, logDate, mortalityCount: mortality, cullingCount,
+          cause: existing.find(e => e.cause)?.cause ?? null,
+          notes: existing.length === 0
+            ? `Auto-filled ${noteSuffix}`
+            : `Replaced ${systemTotal} bird(s) previously recorded with the report's ${mortality} ${noteSuffix}`,
+          loggedById: uploaderId,
+        },
+      });
+      this.logChange(appliedChanges, batchId, rowDate, 'BrooderGeneralMortalityLog', created.id, 'CREATE', null, created);
+    }
+    return true;
   }
 
   // ── Bird weight vs. HyLine standard band ───────────────────────────────
@@ -705,10 +826,8 @@ export class ProductionReportReconciliationService {
     const reportWater = row.waterLts!;
 
     if (stageBucket === 'PRODUCTION') {
-      const existing = await this.prisma.eggCollectionSession.findUnique({
-        where: { batchId_houseId_sessionDate_shift: { batchId, houseId, sessionDate: logDate, shift: 'AM' } },
-      });
-      if (!existing) {
+      const sessions = await this.getDaySessions(batchId, logDate);
+      if (!sessions.length) {
         // Same "nowhere to write yet" case as reconcileMortality — a
         // production-stage water figure can't be auto-filled into a
         // session an attendant hasn't created yet.
@@ -716,47 +835,52 @@ export class ProductionReportReconciliationService {
         discrepancies.push({
           rowDate: row.date, field: 'water', discrepancyType: ProductionReportDiscrepancyType.OTHER,
           locationRef: row.locationRef, systemValue: null, reportValue: String(reportWater),
-          notes: 'No egg-collection session exists yet for this date — water consumption can\'t be auto-filled into a session that hasn\'t been created by an attendant.',
+          notes: 'No egg-collection session (AM or PM) exists yet for this date — water consumption can\'t be auto-filled into a session that hasn\'t been created by an attendant.',
         });
         return;
       }
-      const existingWater = existing.waterLiters != null ? Number(existing.waterLiters) : null;
-      if (existingWater != null && Math.abs(existingWater - reportWater) < 0.01) {
+      const plan = planDayReplacement(sessions, s => toNum(s.waterLiters) ?? 0, reportWater, 0.01);
+      if (plan.matched) {
         row.resolution.water = 'MATCHED';
         onMatch();
         return;
       }
-      // Report is authoritative — correct it, whether nothing was logged
-      // yet or the logged figure conflicts with the report.
-      await this.prisma.eggCollectionSession.update({ where: { id: existing.id }, data: { waterLiters: reportWater } });
-      this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.waterLiters', existing.id, 'UPDATE', { waterLiters: existingWater }, { waterLiters: reportWater });
+      await this.replaceProductionDayField('water', sessions, reportWater, plan, batchId, row.date, appliedChanges);
       row.resolution.water = 'AUTOFILLED';
       onAutofill();
       return;
     }
 
-    // BROODING / GROWER — read-only (see BROODER_MGMT_IS_READ_ONLY): compare
-    // against the attendant's own BrooderLog rows, never write to them.
-    // The attendant's 3-popup daily log records water per SESSION (Morning/
-    // Midday/Evening, each its own BrooderLog row) rather than one once-daily
-    // row, so the report's single daily figure is compared against the SUM
-    // of that day's session rows, not any one row in isolation.
+    // BROODING / GROWER — the attendant's 3-popup log records water per
+    // SESSION (Morning/Midday/Evening, each its own BrooderLog row), so the
+    // report's single daily figure is compared against the SUM of the day's
+    // rows and, when it differs, replaces it (see planDayReplacement) rather
+    // than being written as one more row on top of them.
     const dayLogs = await this.prisma.brooderLog.findMany({ where: { batchId, logDate } });
-    const loggedRows = dayLogs.filter(l => l.waterConsumptionL != null);
-    const loggedTotal = loggedRows.reduce((s, l) => s + Number(l.waterConsumptionL), 0);
-    if (loggedRows.length && Math.abs(loggedTotal - reportWater) < 0.01) {
+    const plan = planDayReplacement(dayLogs, l => l.waterConsumptionL ?? 0, reportWater, 0.01);
+    if (plan.matched) {
       row.resolution.water = 'MATCHED';
       onMatch();
       return;
     }
-    row.resolution.water = 'DISCREPANCY';
-    discrepancies.push({
-      rowDate: row.date, field: 'water', discrepancyType: ProductionReportDiscrepancyType.OTHER,
-      locationRef: row.locationRef,
-      systemValue: loggedRows.length ? String(loggedTotal) : null,
-      reportValue: String(reportWater),
-      notes: this.brooderReadOnlyNote('water consumption'),
-    });
+    if (!plan.target) {
+      const created = await this.prisma.brooderLog.create({
+        data: { batchId, logDate, logSession: null, waterConsumptionL: reportWater, notes: `Auto-filled ${noteSuffix}`, loggedById: uploaderId },
+      });
+      this.logChange(appliedChanges, batchId, row.date, 'BrooderLog', created.id, 'CREATE', null, created);
+    } else {
+      const writes = [
+        { log: plan.target, value: reportWater as number | null },
+        ...dayLogs.filter(l => plan.clearIds.includes(l.id)).map(l => ({ log: l, value: null as number | null })),
+      ];
+      for (const w of writes) {
+        await this.prisma.brooderLog.update({ where: { id: w.log.id }, data: { waterConsumptionL: w.value } });
+        this.logChange(appliedChanges, batchId, row.date, 'BrooderLog.waterConsumptionL', w.log.id, 'UPDATE',
+          { waterConsumptionL: w.log.waterConsumptionL }, { waterConsumptionL: w.value });
+      }
+    }
+    row.resolution.water = 'AUTOFILLED';
+    onAutofill();
   }
 
   // ── Feed ─────────────────────────────────────────────────────────────────
@@ -778,97 +902,143 @@ export class ProductionReportReconciliationService {
     const matchedFeedItem = resolveItemMatch(row.feedType, feedItems, aliasMap);
 
     if (stageBucket === 'PRODUCTION') {
-      const existing = await this.prisma.eggCollectionSession.findUnique({
-        where: { batchId_houseId_sessionDate_shift: { batchId, houseId: batch.houseId, sessionDate: logDate, shift: 'AM' } },
-      });
-      if (!existing) {
+      const sessions = await this.getDaySessions(batchId, logDate);
+      if (!sessions.length) {
         // Nowhere to write yet — not a value difference, still flagged.
         row.resolution.feedKg = 'DISCREPANCY';
         discrepancies.push({
           rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
           locationRef: row.locationRef, systemValue: null, reportValue: `${row.feedKg} kg`,
-          notes: 'No egg-collection session exists yet for this date.',
+          notes: 'No egg-collection session (AM or PM) exists yet for this date.',
         });
         return;
       }
-      const systemFeed = existing.feedKg != null ? Number(existing.feedKg) : 0;
-      if (Math.abs(systemFeed - row.feedKg!) < 0.01) {
+      const daySessionIds = sessions.map(s => s.id);
+      const plan = planDayReplacement(sessions, s => toNum(s.feedKg) ?? 0, row.feedKg!, 0.01);
+      if (plan.matched) {
         row.resolution.feedKg = 'MATCHED';
         onMatch();
-        await this.checkProductionFeedWastage(row, batchId, batch, logDate, existing.id, systemFeed, matchedFeedItem, uploaderId, appliedChanges);
+        const holder = sessions.reduce((a, b) => ((toNum(b.feedKg) ?? 0) > (toNum(a.feedKg) ?? 0) ? b : a));
+        await this.checkProductionFeedWastage(row, batchId, batch, logDate, holder.id, daySessionIds, plan.dayTotal, matchedFeedItem, uploaderId, appliedChanges);
         return;
       }
-      // Report is authoritative — correct to match it, whether higher or
-      // lower, regardless of whether a store item was matched (the field
-      // itself is just a number + a display label, no per-item balance to
-      // check for a single-value session field).
-      await this.prisma.eggCollectionSession.update({
-        where: { id: existing.id },
-        data: { feedKg: row.feedKg!, feedTypeName: matchedFeedItem?.name ?? row.feedType ?? existing.feedTypeName },
-      });
-      this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.feedKg', existing.id, 'UPDATE', { feedKg: systemFeed }, { feedKg: row.feedKg! });
+      const label = matchedFeedItem?.name ?? row.feedType ?? null;
+      const target = await this.replaceProductionDayField('feed', sessions, row.feedKg!, plan, batchId, row.date, appliedChanges,
+        { label, breakdown: [{ feedType: label ?? 'Feed', kg: row.feedKg! }] });
       row.resolution.feedKg = 'AUTOFILLED';
       onAutofill();
-      await this.checkProductionFeedWastage(row, batchId, batch, logDate, existing.id, row.feedKg!, matchedFeedItem, uploaderId, appliedChanges);
+      await this.checkProductionFeedWastage(row, batchId, batch, logDate, target!.id, daySessionIds, row.feedKg!, matchedFeedItem, uploaderId, appliedChanges);
       return;
     }
 
-    // ── Brooder/grower stage — read-only (see BROODER_MGMT_IS_READ_ONLY) ──
-    // Compare the report's feed figure against what the attendant already
-    // recorded and raise a discrepancy on a mismatch; never create, delete,
-    // or replace a BrooderGeneralFeedLog/BrooderLevelFeedLog row from it.
-    const hasLevelDetail = await this.hasLevelSpecificFeedLog(batchId, logDate);
-    const existing = await this.prisma.brooderGeneralFeedLog.findMany({ where: { batchId, entryDate: logDate } });
-    const systemTotal = existing.reduce((s, e) => s + e.quantityDispensedKg, 0);
-
-    if (!hasLevelDetail && existing.length === 0 && row.feedKg! <= 0) {
-      row.resolution.feedKg = 'MATCHED';
-      onMatch();
-      return;
-    }
-
+    // ── Brooder/grower stage ────────────────────────────────────────────
+    const { generalLogs, levelLogs, conflict, systemTotal } = await this.loadBrooderFeedDay(batchId, logDate);
     const wastagePopulation = row.openingStock ?? batch.currentBirdCount;
     const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
     const dailyRationKg = brooderRequiredFeedKg(wastagePopulation, ageWeeks, 1);
 
-    if (!hasLevelDetail && Math.abs(systemTotal - row.feedKg!) < 0.001) {
+    if (!conflict && Math.abs(systemTotal - row.feedKg!) < 0.001) {
       row.resolution.feedKg = 'MATCHED';
       onMatch();
-      // Nothing to reconcile this call, but the day itself may still be
-      // over ration on the attendant's OWN figures — this only reads
-      // BrooderGeneralFeedLog rows the attendant already wrote, so it's
-      // Director-facing analytics, not a change to brooder management data.
-      try {
-        const backfilled = await this.feedWastage.backfillDayIfOverIssued({
-          batch: { id: batchId, batchCode: batch.batchCode },
-          entryDate: logDate,
-          dailyRationKg,
-          loggedById: uploaderId,
-          notify: true,
-        });
-        if (backfilled) {
-          this.logChange(appliedChanges, batchId, row.date, 'BrooderFeedWastageLog', backfilled.id, 'CREATE', null, backfilled);
-        }
-      } catch (wastageErr: any) {
-        this.logger.warn(
-          `[ProductionReportReconciliation] Feed-wastage backfill check failed for batch ${batchId} ` +
-          `on ${row.date} (${wastageErr?.code ?? wastageErr?.message}).`,
-        );
-      }
+      if (generalLogs.length) await this.backfillBrooderWastage(batchId, batch.batchCode, logDate, row.date, dailyRationKg, uploaderId, appliedChanges);
       return;
     }
 
-    row.resolution.feedKg = 'DISCREPANCY';
-    discrepancies.push({
-      rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
-      locationRef: row.locationRef,
-      systemValue: hasLevelDetail ? null : (existing.length ? `${systemTotal} kg` : null),
-      reportValue: `${row.feedKg} kg`,
-      notes: hasLevelDetail
-        ? 'Feed is already logged at row/level detail for this batch on this date — shown here for the ' +
-          'Director to compare against the report; resolve manually at row/level if it needs correcting.'
-        : this.brooderReadOnlyNote('feed'),
-    });
+    await this.replaceBrooderFeedDay(
+      batchId, batch.batchCode, logDate, row.date,
+      [{ item: matchedFeedItem, label: row.feedType, kg: row.feedKg!, note: row.feedType ? `sheet feed type: "${row.feedType}"` : undefined }],
+      generalLogs, levelLogs, systemTotal, uploaderId, noteSuffix, dailyRationKg, appliedChanges,
+    );
+    row.resolution.feedKg = 'AUTOFILLED';
+    onAutofill();
+  }
+
+  /** A brooder day's recorded feed, read the same way the brooder History
+   *  view reads it (BrooderService.getPopulationRecordSheet): the row/level
+   *  entries when there are any, otherwise the general-sheet entries — the
+   *  two are meant to be mutually exclusive per day, so having both is a
+   *  conflict that the report's figure should clear up. */
+  private async loadBrooderFeedDay(batchId: string, logDate: Date) {
+    const levelIds = await this.getBatchLevelIds(batchId);
+    const generalLogs = await this.prisma.brooderGeneralFeedLog.findMany({ where: { batchId, entryDate: logDate } });
+    const levelLogs = levelIds.length
+      ? await this.prisma.brooderLevelFeedLog.findMany({ where: { levelId: { in: levelIds }, entryDate: logDate } })
+      : [];
+    const generalKg = generalLogs.reduce((s, e) => s + e.quantityDispensedKg, 0);
+    const levelKg = levelLogs.reduce((s, e) => s + e.quantityDispensedKg, 0);
+    return {
+      generalLogs, levelLogs,
+      conflict: generalLogs.length > 0 && levelLogs.length > 0,
+      systemTotal: levelLogs.length ? levelKg : generalKg,
+    };
+  }
+
+  /** "Replace, never add" for a brooder day's feed: every general and
+   *  row/level feed entry for the date is removed (ledgered, so rolling the
+   *  report back restores them exactly) and the report's figure is written
+   *  as fresh general entries — one per feed line (one line normally, one
+   *  per portion for a split cell). The report's daily figure is a
+   *  whole-batch total, so it lands on the general sheet; per-level entries
+   *  can't stay alongside it without double counting the day. Feed no longer
+   *  needs a store item to be logged, so a line whose name didn't match one
+   *  is still written (feed type mapped from the sheet's label). */
+  private async replaceBrooderFeedDay(
+    batchId: string, batchCode: string, logDate: Date, rowDate: string,
+    lines: { item: StoreItem | null; label: string | undefined; kg: number; note?: string }[],
+    generalLogs: { id: string }[], levelLogs: { id: string }[], previousTotal: number,
+    uploaderId: string, noteSuffix: string, dailyRationKg: number, appliedChanges: AppliedChangeInput[],
+  ) {
+    await this.deleteAndLog(this.prisma.brooderGeneralFeedLog, generalLogs, 'BrooderGeneralFeedLog', batchId, rowDate, appliedChanges);
+    await this.deleteAndLog(this.prisma.brooderLevelFeedLog, levelLogs, 'BrooderLevelFeedLog', batchId, rowDate, appliedChanges);
+    const hadRecords = generalLogs.length + levelLogs.length > 0;
+
+    for (const line of lines) {
+      if (!(line.kg > 0)) continue;
+      const created = await this.prisma.brooderGeneralFeedLog.create({
+        data: {
+          batchId, entryDate: logDate,
+          feedType: mapFeedType(line.item?.name, line.label),
+          storeItemId: line.item?.id ?? null, unit: line.item?.unit ?? null,
+          quantityDispensedKg: line.kg,
+          notes: [
+            hadRecords ? `Replaced ${previousTotal} kg previously recorded for the day with the report's figure ${noteSuffix}` : `Auto-filled ${noteSuffix}`,
+            line.note,
+          ].filter(Boolean).join(' — '),
+          loggedById: uploaderId,
+        },
+      });
+      this.logChange(appliedChanges, batchId, rowDate, 'BrooderGeneralFeedLog', created.id, 'CREATE', null, created);
+
+      // Director-facing over-ration check, same as the attendant's own
+      // general-sheet path runs. Best-effort — never fails the report.
+      try {
+        const wastageLog = await this.feedWastage.recordIfOverIssued({
+          batch: { id: batchId, batchCode }, entryDate: logDate, dailyRationKg,
+          generalFeedLogId: created.id, feedType: created.feedType, storeItemId: line.item?.id ?? null,
+          thisEntryKg: line.kg, loggedById: uploaderId,
+        });
+        if (wastageLog) this.logChange(appliedChanges, batchId, rowDate, 'BrooderFeedWastageLog', wastageLog.id, 'CREATE', null, wastageLog);
+      } catch (wastageErr: any) {
+        this.logger.warn(`[ProductionReportReconciliation] Feed-wastage check failed for batch ${batchId} on ${rowDate} (${wastageErr?.code ?? wastageErr?.message}). Report row was still applied.`);
+      }
+    }
+  }
+
+  /** The day's feed already matches the report, but the day may still be
+   *  over ration on those figures — backfillDayIfOverIssued is idempotent per
+   *  (batch, day), so this never records the same excess twice. */
+  private async backfillBrooderWastage(
+    batchId: string, batchCode: string, logDate: Date, rowDate: string, dailyRationKg: number,
+    uploaderId: string, appliedChanges: AppliedChangeInput[],
+  ) {
+    try {
+      const backfilled = await this.feedWastage.backfillDayIfOverIssued({
+        batch: { id: batchId, batchCode }, entryDate: logDate, dailyRationKg, loggedById: uploaderId, notify: true,
+      });
+      if (backfilled) this.logChange(appliedChanges, batchId, rowDate, 'BrooderFeedWastageLog', backfilled.id, 'CREATE', null, backfilled);
+    } catch (wastageErr: any) {
+      this.logger.warn(`[ProductionReportReconciliation] Feed-wastage backfill check failed for batch ${batchId} on ${rowDate} (${wastageErr?.code ?? wastageErr?.message}).`);
+    }
   }
 
   // ── PRODUCTION-stage feed wastage: population from the report's OPENING
@@ -892,12 +1062,23 @@ export class ProductionReportReconciliationService {
   private async checkProductionFeedWastage(
     row: ParsedReportRow, batchId: string,
     batch: { batchCode: string; dateReceived: Date },
-    logDate: Date, sessionId: string, actualFeedKg: number,
+    logDate: Date, sessionId: string, daySessionIds: string[], actualFeedKg: number,
     matchedFeedItem: StoreItem | null, uploaderId: string,
     appliedChanges: AppliedChangeInput[],
   ) {
     if (row.openingStock == null || row.openingStock <= 0) return;
     try {
+      // One over-ration record per laying day, not one per upload: an
+      // earlier record for this day (keyed by any of its sessions) that
+      // already reflects this exact feed figure means there's nothing new to
+      // say; a stale one is replaced (ledgered, so rollback restores it).
+      const prior = await this.prisma.brooderFeedWastageLog.findMany({
+        where: { batchId, generalFeedLogId: { in: daySessionIds } },
+      });
+      if (prior.some(w => Math.abs(w.dispensedKgTotal - actualFeedKg) < 0.01)) return;
+      for (const w of prior) this.logChange(appliedChanges, batchId, row.date, 'BrooderFeedWastageLog', w.id, 'DELETE', w, null);
+      if (prior.length) await this.prisma.brooderFeedWastageLog.deleteMany({ where: { id: { in: prior.map(w => w.id) } } });
+
       const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
       const feedType = mapFeedType(matchedFeedItem?.name, row.feedType);
 
@@ -975,126 +1156,65 @@ export class ProductionReportReconciliationService {
   ) {
     const portions = row.feedSplit!;
     const splitSummary = portions.map(p => `${p.label} ${p.percent}%`).join(' / ');
+    const lines = portions.map(p => ({
+      item: resolveItemMatch(p.label, feedItems, aliasMap),
+      label: p.label, kg: p.kg, percent: p.percent,
+      note: `split portion: "${p.label}" — ${p.percent}% of sheet total "${row.feedType}"`,
+    }));
 
     if (stageBucket === 'PRODUCTION') {
-      const existing = await this.prisma.eggCollectionSession.findUnique({
-        where: { batchId_houseId_sessionDate_shift: { batchId, houseId: batch.houseId, sessionDate: logDate, shift: 'AM' } },
-      });
-      if (!existing) {
+      const sessions = await this.getDaySessions(batchId, logDate);
+      if (!sessions.length) {
         row.resolution.feedKg = 'DISCREPANCY';
         discrepancies.push({
           rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
           locationRef: row.locationRef, systemValue: null, reportValue: `${row.feedKg} kg (${splitSummary})`,
-          notes: 'No egg-collection session exists yet for this date.',
+          notes: 'No egg-collection session (AM or PM) exists yet for this date.',
         });
         return;
       }
-      const systemFeed = existing.feedKg != null ? Number(existing.feedKg) : 0;
-      if (Math.abs(systemFeed - row.feedKg!) < 0.01) {
+      const plan = planDayReplacement(sessions, s => toNum(s.feedKg) ?? 0, row.feedKg!, 0.01);
+      if (plan.matched) {
         row.resolution.feedKg = 'MATCHED';
         onMatch();
         return;
       }
-      const labelText = portions.map(p => {
-        const m = resolveItemMatch(p.label, feedItems, aliasMap);
-        return `${m?.name ?? p.label} ${p.percent}%`;
-      }).join(' / ');
-      await this.prisma.eggCollectionSession.update({
-        where: { id: existing.id },
-        data: { feedKg: row.feedKg!, feedTypeName: labelText },
+      const labelText = lines.map(l => `${l.item?.name ?? l.label} ${l.percent}%`).join(' / ');
+      await this.replaceProductionDayField('feed', sessions, row.feedKg!, plan, batchId, row.date, appliedChanges, {
+        label: labelText,
+        breakdown: lines.map(l => ({ feedType: l.item?.name ?? l.label, kg: l.kg })),
       });
-      this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.feedKg', existing.id, 'UPDATE', { feedKg: systemFeed }, { feedKg: row.feedKg! });
       row.resolution.feedKg = 'AUTOFILLED';
       onAutofill();
       return;
     }
 
-    // ── Brooder/grower stage — read-only (see BROODER_MGMT_IS_READ_ONLY) ──
-    // Compare each portion against the attendant's own per-item records and
-    // raise a discrepancy on a mismatch; never create/delete a
-    // BrooderGeneralFeedLog row from a report split.
-    const hasLevelDetail = await this.hasLevelSpecificFeedLog(batchId, logDate);
-    const existing = await this.prisma.brooderGeneralFeedLog.findMany({ where: { batchId, entryDate: logDate } });
-
-    if (!hasLevelDetail && existing.length === 0 && (row.feedKg ?? 0) <= 0) {
-      row.resolution.feedKg = 'MATCHED';
-      onMatch();
-      return;
-    }
-
+    // ── Brooder/grower stage — the day already matches only if it carries
+    // exactly these portions (same feed, same kg) on the general sheet;
+    // otherwise the whole day is replaced with the report's portions. ──────
+    const { generalLogs, levelLogs, systemTotal } = await this.loadBrooderFeedDay(batchId, logDate);
     const wastagePopulation = row.openingStock ?? batch.currentBirdCount;
     const ageWeeks = batchAgeWeeks(batch.dateReceived, logDate);
     const dailyRationKg = brooderRequiredFeedKg(wastagePopulation, ageWeeks, 1);
 
-    let anyMatched = false;
-    let anyMismatch = false;
-
-    if (!hasLevelDetail) {
-      for (const portion of portions) {
-        const matchedItem = resolveItemMatch(portion.label, feedItems, aliasMap);
-        if (!matchedItem) {
-          anyMismatch = true;
-          discrepancies.push({
-            rowDate: row.date, field: `feedType:${portion.label}`, discrepancyType: ProductionReportDiscrepancyType.FEED,
-            locationRef: row.locationRef, systemValue: null, reportValue: portion.label,
-            notes: `Could not match split portion "${portion.label}" (${portion.percent}% of ${row.feedKg} kg) to any store item.`,
-          });
-          continue;
-        }
-        const existingForItem = existing.filter(e => e.storeItemId === matchedItem.id);
-        const systemQtyForItem = existingForItem.reduce((s, e) => s + e.quantityDispensedKg, 0);
-        if (Math.abs(systemQtyForItem - portion.kg) < 0.001) {
-          anyMatched = true;
-          continue;
-        }
-        anyMismatch = true;
-        discrepancies.push({
-          rowDate: row.date, field: `feedType:${portion.label}`, discrepancyType: ProductionReportDiscrepancyType.FEED,
-          locationRef: row.locationRef,
-          systemValue: existingForItem.length ? `${systemQtyForItem} kg` : null,
-          reportValue: `${portion.kg} kg (${portion.percent}% of sheet total "${row.feedType}")`,
-          notes: this.brooderReadOnlyNote('feed'),
-        });
-      }
-    } else {
-      anyMismatch = true;
-      discrepancies.push({
-        rowDate: row.date, field: 'feedKg', discrepancyType: ProductionReportDiscrepancyType.FEED,
-        locationRef: row.locationRef, systemValue: null, reportValue: `${row.feedKg} kg (${splitSummary})`,
-        notes: 'Feed is already logged at row/level detail for this batch on this date — shown here for the ' +
-          'Director to compare against the report.',
-      });
-    }
-
-    if (anyMismatch) {
-      row.resolution.feedKg = 'DISCREPANCY';
+    const lineKey = (itemId: string | null | undefined, feedType: string) => (itemId ? `item:${itemId}` : `type:${feedType}`);
+    const alreadyRecorded = levelLogs.length === 0 && feedLinesMatch(
+      lines.filter(l => l.kg > 0).map(l => ({ key: lineKey(l.item?.id, mapFeedType(l.item?.name, l.label)), kg: l.kg })),
+      generalLogs.map(g => ({ key: lineKey(g.storeItemId, g.feedType), kg: g.quantityDispensedKg })),
+    );
+    if (alreadyRecorded) {
+      row.resolution.feedKg = 'MATCHED';
+      onMatch();
+      if (generalLogs.length) await this.backfillBrooderWastage(batchId, batch.batchCode, logDate, row.date, dailyRationKg, uploaderId, appliedChanges);
       return;
     }
-    row.resolution.feedKg = 'MATCHED';
-    onMatch();
-    if (anyMatched) {
-      // Every portion already matches the attendant's own records — the day
-      // may still be over ration on those figures alone; this only reads
-      // existing BrooderGeneralFeedLog rows, so it's Director-facing
-      // analytics, not a change to brooder management data.
-      try {
-        const backfilled = await this.feedWastage.backfillDayIfOverIssued({
-          batch: { id: batchId, batchCode: batch.batchCode },
-          entryDate: logDate,
-          dailyRationKg,
-          loggedById: uploaderId,
-          notify: true,
-        });
-        if (backfilled) {
-          this.logChange(appliedChanges, batchId, row.date, 'BrooderFeedWastageLog', backfilled.id, 'CREATE', null, backfilled);
-        }
-      } catch (wastageErr: any) {
-        this.logger.warn(
-          `[ProductionReportReconciliation] Feed-wastage backfill check failed for batch ${batchId} ` +
-          `on ${row.date} (split, ${wastageErr?.code ?? wastageErr?.message}).`,
-        );
-      }
-    }
+
+    await this.replaceBrooderFeedDay(
+      batchId, batch.batchCode, logDate, row.date, lines,
+      generalLogs, levelLogs, systemTotal, uploaderId, noteSuffix, dailyRationKg, appliedChanges,
+    );
+    row.resolution.feedKg = 'AUTOFILLED';
+    onAutofill();
   }
 
   private pushUnmatchedFeedDiscrepancy(row: ParsedReportRow, discrepancies: ReconcileOutcome['discrepancies']) {
@@ -1548,39 +1668,53 @@ export class ProductionReportReconciliationService {
     const bySession = this.buildSessionReadings(row);
     if (bySession.length === 0) return;
 
-    // Read-only (see BROODER_MGMT_IS_READ_ONLY): compare against the
-    // attendant's own BrooderLog readings; never write to it from a report.
-    let anyMismatch = false, anyMatch = false;
+    // Fill a missing reading, replace one that disagrees with the report.
+    // The Morning popup stores its readings in the 3am/6am fields and leaves
+    // the plain temperature/humidity/lux fields empty, so a report's Morning
+    // reading is compared against (and written into) whichever of those
+    // already holds a value — 6am by default — rather than added alongside
+    // them as a second reading.
+    let anyWrite = false, anyMatch = false;
 
     for (const { session, temperature, humidity, lux } of bySession) {
       if (temperature === undefined && humidity === undefined && lux === undefined) continue;
 
       const existing = await this.prisma.brooderLog.findFirst({ where: { batchId, logDate, logSession: session } });
+      const toWrite: Record<string, number> = {};
 
-      for (const [label, dbField, rawValue] of [
-        ['temperature', 'temperature', temperature],
-        ['humidity', 'humidityPercent', humidity],
-        ['lux', 'lightIntensityLux', lux],
-      ] as const) {
+      for (const [metric, rawValue] of [['temperature', temperature], ['humidity', humidity], ['lux', lux]] as const) {
         if (rawValue === undefined) continue;
         const num = parseFloat(rawValue);
         if (!Number.isFinite(num)) continue;
-        const existingVal = existing ? (existing as any)[dbField] as number | null : null;
+        const fields = ENV_FIELDS[metric];
+        const candidates = session === 'MORNING' ? fields.morning : [fields.single];
+        const holder = existing ? candidates.find(f => (existing as any)[f] != null) : undefined;
+        const existingVal = holder ? Number((existing as any)[holder]) : null;
         if (existingVal != null && Math.abs(existingVal - num) < 0.5) {
           anyMatch = true;
-        } else {
-          anyMismatch = true;
-          discrepancies.push({
-            rowDate: row.date, field: `${label}:${session}`, discrepancyType: ProductionReportDiscrepancyType.OTHER,
-            locationRef: row.locationRef, systemValue: existingVal != null ? String(existingVal) : null, reportValue: String(num),
-            notes: this.brooderReadOnlyNote(label),
-          });
+          continue;
         }
+        const target = holder ?? (session === 'MORNING' ? fields.morningDefault : fields.single);
+        toWrite[target] = metric === 'lux' ? Math.round(num) : num;
+      }
+
+      if (Object.keys(toWrite).length === 0) continue;
+      anyWrite = true;
+      if (existing) {
+        const before = Object.fromEntries(Object.keys(toWrite).map(k => [k, (existing as any)[k]]));
+        await this.prisma.brooderLog.update({ where: { id: existing.id }, data: toWrite });
+        this.logChange(appliedChanges, batchId, row.date, 'BrooderLog.environmental', existing.id, 'UPDATE', before, toWrite);
+      } else {
+        const created = await this.prisma.brooderLog.create({
+          data: { batchId, logDate, logSession: session, ...toWrite, notes: `Auto-filled ${noteSuffix}`, loggedById: uploaderId },
+        });
+        this.logChange(appliedChanges, batchId, row.date, 'BrooderLog', created.id, 'CREATE', null, created);
       }
     }
 
-    row.resolution.environmental = anyMismatch ? 'DISCREPANCY' : anyMatch ? 'MATCHED' : undefined;
-    if (!anyMismatch && anyMatch) onMatch();
+    row.resolution.environmental = anyWrite ? 'AUTOFILLED' : anyMatch ? 'MATCHED' : undefined;
+    if (anyWrite) onAutofill();
+    else if (anyMatch) onMatch();
   }
 
   /** Merges each metric's per-session readings (favouring the multi-reading
@@ -1708,27 +1842,12 @@ export class ProductionReportReconciliationService {
         continue;
       }
 
-      const alreadyLoggedEvent = await this.hasHealthLogEntryToday(stageBucket, batchId, logDate, batch.houseId, c.kind, matched.id);
-
-      if (stageBucket !== 'PRODUCTION') {
-        // BROODING/GROWER — read-only (see BROODER_MGMT_IS_READ_ONLY): the
-        // report can only confirm what the attendant already logged
-        // (vaccinesJson/supplementsJson/BrooderTreatmentLog); it never
-        // appends a new entry or corrects an existing one.
-        if (alreadyLoggedEvent) {
-          usage.resolution = 'MATCHED';
-          onMatch();
-        } else {
-          usage.resolution = 'DISCREPANCY';
-          discrepancies.push({
-            rowDate: row.date, field: c.kind, discrepancyType: ProductionReportDiscrepancyType.ITEM_ISSUANCE,
-            locationRef: row.locationRef, systemValue: null,
-            reportValue: qty ? `${c.text} (${qty.qty}${qty.unit ?? ''})` : c.text,
-            notes: this.brooderReadOnlyNote(c.kind),
-          });
-        }
+      if (stageBucket === 'PRODUCTION') {
+        await this.reconcileProductionHealthUsage(row, c.kind, c.text, matched, usage, batchId, logDate, noteSuffix, discrepancies, appliedChanges, onAutofill, onMatch);
         continue;
       }
+
+      const alreadyLoggedEvent = await this.hasHealthLogEntryToday(batchId, logDate, c.kind, matched.id);
 
       if (!qty) {
         // Text present (e.g. "Newcastle vaccine given") but no parseable
@@ -1741,32 +1860,101 @@ export class ProductionReportReconciliationService {
         usage.resolution = 'MATCHED';
         onMatch();
         if (!alreadyLoggedEvent) {
-          const created = await this.writeHealthUsageLog(stageBucket, batchId, logDate, uploaderId, batch.houseId, c.kind, matched, usage, noteSuffix);
+          const created = await this.writeHealthUsageLog(batchId, logDate, uploaderId, c.kind, matched, usage, noteSuffix);
           this.logChange(appliedChanges, batchId, row.date, created.entityType, created.entityId, created.action, created.beforeState, created.afterState);
         }
         continue;
       }
 
-      // §held-balance-aware delta correction: never write the full report
-      // quantity again on top of what's already logged today for this
-      // exact item — only the difference, and only if it's covered.
+      // Compare the day's recorded quantity of this exact item against the
+      // report's, in the item's own stock unit.
       const alreadyLoggedQty = await this.sumTodaysLoggedUsage(matched.id, batchId, logDate);
       const correction = await this.resolveItemCorrection(row, matched, alreadyLoggedQty, qty.qty, qty.unit, c.text!, batchId, logDate, discrepancies);
       usage.resolution = correction.resolution;
       if (correction.resolution === 'MATCHED') { onMatch(); continue; }
-      if (correction.resolution === 'DISCREPANCY') continue; // never write on a blocked/short correction
-      // AUTOFILLED — write only the delta amount, not the full report figure.
+      if (correction.resolution === 'DISCREPANCY') continue; // unit couldn't be converted — nothing safe to write
       onAutofill();
-      // `correction.deltaToApply` comes out of resolveItemCorrection() already
-      // converted into the store item's own stock unit (e.g. report said
-      // "12MLS", item is stocked in litres -> deltaToApply is 0.012, in
-      // litres) — `usage.unit` stays the REPORT's raw unit ("MLS") on
-      // purpose here; writeHealthUsageLog() is the one place that decides
-      // which of the two (raw dose vs. converted quantityUsed) each field
-      // gets, so it needs both.
-      const deltaUsage: ParsedHealthUsage = { ...usage, quantity: correction.deltaToApply };
-      const created = await this.writeHealthUsageLog(stageBucket, batchId, logDate, uploaderId, batch.houseId, c.kind, matched, deltaUsage, noteSuffix, alreadyLoggedQty > 0 ? correction.note : undefined);
-      this.logChange(appliedChanges, batchId, row.date, created.entityType, created.entityId, created.action, created.beforeState, created.afterState);
+      // "Replace, never add": remove every entry already recorded for this
+      // item today (treatment log or vaccine/supplement entry — whichever
+      // kind the attendant used), then write ONE entry with the report's full
+      // quantity, instead of stacking a +/- correction entry on top.
+      // `reportQtyInItemUnit` is already converted into the store item's
+      // stock unit; `usage.unit` stays the report's raw unit on purpose —
+      // writeHealthUsageLog() needs both (raw dose text vs. quantityUsed).
+      const reportQtyInItemUnit = alreadyLoggedQty + correction.deltaToApply;
+      await this.removeBrooderHealthEntries(matched.id, batchId, logDate, row.date, appliedChanges);
+      if (reportQtyInItemUnit > 0) {
+        const fullUsage: ParsedHealthUsage = { ...usage, quantity: reportQtyInItemUnit };
+        const replacedNote = alreadyLoggedQty > 0 ? `replaced ${alreadyLoggedQty} ${matched.unit} previously recorded with the report's ${reportQtyInItemUnit} ${matched.unit}` : undefined;
+        const created = await this.writeHealthUsageLog(batchId, logDate, uploaderId, c.kind, matched, fullUsage, noteSuffix, replacedNote);
+        this.logChange(appliedChanges, batchId, row.date, created.entityType, created.entityId, created.action, created.beforeState, created.afterState);
+      }
+    }
+  }
+
+  /** Laying batches record vaccines/supplements/treatments as free text on
+   *  the egg-collection session (EggCollectionSession.vaccineGiven — e.g.
+   *  "V: Newcastle (10ml); T: Amprolium (5g)"), with no per-item quantity to
+   *  compare. So the report fills a gap (appends a line) only when no
+   *  session that day already names this item — this used to look at AM
+   *  only and never at what was already there, so every re-upload appended
+   *  the same line again. */
+  private async reconcileProductionHealthUsage(
+    row: ParsedReportRow, kind: ParsedHealthUsage['kind'], rawText: string, item: StoreItem, usage: ParsedHealthUsage,
+    batchId: string, logDate: Date, noteSuffix: string,
+    discrepancies: ReconcileOutcome['discrepancies'], appliedChanges: AppliedChangeInput[], onAutofill: () => void, onMatch: () => void,
+  ) {
+    const sessions = await this.getDaySessions(batchId, logDate);
+    if (!sessions.length) {
+      usage.resolution = 'DISCREPANCY';
+      discrepancies.push({
+        rowDate: row.date, field: kind, discrepancyType: ProductionReportDiscrepancyType.OTHER,
+        locationRef: row.locationRef, systemValue: null, reportValue: rawText,
+        notes: `No egg-collection session (AM or PM) exists yet for this date — the ${kind} "${rawText}" can't be recorded until an attendant has logged the session.`,
+      });
+      return;
+    }
+    // Names under 3 characters (e.g. "ND") would substring-match almost any
+    // item name, so they can't confirm this item was already recorded.
+    const alreadyNoted = sessions.some(s => vaccineGivenNames(s.vaccineGiven)
+      .some(name => normaliseText(name).length >= 3 && matchInventoryItem(name, [item]) !== null));
+    if (alreadyNoted) {
+      usage.resolution = 'MATCHED';
+      onMatch();
+      return;
+    }
+    const target = sessions[0];
+    const line = `${item.name} (${rawText})${usage.quantity != null ? ` — ${usage.quantity}${usage.unit ?? ''} used` : ''} — Auto-filled ${noteSuffix}`;
+    const after = target.vaccineGiven ? `${target.vaccineGiven}; ${line}` : line;
+    await this.prisma.eggCollectionSession.update({ where: { id: target.id }, data: { vaccineGiven: after } });
+    this.logChange(appliedChanges, batchId, row.date, 'EggCollectionSession.vaccineGiven', target.id, 'UPDATE', { vaccineGiven: target.vaccineGiven }, { vaccineGiven: after });
+    usage.resolution = 'AUTOFILLED';
+    onAutofill();
+  }
+
+  /** Removes every health entry already recorded for one store item on one
+   *  brooder day — BrooderTreatmentLog rows, and matching entries in any of
+   *  the day's BrooderLog vaccinesJson/supplementsJson arrays — each
+   *  ledgered so rolling the report back puts them back. All kinds are
+   *  removed (not just the kind the report names) because the day's
+   *  recorded quantity counts all of them; leaving one behind would double
+   *  count the item once the report's entry is written. */
+  private async removeBrooderHealthEntries(
+    storeItemId: string, batchId: string, logDate: Date, rowDate: string, appliedChanges: AppliedChangeInput[],
+  ) {
+    const treatments = await this.prisma.brooderTreatmentLog.findMany({ where: { batchId, treatmentDate: logDate, storeItemId } });
+    await this.deleteAndLog(this.prisma.brooderTreatmentLog, treatments, 'BrooderTreatmentLog', batchId, rowDate, appliedChanges);
+
+    const dayLogs = await this.prisma.brooderLog.findMany({ where: { batchId, logDate } });
+    for (const log of dayLogs) {
+      for (const key of ['vaccinesJson', 'supplementsJson'] as const) {
+        const arr = Array.isArray(log[key]) ? (log[key] as any[]) : null;
+        if (!arr) continue;
+        const kept = arr.filter(e => e?.storeItemId !== storeItemId);
+        if (kept.length === arr.length) continue;
+        await this.prisma.brooderLog.update({ where: { id: log.id }, data: { [key]: kept } as any });
+        this.logChange(appliedChanges, batchId, rowDate, `BrooderLog.${key}`, log.id, 'UPDATE', { [key]: arr }, { [key]: kept });
+      }
     }
   }
 
@@ -1776,15 +1964,8 @@ export class ProductionReportReconciliationService {
    *  no-quantity health-usage branch from re-appending an identical line on
    *  every re-run of reconciliation over the same report row. */
   private async hasHealthLogEntryToday(
-    stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER', batchId: string, logDate: Date, houseId: string,
-    kind: ParsedHealthUsage['kind'], storeItemId: string,
+    batchId: string, logDate: Date, kind: ParsedHealthUsage['kind'], storeItemId: string,
   ): Promise<boolean> {
-    if (stageBucket === 'PRODUCTION') {
-      const existing = await this.prisma.eggCollectionSession.findUnique({
-        where: { batchId_houseId_sessionDate_shift: { batchId, houseId, sessionDate: logDate, shift: 'AM' } },
-      });
-      return !!existing?.vaccineGiven;
-    }
     if (kind === 'treatment') {
       const existing = await this.prisma.brooderTreatmentLog.findFirst({ where: { batchId, treatmentDate: logDate, storeItemId } });
       return !!existing;
@@ -1827,35 +2008,16 @@ export class ProductionReportReconciliationService {
     return resolveReportCorrection(alreadyRecorded, neededQty, item.unit);
   }
 
-  /** Persists one matched vaccine/supplement/treatment usage into the
-   *  stage-appropriate log. Brooder: BrooderTreatmentLog for treatments,
-   *  BrooderLog.vaccinesJson/supplementsJson (once-daily entry) for
-   *  vaccines/supplements. Production: EggCollectionSession.vaccineGiven —
-   *  the only health-adjacent column that model currently has (see §5: a
-   *  dedicated ProductionHealthLog is a bigger schema change, deferred). */
+  /** Persists one matched vaccine/supplement/treatment usage into a brooder
+   *  day's log: BrooderTreatmentLog for treatments, the once-daily BrooderLog
+   *  row's vaccinesJson/supplementsJson for vaccines/supplements. (Laying
+   *  batches record these as text on the egg-collection session instead —
+   *  see reconcileProductionHealthUsage.) */
   private async writeHealthUsageLog(
-    stageBucket: 'BROODING' | 'PRODUCTION' | 'OTHER', batchId: string, logDate: Date, uploaderId: string, houseId: string,
+    batchId: string, logDate: Date, uploaderId: string,
     kind: ParsedHealthUsage['kind'], item: StoreItem, usage: ParsedHealthUsage, noteSuffix: string, correctionNote?: string,
   ): Promise<{ entityType: string; entityId: string | null; action: AppliedChangeInput['action']; beforeState: unknown; afterState: unknown }> {
     const suffix = correctionNote ? `Correction: ${correctionNote} ${noteSuffix}` : `Auto-filled ${noteSuffix}`;
-
-    if (stageBucket === 'PRODUCTION') {
-      const existing = await this.prisma.eggCollectionSession.findUnique({
-        where: { batchId_houseId_sessionDate_shift: { batchId, houseId, sessionDate: logDate, shift: 'AM' } },
-      });
-      if (!existing) return { entityType: 'EggCollectionSession.vaccineGiven', entityId: null, action: 'CREATE', beforeState: null, afterState: null }; // nothing to attach to
-      // `usage.rawText` is the dosage exactly as the report wrote it (e.g.
-      // "12MLS/120LTS") — never rebuilt from the converted quantity, which
-      // would pair a converted number with the report's un-converted unit
-      // (e.g. "0.012MLS" instead of "0.012L"). `usage.quantity`, when
-      // present, is already expressed in the store item's own unit
-      // (`item.unit`), not the report's.
-      const line = `${item.name} (${usage.rawText})${usage.quantity != null ? ` — ${usage.quantity}${item.unit} used` : ''} — ${suffix}`;
-      const before = existing.vaccineGiven;
-      const after = existing.vaccineGiven ? `${existing.vaccineGiven}; ${line}` : line;
-      await this.prisma.eggCollectionSession.update({ where: { id: existing.id }, data: { vaccineGiven: after } });
-      return { entityType: 'EggCollectionSession.vaccineGiven', entityId: existing.id, action: 'UPDATE', beforeState: { vaccineGiven: before }, afterState: { vaccineGiven: after } };
-    }
 
     if (kind === 'treatment') {
       const created = await this.prisma.brooderTreatmentLog.create({
@@ -1997,57 +2159,50 @@ export class ProductionReportReconciliationService {
   ): Promise<{ applied: boolean; note: string }> {
     const logDate = discrepancy.rowDate;
 
-    // BROODER_MGMT_IS_READ_ONLY applies here too: a Director "applying" a
-    // MORTALITY/FEED discrepancy still writes into the attendant's brooder
-    // logs, which is exactly what §5/this file's header now forbids for a
-    // BROODING/GROWER-stage batch — the report stays informational only.
-    // STOCK_COUNT/CAGE_REASSIGNMENT are unaffected: neither has an attendant
-    // recording path in brooder management (see their handlers below), so
-    // the report/Director sign-off remains the only way those get entered.
     if (discrepancy.discrepancyType === ProductionReportDiscrepancyType.MORTALITY
-      || discrepancy.discrepancyType === ProductionReportDiscrepancyType.FEED
-      || discrepancy.discrepancyType === ProductionReportDiscrepancyType.ENVIRONMENTAL) {
-      const batchStage = await this.prisma.batch.findUnique({ where: { id: batchId }, select: { stage: true } });
-      if (batchStage?.stage === BatchStage.BROODING || batchStage?.stage === BatchStage.GROWER) {
-        return {
-          applied: false,
-          note: 'Brooder management data cannot be corrected from a store production report — this report is ' +
-            'informational for review only. Edit the attendant\'s brooder entry directly if it needs correcting.',
-        };
+      || discrepancy.discrepancyType === ProductionReportDiscrepancyType.FEED) {
+      // Approving trusts the report's figure as the WHOLE day's figure and
+      // replaces what's recorded with it — the same rule as the upload path.
+      // This used to add (report − system) as one more entry, always into
+      // the brooder tables, even for a laying batch.
+      const isMortality = discrepancy.discrepancyType === ProductionReportDiscrepancyType.MORTALITY;
+      if (discrepancy.field !== 'mortality' && discrepancy.field !== 'feedKg') {
+        return { applied: false, note: 'This feed line still needs its name matched to a store item — no single figure to apply.' };
       }
-    }
+      const reportValue = parseFloat(discrepancy.reportValue ?? '');
+      if (!Number.isFinite(reportValue)) return { applied: false, note: 'Could not read the report value.' };
+      const rowDate = logDate.toISOString().slice(0, 10);
+      const what = isMortality ? 'Mortality' : 'Feed';
+      const unit = isMortality ? 'bird(s)' : 'kg';
+      // Approve-path writes are a separate human sign-off and deliberately
+      // stay out of the upload's rollback ledger (see the rollback service).
+      const notLedgered: AppliedChangeInput[] = [];
+      const note = '(Director-approved from store production report)';
 
-    if (discrepancy.discrepancyType === ProductionReportDiscrepancyType.MORTALITY) {
-      const system = Number(discrepancy.systemValue ?? 0);
-      const report = Number(discrepancy.reportValue ?? 0);
-      const delta = report - system;
-      if (delta <= 0) return { applied: false, note: 'System already recorded more than the report — needs manual correction, not auto-applied.' };
-      await this.prisma.brooderGeneralMortalityLog.create({
-        data: {
-          batchId, logDate, mortalityCount: delta,
-          notes: 'Director-approved correction from store production report',
-          loggedById: userId,
-        },
-      });
-      return { applied: true, note: `Added ${delta} to mortality for ${logDate.toISOString().slice(0, 10)}.` };
-    }
+      const batch = await this.prisma.batch.findUnique({ where: { id: batchId }, select: { stage: true, batchCode: true } });
+      if (!batch) return { applied: false, note: 'Batch not found.' };
 
-    if (discrepancy.discrepancyType === ProductionReportDiscrepancyType.FEED) {
-      if (discrepancy.field === 'feedType') {
-        return { applied: false, note: 'Report feed type still needs to be matched to a store item manually — no store item to apply.' };
+      if (batch.stage === BatchStage.PRODUCTION) {
+        const sessions = await this.getDaySessions(batchId, logDate);
+        if (!sessions.length) {
+          return { applied: false, note: 'Still no egg-collection session (AM or PM) for this date — an attendant needs to log the session first.' };
+        }
+        const plan = planDayReplacement(sessions, s => (isMortality ? s.mortalities : toNum(s.feedKg) ?? 0), reportValue, 0.01);
+        if (plan.matched) return { applied: true, note: `${what} for ${rowDate} already matches the report — nothing changed.` };
+        await this.replaceProductionDayField(isMortality ? 'mortality' : 'feed', sessions, reportValue, plan, batchId, rowDate, notLedgered,
+          isMortality ? undefined : { label: null, breakdown: [] });
+        return { applied: true, note: `${what} for ${rowDate} set to ${reportValue} ${unit} to match the report (replaced ${plan.dayTotal}, not added to it).` };
       }
-      const system = parseFloat(discrepancy.systemValue ?? '0');
-      const report = parseFloat(discrepancy.reportValue ?? '0');
-      const delta = report - system;
-      if (delta <= 0) return { applied: false, note: 'System already recorded more feed than the report — needs manual correction, not auto-applied.' };
-      await this.prisma.brooderGeneralFeedLog.create({
-        data: {
-          batchId, entryDate: logDate, feedType: FeedType.CHICK_MASH, quantityDispensedKg: delta,
-          notes: 'Director-approved correction from store production report',
-          loggedById: userId,
-        },
-      });
-      return { applied: true, note: `Added ${delta} kg to feed for ${logDate.toISOString().slice(0, 10)}.` };
+
+      if (isMortality) {
+        const replaced = await this.replaceBrooderMortalityDay(batchId, logDate, rowDate, reportValue, undefined, userId, note, notLedgered);
+        return { applied: true, note: replaced ? `Mortality for ${rowDate} set to ${reportValue} to match the report.` : 'Already matches the report — nothing changed.' };
+      }
+      const { generalLogs, levelLogs, conflict, systemTotal } = await this.loadBrooderFeedDay(batchId, logDate);
+      if (!conflict && Math.abs(systemTotal - reportValue) < 0.001) return { applied: true, note: 'Already matches the report — nothing changed.' };
+      await this.replaceBrooderFeedDay(batchId, batch.batchCode, logDate, rowDate, [{ item: null, label: undefined, kg: reportValue }],
+        generalLogs, levelLogs, systemTotal, userId, note, 0, notLedgered);
+      return { applied: true, note: `Feed for ${rowDate} set to ${reportValue} kg to match the report (replaced ${systemTotal} kg, not added to it).` };
     }
 
     if (discrepancy.discrepancyType === ProductionReportDiscrepancyType.STOCK_COUNT) {
