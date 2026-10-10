@@ -75,6 +75,12 @@ every row has 4 levels (1 = bottom, 4 = top) × tiers (Block 1: 24, Block 2: 38)
   recorded **once per shift per day** (eggs, feed, vaccines, mortalities).
   Mortalities are per cage (`mortalityCagesJson`) and hit the cage map +
   `Batch.currentBirdCount` only when the Manager approves.
+- Cages are addressed as row · level · **cage number along the level**
+  (Block 1: 1–96, Block 2: 1–152). Tiers are only physical grouping —
+  never required in UI, descriptions or placement (still understood if given).
+- Isolation cages record `origin` (where the birds were taken from). Birds can
+  only enter isolation by moving them from a named cage (map: "Came from";
+  text: "moved 2 from A2 level 3 cage 37 to isolation cage 1").
 - Cage reassignments are written in plain words (no grammar):
   `production-cage-text.util.ts` (production) and
   `cage-layout-parser.util.ts` (brooder). Always previewed before applying;

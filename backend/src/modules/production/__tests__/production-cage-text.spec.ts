@@ -61,4 +61,11 @@ describe('parseProductionCageText', () => {
     expect(op.from.cages).toEqual([1, 2, 3, 4]);
     expect(op.to).toMatchObject({ rowCode: 'A1', levels: [4], tiers: [3] });
   });
+
+  it('reads cage numbers along the level without any tier', () => {
+    const r = parseProductionCageText('Moved 2 birds from A2 level 3 cage 37 to isolation cage 1 because they were coughing');
+    const op = r.ops[0] as any;
+    expect(op.from).toEqual({ rowCode: 'A2', levels: [3], cages: [37], tiers: undefined, blockCode: undefined });
+    expect(op.to).toMatchObject({ isolation: true, cages: [1] });
+  });
 });

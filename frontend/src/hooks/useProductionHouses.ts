@@ -44,6 +44,10 @@ export interface OccupiedCage {
   batchCode: string;
   birdCount: number;
   isolationReason: string | null;
+  /** Isolation cages: where the birds were taken from. */
+  origin: string | null;
+  /** Cage number along the level (tiers ignored); isolation cage number for ISO. */
+  cageNo: number;
   placedDate: string;
   mortality7d: number;
 }
@@ -92,8 +96,16 @@ export function levelLabel(level: number, levels = 4) {
   if (level === levels) return `Level ${level} (Top)`;
   return `Level ${level}`;
 }
-export function cageLabel(rowCode: string, level: number, tier: number, cage: number) {
-  return `${rowCode} · ${levelLabel(level)} · Tier ${pad2(tier)} · Cage ${cage}`;
+/** Cage number along a level — tiers are only physical grouping of 4 cages. */
+export function cageNumberOnLevel(tier: number, cage: number, cagesPerTier = 4) {
+  return (tier - 1) * cagesPerTier + cage;
+}
+/** Inverse of cageNumberOnLevel → the stable cage code used by the API. */
+export function cageCodeFromNumber(house: string, rowCode: string, level: number, n: number, cagesPerTier = 4) {
+  return cageCode(house, rowCode, level, Math.ceil(n / cagesPerTier), ((n - 1) % cagesPerTier) + 1);
+}
+export function cageLabel(rowCode: string, level: number, tier: number, cage: number, cagesPerTier = 4) {
+  return `${rowCode} · ${levelLabel(level)} · Cage ${cageNumberOnLevel(tier, cage, cagesPerTier)}`;
 }
 
 /** Query keys to refresh after any write that changes cages. */

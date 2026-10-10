@@ -4,13 +4,15 @@
 // words and turns it into operations the cage map can apply. No fixed
 // grammar — each clause is scanned for whatever it mentions, in any order:
 //
-//   "Moved 3 birds from A1 level 2 tier 5 cage 1 into isolation cage 2 because they were limping"
-//   "transferred two hens to cage 3 from B2 top level tier 10 cage 1"
-//   "C1 bottom level, tiers 1-6, all cages now have 4 birds each"
+//   "Moved 3 birds from A1 level 2 cage 17 into isolation cage 2 because they were limping"
+//   "transferred two hens to cage 3 from B2 top level cage 37"
+//   "C1 bottom level cages 1-24 now have 4 birds each"
 //   "isolation cage 4 is empty"            "Block 2 A2 L3 T7 C2: 2 birds"
 //
 // A clause with "from … to/into …" (or a move verb + "to") is a MOVE; any
 // other clause naming cages and a bird count (or "empty") SETS those cages.
+// Cages are numbered along the level (Block 1: 1–96, Block 2: 1–152); tiers
+// never need to be named, though "tier 5 cage 1" is still understood.
 // Clauses that mention no cage at all are ignored. Row / level / tier carry
 // over from the previous clause when a clause leaves them out, so
 // "A1 level 4: tiers 1-10 four each; tier 11 three each" works too.
