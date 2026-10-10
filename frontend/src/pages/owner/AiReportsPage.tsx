@@ -97,6 +97,31 @@ function productionReportBadge(report: AiReport): { label: string; detail?: stri
   return null;
 }
 
+// ── Data readiness note ───────────────────────────────────────────────────────
+function ReadinessNote({ title, ready, batches }: {
+  title: string; ready: boolean;
+  batches: { batchId: string; batchCode: string; ready: boolean; reason: string | null; completenessPct: number; missingDays: { date: string; missing: string[] }[] }[];
+}) {
+  const gaps = batches.filter(b => !b.ready);
+  return (
+    <div className={`rounded-xl border p-3 text-xs space-y-1.5 ${ready
+      ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800 text-green-700 dark:text-green-400'
+      : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400'}`}>
+      <p className="font-semibold">{ready ? '✓ ' : ''}{title}</p>
+      {!ready && <p>Not enough recorded data yet — the report is held back so no AI credits are wasted. Fill these gaps first:</p>}
+      {ready && gaps.length > 0 && <p>These batches will be left out until their records are filled in:</p>}
+      {gaps.map(b => (
+        <div key={b.batchId}>
+          <p className="font-medium">{b.batchCode} — {b.reason}</p>
+          {b.missingDays.slice(-5).map(d => (
+            <p key={d.date} className="pl-3 opacity-80">{dayjs(d.date).format('ddd D MMM')}: {d.missing.join(', ')}</p>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export function AiReportsPage() {
   const [typeFilter, setTypeFilter] = useState('');
@@ -119,6 +144,22 @@ export function AiReportsPage() {
     if (a.isActive !== b.isActive) return a.isActive ? -1 : 1; // active batches first
     return dayjs(b.updatedAt ?? b.createdAt).valueOf() - dayjs(a.updatedAt ?? a.createdAt).valueOf();
   });
+
+  // Data readiness — checked before any AI call so credits are only spent
+  // when the records are complete enough (no AI call is made here).
+  const { data: weeklyReady } = useQuery<any>({
+    queryKey: ['ai-readiness', 'weekly'],
+    queryFn: () => api.get('/ai/readiness').then(r => r.data),
+    staleTime: 60_000,
+  });
+  const { data: batchReady, isFetching: batchReadyLoading } = useQuery<any>({
+    queryKey: ['ai-readiness', selectedBatchId],
+    queryFn: () => api.get('/ai/readiness', { params: { batchId: selectedBatchId } }).then(r => r.data),
+    enabled: !!selectedBatchId,
+    staleTime: 60_000,
+  });
+  const weeklyBlocked = weeklyReady && !weeklyReady.ready;
+  const batchBlocked = !!selectedBatchId && batchReady && !batchReady.ready;
 
   const trigger = useMutation({
     mutationFn: () => api.post('/ai/reports/trigger').then(r => r.data),
@@ -154,7 +195,8 @@ export function AiReportsPage() {
 
         <button
           onClick={() => trigger.mutate()}
-          disabled={trigger.isPending}
+          disabled={trigger.isPending || weeklyBlocked}
+          title={weeklyBlocked ? 'Too much data missing this week — see below' : undefined}
           className="flex items-center gap-2 px-4 py-2 bg-brand-green text-white rounded-xl text-sm font-medium hover:bg-brand-mid transition-colors disabled:opacity-60"
         >
           {trigger.isPending ? (
@@ -165,9 +207,19 @@ export function AiReportsPage() {
         </button>
       </div>
 
+      {weeklyReady && (
+        <ReadinessNote
+          title={`This week's records: ${weeklyReady.completenessPct}% complete (${weeklyReady.minCompletenessPct}% needed)`}
+          ready={weeklyReady.ready}
+          batches={weeklyReady.batches ?? []}
+        />
+      )}
+
       {trigger.isSuccess && (
         <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl p-3 text-green-700 dark:text-green-400 text-sm">
-          Weekly report generated — it will appear in the list below.
+          {trigger.data?.reused
+            ? trigger.data.message
+            : 'Weekly report generated — it will appear in the list below.'}
         </div>
       )}
       {trigger.isError && (
@@ -183,8 +235,9 @@ export function AiReportsPage() {
           <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">Report on a specific batch</p>
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          Generate a report for any existing batch — active or recently closed — using whatever
-          production data is available for it.
+          Generate a report for any existing batch — active or recently closed. It runs only when the
+          batch's last 14 days are recorded well enough, and reuses the previous report when nothing new
+          has been recorded, so AI credits aren't spent on gaps or repeats.
         </p>
         <div className="flex flex-col sm:flex-row gap-2">
           <select
@@ -201,7 +254,7 @@ export function AiReportsPage() {
           </select>
           <button
             onClick={() => selectedBatchId && triggerBatch.mutate(selectedBatchId)}
-            disabled={!selectedBatchId || triggerBatch.isPending}
+            disabled={!selectedBatchId || triggerBatch.isPending || batchBlocked || batchReadyLoading}
             className="flex items-center justify-center gap-2 px-4 py-2.5 bg-brand-green text-white rounded-xl text-sm font-medium hover:bg-brand-mid transition-colors disabled:opacity-60"
           >
             {triggerBatch.isPending ? (
@@ -211,8 +264,19 @@ export function AiReportsPage() {
             )}
           </button>
         </div>
+        {selectedBatchId && batchReady && (
+          <ReadinessNote
+            title={`${batchReady.batchCode}: ${batchReady.completenessPct}% of the last ${batchReady.expectedDays} day(s) recorded (${batchReady.minCompletenessPct}% needed)`}
+            ready={batchReady.ready}
+            batches={[batchReady]}
+          />
+        )}
         {triggerBatch.isSuccess && (
-          <p className="text-xs text-green-600 dark:text-green-400">Report generated — it will appear in the list below.</p>
+          <p className="text-xs text-green-600 dark:text-green-400">
+            {triggerBatch.data?.reused
+              ? 'Nothing new has been recorded for this batch since its last report — showing that one (no credits used).'
+              : 'Report generated — it will appear in the list below.'}
+          </p>
         )}
         {triggerBatch.isError && (
           <p className="text-xs text-red-500 dark:text-red-400">

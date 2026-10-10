@@ -32,6 +32,13 @@ export class AiController {
     return this.ai.getLatestSummary();
   }
 
+  /** GET /ai/readiness[?batchId=] — is the data complete enough for an AI report? (no AI call) */
+  @Get('readiness')
+  @RequirePermission(Permission.AI_REPORTS_VIEW)
+  readiness(@Query('batchId') batchId?: string) {
+    return this.ai.getReadiness(batchId);
+  }
+
   /** POST /ai/reports/trigger — manually trigger weekly report (Director on-demand) */
   @Post('reports/trigger')
   @RequirePermission(Permission.AI_REPORTS_VIEW)
@@ -42,7 +49,8 @@ export class AiController {
   /**
    * POST /ai/reports/batch/:batchId/trigger — generate a report for ONE
    * specific batch (active or recently closed/sold/discarded), Director
-   * on-demand. No age/stage/data-volume gating — works for any existing batch.
+   * on-demand. Refused (no AI call) when the batch's recent records are too
+   * incomplete; returns the previous report when nothing new was recorded.
    */
   @Post('reports/batch/:batchId/trigger')
   @RequirePermission(Permission.AI_REPORTS_VIEW)

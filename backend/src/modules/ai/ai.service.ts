@@ -6,6 +6,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { NotificationType, UserRole, EntryStatus, BatchStage } from '@prisma/client';
 import dayjs from 'dayjs';
+import { AiReadinessService } from './ai-readiness.service';
 
 @Injectable()
 export class AiService {
@@ -16,6 +17,7 @@ export class AiService {
     private prisma: PrismaService,
     private notifications: NotificationsService,
     private config: ConfigService,
+    private readiness: AiReadinessService,
   ) {
     const apiKey = this.config.get<string>('ANTHROPIC_API_KEY');
     if (apiKey) {
@@ -482,12 +484,41 @@ export class AiService {
   // AI-01 — Weekly Performance Report  (Monday 06:00)
   // ────────────────────────────────────────────────────────────────────────────
   @Cron('0 6 * * 1')
-  async generateWeeklyReport() {
+  async generateWeeklyReport(opts: { manual?: boolean } = {}): Promise<any> {
     this.logger.log('AI-01: Generating weekly performance report…');
     const weekEnd   = dayjs().subtract(1, 'day').endOf('day');
     const weekStart = weekEnd.subtract(6, 'day').startOf('day');
     const startDate = weekStart.toDate();
     const endDate = weekEnd.toDate();
+
+    // ── Readiness gate (see AiReadinessService) ─────────────────────────────
+    // Only batches whose week is recorded well enough are analysed; if none
+    // are, no AI call is made and the Director is told what's missing.
+    const ready = await this.readiness.assessActiveBatches(startDate, endDate);
+    if (!ready.ready) {
+      const why = AiReadinessService.describe(ready.batches) || 'No active batch has recorded days this week.';
+      if (opts.manual) {
+        throw new BadRequestException(`Not enough recorded data for a weekly AI report yet — no credits were used.\n${why}`);
+      }
+      await this.notifications.notifyRole(
+        UserRole.OWNER, NotificationType.AI_REPORT_READY,
+        'Weekly AI report skipped — data incomplete',
+        `The weekly AI report for ${weekStart.format('D MMM')} – ${weekEnd.format('D MMM')} was not generated because too much data is missing.\n${why}`,
+      ).catch(() => {});
+      this.logger.log('AI-01: skipped — data incomplete');
+      return null;
+    }
+    // Same week already reported and nothing recorded since → reuse it.
+    const previous = await this.prisma.aiReport.findFirst({
+      where: { reportType: 'WEEKLY_PERFORMANCE', weekEnding: weekEnd.toDate() }, // same value it is saved with
+      orderBy: { generatedAt: 'desc' },
+    });
+    if (previous && await this.readiness.unchangedSince(previous.generatedAt, ready.readyBatchIds, startDate)) {
+      this.logger.log('AI-01: reused — no new data since the last weekly report');
+      return Object.assign(previous, { reused: true });
+    }
+    const readyIds = ready.readyBatchIds;
+    const excluded = ready.batches.filter(b => !b.ready);
 
     // ── Production reports first ─────────────────────────────────────────────
     // For every active batch, check whether Store has an uploaded production
@@ -498,7 +529,7 @@ export class AiService {
     // week where entries were still pending. Batches without report coverage
     // for this week still fall back to the system tables below.
     const activeBatches = await this.prisma.batch.findMany({
-      where: { isActive: true, deletedAt: null },
+      where: { isActive: true, deletedAt: null, id: { in: readyIds } },
       select: { id: true, currentBirdCount: true },
     });
     const prMetricsByBatch = await Promise.all(
@@ -520,7 +551,7 @@ export class AiService {
     const [eggSessions, flockEntries, feedLogs, expenses, healthEvents, sales, breakages, feedDeliveries, completeness] =
       await Promise.all([
         this.prisma.eggCollectionSession.findMany({
-          where: { sessionDate: { gte: startDate, lte: endDate }, status: EntryStatus.APPROVED, deletedAt: null },
+          where: { sessionDate: { gte: startDate, lte: endDate }, status: EntryStatus.APPROVED, deletedAt: null, batchId: { in: readyIds } },
           select: {
             sessionDate: true, shift: true, batchId: true, closingStock: true,
             totalGoodEggs: true, totalStarterEggs: true, totalFullTrays: true, totalBrokenEggs: true,
@@ -529,7 +560,7 @@ export class AiService {
         (this.prisma as any).flockDailyEntry.findMany({
           where: {
             entryDate: { gte: startDate, lte: endDate }, status: EntryStatus.APPROVED,
-            ...(reportCoveredBatchIds.length ? { batchId: { notIn: reportCoveredBatchIds } } : {}),
+            batchId: { in: readyIds.filter(id => !reportCoveredBatchIds.includes(id)) },
           },
           select: { mortalityCount: true, mortalityCause: true },
         }),
@@ -540,7 +571,7 @@ export class AiService {
         this.prisma.feedIntakeLog.findMany({
           where: {
             entryDate: { gte: startDate, lte: endDate },
-            ...(reportCoveredBatchIds.length ? { batchId: { notIn: reportCoveredBatchIds } } : {}),
+            batchId: { in: readyIds.filter(id => !reportCoveredBatchIds.includes(id)) },
           },
           select: { quantityDispensedKg: true, feedType: true },
         }),
@@ -594,6 +625,11 @@ export class AiService {
       netIncome, totalBirds, healthEvents: healthEvents.length,
       brokenEggPct: totalEggs > 0 ? ((totalBroken / (totalEggs + totalBroken)) * 100).toFixed(1) : '0',
       sales, breakages, feedDeliveries, completeness,
+      dataReadiness: {
+        completenessPct: ready.completenessPct,
+        minCompletenessPct: ready.minCompletenessPct,
+        batches: ready.batches.map(b => ({ batchCode: b.batchCode, completenessPct: b.completenessPct, included: b.ready })),
+      },
       // Data provenance for feed & mortality — see getProductionReportMetrics.
       productionReportCoverage: {
         batchesCovered: reportCoveredBatchIds.length,
@@ -614,7 +650,7 @@ export class AiService {
     const prompt = `You are an expert poultry farm advisor. Write a concise weekly performance report for Anza Whole Foods farm in Kenya. Use plain English — no jargon. Address the Director directly. Be specific with numbers. End with 2-3 actionable recommendations.
 
 WEEK: ${rawData.week}
-DATA SOURCE NOTE: ${prSourceNote}
+DATA SOURCE NOTE: ${prSourceNote}${excluded.length ? ` Batches left out this week because too much of their data is missing (mention this to the Director): ${excluded.map(b => `${b.batchCode} (${b.completenessPct}% recorded)`).join(', ')}.` : ''}
 PRODUCTION: ${totalEggs.toLocaleString()} eggs · ${totalTrays} trays · Avg daily HDP ${avgHdp.toFixed(1)}% (AM+PM combined, based on ${dailyHdp.length} fully-recorded day(s)) · Broken egg rate ${rawData.brokenEggPct}%
 FLOCK: ${totalBirds.toLocaleString()} birds · ${totalMort} mortalities this week
 FEED CONSUMED: ${totalFeedKg.toFixed(1)} kg · FCR ${fcr} kg feed per egg
@@ -729,6 +765,21 @@ Format: one-sentence overall summary, then short paragraphs covering production,
       this.logger.log('AI-04: No health data to analyse');
       return;
     }
+    // Only when something new happened since the last analysis, and recent
+    // records are complete enough to trust (missing mortality logs would
+    // hide or invent patterns).
+    const lastDisease = await this.prisma.aiReport.findFirst({
+      where: { reportType: 'DISEASE_PATTERN' }, orderBy: { generatedAt: 'desc' }, select: { generatedAt: true },
+    });
+    if (lastDisease && await this.readiness.unchangedSince(lastDisease.generatedAt, null, since)) {
+      this.logger.log('AI-04: skipped — no new health or mortality data since the last analysis');
+      return;
+    }
+    const recent = await this.readiness.assessActiveBatches(dayjs().subtract(14, 'day').toDate(), new Date());
+    if (recent.completenessPct < recent.minCompletenessPct) {
+      this.logger.log(`AI-04: skipped — recent records only ${recent.completenessPct}% complete`);
+      return;
+    }
 
     const eventSummary = healthEvents
       .map((e: any) => `${dayjs(e.eventDate).format('D MMM')}: ${e.eventType} in ${e.batch?.batchCode} — ${e.symptoms ?? 'no symptoms noted'}`)
@@ -821,6 +872,8 @@ Write 2-3 short paragraphs. If no concerning patterns exist, say so clearly. End
       // at least 7 fully-recorded days before forecasting.
       const dailyHdp = this.aggregateDailyHdp(batch.eggCollectionSessions);
       if (dailyHdp.length < 7) continue; // not enough complete daily data
+      const batchReady = await this.readiness.assessBatch(batch.id, dayjs().subtract(14, 'day').toDate(), new Date());
+      if (!batchReady?.ready) continue; // recent records too patchy to forecast from
 
       const last14Days = dailyHdp.slice(-14);
       const avgHdp = this.avgOf(last14Days.map(d => d.hdp));
@@ -881,6 +934,19 @@ Based on this data, provide: (1) whether this batch should be closed now, in 4-8
 
     const since30 = dayjs().subtract(30, 'day').toDate();
     const now = new Date();
+
+    const ready = await this.readiness.assessActiveBatches(since30, now);
+    if (!ready.ready || ready.completenessPct < ready.minCompletenessPct) {
+      this.logger.log(`AI-06: skipped — last 30 days only ${ready.completenessPct}% recorded`);
+      return;
+    }
+    const lastSuggestions = await this.prisma.aiReport.findFirst({
+      where: { reportType: 'IMPROVEMENT_SUGGESTIONS' }, orderBy: { generatedAt: 'desc' }, select: { generatedAt: true },
+    });
+    if (lastSuggestions && await this.readiness.unchangedSince(lastSuggestions.generatedAt, ready.readyBatchIds, since30)) {
+      this.logger.log('AI-06: skipped — no new data since the last suggestions');
+      return;
+    }
 
     const [batches, feedLogs, sessions, healthChecklists, breakages, completeness] = await Promise.all([
       this.prisma.batch.findMany({
@@ -1003,6 +1069,18 @@ Provide 3-5 improvement suggestions. Each should be: (a) specific to the data ab
     return { reports, total, page, limit };
   }
 
+  /** What the AI report buttons would do right now, without spending anything. */
+  async getReadiness(batchId?: string) {
+    if (batchId) {
+      const b = await this.readiness.assessBatch(batchId, dayjs().subtract(14, 'day').toDate(), new Date());
+      if (!b) throw new NotFoundException('Batch not found');
+      return { scope: 'batch', minCompletenessPct: this.readiness.minCompletenessPct, ...b };
+    }
+    const weekEnd = dayjs().subtract(1, 'day').endOf('day');
+    const r = await this.readiness.assessActiveBatches(weekEnd.subtract(6, 'day').startOf('day').toDate(), weekEnd.toDate());
+    return { scope: 'weekly', aiConfigured: !!this.anthropic, ...r };
+  }
+
   async getLatestSummary(): Promise<{ content: string; generatedAt: string } | null> {
     const latest = await this.prisma.aiReport.findFirst({
       where: { reportType: 'WEEKLY_PERFORMANCE' },
@@ -1022,11 +1100,13 @@ Provide 3-5 improvement suggestions. Each should be: (a) specific to the data ab
     if (!this.anthropic) {
       throw new BadRequestException('AI reporting is not configured on this server (ANTHROPIC_API_KEY is not set). Contact your administrator.');
     }
-    const report = await this.generateWeeklyReport();
+    const report = await this.generateWeeklyReport({ manual: true });
     if (!report) {
       throw new BadRequestException('The AI service did not return a report. Please try again in a moment.');
     }
-    return { triggered: true, reportId: report.id };
+    return report.reused
+      ? { triggered: false, reused: true, reportId: report.id, message: 'Nothing new has been recorded since this week\'s report — showing the existing one (no credits used).' }
+      : { triggered: true, reportId: report.id };
   }
 
   // ────────────────────────────────────────────────────────────────────────────
@@ -1261,6 +1341,32 @@ Provide 3-5 improvement suggestions. Each should be: (a) specific to the data ab
     });
     if (!batch) throw new NotFoundException('Batch not found');
 
+    // ── Readiness gate: the batch's last 14 recorded days (up to closing for
+    // a closed batch) must be complete enough, or nothing is spent. ──
+    const windowEnd = [batch.closedAt, batch.soldAt, batch.discardedAt].filter(Boolean)
+      .map(d => dayjs(d!)).reduce((min, d) => (d.isBefore(min) ? d : min), dayjs());
+    const batchReady = await this.readiness.assessBatch(batch.id, windowEnd.subtract(14, 'day').toDate(), windowEnd.toDate());
+    if (!batchReady?.ready) {
+      throw new BadRequestException(
+        `Not enough recorded data for an AI report on ${batch.batchCode} yet — no credits were used.\n` +
+        AiReadinessService.describe(batchReady ? [batchReady] : []),
+      );
+    }
+    // Nothing recorded since this batch's last report → hand that one back.
+    const lastBatchReport = await this.prisma.aiReport.findFirst({
+      where: {
+        reportType: 'BATCH_CLOSURE_FORECAST',
+        AND: [
+          { rawData: { path: ['batchId'], equals: batch.id } },
+          { rawData: { path: ['manuallyRequested'], equals: true } },
+        ],
+      },
+      orderBy: { generatedAt: 'desc' },
+    });
+    if (lastBatchReport && await this.readiness.unchangedSince(lastBatchReport.generatedAt, [batch.id], batch.dateReceived)) {
+      return Object.assign(lastBatchReport, { reused: true });
+    }
+
     // ── Gather data ───────────────────────────────────────────────────────────
     // Split into (a) status breakdown — ALL sessions/logs regardless of
     // approval state, used for the data-completeness note, and (b) the
@@ -1462,6 +1568,7 @@ This is meant to be read carefully by the Director, not skimmed — be thorough 
           isActive: batch.isActive,
           manuallyRequested: true,
           modelUsed: batchReportModel,
+          dataReadiness: { completenessPct: batchReady.completenessPct, expectedDays: batchReady.expectedDays },
           completeness: {
             eggPending, eggReturned, feedPending, feedReturned, flockPending, flockReturned, storeDiscrepancies,
           },

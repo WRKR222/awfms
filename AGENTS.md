@@ -91,6 +91,21 @@ every row has 4 levels (1 = bottom, 4 = top) × tiers (Block 1: 24, Block 2: 38)
 Bulk price = `DailyEggPrice.pricePerEggBulk` (falls back to `pricePerEgg`),
 latest price on or before the date.
 
+## AI reports — only when the data supports it
+
+`AiReadinessService` gates every AI call (no credits spent otherwise):
+- A batch-day is **recorded** when: brooder — all 3 session logs + feed;
+  production — AM and PM for every block it has sessions in; or Store's
+  uploaded production report has that date. Today is never counted.
+- **Ready** = ≥ `AI_MIN_DATA_COMPLETENESS_PCT` (default 80%) of days recorded
+  and ≥ `AI_MIN_DATA_DAYS` (default 3) days. Weekly/improvement reports only
+  analyse ready batches and are skipped (Director notified) if none are; the
+  per-batch report checks the last 14 days; forecasts and disease analysis
+  also require recent completeness.
+- **Changed** = some record in scope was created/updated after the last report
+  of that kind; otherwise the previous report is returned (`reused: true`).
+- `GET /ai/readiness[?batchId=]` shows readiness + missing days without an AI call.
+
 ## Vet visits
 
 Live on `HealthEvent` (single source of truth). Manager-only upload via
