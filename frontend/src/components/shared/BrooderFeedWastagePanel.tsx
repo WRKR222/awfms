@@ -73,6 +73,9 @@ export function BrooderFeedWastagePanel() {
               <p className="text-lg font-bold text-red-700 dark:text-red-400">
                 KES {data.totals.excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
+              {(data.totals as any).unpricedKg > 0 && (
+                <p className="text-[10px] text-red-500/80">+ {(data.totals as any).unpricedKg.toFixed(2)} kg with no Store feed price</p>
+              )}
             </div>
           </div>
 
@@ -88,8 +91,10 @@ export function BrooderFeedWastagePanel() {
                     : dayjs(b.periodStart).format('ddd D MMM')}
                 </span>
                 <span className="text-gray-500 dark:text-gray-400">
-                  +{b.excessKg.toFixed(2)}kg · KES {b.excessCostKes.toLocaleString('en-KE', { maximumFractionDigits: 0 })}
-                  {' '}· {b.eventCount} {b.eventCount === 1 ? 'entry' : 'entries'}
+                  +{b.excessKg.toFixed(2)}kg · {(b as any).unpricedKg >= b.excessKg && b.excessKg > 0
+                    ? 'cost unknown'
+                    : `KES ${b.excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                  {' '}· {b.eventCount} {b.eventCount === 1 ? 'day' : 'days'}
                 </span>
               </div>
             ))}

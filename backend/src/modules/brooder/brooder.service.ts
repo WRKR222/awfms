@@ -2116,14 +2116,19 @@ export class BrooderService {
       return m.format('YYYY-MM-DD');
     };
 
-    const buckets = new Map<string, { periodStart: string; excessKg: number; excessCostKes: number; eventCount: number }>();
+    const buckets = new Map<string, { periodStart: string; excessKg: number; excessCostKes: number; eventCount: number; unpricedKg: number }>();
     let totalExcessKg = 0;
     let totalExcessCostKes = 0;
+    let totalUnpricedKg = 0;
 
     for (const r of rows) {
       const key = bucketKey(r.entryDate);
-      const bucket = buckets.get(key) ?? { periodStart: key, excessKg: 0, excessCostKes: 0, eventCount: 0 };
+      const bucket = buckets.get(key) ?? { periodStart: key, excessKg: 0, excessCostKes: 0, eventCount: 0, unpricedKg: 0 };
       bucket.excessKg      = Math.round((bucket.excessKg + r.excessKg) * 100) / 100;
+      if (r.excessCostKes == null) {
+        bucket.unpricedKg = Math.round((bucket.unpricedKg + r.excessKg) * 100) / 100;
+        totalUnpricedKg  += r.excessKg;
+      }
       bucket.excessCostKes = Math.round((bucket.excessCostKes + Number(r.excessCostKes ?? 0)) * 100) / 100;
       bucket.eventCount   += 1;
       buckets.set(key, bucket);
@@ -2140,6 +2145,9 @@ export class BrooderService {
         excessKg:      Math.round(totalExcessKg * 100) / 100,
         excessCostKes: Math.round(totalExcessCostKes * 100) / 100,
         eventCount:    rows.length,
+        // Excess with no Store feed price to cost it against (shown as
+        // "cost unknown" rather than KES 0).
+        unpricedKg:    Math.round(totalUnpricedKg * 100) / 100,
       },
       buckets: Array.from(buckets.values()).sort((a, b) => a.periodStart.localeCompare(b.periodStart)),
     };

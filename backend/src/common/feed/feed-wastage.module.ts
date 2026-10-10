@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { FeedWastageService } from './feed-wastage.service';
 import { FeedIssuedVsRecordedCron } from './feed-issued-vs-recorded.cron';
+import { FeedWastageRecomputeCron } from './feed-wastage-recompute.cron';
 
 // @Global so both BrooderModule (manual feed entry) and StoreModule
 // (production-report auto-fill) can inject FeedWastageService without
@@ -8,7 +9,7 @@ import { FeedIssuedVsRecordedCron } from './feed-issued-vs-recorded.cron';
 // comment for why this needed to move out of BrooderService.
 @Global()
 @Module({
-  providers: [FeedWastageService, FeedIssuedVsRecordedCron],
+  providers: [FeedWastageService, FeedIssuedVsRecordedCron, FeedWastageRecomputeCron],
   exports: [FeedWastageService],
 })
 export class FeedWastageModule {}

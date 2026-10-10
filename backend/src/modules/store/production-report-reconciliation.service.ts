@@ -574,6 +574,10 @@ export class ProductionReportReconciliationService {
       }
     });
 
+    // Feed-wastage follows the data: every day this report touched is
+    // re-checked against what is recorded now (stale rows updated/removed).
+    await this.feedWastage.recomputeDays(batchId, rows.map(r => r.date));
+
     return { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage: stageBucket };
   }
 
@@ -1024,6 +1028,9 @@ export class ProductionReportReconciliationService {
           feedType: mapFeedType(line.item?.name, line.label),
           storeItemId: line.item?.id ?? null, unit: line.item?.unit ?? null,
           quantityDispensedKg: line.kg,
+          // Ration of record for this day (report's population) — lets the
+          // feed-wastage recompute re-check the day later without guessing.
+          requiredKgForDay: dailyRationKg > 0 ? dailyRationKg : null,
           notes: [
             hadRecords ? `Replaced ${previousTotal} kg previously recorded for the day with the report's figure ${noteSuffix}` : `Auto-filled ${noteSuffix}`,
             line.note,

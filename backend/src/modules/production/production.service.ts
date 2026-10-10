@@ -39,6 +39,7 @@ import { assertEggCollectionSessionOpen, getEggCollectionSessionStatus } from '.
 import { StoreInventoryService } from '../store/store-inventory.service';
 import { CageMapService } from './cage-map.service';
 import { AutoExpenseService } from '../../common/finance/auto-expense.service';
+import { FeedWastageService } from '../../common/feed/feed-wastage.service';
 import { ProductionCageService, houseCodeForSessionBlock } from './production-cage.service';
 
 interface RowDataEntry {
@@ -93,6 +94,7 @@ export class ProductionService {
     private readonly cageMapService: CageMapService,
     private readonly autoExpense: AutoExpenseService,
     private readonly productionCages: ProductionCageService,
+    private readonly feedWastage: FeedWastageService,
   ) {}
 
   private readonly logger = new Logger(ProductionService.name);
@@ -390,6 +392,14 @@ export class ProductionService {
       await this.autoExpense.logCollectionDamaged(this.prisma, session, batch.batchCode ?? dto.batchId, user.id);
     } catch (err) {
       this.logger.warn(`Damaged-egg expense logging failed for session ${session.id}: ${(err as Error).message}`);
+    }
+
+    // Feed wastage for the day follows the recorded feed — recomputed for the
+    // whole batch-day (all shifts and blocks) every time a session lands.
+    try {
+      await this.feedWastage.recomputeDay(session.batchId, session.sessionDate, { notify: true });
+    } catch (err) {
+      this.logger.warn(`Feed-wastage recompute failed for session ${session.id}: ${(err as Error).message}`);
     }
 
     // Create EggTallyVerification placeholder for both AM and PM sessions.
