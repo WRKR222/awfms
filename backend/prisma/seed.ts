@@ -208,47 +208,72 @@ async function main() {
   console.log(`✓ ${schedules.length} vaccination schedules seeded`);
 
 
-  // ── Farm Infrastructure — Block 1 (Production House) ───────────────────────
-  // Required for the cage map to load. Block 2 is under construction.
-  const block1 = await prisma.farmBlock.upsert({
-    where: { code: 'BLK1' },
-    create: { code: 'BLK1', name: 'Block 1 — Production House', isActive: true, isUnderConstruction: false },
-    update: {},
-  });
-
-  await prisma.farmBlock.upsert({
-    where: { code: 'BLK2' },
-    create: { code: 'BLK2', name: 'Block 2 — Under Construction', isActive: false, isUnderConstruction: true },
-    update: {},
-  });
-
+  // ── Farm Infrastructure — Production Houses (Block 1 & Block 2) ────────────
+  // Same layout in both: sections A/B/C × rows 1/2; every row has 4 levels
+  // (1 = bottom, 4 = top) × tiers × 4 cages, 4 birds per cage, plus 8
+  // isolation cages per house. Block 1 has 24 tiers per level, Block 2 has 38.
+  // Mirrors migration 20261011090000_production_houses_cages_auto_expenses.
+  const houseDefs = [
+    { code: 'BLK1', name: 'Block 1 — Production House', tiersPerLevel: 24 },
+    { code: 'BLK2', name: 'Block 2 — Production House', tiersPerLevel: 38 },
+  ];
   const sectionDefs = [
     { code: 'A', sortOrder: 1, rows: ['A1', 'A2'] },
     { code: 'B', sortOrder: 2, rows: ['B1', 'B2'] },
     { code: 'C', sortOrder: 3, rows: ['C1', 'C2'] },
   ];
+  const levelName = (l: number) => `Level ${l}${l === 1 ? ' (Bottom)' : l === 4 ? ' (Top)' : ''}`;
 
-  for (const secDef of sectionDefs) {
-    let section = await prisma.farmSection.findFirst({
-      where: { blockId: block1.id, code: secDef.code },
+  for (const def of houseDefs) {
+    const block = await prisma.farmBlock.upsert({
+      where: { code: def.code },
+      create: { code: def.code, name: def.name, isActive: true, isUnderConstruction: false, tiersPerLevel: def.tiersPerLevel },
+      update: { name: def.name, isActive: true, isUnderConstruction: false, tiersPerLevel: def.tiersPerLevel },
     });
-    if (!section) {
-      section = await prisma.farmSection.create({
-        data: { blockId: block1.id, code: secDef.code, sortOrder: secDef.sortOrder },
+
+    const cages: any[] = [];
+    for (const secDef of sectionDefs) {
+      let section = await prisma.farmSection.findFirst({
+        where: { blockId: block.id, code: secDef.code },
       });
-    }
-    for (const rowCode of secDef.rows) {
-      const existingRow = await prisma.farmRow.findFirst({
-        where: { sectionId: section.id, rowCode },
-      });
-      if (!existingRow) {
-        await prisma.farmRow.create({
-          data: { sectionId: section.id, rowCode, isActive: true },
+      if (!section) {
+        section = await prisma.farmSection.create({
+          data: { blockId: block.id, code: secDef.code, sortOrder: secDef.sortOrder },
         });
       }
+      for (const rowCode of secDef.rows) {
+        let row = await prisma.farmRow.findFirst({
+          where: { sectionId: section.id, rowCode },
+        });
+        if (!row) {
+          row = await prisma.farmRow.create({
+            data: { sectionId: section.id, rowCode, isActive: true },
+          });
+        }
+        for (let level = 1; level <= block.levelsPerRow; level++) {
+          for (let tier = 1; tier <= block.tiersPerLevel; tier++) {
+            for (let cage = 1; cage <= block.cagesPerTier; cage++) {
+              const t = String(tier).padStart(2, '0');
+              cages.push({
+                blockId: block.id, rowId: row.id, levelNumber: level, tierNumber: tier, cageNumber: cage,
+                code: `${block.code}-${rowCode}-L${level}-T${t}-C${cage}`,
+                label: `${rowCode} · ${levelName(level)} · Tier ${t} · Cage ${cage}`,
+                capacity: block.birdsPerCage,
+              });
+            }
+          }
+        }
+      }
     }
+    for (let n = 1; n <= block.isolationCageCount; n++) {
+      cages.push({
+        blockId: block.id, cageNumber: n, isIsolation: true,
+        code: `${block.code}-ISO-${n}`, label: `Isolation Cage ${n}`, capacity: block.birdsPerCage,
+      });
+    }
+    await prisma.productionCage.createMany({ data: cages, skipDuplicates: true });
   }
-  console.log('✓ Farm infrastructure seeded (Block 1: 3 sections × 2 rows, Block 2: under construction)');
+  console.log('✓ Production houses seeded (Block 1: 24 tiers, Block 2: 38 tiers, 8 isolation cages each)');
 
   // ── Brooder Cage Map — 6 fixed rows/decks × 4 levels (bottom→top) ──────────
   // Mirrors what migration 20260621000000_phase9_brooder_cage_map seeds for

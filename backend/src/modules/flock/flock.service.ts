@@ -10,6 +10,7 @@ import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
 import { StoreInventoryService } from '../store/store-inventory.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
+import { ProductionCageService, HOUSE_CODES } from '../production/production-cage.service';
 import {
   BROODER_SESSION_WINDOWS,
   BrooderSessionKey,
@@ -37,6 +38,7 @@ export class FlockService {
     private readonly prisma: PrismaService,
     private readonly storeInventory: StoreInventoryService,
     private readonly notifications: NotificationsService,
+    private readonly productionCages: ProductionCageService,
   ) {}
 
   // A vaccine/supplement/treatment can be logged against any active store
@@ -153,20 +155,22 @@ export class FlockService {
     // Determine location first — needed for duplicate check and stage derivation
     const location: string = input.location ?? 'BROODER';
 
-    // Prevent duplicate active production house batch (only one block exists)
+    // Direct production-house registration: birds go into empty cages of the
+    // chosen house (Block 1 or Block 2). Several batches can share the
+    // production houses — the only limit is free cage space (4 birds/cage).
+    const houseCode = String(input.houseCode ?? 'BLK1').toUpperCase();
     if (location === 'PRODUCTION_HOUSE') {
-      const existingProductionBatch = await this.prisma.batch.findFirst({
-        where: {
-          location: 'PRODUCTION_HOUSE',
-          isActive: true,
-          deletedAt: null,
-          stage: { notIn: ['SOLD', 'DISCARDED', 'CLOSED'] as BatchStage[] },
-        },
-        select: { batchCode: true },
-      });
-      if (existingProductionBatch) {
+      if (!HOUSE_CODES.includes(houseCode as any)) {
+        throw new BadRequestException('Choose Production House Block 1 or Block 2');
+      }
+      const cap = await this.productionCages.capacity(houseCode);
+      const toPlace = quantity - Number(input.mortalityOnArrival ?? 0);
+      if (cap.freeSpaces === 0) {
+        throw new BadRequestException(`${cap.name} is full — no empty cages left.`);
+      }
+      if (toPlace > cap.freeSpaces) {
         throw new BadRequestException(
-          `An active batch (${existingProductionBatch.batchCode}) already exists in the Production House. Sell, discard, or close it before creating a new one.`,
+          `${cap.name} only has room for ${cap.freeSpaces} more birds (${toPlace} to place).`,
         );
       }
     }
@@ -258,38 +262,18 @@ export class FlockService {
           },
         });
 
-        // Create cage assignments for direct production-house registration.
-        // FarmRow field: rowCode (NOT code) — schema: @@unique([sectionId, rowCode]).
-        // BatchCageAssignment required fields: transferDate + assignedById (non-nullable).
-        // Uses upsert (consistent with BatchLifecycleService.updateBatchStage).
-        if (stage === BatchStage.PRODUCTION && Array.isArray(input.rowPlacements) && input.rowPlacements.length) {
-          const rowCodes: string[] = input.rowPlacements.map((r: any) => String(r.rowCode));
-          const rows = await tx.farmRow.findMany({
-            where: { rowCode: { in: rowCodes } },
-            select: { id: true, rowCode: true },
+        // Direct production-house registration: fill empty cages of the chosen
+        // house, per row when row counts were given, else anywhere in the house.
+        if (stage === BatchStage.PRODUCTION && location === 'PRODUCTION_HOUSE') {
+          const rows: { rowCode?: string; birds: number }[] =
+            Array.isArray(input.rowPlacements) && input.rowPlacements.some((r: any) => Number(r.birdCount) > 0)
+              ? input.rowPlacements
+                  .filter((r: any) => Number(r.birdCount) > 0)
+                  .map((r: any) => ({ rowCode: String(r.rowCode), birds: Number(r.birdCount) }))
+              : [{ birds: batch.currentBirdCount }];
+          await this.productionCages.placeBatchInHouse(tx, {
+            batchId: batch.id, houseCode, placements: rows, placedDate: dateReceived, userId,
           });
-          const rowIdByCode = Object.fromEntries(rows.map(r => [r.rowCode, r.id]));
-
-          for (const placement of input.rowPlacements) {
-            const rowId = rowIdByCode[placement.rowCode];
-            if (!rowId) continue; // gracefully skip unknown rowCodes
-            await tx.batchCageAssignment.upsert({
-              where: { rowId },
-              create: {
-                rowId,
-                batchId:      batch.id,
-                birdCount:    Number(placement.birdCount) || 0,
-                transferDate: new Date(),
-                assignedById: userId,
-              },
-              update: {
-                batchId:      batch.id,
-                birdCount:    Number(placement.birdCount) || 0,
-                transferDate: new Date(),
-                assignedById: userId,
-              },
-            });
-          }
         }
 
         // Create BrooderCageAssignment records for direct brooder registration

@@ -367,6 +367,7 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
   const batchId = session.batchId ?? session.batch?.id;
   const sameDaySessions = allSessions.filter(
     (s: any) => s.sessionDate === sessionDate && (s.batchId ?? s.batch?.id) === batchId
+      && (s.block ?? 'BLOCK1') === (session.block ?? 'BLOCK1')
   );
   const amApproved = sameDaySessions.some((s: any) => s.shift === 'AM' && s.status === 'APPROVED');
   const pmApproved = sameDaySessions.some((s: any) => s.shift === 'PM' && s.status === 'APPROVED');
@@ -377,6 +378,23 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
 
   return (
     <div className="border-t border-gray-100 dark:border-dark-border bg-gray-50/50 dark:bg-dark-bg/50 p-4 md:p-6 space-y-5">
+
+      {/* Per-cage mortalities — applied to the cage map on approval */}
+      {Array.isArray(session.mortalityCagesJson) && session.mortalityCagesJson.length > 0 && (
+        <div className="rounded-xl border border-red-100 dark:border-red-900/40 bg-red-50/60 dark:bg-red-900/10 p-3">
+          <p className="text-xs font-semibold text-red-700 dark:text-red-400 mb-1.5">
+            Mortalities by cage ({session.mortalities}) {session.mortalitiesAppliedAt ? '· applied to cage map' : '· applied when approved'}
+          </p>
+          <div className="space-y-0.5 text-xs text-gray-700 dark:text-gray-300">
+            {session.mortalityCagesJson.map((m: any) => (
+              <div key={m.cageCode} className="flex justify-between gap-2">
+                <span>{m.cageLabel ?? m.cageCode}{m.cause ? ` — ${m.cause}` : ''}</span>
+                <span className="font-semibold">{m.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* FIX-2: Day locked banner */}
       {dayFullyLocked && (
@@ -667,6 +685,7 @@ function EggSessionRow({ session, allSessions, isExpanded, onToggle, onApprove, 
   const batchId = session.batchId ?? session.batch?.id;
   const sameDaySessions = allSessions.filter(
     (s: any) => s.sessionDate === sessionDate && (s.batchId ?? s.batch?.id) === batchId
+      && (s.block ?? 'BLOCK1') === (session.block ?? 'BLOCK1')
   );
   const amApproved = sameDaySessions.some((s: any) => s.shift === 'AM' && s.status === 'APPROVED');
   const pmApproved = sameDaySessions.some((s: any) => s.shift === 'PM' && s.status === 'APPROVED');
@@ -689,6 +708,9 @@ function EggSessionRow({ session, allSessions, isExpanded, onToggle, onApprove, 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs bg-gray-100 dark:bg-dark-bg text-gray-500 px-2 py-0.5 rounded-full font-mono">{session.batch?.batchCode}</span>
+            <span className="text-xs bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded-full font-semibold">
+              {session.block === 'BLOCK2' ? 'Block 2' : 'Block 1'}
+            </span>
             <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${session.shift === 'PM' ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'}`}>
               {session.shift} Session
             </span>

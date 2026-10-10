@@ -9,6 +9,7 @@ import { AuthModule }     from './auth/auth.module';
 import { PrismaModule }   from './common/prisma/prisma.module';
 import { NotificationsModule } from './common/notifications/notifications.module';
 import { FeedWastageModule } from './common/feed/feed-wastage.module';
+import { AutoExpenseModule } from './common/finance/auto-expense.service';
 import { FlockModule }    from './modules/flock/flock.module';
 import { FeedModule }     from './modules/feed/feed.module';
 import { HealthModule }   from './modules/health/health.module';
@@ -37,6 +38,7 @@ import { WeightModule }   from './modules/weight/weight.module';
     PrismaModule,
     NotificationsModule,
     FeedWastageModule,
+    AutoExpenseModule,
 
     AuthModule,
     UsersModule,      // FIX: was missing — /users routes did not exist at all

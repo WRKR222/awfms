@@ -58,7 +58,8 @@ export class FlockController {
     @Body('stage') stage: BatchStage,
     @Body('rowPlacements') rowPlacements: Array<{ rowId: string; birdCount: number }>,
     @CurrentUser() user: any,
-  ) { return this.lifecycle.updateBatchStage(id, stage, user, rowPlacements); }
+    @Body('houseCode') houseCode?: string,
+  ) { return this.lifecycle.updateBatchStage(id, stage, user, rowPlacements, houseCode); }
 
   @Get('entries/pending')
   @RequirePermission(Permission.FLOCK_VIEW)

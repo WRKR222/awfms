@@ -462,6 +462,9 @@ model Batch {
   createdAt            DateTime   @default(now()) @map("created_at")
   updatedAt            DateTime   @updatedAt @map("updated_at")
   deletedAt            DateTime?  @map("deleted_at")
+  // Set when this batch was split off a brooder batch by a partial transfer
+  // into a production house (the rest of the parent stayed in the brooder).
+  parentBatchId        String?    @map("parent_batch_id")
 
   supplier              Supplier               @relation(fields: [supplierId], references: [id])
   house                 House                  @relation(fields: [houseId], references: [id])
@@ -487,6 +490,7 @@ model Batch {
   brooderDailyReviews         BrooderDailyReview[]
   storeProductionReport       StoreProductionReport?
   weightTrackPoints           BatchWeightTrackPoint[]
+  productionCageAssignments   ProductionCageAssignment[]
   @@index([stage])
   @@index([isActive])
   @@map("batches")
@@ -953,6 +957,14 @@ model EggCollectionSession {
   storeSignedById String?    @map("store_signed_by_id")
   storeSignedAt   DateTime?  @map("store_signed_at")
 
+  // Production house the session covers — "BLOCK1" | "BLOCK2". Each block is
+  // recorded once per shift per day (eggs, feed, vaccines, mortalities).
+  block              String    @default("BLOCK1")
+  // Per-cage mortality breakdown: [{ cageId, cageLabel, count, cause? }].
+  // Sums to `mortalities`. Applied to the cage map when the Manager approves.
+  mortalityCagesJson Json?     @map("mortality_cages_json")
+  mortalitiesAppliedAt DateTime? @map("mortalities_applied_at")
+
   
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -961,8 +973,9 @@ model EggCollectionSession {
   storeIntakes StoreEggIntake[]
   tally        EggTallyVerification?
 
-  @@unique([batchId, houseId, sessionDate, shift])
+  @@unique([batchId, houseId, sessionDate, shift, block])
   @@index([houseId, sessionDate])
+  @@index([block, sessionDate, shift])
   @@index([status])
   @@index([deletedAt])
   @@map("egg_collection_sessions")
@@ -1261,10 +1274,16 @@ model ExpenseLog {
   vendorName   String?  @map("vendor_name")
   receiptRef   String?  @map("receipt_ref")
   recordedById String   @map("recorded_by_id")
+  // Auto-logged expenses (store issues, egg breakage) carry the record that
+  // produced them so a re-submission updates the same row instead of
+  // duplicating it. Manual expenses leave both NULL.
+  sourceType   String?  @map("source_type")
+  sourceId     String?  @map("source_id")
   createdAt    DateTime @default(now()) @map("created_at")
 
   expenseCategory ExpenseCategory @relation(fields: [categoryId], references: [id])
 
+  @@unique([sourceType, sourceId])
   @@index([categoryId, expenseDate])
   @@index([batchId])
   @@map("expense_logs")
@@ -2856,10 +2875,18 @@ model FarmBlock {
   name                String
   isActive            Boolean  @default(true) @map("is_active")
   isUnderConstruction Boolean  @default(false) @map("is_under_construction")
+  // Physical layout of every row in this production house:
+  // levels (1 = bottom, 4 = top) × tiers per level × cages per tier.
+  levelsPerRow        Int      @default(4) @map("levels_per_row")
+  tiersPerLevel       Int      @default(24) @map("tiers_per_level")
+  cagesPerTier        Int      @default(4) @map("cages_per_tier")
+  birdsPerCage        Int      @default(4) @map("birds_per_cage")
+  isolationCageCount  Int      @default(8) @map("isolation_cage_count")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
-  farm_sections FarmSection[]
+  farm_sections   FarmSection[]
+  productionCages ProductionCage[]
 
   @@map("farm_blocks")
 }
@@ -2884,6 +2911,7 @@ model FarmRow {
 
   section     FarmSection          @relation(fields: [sectionId], references: [id], onDelete: Cascade)
   assignments BatchCageAssignment?
+  cages       ProductionCage[]
 
   @@map("farm_rows")
 }
@@ -2903,6 +2931,93 @@ model BatchCageAssignment {
   assignedBy User    @relation("CageAssignedBy", fields: [assignedById], references: [id])
 
   @@map("batch_cage_assignments")
+}
+
+// ─── Production House Cages ───────────────────────────────────────────────────
+// One physical cage in a production house. Regular cages sit in a FarmRow at
+// (levelNumber, tierNumber, cageNumber); isolation cages (8 per house) have no
+// row/level/tier — just cageNumber 1-8 and isIsolation = true. Every cage holds
+// at most `capacity` birds (4). BatchCageAssignment stays as the per-row
+// rollup of these cages for existing row-level reports.
+model ProductionCage {
+  id          String   @id @default(uuid())
+  blockId     String   @map("block_id")
+  rowId       String?  @map("row_id")
+  levelNumber Int?     @map("level_number") // 1 (bottom) - 4 (top)
+  tierNumber  Int?     @map("tier_number")
+  cageNumber  Int      @map("cage_number")  // 1-4 within a tier; 1-8 for isolation cages
+  isIsolation Boolean  @default(false) @map("is_isolation")
+  code        String   @unique
+  label       String
+  capacity    Int      @default(4)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  block         FarmBlock                    @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  row           FarmRow?                     @relation(fields: [rowId], references: [id])
+  assignment    ProductionCageAssignment?
+  mortalityLogs ProductionCageMortalityLog[]
+
+  @@index([blockId])
+  @@index([rowId, levelNumber])
+  @@map("production_cages")
+}
+
+model ProductionCageAssignment {
+  id              String   @id @default(uuid())
+  cageId          String   @unique @map("cage_id")
+  batchId         String   @map("batch_id")
+  birdCount       Int      @default(0) @map("bird_count")
+  placedDate      DateTime @map("placed_date") @db.Date
+  notes           String?
+  isolationReason String?  @map("isolation_reason")
+  assignedById    String   @map("assigned_by_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  cage  ProductionCage @relation(fields: [cageId], references: [id], onDelete: Cascade)
+  batch Batch          @relation(fields: [batchId], references: [id])
+
+  @@index([batchId])
+  @@map("production_cage_assignments")
+}
+
+model ProductionCageMortalityLog {
+  id           String   @id @default(uuid())
+  cageId       String   @map("cage_id")
+  batchId      String   @map("batch_id")
+  sessionId    String?  @map("session_id")
+  logDate      DateTime @map("log_date") @db.Date
+  count        Int
+  cause        String?
+  notes        String?
+  recordedById String   @map("recorded_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  cage ProductionCage @relation(fields: [cageId], references: [id], onDelete: Cascade)
+
+  @@index([batchId, logDate])
+  @@index([sessionId])
+  @@map("production_cage_mortality_logs")
+}
+
+// Cage reassignment recorded in the attendant's own words. `parsedJson` is
+// what the system understood (moves / set-counts); `applied` says whether it
+// was written to the cage map or kept as a note only.
+model ProductionCageReassignment {
+  id             String   @id @default(uuid())
+  blockCode      String   @map("block_code")
+  batchId        String?  @map("batch_id")
+  description    String
+  parsedJson     Json?    @map("parsed_json")
+  applied        Boolean  @default(false)
+  appliedSummary String?  @map("applied_summary")
+  effectiveDate  DateTime @map("effective_date") @db.Date
+  recordedById   String   @map("recorded_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([blockCode, effectiveDate])
+  @@map("production_cage_reassignments")
 }
 
 // ─── Simple Stock Request ─────────────────────────────────────────────────────

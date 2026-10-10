@@ -1238,7 +1238,7 @@ export class BrooderService {
    *  that can't be matched to a real row/level rather than guessing. */
   private async resolveParsedBlocks(parsed: ParsedCageBlock[]): Promise<BulkReassignCagesDto['blocks']> {
     const rows = await this.prisma.brooderRow.findMany({
-      include: { levels: true },
+      include: { levels: { include: { _count: { select: { cages: true } } } } },
       orderBy: { rowNumber: 'asc' },
     });
 
@@ -1260,11 +1260,15 @@ export class BrooderService {
         }
         return level.id;
       });
+      // "all cages" → every cage on the (smallest) level named.
+      const cageCount = p.allCages
+        ? Math.min(...row.levels.filter(l => levelIds.includes(l.id)).map(l => l._count.cages))
+        : p.cageCount;
       return {
         rowId: row.id,
         levelIds,
         startCageNumber: p.startCageNumber,
-        cageCount: p.cageCount,
+        cageCount,
         birdsPerCage: p.birdsPerCage,
         isIsolation: p.isIsolation,
         isolationReason: p.isolationReason ?? undefined,

@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { AutoExpenseService } from '../../common/finance/auto-expense.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { NotificationType, UserRole, StoreItemCategory } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
@@ -141,6 +142,7 @@ export class StoreInventoryService {
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
     private readonly issuancePlanService: IssuancePlanService,
+    private readonly autoExpense: AutoExpenseService,
   ) {}
 
 
@@ -473,6 +475,11 @@ export class StoreInventoryService {
 
       return { stockOuts: created, updatedItem: ui };
     });
+
+    // Every Store issue is automatically an Accountant expense.
+    for (const so of stockOuts) {
+      await this.autoExpense.logStockOutSafe(this.prisma, so.id);
+    }
 
     // Increment each contributing plan item's running issued quantity
     for (const alloc of planAllocations) {

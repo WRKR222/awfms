@@ -3,7 +3,7 @@ import { usePendingEntries, useBatches } from '../../hooks/useFlock';
 import { useAuthStore } from '../../stores/auth.store';
 import { AlertTriangle, Package, ClipboardCheck, Heart, Users, ChevronRight, Flame } from 'lucide-react';
 import { useManagerRealtime } from '../../hooks/useRealtime';
-import { CageMap } from '../../components/shared/CageMap';
+import { ProductionCageMap } from '../../components/shared/ProductionCageMap';
 import { useNavigate } from 'react-router-dom';
 import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
@@ -154,12 +154,8 @@ export function ManagerHome() {
 
       {/* Production House Cage Map */}
       <div>
-        <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Production House — Cage Map</p>
-        <div className="rounded-2xl overflow-hidden shadow-sm border border-dark-border">
-          <div style={{ background: '#060c08', padding: '16px 20px' }}>
-            <CageMap blockCode="BLK1" compact={false} />
-          </div>
-        </div>
+        <p className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3">Production Houses — Cage Map (Block 1 &amp; Block 2)</p>
+        <ProductionCageMap editable />
       </div>
 
       {/* Brooder Live Cage Map */}

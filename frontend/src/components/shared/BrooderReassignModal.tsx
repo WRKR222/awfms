@@ -104,7 +104,9 @@ export function BrooderReassignModal({ batch, onClose }: Props) {
   useEffect(() => { setReassignPreview(null); }, [reassignDescription, placedDate]);
 
   const REASSIGN_DESCRIPTION_PLACEHOLDER =
-    'Row F Level 4:\n1-33: 9 birds each\n34: 8 birds\n35-39: 9 birds each\n40: 8 birds\n41-44: 9 birds each';
+    'Put 9 birds each in cages 1 to 33 of row F, level 4, and 8 birds in cage 34.\n' +
+    'Cages 35-39 have 9 each, 40 has 8, 41 to 44 have 9.\n' +
+    'Row B top level cage 44: 3 birds isolated because they were coughing';
 
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -193,8 +195,8 @@ export function BrooderReassignModal({ batch, onClose }: Props) {
             <Info className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
             <span className="text-gray-600 dark:text-gray-300">
               Describe the new layout instead of moving birds cage-by-cage — pick <strong>Blocks</strong> to
-              build it with row/level pickers, or <strong>Describe layout</strong> to type it out (handles
-              mixed counts, like "cages 1-33 have 9 birds, 34 has 8" in one go). This{' '}
+              build it with row/level pickers, or <strong>Describe layout</strong> to write it in your own
+              words (any wording, mixed counts like "cages 1-33 have 9 birds, 34 has 8" in one go). This{' '}
               <strong>replaces the batch's entire cage layout</strong> with what you define below.
             </span>
           </div>
@@ -339,9 +341,11 @@ export function BrooderReassignModal({ batch, onClose }: Props) {
                   placeholder={REASSIGN_DESCRIPTION_PLACEHOLDER}
                 />
                 <p className="text-[11px] text-gray-400 mt-1">
-                  Start each row with "Row &lt;letter&gt; Level &lt;number&gt;:", then list cage ranges and
-                  bird counts, one per line. Add "(isolation: reason)" after a row/level header or a segment
-                  to mark it as isolation.
+                  Write it however you'd say it — no fixed format or word order. Mention the row, the
+                  level(s) (or top / bottom), the cages and how many birds, e.g. "put 9 birds each in cages
+                  1 to 33 of row F level 4, and 8 in cage 34", or "row B bottom level cage 44 has 3 birds
+                  isolated because they're coughing". Row and level carry over to the next line. Preview to
+                  check before saving.
                 </p>
               </div>
 

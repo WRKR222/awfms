@@ -1,22 +1,17 @@
 // src/components/shared/BrooderCageMapGrid.tsx
 // Brooder Cage Map — fixed 6 rows/decks × 4 levels (bottom→top) grid.
 //
-// The cage map is now VIEW + ASSIGN only, plus one action:
-//   • Tap an EMPTY cell            → assign a batch to it.
-//   • Tap an OCCUPIED cell, or its
-//     "Daily Log" action button    → opens the unified Daily Log form
-//     (session / daily entry / treatment / feed / mortality — one submit),
-//     pre-scoped to that row & level.
+// The cage map is VIEW + ASSIGN only:
+//   • Tap an EMPTY cell     → assign a batch to it.
+//   • Tap an OCCUPIED cell  → show / hide its individual cages.
 //
-// Removed from the cage map (per farm-ops simplification): the old
-// "Reassign birds" button, "Log Weight", "Log Mortality", and "Log heat"
-// row-level action. Reassign's old slot is now the Daily Log action;
-// mortality can still be logged per-row/level/cage — just via the Daily
-// Log form's Mortality section instead of a dedicated cage-map button.
+// There is no Daily Log action on the map any more (per row or per level) —
+// the daily log is recorded from the batch panels / the auto-opening session
+// popup on the Brooder page.
 
 import { useState } from 'react';
 import {
-  Flame, Bird, AlertTriangle, CheckCircle2, Clock, Layers, Grid3x3, Lock, ClipboardList,
+  Flame, Bird, AlertTriangle, CheckCircle2, Clock, Layers, Grid3x3, Lock,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
 import {
@@ -42,16 +37,14 @@ function varianceColor(pct: number | null) {
 //   │ Today: 1.2/1.5kg            │
 //   │ Week: 8.4/10kg              │
 //   │ ⚖ 320g (300-340g)           │
-//   ├──────────────────────────────┤
-//   │           📋 Daily Log       │  ← action bar — always below content
 //   └──────────────────────────────┘
 
 function LevelCell({
   level,
-  onOpenLog,
+  onSelect,
 }: {
-  level:     BrooderLevelData;
-  onOpenLog: (level: BrooderLevelData) => void;
+  level:    BrooderLevelData;
+  onSelect: (level: BrooderLevelData) => void;
 }) {
   const occupied = !!level.assignment;
   const [showCages, setShowCages] = useState(false);
@@ -86,10 +79,10 @@ function LevelCell({
             : 'bg-amber-950/30 border-amber-700/40 hover:border-amber-500/60'
         : 'bg-white/5 border-white/10 hover:border-white/20'
     }`}>
-      {/* ── Content area — tapping opens the Daily Log form (occupied) or
-           the assign flow (empty), handled by the parent's onSelect ── */}
+      {/* ── Content area — empty: assign flow (parent's onSelect);
+           occupied: toggles the per-cage breakdown below ── */}
       <button
-        onClick={() => onOpenLog(level)}
+        onClick={() => (occupied ? setShowCages(v => !v) : onSelect(level))}
         className="w-full text-left p-2.5 flex-1"
       >
         <div className="flex items-center justify-between gap-1 min-w-0">
@@ -207,19 +200,6 @@ function LevelCell({
         </div>
       )}
 
-      {/* ── Action bar — Daily Log (session/daily entry/treatment/feed/mortality) ── */}
-      {occupied && (
-        <div className="flex items-center justify-end gap-0.5 px-2 pb-1.5 pt-1 border-t border-white/5">
-          <button
-            onClick={e => { e.stopPropagation(); onOpenLog(level); }}
-            className="flex items-center gap-1 px-2 py-1 rounded hover:bg-amber-900/40 transition-colors group"
-            title="Open Daily Log — session, daily entry, treatment, feed & mortality"
-          >
-            <ClipboardList className="w-3 h-3 text-white/40 group-hover:text-amber-400 transition-colors" />
-            <span className="text-[9px] font-semibold text-white/40 group-hover:text-amber-300 transition-colors">Daily Log</span>
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -228,10 +208,10 @@ function LevelCell({
 
 function RowBlock({
   row,
-  onOpenLog,
+  onSelect,
 }: {
-  row:       BrooderRowData;
-  onOpenLog: (level: BrooderLevelData, row: BrooderRowData) => void;
+  row:      BrooderRowData;
+  onSelect: (level: BrooderLevelData, row: BrooderRowData) => void;
 }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3">
@@ -251,7 +231,7 @@ function RowBlock({
           <LevelCell
             key={level.levelId}
             level={level}
-            onOpenLog={l => onOpenLog(l, row)}
+            onSelect={l => onSelect(l, row)}
           />
         ))}
       </div>
@@ -263,13 +243,9 @@ function RowBlock({
 
 export function BrooderCageMapGrid({
   onSelectLevel,
-  onOpenLog,
 }: {
   /** Called when an EMPTY cell is tapped — parent opens the assign modal. */
   onSelectLevel?: (level: BrooderLevelData, row: BrooderRowData) => void;
-  /** Called when an OCCUPIED cell (or its Daily Log button) is tapped —
-   *  parent opens the unified Daily Log form, scoped to this row/level. */
-  onOpenLog?:     (level: BrooderLevelData, row: BrooderRowData) => void;
 }) {
   const { data, isLoading } = useBrooderCageMap();
 
@@ -297,11 +273,7 @@ export function BrooderCageMapGrid({
   const totalIsolatedBirds = isolatedCages.reduce((s, c) => s + c.birdCount, 0);
 
   const handleOpenLevel = (level: BrooderLevelData, row: BrooderRowData) => {
-    if (level.assignment) {
-      onOpenLog?.(level, row);
-    } else {
-      onSelectLevel?.(level, row);
-    }
+    if (!level.assignment) onSelectLevel?.(level, row);
   };
 
   return (
@@ -331,7 +303,7 @@ export function BrooderCageMapGrid({
           <CheckCircle2 className="w-3 h-3 text-green-400" /> Feed on target
         </span>
         <span className="text-[10px] text-white/30 flex items-center gap-1">
-          <ClipboardList className="w-3 h-3 text-amber-400/70" /> Tap a cage — Daily Log (session · entry · treatment · feed · mortality)
+          <Grid3x3 className="w-3 h-3 text-amber-400/70" /> Tap an empty level to assign · an occupied level to see its cages
         </span>
         <span className="text-[10px] text-white/30 flex items-center gap-1">
           <Lock className="w-3 h-3 text-purple-400/70" /> Isolation cage
@@ -390,7 +362,7 @@ export function BrooderCageMapGrid({
               <RowBlock
                 key={row.rowId}
                 row={row}
-                onOpenLog={handleOpenLevel}
+                onSelect={handleOpenLevel}
               />
             ))}
           </div>

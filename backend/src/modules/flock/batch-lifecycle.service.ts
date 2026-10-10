@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { BatchStage } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
+import { ProductionCageService, HOUSE_CODES } from '../production/production-cage.service';
 
 // Valid lifecycle transitions: from → allowed_to[]
 const VALID_TRANSITIONS: Record<BatchStage, BatchStage[]> = {
@@ -22,7 +23,10 @@ const VALID_TRANSITIONS: Record<BatchStage, BatchStage[]> = {
 
 @Injectable()
 export class BatchLifecycleService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly productionCages: ProductionCageService,
+  ) {}
 
   /** Validate that a stage transition is allowed. Throws BadRequestException if not. */
   validateLifecycleTransition(from: BatchStage, to: BatchStage): void {
@@ -93,6 +97,7 @@ export class BatchLifecycleService {
     newStage: BatchStage,
     user: RequestUser,
     rowPlacements?: Array<{ rowId: string; birdCount: number }>,
+    houseCode?: string,
   ) {
     const batch = await this.prisma.batch.findUnique({ where: { id: batchId } });
     if (!batch) throw new NotFoundException(`Batch ${batchId} not found`);
@@ -119,44 +124,31 @@ export class BatchLifecycleService {
         await tx.brooderLevelAssignment.deleteMany({ where: { batchId } });
       }
 
-      // When moving to PRODUCTION, write row assignments
-      // rowPlacements may contain rowCode strings (e.g. "A1") instead of UUIDs
-      // Resolve them to actual FarmRow IDs
-      if (newStage === BatchStage.PRODUCTION && rowPlacements?.length) {
-        // Check if first rowId looks like a UUID or a rowCode
-        const isRowCode = rowPlacements[0]?.rowId && !rowPlacements[0].rowId.includes('-');
-        
-        let resolvedPlacements = rowPlacements;
-        if (isRowCode) {
-          const rowCodes = rowPlacements.map(p => p.rowId);
-          const rows = await tx.farmRow.findMany({
-            where: { rowCode: { in: rowCodes } },
-            select: { id: true, rowCode: true },
-          });
-          const rowIdByCode = Object.fromEntries(rows.map(r => [r.rowCode, r.id]));
-          resolvedPlacements = rowPlacements
-            .map(p => ({ ...p, rowId: rowIdByCode[p.rowId] ?? p.rowId }))
-            .filter(p => p.rowId); // skip unresolved
-        }
+      // Leaving the production house (sold / discarded / closed) frees its cages.
+      if (batch.stage === BatchStage.PRODUCTION && newStage !== BatchStage.PRODUCTION) {
+        const rows = await tx.productionCage.findMany({
+          where: { assignment: { batchId } }, select: { rowId: true },
+        });
+        await tx.productionCageAssignment.deleteMany({ where: { batchId } });
+        await this.productionCages.recomputeRowRollups(tx, rows.map(r => r.rowId!).filter(Boolean), user.id);
+      }
 
-        for (const placement of resolvedPlacements) {
-          await tx.batchCageAssignment.upsert({
-            where: { rowId: placement.rowId },
-            create: {
-              rowId:        placement.rowId,
-              batchId,
-              birdCount:    placement.birdCount,
-              transferDate: new Date(),
-              assignedById: user.id,
-            },
-            update: {
-              batchId,
-              birdCount:    placement.birdCount,
-              transferDate: new Date(),
-              assignedById: user.id,
-            },
-          });
-        }
+      // When moving to PRODUCTION, place the birds into empty cages of the
+      // chosen production house (Block 1 by default), optionally pinned per
+      // row. The per-row BatchCageAssignment rollup is maintained from the
+      // cages. Partial transfers go through ProductionCageService.transferFromBrooder.
+      if (newStage === BatchStage.PRODUCTION && rowPlacements?.length) {
+        const code = (houseCode ?? 'BLK1').toUpperCase();
+        if (!HOUSE_CODES.includes(code as any)) throw new BadRequestException('Unknown production house');
+        await this.productionCages.placeBatchInHouse(tx, {
+          batchId,
+          houseCode: code,
+          placements: rowPlacements
+            .filter(p => Number(p.birdCount) > 0)
+            .map(p => ({ rowCode: p.rowId, birds: Number(p.birdCount) })),
+          placedDate: new Date(),
+          userId: user.id,
+        });
       }
 
       return updated;

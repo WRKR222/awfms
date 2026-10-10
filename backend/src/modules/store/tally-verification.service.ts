@@ -13,12 +13,13 @@
 //     a tally.locked event.
 
 import {
-  Injectable, NotFoundException, BadRequestException, ForbiddenException,
+  Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { RequestUser } from '../../auth/types/request-user.type';
+import { AutoExpenseService, AUTO_EXPENSE_SOURCES, EGG_BREAKAGE_CATEGORY } from '../../common/finance/auto-expense.service';
 
 type Party = 'PM' | 'SALES' | 'STORE';
 
@@ -34,7 +35,10 @@ export class TallyVerificationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventEmitter2,
+    private readonly autoExpense: AutoExpenseService,
   ) {}
+
+  private readonly logger = new Logger(TallyVerificationService.name);
 
   // ─── Called by production.service when PM session is approved ───────────────
   // Creates tally records for BOTH AM and PM sessions so they appear on each
@@ -89,7 +93,7 @@ export class TallyVerificationService {
       include: {
         session: {
           select: {
-            id: true, sessionDate: true, shift: true, status: true,
+            id: true, sessionDate: true, shift: true, status: true, block: true,
             houseId: true, totalGoodEggs: true,
             totalFullTrays: true, totalLooseEggs: true,
             totalStarterEggs: true, totalBrokenSellable: true,
@@ -158,7 +162,7 @@ export class TallyVerificationService {
     const totalFullTrays = Math.floor(totalGoodEggs / 30);
     const totalLooseEggs = totalGoodEggs % 30;
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.eggCollectionSession.update({
         where: { id: sessionId },
         data: {
@@ -207,6 +211,33 @@ export class TallyVerificationService {
       }
       return updated;
     });
+
+    // Keep the auto-logged egg-loss expenses in step with the edit: damaged
+    // eggs are re-costed now; the broken split was cleared, so its expense
+    // drops to zero until the PM re-signs with the new split.
+    try {
+      const session = await this.prisma.eggCollectionSession.findUnique({
+        where: { id: sessionId },
+        include: { batch: { select: { batchCode: true } } },
+      });
+      if (session) {
+        await this.autoExpense.logCollectionDamaged(this.prisma, session, session.batch.batchCode, user.id);
+        await this.autoExpense.upsertForSource(this.prisma, {
+          sourceType: AUTO_EXPENSE_SOURCES.TALLY_BROKEN_SPLIT,
+          sourceId: sessionId,
+          categoryName: EGG_BREAKAGE_CATEGORY,
+          amount: 0,
+          description: `Tally broken-egg split — reset after Manager edit, awaiting PM re-sign.`,
+          expenseDate: session.sessionDate,
+          batchId: session.batchId,
+          receiptRef: `TALLY-${sessionId.slice(0, 8)}`,
+          userId: user.id,
+        });
+      }
+    } catch (err) {
+      this.logger.warn(`Expense refresh after tally edit failed for session ${sessionId}: ${(err as Error).message}`);
+    }
+    return result;
   }
 
   /**
@@ -397,13 +428,11 @@ export class TallyVerificationService {
       data.storeRowData = tally.session.rowData;
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       // Correct the session's broken sellable/unsellable split (was
-      // conservatively defaulted to 100% unsellable at collection time) and
-      // log an adjusting expense entry for the difference, now that the
-      // actual classification is known.
+      // conservatively defaulted to 100% unsellable at collection time).
+      // The matching expense is logged after the transaction commits.
       if (brokenSplitToApply) {
-        const session = tally.session as any;
         await tx.eggCollectionSession.update({
           where: { id: sessionId },
           data: {
@@ -411,42 +440,6 @@ export class TallyVerificationService {
             totalBrokenUnsellable: brokenSplitToApply.unsellable,
           },
         });
-
-        try {
-          const collDate = new Date(session.sessionDate);
-          collDate.setHours(0, 0, 0, 0);
-          const pricing = await tx.dailyEggPrice.findUnique({ where: { priceDate: collDate } });
-          const costPerEgg        = pricing?.pricePerEgg       ? Number(pricing.pricePerEgg)       : 0;
-          const pricePerEggBroken = pricing?.pricePerEggBroken ? Number(pricing.pricePerEggBroken) : 0;
-          if (costPerEgg > 0) {
-            const provisionalLoss = (session.totalBrokenEggs ?? 0) * costPerEgg;
-            const actualLoss =
-              brokenSplitToApply.unsellable * costPerEgg +
-              brokenSplitToApply.sellable   * Math.max(0, costPerEgg - pricePerEggBroken);
-            const diff = Math.round((actualLoss - provisionalLoss) * 100) / 100;
-            if (diff !== 0) {
-              let cat = await tx.expenseCategory.findUnique({ where: { name: 'Egg Breakage' } });
-              if (!cat) {
-                cat = await tx.expenseCategory.create({
-                  data: { name: 'Egg Breakage', description: 'Auto-logged egg breakage losses', createdById: user.id },
-                });
-              }
-              await tx.expenseLog.create({
-                data: {
-                  categoryId:   cat.id,
-                  description:  `Broken-egg classification adjustment — Sales split ${session.shift} session ` +
-                    `${sessionId.slice(0, 8)} into ${brokenSplitToApply.sellable} sellable / ` +
-                    `${brokenSplitToApply.unsellable} unsellable (was provisionally all unsellable).`,
-                  amount:       diff,
-                  expenseDate:  collDate,
-                  vendorName:   null,
-                  receiptRef:   `COLL-ADJ-${sessionId.slice(0, 8)}`,
-                  recordedById: user.id,
-                },
-              });
-            }
-          }
-        } catch (_) { /* best-effort adjustment logging — split itself already saved above */ }
       }
 
       const updated = await tx.eggTallyVerification.update({
@@ -463,9 +456,11 @@ export class TallyVerificationService {
         where: {
           batchId: session.batchId,
           houseId: session.houseId,
+          block: session.block,
           sessionDate: session.sessionDate,
           shift: siblingShift,
           status: 'APPROVED',
+          deletedAt: null,
         },
       });
 
@@ -509,6 +504,7 @@ export class TallyVerificationService {
               sessionDate: session.sessionDate,
               shift: { in: ['AM', 'PM'] },
               status: 'APPROVED',
+              deletedAt: null,
             },
           });
 
@@ -613,6 +609,46 @@ export class TallyVerificationService {
       }
       return locked;
     });
+
+    if (brokenSplitToApply) {
+      await this.logBrokenSplitExpense(tally.session as any, brokenSplitToApply, user.id);
+    }
+    return result;
+  }
+
+  /**
+   * Broken eggs become an Accountant expense once the PM has split them:
+   * unsellable × standard bulk price + sellable × (bulk − broken price).
+   * Sessions submitted before this rule still carry the old provisional
+   * "all broken = full loss" entry (receipt COLL-<id>, no source) plus any
+   * old adjusting entries — those amounts are netted off so nothing is
+   * counted twice.
+   */
+  private async logBrokenSplitExpense(
+    session: { id: string; sessionDate: Date; shift: string; block?: string | null; batchId: string; totalBrokenEggs?: number },
+    split: { sellable: number; unsellable: number },
+    userId: string,
+  ) {
+    try {
+      const ref = session.id.slice(0, 8);
+      let alreadyExpensed = 0;
+      const legacyProvisional = await this.prisma.expenseLog.findFirst({
+        where: { receiptRef: `COLL-${ref}`, sourceType: null },
+      });
+      if (legacyProvisional && (session.totalBrokenEggs ?? 0) > 0) {
+        const day = new Date(session.sessionDate);
+        const price = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: day } });
+        alreadyExpensed += (session.totalBrokenEggs ?? 0) * Number(price?.pricePerEgg ?? 0);
+        const legacyAdjustments = await this.prisma.expenseLog.findMany({
+          where: { receiptRef: `COLL-ADJ-${ref}`, sourceType: null },
+          select: { amount: true },
+        });
+        alreadyExpensed += legacyAdjustments.reduce((s, e) => s + Number(e.amount), 0);
+      }
+      await this.autoExpense.logTallyBrokenSplit(this.prisma, session, split, userId, alreadyExpensed);
+    } catch (err) {
+      this.logger.warn(`Broken-split expense logging failed for session ${session.id}: ${(err as Error).message}`);
+    }
   }
 
   /** Accountant / Owner sets the expected morning revenue after the tally is locked. */

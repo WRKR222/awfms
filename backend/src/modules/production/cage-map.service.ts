@@ -210,11 +210,22 @@ export class CageMapService {
    * rowCode with no active assignment for this batch is skipped rather than
    * guessed at.
    */
-  async syncRowPopulations(batchId: string, rowData: Array<{ rowCode: string; totalBirds: number }>) {
+  async syncRowPopulations(
+    batchId: string,
+    rowData: Array<{ rowCode: string; totalBirds: number }>,
+    blockCode = 'BLK1',
+  ) {
     if (!Array.isArray(rowData) || rowData.length === 0) return;
 
+    // Row codes repeat across production houses (A1 … C2 in both blocks), so
+    // only this session's block is considered. Rows tracked per cage are
+    // skipped — their headcount comes from the cages themselves (see
+    // ProductionCageService.recomputeRowRollups).
     const assignments = await this.prisma.batchCageAssignment.findMany({
-      where: { batchId },
+      where: {
+        batchId,
+        row: { section: { block: { code: blockCode } }, cages: { none: { assignment: { isNot: null } } } },
+      },
       include: { row: { select: { rowCode: true } } },
     });
     if (assignments.length === 0) return;

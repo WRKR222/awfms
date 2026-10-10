@@ -12,8 +12,8 @@
 //   • 3pm      (3pm–5pm)            — one reading, water, vaccines/
 //     supplements, feed, mortalities.
 // Which popup is open is decided server-side (farm-local time) via
-// useBrooderSessionStatus — the batch panel's buttons and the cage map's
-// tap-to-log flow both defer to it rather than the viewer's own clock.
+// useBrooderSessionStatus — the batch panel's buttons defer to it rather
+// than the viewer's own clock. The cage map itself has no Daily Log action.
 // Cage Reassignment is a separate, always-available action
 // (<BrooderReassignModal>) — it isn't part of the daily log any more.
 //   • Log history grouped by date with sessions shown as a compact timeline.
@@ -31,7 +31,7 @@ import {
 import { BrooderCageMapGrid }        from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement }    from '../../components/shared/BrooderFeedRequirement';
 import { BrooderLevelAssignModal }   from '../../components/shared/BrooderLevelAssignModal';
-import { BrooderSessionLogModal, type BrooderLogPresetScope } from '../../components/shared/BrooderSessionLogModal';
+import { BrooderSessionLogModal } from '../../components/shared/BrooderSessionLogModal';
 import { BrooderReassignModal }      from '../../components/shared/BrooderReassignModal';
 import { BrooderControlStandardPanel } from '../../components/shared/BrooderControlStandardPanel';
 import { LoadErrorNote } from '../../components/shared/LoadErrorNote';
@@ -592,9 +592,7 @@ export function BrooderPage() {
 
   const { data: cageMapData }                  = useBrooderCageMap();
   const [assignTarget, setAssignTarget]        = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
-  const [logTarget,    setLogTarget]           = useState<{ level: BrooderLevelData; row: BrooderRowData } | null>(null);
-  // Tapping a cage on the map opens whichever of the 3 daily-log popups is
-  // currently open (server-decided) — pre-scoped to that row/level.
+  // Whichever of the 3 daily-log popups is open right now (server-decided).
   const { data: sessionStatus } = useBrooderSessionStatus();
   const openSessionKey = sessionStatus?.sessions.find(s => s.open)?.key ?? null;
   const today = sessionStatus?.farmDate ?? dayjs().format('YYYY-MM-DD');
@@ -673,24 +671,6 @@ export function BrooderPage() {
     }
   };
 
-  // Full batch record for whichever level's Daily Log form is open — the
-  // cage map only gives us batchId/birdCount, so we look up the full
-  // batch object (id, currentBirdCount, dateOfHatch, ...) the form needs.
-  const logTargetBatch = logTarget?.level.assignment
-    ? brooderBatches.find(b => b.id === logTarget.level.assignment!.batchId) ?? null
-    : null;
-  const logTargetScope: BrooderLogPresetScope | null = logTarget
-    ? {
-        rowId:      logTarget.row.rowId,
-        rowLabel:   logTarget.row.label,
-        levelId:    logTarget.level.levelId,
-        levelLabel: logTarget.level.label,
-        cages:      logTarget.level.cages
-          .filter(c => c.assignment)
-          .map(c => ({ cageId: c.cageId, label: c.label, birdCount: c.assignment!.birdCount })),
-      }
-    : null;
-
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-6">
 
@@ -713,28 +693,20 @@ export function BrooderPage() {
         <BrooderFeedRequirement />
       </div>
 
-      {/* ── SECTION 3: Cage Map — view & assign only, plus one Daily Log action ── */}
+      {/* ── SECTION 3: Cage Map — view & assign only ── */}
       <div className="space-y-2">
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-3 text-xs text-amber-700 dark:text-amber-400 flex items-start gap-2">
           <HeartCrack className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-500" />
           <div>
-            <p className="font-semibold">Cage Map — tap an empty cage to assign a batch · tap an occupied cage (or its <span className="text-amber-600">Daily Log</span> button) to record session, daily entry, treatment, feed &amp; mortality for that row/level</p>
+            <p className="font-semibold">Cage Map — tap an empty level to assign a batch · tap an occupied level to see its cages</p>
             <p className="mt-0.5 text-amber-600 dark:text-amber-500">
-              Feed is always logged for the whole unit. Mortality can be logged per row/level/cage from the Daily Log form, or against the whole batch from the batch panel below — whichever the farm uses.
+              Daily logs (session readings, treatment, feed &amp; mortality) are recorded from the batch panels below.
+              Use <span className="font-semibold">Cage Reassignment</span> on a batch panel to describe moves in your own words.
             </p>
           </div>
         </div>
 
-        <BrooderCageMapGrid
-          onSelectLevel={handleSelectLevel}
-          onOpenLog={(level, row) => {
-            if (!openSessionKey) {
-              alert('No daily-log popup is open right now. The Morning popup opens at 12am (closes 9am), the 11am popup opens at 11am (locks 1pm), and the 3pm popup opens at 3pm (closes 5pm).');
-              return;
-            }
-            setLogTarget({ level, row });
-          }}
-        />
+        <BrooderCageMapGrid onSelectLevel={handleSelectLevel} />
       </div>
 
       {/* ── SECTION 4: Batch panels — daily log + treatment ── */}
@@ -779,20 +751,10 @@ export function BrooderPage() {
           onClose={() => setAssignTarget(null)}
         />
       )}
-      {logTarget && logTargetBatch && logTargetScope && openSessionKey && (
-        <BrooderSessionLogModal
-          batch={logTargetBatch}
-          session={openSessionKey}
-          presetScope={logTargetScope}
-          onClose={() => setLogTarget(null)}
-        />
-      )}
-
       {/* Auto-popped current time-slot log — shown on top, first thing the
           attendant sees, for the first active batch still missing today's
-          open popup. Suppressed while the attendant has deliberately opened
-          a cage-map-scoped log (logTarget) so the two never stack. */}
-      {!logTarget && autoLogBatch && openSessionKey && (
+          open popup. */}
+      {autoLogBatch && openSessionKey && (
         <BrooderSessionLogModal
           batch={autoLogBatch}
           session={openSessionKey}
