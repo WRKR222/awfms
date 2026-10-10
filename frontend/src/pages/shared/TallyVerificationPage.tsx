@@ -59,6 +59,7 @@ interface TallySession {
   session?: {
     houseId: string;
     shift: string;
+    block?: string;
     sessionDate: string;
     totalGoodEggs: number;
     totalFullTrays: number;
@@ -642,11 +643,11 @@ function TallyCard({ tally }: { tally: TallySession }) {
   );
 }
 
-// Group tallies by date+batchId and render AM before PM within each group
+// Group tallies by date+batchId+block and render AM before PM within each group
 function groupTallies(tallies: TallySession[]): TallySession[][] {
   const map = new Map<string, TallySession[]>();
   for (const t of tallies) {
-    const key = `${t.session?.sessionDate ?? t.verificationDate}_${t.session?.batchId ?? ''}`;
+    const key = `${t.session?.sessionDate ?? t.verificationDate}_${t.session?.batchId ?? ''}_${t.session?.block ?? 'BLOCK1'}`;
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(t);
   }
@@ -692,7 +693,7 @@ export default function TallyVerificationPage() {
               <div key={gi}>
                 <div className="flex items-center gap-2 mb-3">
                   <p className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-widest">
-                    {dateLabel} — {batchCode}
+                    {dateLabel} — {batchCode} · {firstSession?.block === 'BLOCK2' ? 'Block 2' : 'Block 1'}
                   </p>
                   <div className="flex-1 border-t border-gray-100 dark:border-dark-border" />
                 </div>

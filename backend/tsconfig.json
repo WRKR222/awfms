@@ -31,6 +31,8 @@
     "prisma.config.ts",
     "scripts",
     "src/modules/__tests__",
-    "src/modules/store/__tests__"
+    "src/modules/store/__tests__",
+    "src/**/__tests__",
+    "vitest.config.mts"
   ]
 }

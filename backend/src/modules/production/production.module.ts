@@ -11,6 +11,8 @@ import { HdpControlController } from './hdp-control.controller';
 import { HdpControlService } from './hdp-control.service';
 import { AiModule } from '../ai/ai.module';
 import { EggCollectionMissedCron } from './egg-collection-missed.cron';
+import { ProductionCageService } from './production-cage.service';
+import { ProductionCageController } from './production-cage.controller';
 
 // FIX: Added missing import for TallyVerificationService (was listed as provider but never imported).
 // FIX: Removed EventEmitterModule.forRoot() — EventEmitter is already registered globally in
@@ -26,8 +28,8 @@ import { EggCollectionMissedCron } from './egg-collection-missed.cron';
 // exports AiService for this exact cross-module pattern (FlockModule uses it too).
 @Module({
   imports: [PrismaModule, NotificationsModule, StoreModule, AiModule],
-  controllers: [ProductionController, CageMapController, CageMapUtilController, HdpControlController],
-  providers: [ProductionService, CageMapService, TallyVerificationService, HdpControlService, EggCollectionMissedCron],
-  exports: [ProductionService, CageMapService],
+  controllers: [ProductionController, CageMapController, CageMapUtilController, HdpControlController, ProductionCageController],
+  providers: [ProductionService, CageMapService, TallyVerificationService, HdpControlService, EggCollectionMissedCron, ProductionCageService],
+  exports: [ProductionService, CageMapService, ProductionCageService],
 })
 export class ProductionModule {}

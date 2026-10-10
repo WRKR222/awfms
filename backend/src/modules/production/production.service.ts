@@ -3,8 +3,9 @@
 // Lead Attendant submission flow per changes.pdf + Anza Whole Foods Summary:
 //   • One bundled submission contains egg counts, session feed, environmental
 //     readings and (optional) vaccines/supplements.
-//   • Block 1 only — units A, B, C with two rows each (Block 2 is under
-//     construction and rejected here as a guard).
+//   • Two production houses — Block 1 and Block 2, units A, B, C with two
+//     rows each. Each block is recorded ONCE per shift per day (eggs, feed,
+//     vaccines/supplements, per-cage mortalities all travel together).
 //   • Per-row counters: broken / damaged / starterEggs. The old brokenUnsellable
 //     / brokenSellable split is no longer captured at collection time — Sales
 //     enters the actual sellable/unsellable classification at tally sign-off.
@@ -29,7 +30,7 @@ import {
   BadRequestException, ForbiddenException, Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { EntryStatus, VaccinationRoute } from '@prisma/client';
+import { EntryStatus, Prisma, VaccinationRoute } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import type { CreateEggCollectionSessionDto } from './production.dto';
@@ -37,6 +38,9 @@ import { TallyVerificationService } from '../store/tally-verification.service';
 import { assertEggCollectionSessionOpen, getEggCollectionSessionStatus } from '../../common/production/egg-collection-session-window.util';
 import { StoreInventoryService } from '../store/store-inventory.service';
 import { CageMapService } from './cage-map.service';
+import { AutoExpenseService } from '../../common/finance/auto-expense.service';
+import { FeedWastageService } from '../../common/feed/feed-wastage.service';
+import { ProductionCageService, houseCodeForSessionBlock } from './production-cage.service';
 
 interface RowDataEntry {
   rowCode: string;
@@ -88,6 +92,9 @@ export class ProductionService {
     private readonly tallyVerificationService: TallyVerificationService,
     private readonly storeInventory: StoreInventoryService,
     private readonly cageMapService: CageMapService,
+    private readonly autoExpense: AutoExpenseService,
+    private readonly productionCages: ProductionCageService,
+    private readonly feedWastage: FeedWastageService,
   ) {}
 
   private readonly logger = new Logger(ProductionService.name);
@@ -137,8 +144,15 @@ export class ProductionService {
     if (user.role !== 'ATTENDANT') {
       throw new ForbiddenException('Only the Lead Attendant may submit egg collection sessions');
     }
-    if (dto.block && dto.block !== 'BLOCK1') {
-      throw new BadRequestException('Block 2 is under construction and cannot accept submissions yet');
+    const block = (dto.block ?? 'BLOCK1') as 'BLOCK1' | 'BLOCK2';
+    if (block !== 'BLOCK1' && block !== 'BLOCK2') {
+      throw new BadRequestException('Block must be BLOCK1 or BLOCK2');
+    }
+    const blockName = block === 'BLOCK2' ? 'Block 2' : 'Block 1';
+    const houseCode = houseCodeForSessionBlock(block);
+    const house = await this.prisma.farmBlock.findUnique({ where: { code: houseCode } });
+    if (!house || !house.isActive || house.isUnderConstruction) {
+      throw new BadRequestException(`${blockName} is not open for egg collection`);
     }
 
     const batch = await this.prisma.batch.findFirst({
@@ -146,10 +160,20 @@ export class ProductionService {
     });
     if (!batch) throw new NotFoundException('Batch not found or closed');
 
+    // The batch must actually have birds in this block (legacy batches with
+    // no per-cage placement at all are accepted for Block 1 only).
+    const [cagesHere, cagesAnywhere] = await Promise.all([
+      this.prisma.productionCageAssignment.count({ where: { batchId: batch.id, cage: { blockId: house.id } } }),
+      this.prisma.productionCageAssignment.count({ where: { batchId: batch.id } }),
+    ]);
+    if (cagesHere === 0 && (cagesAnywhere > 0 || block === 'BLOCK2')) {
+      throw new BadRequestException(`Batch ${batch.batchCode} has no birds in ${blockName}`);
+    }
+
+    // Each block is recorded once per shift per day — whatever batch it holds.
     const existing = await this.prisma.eggCollectionSession.findFirst({
       where: {
-        batchId: dto.batchId,
-        houseId: dto.houseId,
+        block,
         sessionDate: new Date(dto.sessionDate),
         shift: dto.shift,
         deletedAt: null,
@@ -172,8 +196,7 @@ export class ProductionService {
     if (dto.shift === 'PM') {
       const amSession = await this.prisma.eggCollectionSession.findFirst({
         where: {
-          batchId: dto.batchId,
-          houseId: dto.houseId,
+          block,
           sessionDate: new Date(dto.sessionDate),
           shift: 'AM',
           deletedAt: null,
@@ -189,14 +212,15 @@ export class ProductionService {
       // correction) still must resolve to APPROVED first.
       if (amSession && amSession.status !== EntryStatus.APPROVED) {
         throw new ConflictException(
-          'AM session must be approved by the Production Manager before PM data can be recorded.',
+          `${blockName} AM session must be approved by the Production Manager before its PM data can be recorded.`,
         );
       }
     }
 
     if (existing && existing.status !== EntryStatus.RETURNED) {
       throw new ConflictException(
-        `A ${dto.shift} egg collection session already exists for this house on ${dto.sessionDate}`,
+        `${blockName} ${dto.shift} has already been recorded for ${dto.sessionDate} — eggs, feed, vaccines and ` +
+        `mortalities for a block can only be recorded once per session.`,
       );
     }
     if (existing?.tally?.isLocked) {
@@ -240,6 +264,20 @@ export class ProductionService {
       }
     }
 
+    // Per-cage mortalities: each entry names the cage (code) a bird died in.
+    // When given they must add up to the session's mortality total.
+    const mortalityCages = await this.productionCages.resolveMortalityEntries(
+      houseCode, (dto as any).mortalityCages ?? [],
+    );
+    if (mortalityCages.length) {
+      const perCage = mortalityCages.reduce((sum, m) => sum + m.count, 0);
+      if (perCage !== dto.mortalities) {
+        throw new BadRequestException(
+          `Per-cage mortalities add up to ${perCage} but the mortality total is ${dto.mortalities}.`,
+        );
+      }
+    }
+
     const totals = rollupRows(dto.rowData as RowDataEntry[]);
     const closingStock = dto.openingPop - dto.mortalities;
     // When all eggs are starters, use totalStarter for HDP so production isn't
@@ -254,6 +292,8 @@ export class ProductionService {
       houseId: dto.houseId,
       sessionDate: new Date(dto.sessionDate),
       shift: dto.shift,
+      block,
+      mortalityCagesJson: mortalityCages.length ? (mortalityCages as any) : Prisma.DbNull,
       collectedById: user.id,
       openingPop: dto.openingPop,
       mortalities: dto.mortalities,
@@ -343,58 +383,24 @@ export class ProductionService {
       });
     }
 
-    // Auto-log collection-time breakage expenses (soft shell, deformed,
-    // damaged, broken). The broken/sellable split isn't known yet at
-    // collection time — Sales enters it at tally sign-off — so broken is
-    // conservatively costed here as a full loss, same as damaged/soft
-    // shell/deformed. TallyVerificationService.sign() logs an adjusting
-    // entry once the actual split is known.
+    // Auto-log the attendant's damaged eggs as an Accountant expense, costed
+    // at the standard bulk egg price (they are never sold). Broken eggs are
+    // expensed later, once the PM splits them into sellable / unsellable at
+    // the three-party tally (see TallyVerificationService.sign). Keyed on the
+    // session, so a returned-and-resubmitted session updates its expense.
     try {
-      const collDate = new Date(dto.sessionDate);
-      collDate.setHours(0, 0, 0, 0);
-      const pricing = await this.prisma.dailyEggPrice.findUnique({ where: { priceDate: collDate } });
-      const costPerEgg        = pricing?.pricePerEgg       ? Number(pricing.pricePerEgg)       : 0;
-      // pricePerEggBroken isn't used here — the broken bucket is conservatively
-      // costed as a full loss until Sales's split is known (see sign() adjustment).
+      await this.autoExpense.logCollectionDamaged(this.prisma, session, batch.batchCode ?? dto.batchId, user.id);
+    } catch (err) {
+      this.logger.warn(`Damaged-egg expense logging failed for session ${session.id}: ${(err as Error).message}`);
+    }
 
-      const softShellQty     = totals.totalSoftShell ?? 0;
-      const deformedQty      = totals.totalDeformed  ?? 0;
-      const damagedQty       = totals.totalDamaged   ?? 0;
-      const brokenQty        = totals.totalBroken    ?? 0; // unsplit at collection time — full loss until Sales classifies
-
-      // softShell + deformed + damaged: cost = costPerEgg × qty (not sold)
-      const fullLossLoss    = (softShellQty + deformedQty + damagedQty) * costPerEgg;
-      // broken: conservatively costed as full loss (unsellable) at collection
-      // time — corrected by an adjusting entry once Sales splits it.
-      const brokenLoss      = brokenQty * costPerEgg;
-      const totalCollLoss   = fullLossLoss + brokenLoss;
-
-      if (totalCollLoss > 0 && costPerEgg > 0) {
-        let cat = await this.prisma.expenseCategory.findUnique({ where: { name: 'Egg Breakage' } });
-        if (!cat) {
-          cat = await this.prisma.expenseCategory.create({
-            data: { name: 'Egg Breakage', description: 'Auto-logged egg breakage losses', createdById: user.id },
-          });
-        }
-        const parts: string[] = [];
-        if (softShellQty > 0) parts.push(`Soft shell: ${softShellQty}`);
-        if (deformedQty  > 0) parts.push(`Deformed: ${deformedQty}`);
-        if (damagedQty   > 0) parts.push(`Damaged: ${damagedQty}`);
-        if (brokenQty    > 0) parts.push(`Broken (unclassified, provisional full loss): ${brokenQty}`);
-
-        await this.prisma.expenseLog.create({
-          data: {
-            categoryId:   cat.id,
-            description:  `${dto.shift} collection breakage — Batch ${batch.batchCode ?? dto.batchId}. ${parts.join(', ')}.`,
-            amount:       totalCollLoss,
-            expenseDate:  collDate,
-            vendorName:   null,
-            receiptRef:   `COLL-${session.id.slice(0, 8)}`,
-            recordedById: user.id,
-          },
-        });
-      }
-    } catch (_) { /* best-effort collection expense logging */ }
+    // Feed wastage for the day follows the recorded feed — recomputed for the
+    // whole batch-day (all shifts and blocks) every time a session lands.
+    try {
+      await this.feedWastage.recomputeDay(session.batchId, session.sessionDate, { notify: true });
+    } catch (err) {
+      this.logger.warn(`Feed-wastage recompute failed for session ${session.id}: ${(err as Error).message}`);
+    }
 
     // Create EggTallyVerification placeholder for both AM and PM sessions.
     // Tally sign-off is only triggered once BOTH sessions are APPROVED (see verifySession).
@@ -442,10 +448,7 @@ export class ProductionService {
       where: { role: { in: ['MANAGER', 'STORE', 'OWNER'] }, isActive: true },
       select: { id: true, role: true },
     });
-    const houseRecord = await this.prisma.house.findUnique({
-      where: { id: session.houseId }, select: { name: true },
-    });
-    const houseName = houseRecord?.name ?? 'House';
+    const houseName = session.block === 'BLOCK2' ? 'Production House Block 2' : 'Production House Block 1';
 
     for (const target of targets) {
       const allStarterSession = (session as any).totalStarterEggs > 0 && session.totalGoodEggs === 0;
@@ -488,7 +491,7 @@ export class ProductionService {
           },
         },
       },
-      orderBy: [{ sessionDate: 'desc' }, { shift: 'asc' }],
+      orderBy: [{ sessionDate: 'desc' }, { shift: 'asc' }, { block: 'asc' }],
       take: 100,
     });
   }
@@ -527,10 +530,7 @@ export class ProductionService {
       throw new BadRequestException(`Session is already ${session.status.toLowerCase()}`);
     }
 
-    const houseRecord = await this.prisma.house.findUnique({
-      where: { id: session.houseId }, select: { name: true },
-    });
-    const houseName = houseRecord?.name ?? 'House';
+    const houseName = session.block === 'BLOCK2' ? 'Production House Block 2' : 'Production House Block 1';
 
     if (action === 'approve') {
       const storeIntake = session.storeIntakes[0];
@@ -554,9 +554,15 @@ export class ProductionService {
       // verified it. Best-effort — a cage-map sync problem should never
       // block the verification itself from going through.
       try {
-        await this.cageMapService.syncRowPopulations(session.batchId, session.rowData as any);
+        await this.cageMapService.syncRowPopulations(session.batchId, session.rowData as any, houseCodeForSessionBlock(session.block));
       } catch (err) {
         this.logger.warn(`Cage map row-population sync failed for session ${id}: ${err}`);
+      }
+      // Per-cage mortalities reach the production cage map only once verified.
+      try {
+        await this.productionCages.applySessionMortalities(session.id, user.id);
+      } catch (err) {
+        this.logger.warn(`Per-cage mortality apply failed for session ${id}: ${err}`);
       }
 
       // FIX-1: Notify attendant that their session has been approved
@@ -602,8 +608,7 @@ export class ProductionService {
       if (session.shift === 'PM') {
         const amSession = await this.prisma.eggCollectionSession.findFirst({
           where: {
-            batchId: session.batchId,
-            houseId: session.houseId,
+            block: session.block,
             sessionDate: session.sessionDate,
             shift: 'AM',
             status: EntryStatus.APPROVED,

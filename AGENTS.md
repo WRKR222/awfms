@@ -57,6 +57,40 @@ Store is running low on equipment / consumables.
 3. Director (`OWNER`) approves the LPO (`LPO_APPROVE` permission).
 4. On goods receipt, Store creates `StoreStockIn` linked back to the LPO.
 
+## Production houses (Block 1 & Block 2)
+
+Both houses are live. Layout per house: sections A/B/C × rows 1/2 (A1 … C2);
+every row has 4 levels (1 = bottom, 4 = top) × tiers (Block 1: 24, Block 2: 38)
+× 4 cages; plus 8 isolation cages. **A cage holds at most 4 birds.**
+
+- `ProductionCage` (code `BLK1-A1-L4-T07-C2`, `BLK2-ISO-3`) +
+  `ProductionCageAssignment` (one batch per cage) are the source of truth.
+  `BatchCageAssignment` is an auto-maintained per-row rollup
+  (`ProductionCageService.recomputeRowRollups`) — never write it directly.
+- Transfer brooder → production: `POST /production/houses/transfer`
+  (`houseCode`, `birdCount`, optional `rowCodes`). All birds = batch moves;
+  some birds = split into a child batch `<code>-B1|B2` (`parentBatchId`).
+  Refused when the chosen house has no room; both full = no transfer.
+- Egg collection sessions carry `block` (`BLOCK1`/`BLOCK2`). Each block is
+  recorded **once per shift per day** (eggs, feed, vaccines, mortalities).
+  Mortalities are per cage (`mortalityCagesJson`) and hit the cage map +
+  `Batch.currentBirdCount` only when the Manager approves.
+- Cage reassignments are written in plain words (no grammar):
+  `production-cage-text.util.ts` (production) and
+  `cage-layout-parser.util.ts` (brooder). Always previewed before applying;
+  production descriptions can also be saved as a note only.
+
+## Auto-logged expenses (Accountant)
+
+`AutoExpenseService` (global) writes `ExpenseLog` rows keyed by
+`(sourceType, sourceId)` so re-submissions update instead of duplicating:
+- `STORE_STOCK_OUT` — every Store issue (stock-out, stock request, report correction).
+- `EGG_COLLECTION_DAMAGED` — attendant damaged eggs × standard bulk price.
+- `TALLY_BROKEN_SPLIT` — PM split at tally: unsellable × bulk + sellable × (bulk − broken price).
+- `EGG_BREAKAGE_ADJUSTMENT` — Sales breakage adjustments, same costing.
+Bulk price = `DailyEggPrice.pricePerEggBulk` (falls back to `pricePerEgg`),
+latest price on or before the date.
+
 ## Vet visits
 
 Live on `HealthEvent` (single source of truth). Manager-only upload via

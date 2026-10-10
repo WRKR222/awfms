@@ -10,13 +10,18 @@
 //     PM_RETURNED, DAY_LOCKED.
 //   • RETURNED sessions pre-populate form from returnedSession.rowData.
 //   • `localSubmitPending` flag prevents flash back to form during API round-trip.
+//   • Two production houses: Block 1 and Block 2. Each block is recorded ONCE
+//     per shift (eggs, feed, vaccines, supplements, mortalities together) —
+//     once a block's AM is in, the page moves on to the other block.
+//   • Mortalities are recorded per cage (picked on the block's cage map).
+//   • Cage reassignments are written in plain words (separate action).
 import { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CheckCircle, Egg, AlertCircle, WifiOff, ChevronDown,
-  Droplet, Thermometer, Wheat, Syringe, Plus, X, Lock,
+  Droplet, Thermometer, Wheat, Syringe, Plus, X, Lock, Skull, Map as MapIcon,
 } from 'lucide-react';
 import { api } from '../../lib/api/client';
 import { useOfflineMutation } from '../../hooks/useOfflineSync';
@@ -30,6 +35,9 @@ import {
 } from '../../hooks/useIssuableStoreItems';
 import { LAYER_FEED_TYPES } from '../../lib/feedTypes';
 import dayjs from '../../lib/dayjs';
+import { ProductionCageMap } from '../../components/shared/ProductionCageMap';
+import { ProductionCageReassignPanel } from '../../components/shared/ProductionCageReassignPanel';
+import { useHouseMap, type HouseCode } from '../../hooks/useProductionHouses';
 
 const inputCls  = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-base bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
 const numInput  = 'w-full text-center border border-gray-200 dark:border-dark-border rounded-lg px-1 py-2 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
@@ -74,6 +82,19 @@ interface FeedLineEntry {
 }
 
 type BlockKey = 'BLOCK1' | 'BLOCK2';
+const BLOCKS: { key: BlockKey; house: HouseCode; label: string }[] = [
+  { key: 'BLOCK1', house: 'BLK1', label: 'Block 1' },
+  { key: 'BLOCK2', house: 'BLK2', label: 'Block 2' },
+];
+const FORM_MODES = ['AM_FORM', 'AM_RETURNED', 'PM_FORM', 'PM_RETURNED'];
+
+interface MortalityEntry {
+  cageCode: string;
+  label: string;
+  birdsInCage: number;
+  count: string;
+  cause: string;
+}
 
 function buildDefaultBlock(): { rows: RowEntry[] } {
   const rows: RowEntry[] = [];
@@ -148,7 +169,7 @@ function resolvePageMode(
 
 function PendingBanner({ shift, session, message }: { shift: 'AM' | 'PM'; session: any; message: string }) {
   return (
-    <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
+    <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto">
       <CheckCircle className="w-16 h-16 text-brand-green mb-4" />
       <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">{shift} Session Submitted</h2>
       <p className="text-gray-500 dark:text-gray-400 mt-2 max-w-sm">{message}</p>
@@ -186,7 +207,7 @@ function DayLockedPanel({ amSession, pmSession }: { amSession: any; pmSession: a
   // AM may be missing here — its cutoff can pass with nothing recorded, and
   // the day still locks once PM is approved (see resolvePageMode's amMissed).
   return (
-    <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
+    <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto">
       <Lock className="w-16 h-16 text-gray-400 mb-4" />
       <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Day Locked</h2>
       <p className="text-sm text-gray-400 mt-1">{sessionDateLabel}</p>
@@ -234,7 +255,7 @@ function DayLockedPanel({ amSession, pmSession }: { amSession: any; pmSession: a
 function TimeLockedPanel({ shift, closesLabel, reopenNote }: { shift: 'AM' | 'PM'; closesLabel?: string; reopenNote: string }) {
   const navigate = useNavigate();
   return (
-    <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
+    <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto">
       <Lock className="w-16 h-16 text-gray-400 mb-4" />
       <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">{shift} Session Closed</h2>
       <p className="text-gray-500 dark:text-gray-400 mt-2 max-w-sm">
@@ -304,11 +325,15 @@ export function EggCollectionPage() {
   // Minimal in-flight flag — set true on mutate, cleared once server confirms
   const [localSubmitPending, setLocalSubmitPending] = useState(false);
 
-  const [selectedBlock, setSelectedBlock] = useState<BlockKey | null>('BLOCK1');
-  const [blockData, setBlockData] = useState<Record<'BLOCK1', { rows: RowEntry[] }>>({
-    BLOCK1: buildDefaultBlock(),
-  });
+  const [selectedBlock, setSelectedBlock] = useState<BlockKey>('BLOCK1');
+  const [blockChosenByUser, setBlockChosenByUser] = useState(false);
+  const [rows, setRows] = useState<RowEntry[]>(() => buildDefaultBlock().rows);
   const [vaccines, setVaccines] = useState<VaccineEntry[]>([]);
+  const [mortalityEntries, setMortalityEntries] = useState<MortalityEntry[]>([]);
+  const [pickingCage, setPickingCage] = useState(false);
+  const [showMap, setShowMap] = useState(false);
+  const selectedHouse: HouseCode = selectedBlock === 'BLOCK2' ? 'BLK2' : 'BLK1';
+  const { data: houseMap } = useHouseMap(selectedHouse);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   // ── Feed — a fixed list of feed-stage names (not tied to a specific Store
@@ -321,9 +346,11 @@ export function EggCollectionPage() {
     setFeedLines(f => f.map((line, j) => j === i ? { ...line, [field]: val } : line));
   }
 
-  // Derive session state from server
-  const amSession = (todaySessions as any[]).find((s: any) => s.shift === 'AM');
-  const pmSession = (todaySessions as any[]).find((s: any) => s.shift === 'PM');
+  // Derive session state from server — per production house (block).
+  const sessionsFor = (block: BlockKey) =>
+    (todaySessions as any[]).filter((s: any) => (s.block ?? 'BLOCK1') === block);
+  const amSession = sessionsFor(selectedBlock).find((s: any) => s.shift === 'AM');
+  const pmSession = sessionsFor(selectedBlock).find((s: any) => s.shift === 'PM');
 
   // Farm-time-aware submission cutoffs — AM locks at 12:00pm, PM at 4:30pm.
   const { data: windowStatus } = useEggCollectionSessionStatus();
@@ -332,10 +359,57 @@ export function EggCollectionPage() {
   const pmClosesLabel = windowStatus?.shifts.find(s => s.shift === 'PM')?.closesLabel;
 
   const pageMode = resolvePageMode(amSession, pmSession, localSubmitPending, amWindowOpen, pmWindowOpen);
+  const modeFor = (block: BlockKey) => {
+    const list = sessionsFor(block);
+    return resolvePageMode(
+      list.find((x: any) => x.shift === 'AM'), list.find((x: any) => x.shift === 'PM'),
+      false, amWindowOpen, pmWindowOpen,
+    );
+  };
+
+  // Each block is recorded once per shift: if the selected block is already
+  // recorded for this shift, move to the other block when it still needs it.
+  useEffect(() => {
+    if (sessionsLoading || localSubmitPending) return;
+    const current = modeFor(selectedBlock);
+    if (FORM_MODES.includes(current)) return;
+    const other: BlockKey = selectedBlock === 'BLOCK1' ? 'BLOCK2' : 'BLOCK1';
+    if (FORM_MODES.includes(modeFor(other)) && !blockChosenByUser) setSelectedBlock(other);
+  }, [todaySessions, amWindowOpen, pmWindowOpen, sessionsLoading, localSubmitPending]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function chooseBlock(block: BlockKey) {
+    setBlockChosenByUser(true);
+    setSelectedBlock(block);
+  }
+
+  // Switching block starts a clean form — nothing carries over between houses.
+  useEffect(() => {
+    setRows(buildDefaultBlock().rows);
+    setVaccines([]);
+    setMortalityEntries([]);
+    setFeedLines([{ feedType: '', kg: '' }]);
+    setSubmitError(null);
+    setValue('openingPop', 0);
+    setValue('mortalities', 0);
+    setValue('remarks', '');
+    setValue('waterLiters', '');
+    setValue('houseTempC', '');
+    setValue('batchId', '');
+  }, [selectedBlock]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Batches with birds in this block (falls back to every production batch
+  // for Block 1 when nothing has been placed per cage yet).
+  const blockBatchIds = new Set((houseMap?.batches ?? []).map(b => b.id));
+  const blockBatches = blockBatchIds.size > 0
+    ? batches.filter((b: any) => blockBatchIds.has(b.id))
+    : selectedBlock === 'BLOCK1' ? batches : [];
+  useEffect(() => {
+    if (blockBatches.length === 1 && !watch('batchId')) setValue('batchId', blockBatches[0].id);
+  }, [blockBatches.length, selectedBlock]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Determine shift from pageMode — no user control
   const activeShift: 'AM' | 'PM' =
-    pageMode === 'PM_FORM' || pageMode === 'PM_PENDING' || pageMode === 'PM_RETURNED'
+    pageMode === 'PM_FORM' || pageMode === 'PM_PENDING' || pageMode === 'PM_RETURNED' || pageMode === 'PM_TIME_LOCKED'
       ? 'PM'
       : 'AM';
 
@@ -357,7 +431,14 @@ export function EggCollectionPage() {
   useEffect(() => {
     const returned = pageMode === 'AM_RETURNED' ? amSession : (pageMode === 'PM_RETURNED' ? pmSession : null);
     if (!returned?.rowData) return;
-    setBlockData({ BLOCK1: { rows: returned.rowData } });
+    setRows(returned.rowData);
+    if (returned.batchId) setValue('batchId', returned.batchId);
+    if (Array.isArray(returned.mortalityCagesJson)) {
+      setMortalityEntries(returned.mortalityCagesJson.map((m: any) => ({
+        cageCode: m.cageCode, label: m.cageLabel ?? m.cageCode, birdsInCage: m.count,
+        count: String(m.count), cause: m.cause ?? '',
+      })));
+    }
     if (returned.openingPop  != null) setValue('openingPop',  returned.openingPop);
     if (returned.mortalities  != null) setValue('mortalities',  returned.mortalities);
     if (returned.waterLiters  != null) setValue('waterLiters',  returned.waterLiters);
@@ -370,7 +451,7 @@ export function EggCollectionPage() {
     } else if (returned.feedTypeName) {
       setFeedLines([{ feedType: returned.feedTypeName, kg: returned.feedKg != null ? String(returned.feedKg) : '' }]);
     }
-  }, [pageMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pageMode, selectedBlock]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { mutate: offlineMutate } = useOfflineMutation({
     endpoint: '/production/sessions',
@@ -386,15 +467,18 @@ export function EggCollectionPage() {
       qc.invalidateQueries({ queryKey: ['health'] });
       await refetchSessions();
       setLocalSubmitPending(false);
+      // Let the page move on to the other block if it still needs recording.
+      setBlockChosenByUser(false);
     },
     onQueued: () => { setLocalSubmitPending(true); },
   });
 
   const batchId = watch('batchId');
   const openingPop = Number(watch('openingPop') ?? 0);
-  const mortalities = Number(watch('mortalities') ?? 0);
+  // Mortalities are recorded per cage — the session total is their sum.
+  const mortalities = mortalityEntries.reduce((s, m) => s + (Number(m.count) || 0), 0);
   const closingStock = openingPop - mortalities;
-  const allRows = blockData.BLOCK1.rows;
+  const allRows = rows;
   const grandTotalEggs       = allRows.reduce((s, r) => s + Number(r.totalEggs ?? 0), 0);
   const grandStarterEggs     = allRows.reduce((s, r) => s + Number(r.starterEggs ?? 0), 0);
   const grandBroken          = allRows.reduce((s, r) => s + Number(r.broken ?? 0), 0);
@@ -406,11 +490,23 @@ export function EggCollectionPage() {
   const selectedBatch = batches.find((b: any) => b.id === batchId);
 
   function updateRow(idx: number, field: keyof RowEntry, value: any) {
-    setBlockData(prev => {
-      const rows = [...prev.BLOCK1.rows];
-      rows[idx] = { ...rows[idx], [field]: value };
-      return { BLOCK1: { rows } };
+    setRows(prev => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], [field]: value };
+      return next;
     });
+  }
+
+  function addMortalityCage(cage: { code: string; label: string; birdCount: number; batchCode: string | null }) {
+    setPickingCage(false);
+    if (!cage.batchCode) {
+      setSubmitError(`${cage.label} is empty on the cage map — pick the cage the bird was in.`);
+      return;
+    }
+    setSubmitError(null);
+    setMortalityEntries(prev => prev.some(m => m.cageCode === cage.code)
+      ? prev
+      : [...prev, { cageCode: cage.code, label: cage.label, birdsInCage: cage.birdCount, count: '1', cause: '' }]);
   }
 
   async function onSubmit(data: any) {
@@ -452,7 +548,12 @@ export function EggCollectionPage() {
       return;
     }
 
-    const totalMortalities = Number(data.mortalities);
+    const totalMortalities = mortalities;
+    const badMortality = mortalityEntries.find(m => !(Number(m.count) > 0) || Number(m.count) > m.birdsInCage);
+    if (badMortality) {
+      setSubmitError(`${badMortality.label}: mortality must be between 1 and the ${badMortality.birdsInCage} bird(s) in that cage.`);
+      return;
+    }
 
     setLocalSubmitPending(true);
 
@@ -466,7 +567,10 @@ export function EggCollectionPage() {
         shift: activeShift,  // hardcoded from pageMode — no user-controlled radio
         openingPop: Number(data.openingPop),
         mortalities: totalMortalities,
-        block: 'BLOCK1',
+        mortalityCages: mortalityEntries.map(m => ({
+          cageCode: m.cageCode, count: Number(m.count), cause: m.cause.trim() || undefined,
+        })),
+        block: selectedBlock,
         rowData: allRows.map(r => ({
           rowCode: r.rowCode,
           totalBirds: Number(r.totalBirds),
@@ -507,7 +611,7 @@ export function EggCollectionPage() {
   // showing the last good data instead of blanking the screen.
   if (sessionsLoading) {
     return (
-      <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
+      <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto">
         <div className="w-10 h-10 border-4 border-gray-200 dark:border-dark-border border-t-brand-green rounded-full animate-spin mb-4" />
         <p className="text-sm text-gray-400">Loading today's sessions…</p>
       </div>
@@ -516,7 +620,7 @@ export function EggCollectionPage() {
 
   if (sessionsError) {
     return (
-      <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto mt-10">
+      <div className="p-6 flex flex-col items-center justify-center min-h-64 text-center max-w-5xl mx-auto">
         <WifiOff className="w-16 h-16 text-red-400 mb-4" />
         <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Couldn't Load Today's Sessions</h2>
         <p className="text-gray-500 dark:text-gray-400 mt-2 max-w-sm">
@@ -532,39 +636,52 @@ export function EggCollectionPage() {
     );
   }
 
-  if (pageMode === 'DAY_LOCKED') {
-    return <DayLockedPanel amSession={amSession} pmSession={pmSession} />;
+  const blockLabel = selectedBlock === 'BLOCK2' ? 'Block 2' : 'Block 1';
+  const isForm = FORM_MODES.includes(pageMode);
+
+  function blockStatus(block: BlockKey): { text: string; cls: string } {
+    const mode = modeFor(block);
+    switch (mode) {
+      case 'AM_FORM': return { text: 'AM to record', cls: 'text-brand-green bg-brand-green/10' };
+      case 'AM_RETURNED': return { text: 'AM returned', cls: 'text-red-600 bg-red-100 dark:bg-red-900/30' };
+      case 'AM_PENDING': return { text: 'AM recorded · pending', cls: 'text-amber-700 bg-amber-100 dark:bg-amber-900/30' };
+      case 'PM_FORM': return { text: 'PM to record', cls: 'text-brand-green bg-brand-green/10' };
+      case 'PM_RETURNED': return { text: 'PM returned', cls: 'text-red-600 bg-red-100 dark:bg-red-900/30' };
+      case 'PM_PENDING': return { text: 'PM recorded · pending', cls: 'text-amber-700 bg-amber-100 dark:bg-amber-900/30' };
+      case 'PM_TIME_LOCKED': return { text: 'PM closed', cls: 'text-gray-500 bg-gray-100 dark:bg-dark-bg' };
+      default: return { text: 'Day locked', cls: 'text-gray-500 bg-gray-100 dark:bg-dark-bg' };
+    }
   }
 
-  if (pageMode === 'PM_TIME_LOCKED') {
-    return (
+  let statusPanel: React.ReactNode = null;
+  if (pageMode === 'DAY_LOCKED') {
+    statusPanel = <DayLockedPanel amSession={amSession} pmSession={pmSession} />;
+  } else if (pageMode === 'PM_TIME_LOCKED') {
+    statusPanel = (
       <TimeLockedPanel
         shift="PM"
         closesLabel={pmClosesLabel}
         reopenNote="Next session opens tomorrow at 12:00am (AM)."
       />
     );
-  }
-
-  if (pageMode === 'AM_PENDING' || pageMode === 'PM_PENDING') {
+  } else if (pageMode === 'AM_PENDING' || pageMode === 'PM_PENDING') {
     const shift = pageMode === 'AM_PENDING' ? 'AM' : 'PM';
-    return (
+    statusPanel = (
       <PendingBanner
         shift={shift}
         session={pageMode === 'AM_PENDING' ? amSession : pmSession}
-        message="Submitted — awaiting Production Manager verification."
+        message={`${blockLabel} ${shift} is recorded — eggs, feed, vaccines and mortalities for this block can't be recorded again this session. Awaiting Production Manager verification.`}
       />
     );
   }
 
-  // AM_FORM, AM_RETURNED, PM_FORM, PM_RETURNED → show the collection form
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto pb-10 space-y-4">
       <div className="flex items-center gap-3 mb-1">
         <div className="flex-1">
           <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
             <Egg className="w-5 h-5 text-amber-500" />
-            Egg Collection — <span className="text-brand-green">{activeShift} Session</span>
+            Egg Collection — <span className="text-brand-green">{blockLabel} · {activeShift} Session</span>
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">
             {dayjs().format('dddd, D MMMM YYYY')}
@@ -572,6 +689,36 @@ export function EggCollectionPage() {
         </div>
       </div>
 
+      {/* ── Production house (block) — each recorded once per shift ── */}
+      <div className={cardCls}>
+        <p className={sectionLbl}>Production House</p>
+        <div className="grid grid-cols-2 gap-3">
+          {BLOCKS.map(b => {
+            const st = blockStatus(b.key);
+            const active = selectedBlock === b.key;
+            return (
+              <button key={b.key} type="button" onClick={() => chooseBlock(b.key)}
+                className={`flex items-center justify-between rounded-xl p-4 border-2 transition-all text-left ${active
+                  ? 'border-brand-green bg-brand-green/10'
+                  : 'border-gray-200 dark:border-dark-border hover:border-gray-300'}`}>
+                <div>
+                  <p className={`font-bold text-base ${active ? 'text-brand-green' : 'text-gray-800 dark:text-gray-100'}`}>{b.label}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Units A, B, C — 2 rows each</p>
+                </div>
+                <span className={`text-[10px] font-semibold px-2 py-1 rounded-full whitespace-nowrap ${st.cls}`}>{st.text}</span>
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-2 text-[11px] text-gray-400">
+          Each block is recorded once per AM and once per PM session — eggs, feed, vaccines, supplements and
+          mortalities together. Once a block is in, the page moves to the other block.
+        </p>
+      </div>
+
+      {statusPanel}
+
+      {isForm && (<>
       {/* Return alert banner */}
       {(pageMode === 'AM_RETURNED' || pageMode === 'PM_RETURNED') && (
         <ReturnAlert reason={
@@ -585,14 +732,14 @@ export function EggCollectionPage() {
           <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-2xl p-4 flex items-center gap-3">
             <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
             <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
-              AM session was not recorded and its window has closed — you may still record the PM session.
+              {blockLabel} AM session was not recorded and its window has closed — you may still record the PM session.
             </p>
           </div>
         ) : (
           <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-2xl p-4 flex items-center gap-3">
             <CheckCircle className="w-5 h-5 text-green-600 shrink-0" />
             <p className="text-sm font-semibold text-green-700 dark:text-green-400">
-              AM session verified ✓ — You may now record the PM session.
+              {blockLabel} AM session verified ✓ — You may now record its PM session.
             </p>
           </div>
         )
@@ -607,32 +754,32 @@ export function EggCollectionPage() {
           </label>
           <select {...register('batchId', { required: true })} className={inputCls}>
             <option value="">Select batch...</option>
-            {batches.length === 0 && (
-              <option value="" disabled>No production-stage batches available</option>
+            {blockBatches.length === 0 && (
+              <option value="" disabled>No production batch has birds in {blockLabel} yet</option>
             )}
-            {batches.map((b: any) => (
+            {blockBatches.map((b: any) => (
               <option key={b.id} value={b.id}>
-                {b.batchCode} — Production House ({b.house?.name ?? 'N/A'})
+                {b.batchCode} — Production House {blockLabel}
               </option>
             ))}
           </select>
           <p className="mt-2 text-xs text-gray-400">
-            Recording <span className="font-semibold text-brand-green">{activeShift} session</span>
+            Recording <span className="font-semibold text-brand-green">{blockLabel} {activeShift} session</span>
             {activeShift === 'PM' && (amWasMissed ? ' · AM session was not recorded' : ' · AM session has been approved')}
           </p>
         </div>
 
         {/* ── Population ── */}
         <div className={cardCls}>
-          <p className={sectionLbl}>Bird Population</p>
+          <p className={sectionLbl}>Bird Population — {blockLabel}</p>
           <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-xs text-gray-500 mb-1">Opening Count</label>
               <input {...register('openingPop')} type="number" min="0" inputMode="numeric" className={inputCls} />
             </div>
             <div>
-              <label className="block text-xs text-gray-500 mb-1">Mortalities</label>
-              <input {...register('mortalities')} type="number" min="0" inputMode="numeric" className={inputCls} />
+              <label className="block text-xs text-gray-500 mb-1">Mortalities (from cages)</label>
+              <div className={`${inputCls} bg-gray-50 dark:bg-dark-bg text-center font-semibold`}>{mortalities}</div>
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">Closing Stock (Auto)</label>
@@ -643,128 +790,119 @@ export function EggCollectionPage() {
           </div>
         </div>
 
-        {/* ── Block selection ── */}
+        {/* ── Mortalities per cage ── */}
         <div className={cardCls}>
-          <p className={sectionLbl}>Select Block</p>
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => setSelectedBlock(selectedBlock === 'BLOCK1' ? null : 'BLOCK1')}
-              className={`flex items-center justify-between rounded-xl p-4 border-2 transition-all ${
-                selectedBlock === 'BLOCK1'
-                  ? 'border-brand-green bg-brand-green/10'
-                  : 'border-gray-200 dark:border-dark-border hover:border-gray-300'
-              }`}
-            >
-              <div className="text-left">
-                <p className={`font-bold text-base ${selectedBlock === 'BLOCK1' ? 'text-brand-green' : 'text-gray-800 dark:text-gray-100'}`}>
-                  Block 1
-                </p>
-                <p className="text-xs text-gray-500 mt-0.5">Units A, B, C — 2 rows each</p>
-              </div>
-              <div className="flex items-center gap-2">
-                {grandTotalEggs > 0 && (
-                  <span className="text-xs font-semibold text-brand-green bg-brand-green/10 px-2 py-0.5 rounded-full">
-                    {grandTotalEggs} eggs
-                  </span>
-                )}
-                <ChevronDown className={`w-4 h-4 transition-transform ${
-                  selectedBlock === 'BLOCK1' ? 'rotate-180 text-brand-green' : 'text-gray-400'
-                }`} />
-              </div>
+          <div className="flex items-center justify-between mb-2">
+            <p className={sectionLbl + ' flex items-center gap-2 mb-0'}>
+              <Skull className="w-4 h-4 text-red-500" /> Mortalities — per cage
+            </p>
+            <button type="button" onClick={() => setPickingCage(true)}
+              className="text-xs font-semibold text-brand-green hover:underline flex items-center gap-1">
+              <Plus className="w-3 h-3" /> Add mortality (pick cage)
             </button>
-
-            <div
-              aria-disabled
-              className="flex items-center justify-between rounded-xl p-4 border-2 border-dashed border-gray-200 dark:border-dark-border bg-gray-50 dark:bg-dark-bg/40 opacity-70 cursor-not-allowed"
-            >
-              <div className="text-left">
-                <p className="font-bold text-base text-gray-500 dark:text-gray-400">Block 2</p>
-                <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5 font-medium">
-                  Under construction
-                </p>
-              </div>
-              <span className="text-[10px] uppercase tracking-wider font-bold text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30 px-2 py-1 rounded-full">
-                Unavailable
-              </span>
-            </div>
           </div>
+          {mortalityEntries.length === 0 && (
+            <p className="text-xs text-gray-400 italic">No mortalities this session. Tap "Add mortality" and pick the cage on the {blockLabel} cage map.</p>
+          )}
+          {mortalityEntries.map((m, i) => (
+            <div key={m.cageCode} className="grid grid-cols-12 gap-2 items-end border border-gray-100 dark:border-dark-border rounded-xl p-2 mb-2">
+              <div className="col-span-12 md:col-span-5">
+                <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">{m.label}</p>
+                <p className="text-[10px] text-gray-400">{m.birdsInCage} bird(s) in cage</p>
+              </div>
+              <div className="col-span-3 md:col-span-2">
+                <label className="block text-[10px] text-gray-500 mb-0.5">Dead</label>
+                <input type="number" min={1} max={m.birdsInCage} value={m.count}
+                  onChange={e => setMortalityEntries(prev => prev.map((x, j) => j === i ? { ...x, count: e.target.value } : x))}
+                  className={numInput} />
+              </div>
+              <div className="col-span-8 md:col-span-4">
+                <label className="block text-[10px] text-gray-500 mb-0.5">Cause (optional)</label>
+                <input value={m.cause} placeholder="e.g. heat, pecking"
+                  onChange={e => setMortalityEntries(prev => prev.map((x, j) => j === i ? { ...x, cause: e.target.value } : x))}
+                  className={`${numInput} text-left px-2`} />
+              </div>
+              <div className="col-span-1 flex justify-end">
+                <button type="button" onClick={() => setMortalityEntries(prev => prev.filter((_, j) => j !== i))}
+                  className="p-2 text-gray-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+              </div>
+            </div>
+          ))}
+          <p className="text-[11px] text-gray-400 mt-1">Cage counts drop once the Production Manager verifies this session.</p>
         </div>
 
-        {/* ── Block 1 unit rows ── */}
-        {selectedBlock === 'BLOCK1' && (
-          <div className={cardCls}>
-            <p className="font-bold text-gray-800 dark:text-gray-100 mb-4">
-              Block 1 — Units A, B, C
-            </p>
-            {UNIT_LETTERS.map(letter => {
-              const rowIdxOffset = UNIT_LETTERS.indexOf(letter) * 2;
-              const row1 = blockData.BLOCK1.rows[rowIdxOffset];
-              const row2 = blockData.BLOCK1.rows[rowIdxOffset + 1];
-              const unitEggs = Number(row1?.totalEggs ?? 0) + Number(row2?.totalEggs ?? 0);
-              return (
-                <div
-                  key={letter}
-                  className="mb-5 pb-4 border-b border-gray-100 dark:border-dark-border last:border-0"
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="font-semibold text-sm text-gray-700 dark:text-gray-300">
-                      Unit {letter}
-                    </p>
-                    {unitEggs > 0 && (
-                      <span className="text-xs text-brand-green bg-brand-green/10 px-2 py-0.5 rounded-full font-medium">
-                        {unitEggs} eggs · {eggsToTrays(unitEggs)}
-                      </span>
-                    )}
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs min-w-[640px]">
-                      <thead>
-                        <tr>
-                          {[
-                            'Row', 'Total Birds', 'Total Eggs', 'Starter Eggs',
-                            'Broken', 'Damaged',
-                            'Soft Shell', 'Deformed', 'kg', 'Attendant',
-                          ].map(h => (
-                            <th key={h} className="text-center text-gray-400 font-medium pb-1.5 px-1">
-                              {h}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[0, 1].map(offset => {
-                          const rowIdx = rowIdxOffset + offset;
-                          const row = blockData.BLOCK1.rows[rowIdx];
-                          return (
-                            <tr key={row.rowCode}>
-                              <td className="px-1 py-1">
-                                <div className="flex items-center justify-center">
-                                  <span className="text-xs font-bold text-brand-green bg-brand-green/10 rounded-lg px-2 py-1">
-                                    {row.rowCode}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.totalBirds || ''} onChange={e => updateRow(rowIdx, 'totalBirds', e.target.value)} className={numInput} placeholder="0" /></td>
-                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.totalEggs || ''} onChange={e => updateRow(rowIdx, 'totalEggs', e.target.value)} className={numInput} placeholder="0" /></td>
-                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.starterEggs || ''} onChange={e => updateRow(rowIdx, 'starterEggs', e.target.value)} className={numInput} placeholder="0" /></td>
-                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.broken || ''} onChange={e => updateRow(rowIdx, 'broken', e.target.value)} className={numInput} placeholder="0" /></td>
-                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.damaged || ''} onChange={e => updateRow(rowIdx, 'damaged', e.target.value)} className={numInput} placeholder="0" /></td>
-                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.softShell || ''} onChange={e => updateRow(rowIdx, 'softShell', e.target.value)} className={numInput} placeholder="0" /></td>
-                              <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.deformed || ''} onChange={e => updateRow(rowIdx, 'deformed', e.target.value)} className={numInput} placeholder="0" /></td>
-                              <td className="px-1 py-1"><input type="number" min="0" step="0.1" inputMode="decimal" value={row.weightKg || ''} onChange={e => updateRow(rowIdx, 'weightKg', e.target.value)} className={numInput} placeholder="0" /></td>
-                              <td className="px-1 py-1"><input type="text" value={row.attendantName} onChange={e => updateRow(rowIdx, 'attendantName', e.target.value)} placeholder="Name" className={`${numInput} text-left px-2`} /></td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+        {/* ── Unit rows for the selected block ── */}
+        <div className={cardCls}>
+          <p className="font-bold text-gray-800 dark:text-gray-100 mb-4">
+            {blockLabel} — Units A, B, C
+          </p>
+          {UNIT_LETTERS.map(letter => {
+            const rowIdxOffset = UNIT_LETTERS.indexOf(letter) * 2;
+            const row1 = rows[rowIdxOffset];
+            const row2 = rows[rowIdxOffset + 1];
+            const unitEggs = Number(row1?.totalEggs ?? 0) + Number(row2?.totalEggs ?? 0);
+            return (
+              <div
+                key={letter}
+                className="mb-5 pb-4 border-b border-gray-100 dark:border-dark-border last:border-0"
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <p className="font-semibold text-sm text-gray-700 dark:text-gray-300">
+                    Unit {letter}
+                  </p>
+                  {unitEggs > 0 && (
+                    <span className="text-xs text-brand-green bg-brand-green/10 px-2 py-0.5 rounded-full font-medium">
+                      {unitEggs} eggs · {eggsToTrays(unitEggs)}
+                    </span>
+                  )}
                 </div>
-              );
-            })}
-          </div>
-        )}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs min-w-[640px]">
+                    <thead>
+                      <tr>
+                        {[
+                          'Row', 'Total Birds', 'Total Eggs', 'Starter Eggs',
+                          'Broken', 'Damaged',
+                          'Soft Shell', 'Deformed', 'kg', 'Attendant',
+                        ].map(h => (
+                          <th key={h} className="text-center text-gray-400 font-medium pb-1.5 px-1">
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[0, 1].map(offset => {
+                        const rowIdx = rowIdxOffset + offset;
+                        const row = rows[rowIdx];
+                        return (
+                          <tr key={row.rowCode}>
+                            <td className="px-1 py-1">
+                              <div className="flex items-center justify-center">
+                                <span className="text-xs font-bold text-brand-green bg-brand-green/10 rounded-lg px-2 py-1">
+                                  {row.rowCode}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.totalBirds || ''} onChange={e => updateRow(rowIdx, 'totalBirds', e.target.value)} className={numInput} placeholder="0" /></td>
+                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.totalEggs || ''} onChange={e => updateRow(rowIdx, 'totalEggs', e.target.value)} className={numInput} placeholder="0" /></td>
+                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.starterEggs || ''} onChange={e => updateRow(rowIdx, 'starterEggs', e.target.value)} className={numInput} placeholder="0" /></td>
+                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.broken || ''} onChange={e => updateRow(rowIdx, 'broken', e.target.value)} className={numInput} placeholder="0" /></td>
+                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.damaged || ''} onChange={e => updateRow(rowIdx, 'damaged', e.target.value)} className={numInput} placeholder="0" /></td>
+                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.softShell || ''} onChange={e => updateRow(rowIdx, 'softShell', e.target.value)} className={numInput} placeholder="0" /></td>
+                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.deformed || ''} onChange={e => updateRow(rowIdx, 'deformed', e.target.value)} className={numInput} placeholder="0" /></td>
+                            <td className="px-1 py-1"><input type="number" min="0" step="0.1" inputMode="decimal" value={row.weightKg || ''} onChange={e => updateRow(rowIdx, 'weightKg', e.target.value)} className={numInput} placeholder="0" /></td>
+                            <td className="px-1 py-1"><input type="text" value={row.attendantName} onChange={e => updateRow(rowIdx, 'attendantName', e.target.value)} placeholder="Name" className={`${numInput} text-left px-2`} /></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
+        </div>
 
         {/* ── Session Feed Consumption ── */}
         <div className={cardCls}>
@@ -997,10 +1135,36 @@ export function EggCollectionPage() {
             : `Save Offline — ${grandTotalEggs} Eggs`}
         </button>
         <p className="text-[11px] text-center text-gray-400">
-          Submission locks egg counts, feed, environmental and vaccine records together.
-          Only the Production Manager may edit after this.
+          Submission locks {blockLabel}'s egg counts, feed, environmental, vaccine and mortality records together
+          for this session. Only the Production Manager may edit after this.
         </p>
       </form>
+      </>)}
+
+      {/* ── Cage map (view / assign) ── */}
+      <div className={cardCls}>
+        <button type="button" onClick={() => setShowMap(v => !v)} className="w-full flex items-center justify-between">
+          <span className={sectionLbl + ' flex items-center gap-2 mb-0'}>
+            <MapIcon className="w-4 h-4 text-emerald-500" /> {blockLabel} Cage Map
+          </span>
+          <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${showMap ? 'rotate-180' : ''}`} />
+        </button>
+        {showMap && <div className="mt-3"><ProductionCageMap houseCode={selectedHouse} editable title={`${blockLabel} — Cage Map`} /></div>}
+      </div>
+
+      {/* ── Cage reassignment in plain words (separate from the session) ── */}
+      <ProductionCageReassignPanel houseCode={selectedHouse} batchId={batchId || undefined} />
+
+      {pickingCage && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end md:items-center justify-center p-0 md:p-4" onClick={() => setPickingCage(false)}>
+          <div className="w-full md:max-w-4xl max-h-[92vh] overflow-y-auto rounded-t-3xl md:rounded-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-end bg-black/40 p-2">
+              <button type="button" onClick={() => setPickingCage(false)} className="p-2 rounded-xl text-white/70 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+            <ProductionCageMap houseCode={selectedHouse} onPickCage={addMortalityCage} title={`Pick the cage — ${blockLabel}`} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

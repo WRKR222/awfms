@@ -96,7 +96,7 @@ export const CreateEggCollectionSessionSchema = z.object({
   houseId: z.string().uuid(),
   sessionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   shift: z.enum(['AM', 'PM']),
-  block: z.enum(['BLOCK1']).default('BLOCK1'),       // BLOCK2 disabled (under construction)
+  block: z.enum(['BLOCK1', 'BLOCK2']).default('BLOCK1'), // production house; each recorded once per shift
   openingPop: z.number().int().min(0),
   mortalities: z.number().int().min(0),
   // GENERAL: mortalities are a single count for the house, with one
@@ -108,6 +108,13 @@ export const CreateEggCollectionSessionSchema = z.object({
   mortalityRowBreakdown: z.array(MortalityRowEntrySchema).default([]),
   mortalityFedBeforeDeath: z.enum(['YES', 'NO', 'MIXED']).optional(),
   mortalityFeedAlreadyEatenKg: z.number().min(0).optional(),
+  // Per-cage mortalities (cage code e.g. "BLK2-A1-L4-T07-C2" or "BLK1-ISO-3").
+  // Must sum to `mortalities` when given; applied to the cage map on approval.
+  mortalityCages: z.array(z.object({
+    cageCode: z.string().min(1),
+    count: z.number().int().positive(),
+    cause: z.string().optional(),
+  })).default([]),
   rowData: z.array(RowDataEntrySchema).min(1),
   sessionFeed: SessionFeedSchema,                    // required — bundled w/ submission
   environment: EnvironmentSchema,                    // required — bundled w/ submission

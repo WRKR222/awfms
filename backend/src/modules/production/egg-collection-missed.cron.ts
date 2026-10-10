@@ -6,9 +6,9 @@
 // source of truth for these windows. Once a shift's window closes it can
 // never be filled in for that day through the normal flow (assertEggCollectionSessionOpen
 // throws), so a missed shift is a real gap in the record, not just a delay.
-// This cron checks, shortly after each window closes, whether every active
-// production-stage batch has a session for that shift and tells the
-// Director (OWNER role) about any that don't.
+// This cron checks, shortly after each window closes, whether every
+// production house (Block 1 / Block 2) holding birds has a session for that
+// shift and tells the Director (OWNER role) about any that don't.
 //
 // Exact same pattern as brooder-missed-log.cron.ts. Cron times are written
 // as farm-local, since the deployed process' wall clock is set to the
@@ -47,40 +47,49 @@ export class EggCollectionMissedCron {
     await this.checkMissed('PM');
   }
 
+  /** Each production house that holds birds must be recorded once per shift. */
   private async checkMissed(shift: EggCollectionShift) {
     const sessionDate = farmTodayUtcMidnight();
 
-    const batches: { id: string; batchCode: string }[] = await this.prisma.batch.findMany({
-      where: { stage: 'PRODUCTION', isActive: true, deletedAt: null },
-      select: { id: true, batchCode: true },
+    const blocks = await this.prisma.farmBlock.findMany({
+      where: { code: { in: ['BLK1', 'BLK2'] }, isActive: true, isUnderConstruction: false },
+      select: { id: true, code: true },
     });
-    if (batches.length === 0) return;
+    const occupied: string[] = [];
+    for (const b of blocks) {
+      const birds = await this.prisma.productionCageAssignment.count({
+        where: { cage: { blockId: b.id }, batch: { stage: 'PRODUCTION', isActive: true, deletedAt: null } },
+      });
+      if (birds > 0) occupied.push(b.code === 'BLK2' ? 'BLOCK2' : 'BLOCK1');
+    }
+    // Legacy fallback: production batches with no per-cage placement live in Block 1.
+    if (!occupied.includes('BLOCK1')) {
+      const legacy = await this.prisma.batch.count({
+        where: { stage: 'PRODUCTION', isActive: true, deletedAt: null, productionCageAssignments: { none: {} } },
+      });
+      if (legacy > 0) occupied.push('BLOCK1');
+    }
+    if (occupied.length === 0) return;
 
-    const logged: { batchId: string }[] = await this.prisma.eggCollectionSession.findMany({
-      where: {
-        batchId: { in: batches.map((b: { id: string }) => b.id) },
-        sessionDate,
-        shift,
-        deletedAt: null,
-      },
-      select: { batchId: true },
+    const logged = await this.prisma.eggCollectionSession.findMany({
+      where: { block: { in: occupied }, sessionDate, shift, deletedAt: null },
+      select: { block: true },
     });
-    const loggedIds = new Set(logged.map((l: { batchId: string }) => l.batchId));
-    const missed = batches.filter((b: { id: string }) => !loggedIds.has(b.id));
+    const loggedBlocks = new Set(logged.map(l => l.block));
+    const missed = occupied.filter(b => !loggedBlocks.has(b)).map(b => (b === 'BLOCK2' ? 'Block 2' : 'Block 1'));
     if (missed.length === 0) return;
 
     const w = EGG_COLLECTION_SESSION_WINDOWS[shift];
-    const codes = missed.map((b: { batchCode: string }) => b.batchCode).join(', ');
-    const plural = missed.length !== 1;
+    const names = missed.join(' and ');
 
     await this.notifications.notifyRole(
       UserRole.OWNER,
       NotificationType.EGG_COLLECTION_SESSION_MISSED as any,
       `${w.label} — Not Recorded`,
-      `The ${w.label} window closed at ${w.closesLabel} and ${plural ? 'these batches were' : 'this batch was'} ` +
-        `not recorded today: ${codes}.`,
+      `The ${w.label} window closed at ${w.closesLabel} and Production House ${names} ` +
+        `${missed.length === 1 ? 'was' : 'were'} not recorded today.`,
     );
 
-    this.logger.warn(`Egg collection ${shift} missed for ${sessionDate.toISOString().slice(0, 10)} — batches: ${codes}`);
+    this.logger.warn(`Egg collection ${shift} missed for ${sessionDate.toISOString().slice(0, 10)} — ${names}`);
   }
 }

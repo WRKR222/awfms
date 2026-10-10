@@ -1238,7 +1238,7 @@ export class BrooderService {
    *  that can't be matched to a real row/level rather than guessing. */
   private async resolveParsedBlocks(parsed: ParsedCageBlock[]): Promise<BulkReassignCagesDto['blocks']> {
     const rows = await this.prisma.brooderRow.findMany({
-      include: { levels: true },
+      include: { levels: { include: { _count: { select: { cages: true } } } } },
       orderBy: { rowNumber: 'asc' },
     });
 
@@ -1260,11 +1260,15 @@ export class BrooderService {
         }
         return level.id;
       });
+      // "all cages" → every cage on the (smallest) level named.
+      const cageCount = p.allCages
+        ? Math.min(...row.levels.filter(l => levelIds.includes(l.id)).map(l => l._count.cages))
+        : p.cageCount;
       return {
         rowId: row.id,
         levelIds,
         startCageNumber: p.startCageNumber,
-        cageCount: p.cageCount,
+        cageCount,
         birdsPerCage: p.birdsPerCage,
         isIsolation: p.isIsolation,
         isolationReason: p.isolationReason ?? undefined,
@@ -2112,14 +2116,19 @@ export class BrooderService {
       return m.format('YYYY-MM-DD');
     };
 
-    const buckets = new Map<string, { periodStart: string; excessKg: number; excessCostKes: number; eventCount: number }>();
+    const buckets = new Map<string, { periodStart: string; excessKg: number; excessCostKes: number; eventCount: number; unpricedKg: number }>();
     let totalExcessKg = 0;
     let totalExcessCostKes = 0;
+    let totalUnpricedKg = 0;
 
     for (const r of rows) {
       const key = bucketKey(r.entryDate);
-      const bucket = buckets.get(key) ?? { periodStart: key, excessKg: 0, excessCostKes: 0, eventCount: 0 };
+      const bucket = buckets.get(key) ?? { periodStart: key, excessKg: 0, excessCostKes: 0, eventCount: 0, unpricedKg: 0 };
       bucket.excessKg      = Math.round((bucket.excessKg + r.excessKg) * 100) / 100;
+      if (r.excessCostKes == null) {
+        bucket.unpricedKg = Math.round((bucket.unpricedKg + r.excessKg) * 100) / 100;
+        totalUnpricedKg  += r.excessKg;
+      }
       bucket.excessCostKes = Math.round((bucket.excessCostKes + Number(r.excessCostKes ?? 0)) * 100) / 100;
       bucket.eventCount   += 1;
       buckets.set(key, bucket);
@@ -2136,6 +2145,9 @@ export class BrooderService {
         excessKg:      Math.round(totalExcessKg * 100) / 100,
         excessCostKes: Math.round(totalExcessCostKes * 100) / 100,
         eventCount:    rows.length,
+        // Excess with no Store feed price to cost it against (shown as
+        // "cost unknown" rather than KES 0).
+        unpricedKg:    Math.round(totalUnpricedKg * 100) / 100,
       },
       buckets: Array.from(buckets.values()).sort((a, b) => a.periodStart.localeCompare(b.periodStart)),
     };

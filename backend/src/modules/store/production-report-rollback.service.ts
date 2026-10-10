@@ -27,6 +27,7 @@
 import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { FeedWastageService } from '../../common/feed/feed-wastage.service';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { LayoutCage, layoutCounts, sameLayout, writeCageLayout } from './production-report-sections.service';
 
@@ -42,7 +43,10 @@ export interface RollbackResult {
 export class ProductionReportRollbackService {
   private readonly logger = new Logger(ProductionReportRollbackService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly feedWastage: FeedWastageService,
+  ) {}
 
   async rollback(reportId: string, user: RequestUser): Promise<RollbackResult> {
     const report = await this.prisma.storeProductionReport.findUnique({ where: { id: reportId } });
@@ -82,6 +86,13 @@ export class ProductionReportRollbackService {
     for (const levelId of touchedLevelIds) {
       await this.recomputeLevelRollup(levelId, user.id);
     }
+
+    // Feed wastage for every day this report touched is rebuilt from the
+    // restored data, so no over-issue figure from the undone report lingers.
+    await this.feedWastage.recomputeDays(
+      report.batchId,
+      changes.map(c => c.rowDate).filter((d): d is Date => !!d),
+    );
 
     // The weight track belongs to the report version being undone.
     await this.prisma.batchWeightTrackPoint.deleteMany({ where: { reportId } });

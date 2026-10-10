@@ -37,6 +37,7 @@
 // needs the Director's sign-off.
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { AutoExpenseService } from '../../common/finance/auto-expense.service';
 import {
   FeedType, ProductionReportDiscrepancyType, StoreItem, BatchStage, BrooderLogSession, UserRole,
   EggCollectionSession,
@@ -349,6 +350,7 @@ export class ProductionReportReconciliationService {
     private readonly feedWastage: FeedWastageService,
     private readonly notifications: NotificationsService,
     private readonly weightAlerts: WeightAlertService,
+    private readonly autoExpense: AutoExpenseService,
   ) {}
 
   /** Run the full cross-check + autofill pass over every parsed row for a
@@ -571,6 +573,10 @@ export class ProductionReportReconciliationService {
         }
       }
     });
+
+    // Feed-wastage follows the data: every day this report touched is
+    // re-checked against what is recorded now (stale rows updated/removed).
+    await this.feedWastage.recomputeDays(batchId, rows.map(r => r.date));
 
     return { rows, discrepancies, appliedChanges, autofillCount, matchedCount, stage: stageBucket };
   }
@@ -1022,6 +1028,9 @@ export class ProductionReportReconciliationService {
           feedType: mapFeedType(line.item?.name, line.label),
           storeItemId: line.item?.id ?? null, unit: line.item?.unit ?? null,
           quantityDispensedKg: line.kg,
+          // Ration of record for this day (report's population) — lets the
+          // feed-wastage recompute re-check the day later without guessing.
+          requiredKgForDay: dailyRationKg > 0 ? dailyRationKg : null,
           notes: [
             hadRecords ? `Replaced ${previousTotal} kg previously recorded for the day with the report's figure ${noteSuffix}` : `Auto-filled ${noteSuffix}`,
             line.note,
@@ -2323,7 +2332,7 @@ export class ProductionReportReconciliationService {
         if (Number(item.currentStock) < delta) {
           return { applied: false, note: `Insufficient stock (${item.currentStock} ${item.unit}) to apply the extra ${delta} ${item.unit} — needs manual reconciliation.` };
         }
-        await this.prisma.$transaction([
+        const [correctionStockOut] = await this.prisma.$transaction([
           this.prisma.storeStockOut.create({
             data: {
               storeItemId: item.id, issuedDate: logDate, quantityOut: delta,
@@ -2335,6 +2344,7 @@ export class ProductionReportReconciliationService {
           }),
           this.prisma.storeItem.update({ where: { id: item.id }, data: { currentStock: { decrement: delta } } }),
         ]);
+        await this.autoExpense.logStockOutSafe(this.prisma, correctionStockOut.id);
         return { applied: true, note: `Deducted an additional ${delta} ${item.unit} of ${item.name} (Director-approved — this is the one path that can move stock without a prior issuance).` };
       } else if (delta < 0) {
         // Report says less was used than the system deducted — credit the difference back.

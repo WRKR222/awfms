@@ -29,6 +29,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { AutoExpenseService } from '../../common/finance/auto-expense.service';
 import { OrderStatus, PaymentMethod } from '@prisma/client';
 import { RequestUser } from '../../auth/types/request-user.type';
 import dayjs from 'dayjs';
@@ -46,6 +47,7 @@ export class SalesService {
   constructor(
     private prisma: PrismaService,
     private financeService: FinanceService,
+    private autoExpense: AutoExpenseService,
   ) {}
 
   // ── Customers ─────────────────────────────────────────────────────────────
@@ -570,56 +572,19 @@ export class SalesService {
 
     // ── Side effects (best-effort, never crash the response) ──────────────
     try {
-      const today = dayjs().startOf('day').toDate();
-      const pricing = await this.prisma.dailyEggPrice.findUnique({
-        where: { priceDate: today },
-      });
-      const costPerEgg        = pricing?.pricePerEgg ? Number(pricing.pricePerEgg) : 0;
-      const pricePerEggBroken = (pricing as any)?.pricePerEggBroken
-        ? Number((pricing as any).pricePerEggBroken)
+      const deltaUnsellable = Math.max(0, dto.newNonConsumable - dto.quantityNonConsumableBefore);
+      const deltaSellable   = Math.max(0, dto.newConsumable    - dto.quantityConsumableBefore);
+
+      // Lost eggs are costed at the standard BULK egg price: unsellable at
+      // the full bulk price, sellable at (bulk − broken-sellable price).
+      // A consumable (broken-sellable) egg that gets destroyed was already
+      // expensed at the sellable shortfall — it now loses only its broken price.
+      const sellableDestroyed = sourceType === 'CONSUMABLE'
+        ? Math.min(deltaUnsellable, Math.max(0, dto.quantityConsumableBefore - dto.newConsumable))
         : 0;
-
-      const deltaUnsellable = dto.newNonConsumable - dto.quantityNonConsumableBefore;
-      const deltaSellable   = dto.newConsumable    - dto.quantityConsumableBefore;
-
-      const unsellableLoss = Math.max(0, deltaUnsellable) * costPerEgg;
-      const sellableLoss   =
-        Math.max(0, deltaSellable) * Math.max(0, costPerEgg - pricePerEggBroken);
-      const totalLoss = unsellableLoss + sellableLoss;
-
-      if (totalLoss > 0) {
-        let cat = await this.prisma.expenseCategory.findUnique({
-          where: { name: 'Egg Breakage' },
-        });
-        if (!cat) {
-          cat = await this.prisma.expenseCategory.create({
-            data: {
-              name:        'Egg Breakage',
-              description: 'Auto-logged egg breakage losses',
-              createdById: user.id,
-            },
-          });
-        }
-
-        await this.prisma.expenseLog.create({
-          data: {
-            categoryId:  cat.id,
-            description:
-              `Egg breakage — Ref: ${adjustmentRef}. ` +
-              (deltaUnsellable > 0
-                ? `Unsellable: ${deltaUnsellable} x KES ${costPerEgg.toFixed(2)}. `
-                : '') +
-              (deltaSellable > 0
-                ? `Sellable: ${deltaSellable} x KES ${(costPerEgg - pricePerEggBroken).toFixed(2)} (cost minus sell). `
-                : ''),
-            amount:       totalLoss,
-            expenseDate:  today,
-            vendorName:   null,
-            receiptRef:   adjustmentRef,
-            recordedById: user.id,
-          },
-        });
-      }
+      const { amount: totalLoss } = await this.autoExpense.logSalesBreakage(
+        this.prisma, adjustment, deltaUnsellable, deltaSellable, user.id, sellableDestroyed,
+      );
 
       const accountant = await this.prisma.user.findFirst({
         where: { role: 'ACCOUNTANT' as any, isActive: true },
@@ -630,7 +595,7 @@ export class SalesService {
             userId:     accountant.id,
             type:       'SYSTEM' as any,
             title:      'Egg Breakage Expense Logged',
-            message:    `Breakage ${adjustmentRef}: KES ${totalLoss.toFixed(2)} auto-logged as expense (${Math.max(0, deltaUnsellable)} unsellable, ${Math.max(0, deltaSellable)} sellable broken eggs).`,
+            message:    `Breakage ${adjustmentRef}: KES ${totalLoss.toFixed(2)} auto-logged as expense (${deltaUnsellable} unsellable, ${deltaSellable} sellable broken eggs).`,
             entityId:   adjustment.id,
             entityType: 'EggBreakageAdjustment',
           },

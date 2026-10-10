@@ -21,6 +21,10 @@ import dayjs from 'dayjs';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { convertToUnit } from '../units/unit-conversion.util';
+import {
+  batchAgeWeeks, brooderRequiredFeedKg, farmNow, farmTodayUtcMidnight, hylineGramsPerBirdPerDay, requiredFeedKg,
+} from './feed-standard.util';
 
 export interface RecordFeedWastageParams {
   batch: { id: string; batchCode: string };
@@ -73,243 +77,289 @@ export class FeedWastageService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  // ── Feed wastage: over-issuance detection + cost (whole-brooder path) ────
+  // ── Feed wastage: ONE row per (batch, day), always rebuilt from current data ──
   //
-  // Called right after a BrooderGeneralFeedLog row is saved — whether that
-  // row came from a manual General Record entry OR from a production report
-  // being auto-reconciled. Recomputes the batch's TOTAL feed for that
-  // calendar date (every general-log entry for the day, including the one
-  // that just triggered this call) and compares it against the HyLine daily
-  // ration.
+  // A day's wastage used to be written once, at the moment a feed entry was
+  // saved, as the INCREMENTAL excess of that entry. Anything that changed
+  // the day afterwards — a re-uploaded production report, a rollback, a
+  // returned-and-resubmitted egg session, a deleted/corrected feed log —
+  // left those rows stale (e.g. "0.11 kg over" for a day that is no longer
+  // over at all). recomputeDay() instead looks at everything recorded for
+  // the batch on that day *now*, and keeps exactly one wastage row that
+  // matches it (updated in place, created, or removed). Every write path
+  // calls it, and FeedWastageRecomputeCron re-runs it for recent days as a
+  // safety net, so the Director's figures follow the data automatically.
   //
-  // excessKg is deliberately the INCREMENTAL amount this specific entry
-  // added past the ration, not the day's running total:
-  //   - if the day was already under ration before this entry, and this
-  //     entry alone pushes it over, excessKg = (new total − ration).
-  //   - if the day was ALREADY over ration before this entry (e.g. an
-  //     evening top-up, or a report correction applied on top of an
-  //     already-full day), the entire new entry counts as excess.
-  // That keeps a per-event notification meaningful ("this entry added Xkg
-  // over") while still letting excessKg sum correctly to the day's true
-  // total when rolled up for the daily/weekly/monthly Director summary.
-  //
-  // Cost is priced off the CURRENT StoreItem.unitCostKes for whichever
-  // store item this triggering entry was logged against — the log rows
-  // don't carry a per-entry price snapshot, so this is the best available
-  // figure at write time. If the entry wasn't linked to a store item, only
-  // the excess kg is recorded — no cost figure is fabricated.
-  //
-  // Best-effort by design — callers should wrap this in try/catch and log a
-  // warning on failure rather than let it fail the feed log write itself
-  // (see both call sites).
+  // Excess only counts when it is a real over-issue, not weighing / rounding
+  // noise: more than max(0.5 kg, 1% of the day's ration). Cost is always
+  // priced per kg — from the linked store item, else the latest feed issued
+  // to the batch, else the matching feed item in Store, else Store's average
+  // feed price — and is never shown as KES 0 for a non-zero excess.
+  static readonly EXCESS_MIN_KG = 0.5;
+  static readonly EXCESS_MIN_FRACTION = 0.01;
+
+  static excessThreshold(requiredKg: number) {
+    return Math.max(FeedWastageService.EXCESS_MIN_KG, requiredKg * FeedWastageService.EXCESS_MIN_FRACTION);
+  }
+
+  private static dayStart(date: Date | string) {
+    const dayStr = typeof date === 'string' ? date.slice(0, 10) : dayjs(date).format('YYYY-MM-DD');
+    return new Date(`${dayStr}T00:00:00.000Z`);
+  }
+
+  /** Store price of feed, per kg. Null only when Store has no priced feed at all. */
+  async resolveFeedCostPerKg(args: { storeItemId?: string | null; feedType?: string | null; batchId: string; day: Date }) {
+    const perKg = (item: { unit: string | null; unitCostKes: any; name?: string } | null) => {
+      if (!item) return null;
+      const cost = Number(item.unitCostKes);
+      if (!(cost > 0)) return null;
+      if (!item.unit) return cost;
+      const unitsPerKg = convertToUnit(1, 'KG', item.unit);
+      if (unitsPerKg != null && unitsPerKg > 0) return Math.round(cost * unitsPerKg * 10000) / 10000;
+      // Bags / sacks: use the pack size in the name ("Layers Mash 70kg").
+      const pack = `${item.name ?? ''} ${item.unit}`.match(/(\d+(?:\.\d+)?)\s*kgs?\b/i);
+      return pack && Number(pack[1]) > 0 ? Math.round((cost / Number(pack[1])) * 10000) / 10000 : null;
+    };
+
+    if (args.storeItemId) {
+      const item = await this.prisma.storeItem.findUnique({
+        where: { id: args.storeItemId }, select: { name: true, unit: true, unitCostKes: true },
+      });
+      const c = perKg(item);
+      if (c != null) return { costPerKg: c, source: item!.name };
+    }
+
+    const issued = await this.prisma.storeStockOut.findMany({
+      where: {
+        issuedToBatchId: args.batchId,
+        issuedDate: { lte: new Date(args.day.getTime() + 86_399_999) },
+        storeItem: { category: { in: ['FEED', 'FEED_SUPPLEMENT'] } },
+      },
+      orderBy: { issuedDate: 'desc' },
+      take: 5,
+      select: { unitCostKes: true, storeItem: { select: { name: true, unit: true } } },
+    });
+    for (const so of issued) {
+      const c = perKg({ unit: so.storeItem.unit, unitCostKes: so.unitCostKes, name: so.storeItem.name });
+      if (c != null) return { costPerKg: c, source: so.storeItem.name };
+    }
+
+    const feedItems = await this.prisma.storeItem.findMany({
+      where: { category: 'FEED', isActive: true },
+      select: { name: true, unit: true, unitCostKes: true },
+    });
+    const key = String(args.feedType ?? '').toLowerCase().split('_')[0]; // layer / grower / chick / developer / prelayer / kienyeji
+    if (key) {
+      const match = feedItems.find(i => i.name.toLowerCase().replace(/[^a-z]/g, '').includes(key) && perKg(i) != null);
+      if (match) return { costPerKg: perKg(match)!, source: match.name };
+    }
+    const priced = feedItems.map(perKg).filter((c): c is number => c != null);
+    if (priced.length) {
+      return {
+        costPerKg: Math.round((priced.reduce((a, b) => a + b, 0) / priced.length) * 10000) / 10000,
+        source: 'Average Store feed price',
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Rebuilds the single wastage row for one batch-day from what is recorded
+   * now. `requiredKg` / `dispensedKg` overrides are used by callers that
+   * already know the day's ration of record (e.g. a production report's
+   * opening stock); otherwise the ration comes from the day's own snapshot
+   * (existing row, feed-log snapshot, or the egg sessions' opening count).
+   * Returns the row (or null when the day is not over-issued).
+   */
+  async recomputeDay(batchId: string, date: Date | string, opts: {
+    requiredKg?: number;
+    dispensedKg?: number;
+    feedType?: string;
+    storeItemId?: string | null;
+    sourceEntityId?: string;
+    loggedById?: string;
+    notify?: boolean;
+    populationNote?: string;
+  } = {}) {
+    const day = FeedWastageService.dayStart(date);
+    const dayEnd = new Date(day.getTime() + 86_399_999);
+    const batch = await this.prisma.batch.findUnique({
+      where: { id: batchId },
+      select: { id: true, batchCode: true, dateReceived: true, currentBirdCount: true },
+    });
+    if (!batch) return null;
+
+    const [existing, generalLogs, sessions] = await Promise.all([
+      this.prisma.brooderFeedWastageLog.findMany({ where: { batchId, entryDate: day }, orderBy: { createdAt: 'desc' } }),
+      this.prisma.brooderGeneralFeedLog.findMany({
+        where: { batchId, entryDate: { gte: day, lte: dayEnd } },
+        select: { id: true, feedType: true, storeItemId: true, quantityDispensedKg: true, requiredKgForDay: true, loggedById: true },
+      }),
+      this.prisma.eggCollectionSession.findMany({
+        where: { batchId, sessionDate: day, deletedAt: null },
+        select: { id: true, shift: true, block: true, openingPop: true, feedKg: true, feedTypeName: true, feedStoreItemId: true, collectedById: true },
+      }),
+    ]);
+    const previousExcess = existing.reduce((sum, r) => sum + r.excessKg, 0);
+
+    // ── What was fed that day, and against what ration ──
+    let dispensedKg = 0;
+    let requiredKg: number | null = null;
+    let feedType = opts.feedType ?? 'LAYER_MASH';
+    let storeItemId: string | null = opts.storeItemId ?? null;
+    let sourceId = opts.sourceEntityId ?? existing[0]?.generalFeedLogId ?? '';
+    let loggedById = opts.loggedById ?? existing[0]?.loggedById ?? '';
+
+    if (generalLogs.length) {
+      dispensedKg = generalLogs.reduce((sum, r) => sum + (r.quantityDispensedKg ?? 0), 0);
+      const dominant = [...generalLogs].sort((a, b) => (b.quantityDispensedKg ?? 0) - (a.quantityDispensedKg ?? 0))[0];
+      feedType = opts.feedType ?? dominant.feedType;
+      storeItemId = opts.storeItemId !== undefined ? opts.storeItemId : dominant.storeItemId;
+      sourceId = opts.sourceEntityId ?? dominant.id;
+      loggedById = opts.loggedById ?? dominant.loggedById;
+      const snapshot = Math.max(0, ...generalLogs.map(r => r.requiredKgForDay ?? 0));
+      requiredKg = existing[0]?.requiredKgForDay ?? (snapshot > 0 ? snapshot : null);
+      // Today / yesterday with no snapshot: the live headcount is the population of record.
+      if (requiredKg == null && dayjs(farmNow()).diff(dayjs(day), 'day') <= 1) {
+        requiredKg = brooderRequiredFeedKg(batch.currentBirdCount, batchAgeWeeks(batch.dateReceived, day), 1);
+      }
+    } else if (sessions.length) {
+      dispensedKg = sessions.reduce((sum, r) => sum + Number(r.feedKg ?? 0), 0);
+      const first = sessions.find(x => x.shift === 'AM' && Number(x.feedKg ?? 0) > 0) ?? sessions[0];
+      feedType = opts.feedType ?? first.feedTypeName ?? 'LAYER_MASH';
+      storeItemId = opts.storeItemId !== undefined ? opts.storeItemId : first.feedStoreItemId;
+      sourceId = opts.sourceEntityId ?? first.id;
+      loggedById = opts.loggedById ?? first.collectedById;
+      // Population of record = each block's opening count for its first shift of the day.
+      const byBlock = new Map<string, number>();
+      for (const sess of [...sessions].sort((a, b) => (a.shift === 'AM' ? -1 : 1) - (b.shift === 'AM' ? -1 : 1))) {
+        if (!byBlock.has(sess.block)) byBlock.set(sess.block, sess.openingPop);
+      }
+      const population = [...byBlock.values()].reduce((a, b) => a + b, 0);
+      requiredKg = population > 0
+        ? requiredFeedKg(population, 'LAYER_MASH', batchAgeWeeks(batch.dateReceived, day), 1, (_t, aw) => hylineGramsPerBirdPerDay(aw))
+        : existing[0]?.requiredKgForDay ?? null;
+    }
+    if (opts.requiredKg != null && opts.requiredKg > 0) requiredKg = opts.requiredKg;
+    if (opts.dispensedKg != null) dispensedKg = opts.dispensedKg;
+    dispensedKg = Math.round(dispensedKg * 100) / 100;
+
+    // No ration of record → leave the day exactly as it is.
+    if (requiredKg == null || requiredKg <= 0) return existing[0] ?? null;
+
+    const excessKg = Math.round((dispensedKg - requiredKg) * 100) / 100;
+    const isOver = excessKg > FeedWastageService.excessThreshold(requiredKg);
+
+    if (!isOver) {
+      if (existing.length) await this.prisma.brooderFeedWastageLog.deleteMany({ where: { id: { in: existing.map(r => r.id) } } });
+      return null;
+    }
+
+    const price = await this.resolveFeedCostPerKg({ storeItemId, feedType, batchId, day });
+    const unitCostKes = price?.costPerKg ?? null;
+    const excessCostKes = unitCostKes != null ? Math.round(excessKg * unitCostKes * 100) / 100 : null;
+    const data = {
+      batchCode: batch.batchCode,
+      generalFeedLogId: sourceId,
+      feedType,
+      storeItemId,
+      storeItemName: price?.source ?? null,
+      requiredKgForDay: Math.round(requiredKg * 100) / 100,
+      dispensedKgTotal: dispensedKg,
+      excessKg,
+      unitCostKes,
+      excessCostKes,
+    };
+
+    let row;
+    if (existing.length) {
+      row = await this.prisma.brooderFeedWastageLog.update({ where: { id: existing[0].id }, data });
+      if (existing.length > 1) {
+        await this.prisma.brooderFeedWastageLog.deleteMany({ where: { id: { in: existing.slice(1).map(r => r.id) } } });
+      }
+    } else {
+      row = await this.prisma.brooderFeedWastageLog.create({
+        data: { ...data, batchId, entryDate: day, loggedById: loggedById || 'system' },
+      });
+    }
+
+    // Page the Director only when the day became (more) over-issued.
+    if (opts.notify && excessKg > previousExcess + FeedWastageService.excessThreshold(requiredKg)) {
+      const dayStr = dayjs(day).format('YYYY-MM-DD');
+      const costLine = excessCostKes != null
+        ? ` Cost of the excess: KES ${excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
+          `(${price!.source} @ KES ${unitCostKes!.toFixed(2)}/kg).`
+        : ' No priced feed in Store, so the cost could not be calculated.';
+      await this.notifications.notifyRole(
+        UserRole.OWNER,
+        'BROODER_FEED_WASTAGE' as any,
+        `Feed Over-Issued — ${batch.batchCode}`,
+        `Batch ${batch.batchCode} was given ${dispensedKg.toFixed(2)}kg of feed on ${dayStr} against a required ` +
+        `${requiredKg.toFixed(2)}kg${opts.populationNote ?? ''} — ${excessKg.toFixed(2)}kg more than estimated.` + costLine,
+        { entityId: batch.id, entityType: 'Brooder' },
+      ).catch(() => {});
+    }
+    return row;
+  }
+
+  /** Re-runs recomputeDay for several days of one batch (no Director paging). */
+  async recomputeDays(batchId: string, dates: Iterable<Date | string>) {
+    const seen = new Set<string>();
+    for (const d of dates) {
+      const key = FeedWastageService.dayStart(d).toISOString();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      try {
+        await this.recomputeDay(batchId, d);
+      } catch (err) {
+        this.logger.warn(`Feed-wastage recompute failed for ${batchId} on ${key.slice(0, 10)}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /** Safety net: every batch with feed recorded in the last `days` days. */
+  async recomputeRecent(days = 14) {
+    const from = new Date(farmTodayUtcMidnight().getTime() - days * 86_400_000);
+    const [general, sessions, rows] = await Promise.all([
+      this.prisma.brooderGeneralFeedLog.findMany({ where: { entryDate: { gte: from } }, select: { batchId: true, entryDate: true } }),
+      this.prisma.eggCollectionSession.findMany({ where: { sessionDate: { gte: from }, deletedAt: null }, select: { batchId: true, sessionDate: true } }),
+      this.prisma.brooderFeedWastageLog.findMany({ where: { entryDate: { gte: from } }, select: { batchId: true, entryDate: true } }),
+    ]);
+    const byBatch = new Map<string, Date[]>();
+    const add = (batchId: string, d: Date) => byBatch.set(batchId, [...(byBatch.get(batchId) ?? []), d]);
+    general.forEach(g => add(g.batchId, g.entryDate));
+    sessions.forEach(x => add(x.batchId, x.sessionDate));
+    rows.forEach(r => add(r.batchId, r.entryDate));
+    for (const [batchId, dates] of byBatch) await this.recomputeDays(batchId, dates);
+    return { batches: byBatch.size };
+  }
+
+  // ── Call-site API (kept for existing callers) — all routed through recomputeDay ──
+
+  /** After a whole-brooder feed entry is saved (manual or report auto-fill). */
   async recordIfOverIssued(params: RecordFeedWastageParams) {
-    const {
-      batch, entryDate, dailyRationKg, generalFeedLogId,
-      feedType, storeItemId, thisEntryKg, loggedById,
-    } = params;
-
-    // No valid ration to compare against (e.g. batch has 0 live birds) —
-    // nothing meaningful to flag.
-    if (!dailyRationKg || dailyRationKg <= 0) return null;
-
-    const dayStr        = dayjs(entryDate).format('YYYY-MM-DD');
-    const entryDateStart = new Date(`${dayStr}T00:00:00.000Z`);
-    const entryDateEnd   = new Date(`${dayStr}T23:59:59.999Z`);
-
-    const dayTotal = await this.prisma.brooderGeneralFeedLog.aggregate({
-      where: { batchId: batch.id, entryDate: { gte: entryDateStart, lte: entryDateEnd } },
-      _sum:  { quantityDispensedKg: true },
+    return this.recomputeDay(params.batch.id, params.entryDate, {
+      requiredKg: params.dailyRationKg,
+      loggedById: params.loggedById,
+      notify: params.notify !== false,
     });
-    const dispensedKgTotal = Math.round((dayTotal._sum.quantityDispensedKg ?? 0) * 100) / 100;
-
-    const effectiveRationKg = dailyRationKg;
-
-    const dispensedBeforeThisEntry = Math.max(0, dispensedKgTotal - thisEntryKg);
-    const excessBefore = Math.max(0, dispensedBeforeThisEntry - effectiveRationKg);
-    const excessAfter  = Math.max(0, dispensedKgTotal - effectiveRationKg);
-    const excessKg     = Math.round((excessAfter - excessBefore) * 100) / 100;
-
-    // Rounding-noise tolerance — mirrors the 0.05kg tolerance the
-    // under-issuance (missed-feed) check uses, applied here symmetrically.
-    if (excessKg <= 0.05) return null;
-
-    let unitCostKes: number | null = null;
-    let storeItemName: string | null = null;
-    if (storeItemId) {
-      const item = await this.prisma.storeItem.findUnique({
-        where:  { id: storeItemId },
-        select: { name: true, unitCostKes: true },
-      });
-      if (item) {
-        storeItemName = item.name;
-        unitCostKes   = Number(item.unitCostKes);
-      }
-    }
-    const excessCostKes = unitCostKes != null
-      ? Math.round(excessKg * unitCostKes * 100) / 100
-      : null;
-
-    const created = await this.prisma.brooderFeedWastageLog.create({
-      data: {
-        batchId:          batch.id,
-        batchCode:        batch.batchCode,
-        generalFeedLogId,
-        feedType,
-        storeItemId,
-        storeItemName,
-        entryDate:        entryDateStart,
-        requiredKgForDay: effectiveRationKg,
-        dispensedKgTotal,
-        excessKg,
-        unitCostKes,
-        excessCostKes,
-        loggedById,
-      },
-    });
-
-    const costLine = excessCostKes != null
-      ? ` Cost of the excess: KES ${excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
-        `(${storeItemName} @ KES ${unitCostKes!.toFixed(2)}/kg).`
-      : ' This feed entry was not linked to a store item, so no cost could be calculated.';
-
-    // Director-only — unlike the other Brooder alerts (mortality, weight
-    // anomaly, stock mismatch) this one deliberately does NOT go through
-    // alertRoles(), which also notifies MANAGER. Feed cost/wastage tracking
-    // is Director-facing only.
-    if (params.notify !== false) await this.notifications.notifyRole(
-      UserRole.OWNER,
-      'BROODER_FEED_WASTAGE' as any,
-      `Feed Over-Issued — ${batch.batchCode}`,
-      `Batch ${batch.batchCode} has been given ${dispensedKgTotal.toFixed(2)}kg of feed so far today ` +
-      `against a required ${effectiveRationKg.toFixed(2)}kg — ${excessKg.toFixed(2)}kg more than estimated.` +
-      costLine,
-      { entityId: batch.id, entityType: 'Brooder' },
-    );
-
-    // Returned so report-driven callers (ProductionReportReconciliationService)
-    // can record this write in the ProductionReportAppliedChange ledger —
-    // without it, ProductionReportRollbackService has no way to remove a
-    // wastage entry that a since-rolled-back report created, and it's left
-    // behind showing a stale/wrong excess figure forever. See
-    // ProductionReportRollbackService's 'BrooderFeedWastageLog' case.
-    return created;
   }
 
-  // ── Feed wastage: PRODUCTION stage, population = report's opening stock ──
-  //
-  // Companion to recordIfOverIssued() above, for laying batches. The two
-  // differ in one important way: EggCollectionSession.feedKg is a single
-  // whole-day figure that gets overwritten wholesale on correction (see
-  // reconcileFeed's PRODUCTION branch), not an append-only log of
-  // individual entries — so there's no "incremental amount THIS entry
-  // added" to compute here, unlike the brooder path. excessKg is simply
-  // actualKg − requiredKg for the day.
-  //
-  // requiredKg is computed by the caller from the report row's OPENING
-  // STOCK (never closing stock, never Batch.currentBirdCount) — a laying
-  // batch's population of record for a given day is whatever the farm's
-  // own daily sheet says was present that morning, not today's live
-  // headcount.
+  /** After a production report sets a laying day's feed; ration from the report's opening stock. */
   async recordProductionOverIssuance(params: RecordProductionFeedWastageParams) {
-    const {
-      batch, entryDate, populationOpeningStock, requiredKg, actualKg,
-      sourceEntityId, feedType, storeItemId, loggedById,
-    } = params;
-
-    if (!requiredKg || requiredKg <= 0) return null;
-
-    const effectiveRequiredKg = requiredKg;
-    const excessKg = Math.round((actualKg - effectiveRequiredKg) * 100) / 100;
-    // Same rounding-noise tolerance as the brooder check.
-    if (excessKg <= 0.05) return null;
-
-    const dayStr         = dayjs(entryDate).format('YYYY-MM-DD');
-    const entryDateStart = new Date(`${dayStr}T00:00:00.000Z`);
-
-    let unitCostKes: number | null = null;
-    let storeItemName: string | null = null;
-    if (storeItemId) {
-      const item = await this.prisma.storeItem.findUnique({
-        where:  { id: storeItemId },
-        select: { name: true, unitCostKes: true },
-      });
-      if (item) {
-        storeItemName = item.name;
-        unitCostKes   = Number(item.unitCostKes);
-      }
-    }
-    const excessCostKes = unitCostKes != null
-      ? Math.round(excessKg * unitCostKes * 100) / 100
-      : null;
-
-    const created = await this.prisma.brooderFeedWastageLog.create({
-      data: {
-        batchId:          batch.id,
-        batchCode:        batch.batchCode,
-        generalFeedLogId: sourceEntityId,
-        feedType,
-        storeItemId,
-        storeItemName,
-        entryDate:        entryDateStart,
-        requiredKgForDay: effectiveRequiredKg,
-        dispensedKgTotal: actualKg,
-        excessKg,
-        unitCostKes,
-        excessCostKes,
-        loggedById,
-      },
+    return this.recomputeDay(params.batch.id, params.entryDate, {
+      requiredKg: params.requiredKg,
+      dispensedKg: params.actualKg,
+      feedType: params.feedType,
+      storeItemId: params.storeItemId,
+      sourceEntityId: params.sourceEntityId,
+      loggedById: params.loggedById,
+      notify: params.notify !== false,
+      populationNote: ` for its reported opening stock of ${params.populationOpeningStock.toLocaleString()} birds`,
     });
-
-    const costLine = excessCostKes != null
-      ? ` Cost of the excess: KES ${excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
-        `(${storeItemName} @ KES ${unitCostKes!.toFixed(2)}/kg).`
-      : ' This feed entry was not linked to a store item, so no cost could be calculated.';
-
-    // Director-only, same as the brooder alert.
-    if (params.notify !== false) await this.notifications.notifyRole(
-      UserRole.OWNER,
-      'BROODER_FEED_WASTAGE' as any,
-      `Feed Over-Issued — ${batch.batchCode}`,
-      `Batch ${batch.batchCode} was recorded with ${actualKg.toFixed(2)}kg of feed on ${dayStr} ` +
-      `against a required ${effectiveRequiredKg.toFixed(2)}kg for its reported opening stock of ` +
-      `${populationOpeningStock.toLocaleString()} birds — ${excessKg.toFixed(2)}kg more than estimated.` +
-      costLine,
-      { entityId: batch.id, entityType: 'Brooder' },
-    );
-
-    return created; // see recordIfOverIssued's matching comment above
   }
 
-  // ── One-time catch-up for feed logged BEFORE this check existed ─────────
-  //
-  // recordIfOverIssued() (above) is designed to run once per NEW entry, as
-  // it's written, and works out the INCREMENTAL excess that single entry
-  // added. That math depends on being called in real time — it can't be
-  // safely replayed after the fact for entries that all already exist,
-  // because "the total before this entry" no longer means anything once
-  // every entry for the day is already sitting in the table.
-  //
-  // For catching up a day's feed that was logged before this service was
-  // wired into the caller (e.g. a production report that was reconciled
-  // prior to this fix), this instead treats the WHOLE day as one check:
-  // sum every BrooderGeneralFeedLog entry for (batch, entryDate), compare
-  // the total against the day's ration, and if it's over, write ONE
-  // BrooderFeedWastageLog entry for the full excess. Cost is priced off
-  // whichever store item contributed the most kg that day (a day can mix
-  // feed types/items; there's no meaningful way to split cost precisely
-  // after the fact without a per-entry price snapshot, which these older
-  // entries don't have).
-  //
-  // Idempotent per (batch, entryDate): if a BrooderFeedWastageLog entry
-  // already exists for that day, this is a no-op — safe to re-run across
-  // an entire batch's history repeatedly (e.g. after reconciling another
-  // report for the same batch) without creating duplicates.
-  //
-  // `notify` defaults to false — these are (usually) historical
-  // over-issuances, not something happening right now, so a live Director
-  // alert for a date that's already passed would be misleading. Pass
-  // `notify: true` only if the caller genuinely wants the Director paged
-  // for it anyway.
+  /** Report re-applied a day whose feed already matched — just re-check it. */
   async backfillDayIfOverIssued(params: {
     batch: { id: string; batchCode: string };
     entryDate: Date;
@@ -317,88 +367,11 @@ export class FeedWastageService {
     loggedById: string;
     notify?: boolean;
   }) {
-    const { batch, entryDate, dailyRationKg, loggedById, notify = false } = params;
-    if (!dailyRationKg || dailyRationKg <= 0) return null;
-
-    const dayStr         = dayjs(entryDate).format('YYYY-MM-DD');
-    const entryDateStart = new Date(`${dayStr}T00:00:00.000Z`);
-    const entryDateEnd   = new Date(`${dayStr}T23:59:59.999Z`);
-
-    // Already checked (live or by a previous backfill run) — skip.
-    const already = await this.prisma.brooderFeedWastageLog.findFirst({
-      where: { batchId: batch.id, entryDate: entryDateStart },
-      select: { id: true },
+    return this.recomputeDay(params.batch.id, params.entryDate, {
+      requiredKg: params.dailyRationKg,
+      loggedById: params.loggedById,
+      notify: params.notify === true,
     });
-    if (already) return null;
-
-    const rows = await this.prisma.brooderGeneralFeedLog.findMany({
-      where: { batchId: batch.id, entryDate: { gte: entryDateStart, lte: entryDateEnd } },
-      select: { id: true, feedType: true, storeItemId: true, quantityDispensedKg: true },
-    });
-    if (rows.length === 0) return null;
-
-    const dispensedKgTotal = Math.round(
-      rows.reduce((sum, r) => sum + (r.quantityDispensedKg ?? 0), 0) * 100,
-    ) / 100;
-    const effectiveRationKg = dailyRationKg;
-    const excessKg = Math.round((dispensedKgTotal - effectiveRationKg) * 100) / 100;
-    if (excessKg <= 0.05) return null;
-
-    // The row that contributed the most kg that day — used to attribute
-    // feedType/storeItemId/generalFeedLogId for this one summary entry.
-    const dominant = [...rows].sort((a, b) => (b.quantityDispensedKg ?? 0) - (a.quantityDispensedKg ?? 0))[0];
-
-    let unitCostKes: number | null = null;
-    let storeItemName: string | null = null;
-    if (dominant.storeItemId) {
-      const item = await this.prisma.storeItem.findUnique({
-        where:  { id: dominant.storeItemId },
-        select: { name: true, unitCostKes: true },
-      });
-      if (item) {
-        storeItemName = item.name;
-        unitCostKes   = Number(item.unitCostKes);
-      }
-    }
-    const excessCostKes = unitCostKes != null
-      ? Math.round(excessKg * unitCostKes * 100) / 100
-      : null;
-
-    const created = await this.prisma.brooderFeedWastageLog.create({
-      data: {
-        batchId:          batch.id,
-        batchCode:        batch.batchCode,
-        generalFeedLogId: dominant.id,
-        feedType:         dominant.feedType,
-        storeItemId:      dominant.storeItemId,
-        storeItemName,
-        entryDate:        entryDateStart,
-        requiredKgForDay: effectiveRationKg,
-        dispensedKgTotal,
-        excessKg,
-        unitCostKes,
-        excessCostKes,
-        loggedById,
-      },
-    });
-
-    if (notify) {
-      const costLine = excessCostKes != null
-        ? ` Cost of the excess: KES ${excessCostKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ` +
-          `(${storeItemName} @ KES ${unitCostKes!.toFixed(2)}/kg).`
-        : ' This feed entry was not linked to a store item, so no cost could be calculated.';
-      await this.notifications.notifyRole(
-        UserRole.OWNER,
-        'BROODER_FEED_WASTAGE' as any,
-        `Feed Over-Issued — ${batch.batchCode} (${dayStr})`,
-        `Batch ${batch.batchCode} was given ${dispensedKgTotal.toFixed(2)}kg of feed on ${dayStr} ` +
-        `against a required ${effectiveRationKg.toFixed(2)}kg — ${excessKg.toFixed(2)}kg more than estimated.` +
-        costLine,
-        { entityId: batch.id, entityType: 'Brooder' },
-      );
-    }
-
-    return created;
   }
 
   // ── Issued vs Recorded: Store's daily issuance vs what attendants logged ──

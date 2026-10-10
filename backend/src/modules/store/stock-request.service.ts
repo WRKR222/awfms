@@ -6,6 +6,7 @@ import {
   Injectable, NotFoundException, ForbiddenException, BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { AutoExpenseService } from '../../common/finance/auto-expense.service';
 import { RequestUser } from '../../auth/types/request-user.type';
 
 const REQUESTER_ROLES = new Set(['MANAGER', 'SALES', 'ACCOUNTANT', 'OWNER']);
@@ -26,7 +27,10 @@ export interface FulfillDto {
 
 @Injectable()
 export class StockRequestService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly autoExpense: AutoExpenseService,
+  ) {}
 
   async create(dto: CreateSimpleStockRequestDto, user: RequestUser) {
     if (!REQUESTER_ROLES.has(user.role)) {
@@ -98,7 +102,8 @@ export class StockRequestService {
 
     const today = new Date(); today.setHours(0, 0, 0, 0);
 
-    return this.prisma.$transaction(async (tx) => {
+    const stockOutIds: string[] = [];
+    const result = await this.prisma.$transaction(async (tx) => {
       let allFull = true;
       let anyIssued = false;
 
@@ -137,6 +142,7 @@ export class StockRequestService {
           where: { id: reqItem.id },
           data: { quantityIssued: qtyIssued, stockOutId: stockOut.id },
         });
+        stockOutIds.push(stockOut.id);
       }
 
       const status = !anyIssued ? 'REJECTED' : (allFull ? 'ISSUED' : 'PARTIAL');
@@ -161,6 +167,12 @@ export class StockRequestService {
       });
       return updated;
     });
+
+    // Every Store issue is automatically an Accountant expense.
+    for (const id of stockOutIds) {
+      await this.autoExpense.logStockOutSafe(this.prisma, id);
+    }
+    return result;
   }
 
   async cancel(id: string, user: RequestUser) {

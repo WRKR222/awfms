@@ -248,8 +248,14 @@ function ExpensesTab() {
                   <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-0.5 rounded-full flex-shrink-0">
                     {e.expenseCategory?.name ?? e.category}
                   </span>
+                  {e.sourceType && (
+                    <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded-full flex-shrink-0 font-semibold"
+                      title="Logged automatically from a Store issue or recorded egg breakage">
+                      Auto
+                    </span>
+                  )}
                 </div>
-                <p className="text-xs text-gray-400">{dayjs(e.expenseDate).format('D MMM YYYY')}{e.vendorName ? ` · ${e.vendorName}` : ''}</p>
+                <p className="text-xs text-gray-400">{dayjs(e.expenseDate).format('D MMM YYYY')}{e.vendorName ? ` · ${e.vendorName}` : ''}{e.receiptRef ? ` · ${e.receiptRef}` : ''}</p>
               </div>
               <p className="text-sm font-bold text-gray-700 dark:text-gray-300 flex-shrink-0">KES {Number(e.amount).toLocaleString()}</p>
             </div>

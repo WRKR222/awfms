@@ -18,7 +18,7 @@ import {
   Activity, Users, ChevronRight, Lock, Brain, ArrowRight, Map,
 } from 'lucide-react';
 import dayjs from '../../lib/dayjs';
-import { CageMap } from '../../components/shared/CageMap';
+import { ProductionCageMap } from '../../components/shared/ProductionCageMap';
 import { BrooderCageMapGrid } from '../../components/shared/BrooderCageMapGrid';
 import { BrooderFeedRequirement } from '../../components/shared/BrooderFeedRequirement';
 import { BrooderFeedSummary } from '../../components/shared/BrooderFeedSummary';
@@ -533,7 +533,7 @@ function CageMapPanel() {
       >
         <div className="flex items-center gap-2">
           <Map className="w-4 h-4 text-brand-green" />
-          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Block 1 — Live Cage Map</span>
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">Production Houses (Block 1 &amp; 2) — Live Cage Map</span>
           <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 font-medium">
             Live
           </span>
@@ -541,8 +541,8 @@ function CageMapPanel() {
         <ChevronRight className={`w-4 h-4 text-gray-400 transition-transform ${open ? 'rotate-90' : ''}`} />
       </button>
       {open && (
-        <div style={{ background: '#060c08', padding: '16px 20px' }}>
-          <CageMap blockCode="BLK1" compact={false} />
+        <div className="p-3 bg-white dark:bg-dark-card">
+          <ProductionCageMap />
         </div>
       )}
     </div>
