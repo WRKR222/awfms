@@ -15,6 +15,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
+import { fmtQty } from '../../lib/utils';
 import { ClipboardList, Clock, CheckCircle, X, Trash2 } from 'lucide-react';
 
 function nextMondayDate() {
@@ -101,7 +102,7 @@ function RequisitionCard({
                   )}
                 </span>
                 <div className="flex items-center gap-2">
-                  <span className="text-gray-400">{Number(it.quantityNeeded).toFixed(2)} {it.storeItem?.unit ?? it.customItemUnit ?? ''}</span>
+                  <span className="text-gray-400">{fmtQty(it.quantityNeeded)} {it.storeItem?.unit ?? it.customItemUnit ?? ''}</span>
                   <button
                     onClick={() => onDeleteItem(requisition.id, it.id)}
                     disabled={deletingItemId === it.id}

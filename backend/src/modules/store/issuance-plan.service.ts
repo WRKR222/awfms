@@ -54,6 +54,20 @@ const ITEM_INCLUDE = {
   rejectedBy: { select: { id: true, fullName: true } },
 } as const;
 
+/** Adds up a weekly daily breakdown without floating-point noise
+ *  (0.1 + 0.2 = 0.30000000000000004): kept exact to 6 decimal places. */
+function sumBreakdown(values: unknown[]): number {
+  const total = values.reduce<number>((s, v) => s + Number(v ?? 0), 0);
+  return Math.round(total * 1e6) / 1e6;
+}
+
+/** A quantity exactly as entered (12.345 stays 12.345, 10 stays 10). */
+function fmtQty(value: unknown): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 6, useGrouping: false });
+}
+
 @Injectable()
 export class IssuancePlanService {
   private readonly logger = new Logger(IssuancePlanService.name);
@@ -131,7 +145,7 @@ export class IssuancePlanService {
     const enrichedItems = dto.items.map((item) => {
       let qtyPlanned = Number(item.quantityPlanned ?? 0);
       if (item.dailyBreakdown && dto.type === 'WEEKLY') {
-        qtyPlanned = Object.values(item.dailyBreakdown).reduce((s: number, v: unknown) => s + Number(v ?? 0), 0);
+        qtyPlanned = sumBreakdown(Object.values(item.dailyBreakdown));
       }
       if (!isFinite(qtyPlanned) || qtyPlanned < 0) qtyPlanned = 0;
       return { ...item, quantityPlanned: qtyPlanned };
@@ -247,7 +261,7 @@ export class IssuancePlanService {
       const breakdown = (line.dailyBreakdown as Record<string, number> | null) ?? null;
       const dailyBreakdown = targetPlan.type === 'WEEKLY' && breakdown ? breakdown : undefined;
       const qty = dailyBreakdown
-        ? Object.values(dailyBreakdown).reduce((s: number, v: unknown) => s + Number(v ?? 0), 0)
+        ? sumBreakdown(Object.values(dailyBreakdown))
         : Number(line.quantityNeeded);
 
       const planItem = await this.prisma.issuancePlanItem.create({
@@ -571,10 +585,7 @@ export class IssuancePlanService {
         for (const item of dto.items as any[]) {
           let qtyPlanned = Number(item.quantityPlanned ?? 0);
           if (item.dailyBreakdown && plan.type === 'WEEKLY') {
-            qtyPlanned = Object.values(item.dailyBreakdown as Record<string, number>).reduce(
-              (s: number, v: number) => s + Number(v ?? 0),
-              0,
-            );
+            qtyPlanned = sumBreakdown(Object.values(item.dailyBreakdown as Record<string, number>));
           }
           if (!isFinite(qtyPlanned) || qtyPlanned < 0) qtyPlanned = 0;
 
@@ -756,7 +767,7 @@ export class IssuancePlanService {
     }
     if (approvedQty > qtyPlanned) {
       throw new BadRequestException(
-        `Approved quantity (${approvedQty.toFixed(3)}) cannot exceed the requested quantity (${qtyPlanned.toFixed(3)}).`,
+        `Approved quantity (${fmtQty(approvedQty)}) cannot exceed the requested quantity (${fmtQty(qtyPlanned)}).`,
       );
     }
 
@@ -787,7 +798,7 @@ export class IssuancePlanService {
     await this.syncPhase(planId);
 
     const qtyNote = approvedQty !== qtyPlanned
-      ? ` Approved for ${approvedQty.toFixed(2)} ${item.storeItem.unit ?? ''} (requested ${qtyPlanned.toFixed(2)}).`
+      ? ` Approved for ${fmtQty(approvedQty)} ${item.storeItem.unit ?? ''} (requested ${fmtQty(qtyPlanned)}).`
       : '';
 
     // Notify Store that this item is now authorised for stock issuance
@@ -995,8 +1006,8 @@ export class IssuancePlanService {
       const planNote = weeklyItems.length > 1 ? ` (combined across ${weeklyItems.length} approved weekly plans)` : '';
       throw new BadRequestException(
         `Quantity exceeds today's approved issuance plan${planNote}. ` +
-          `Approved for ${dayKey}: ${totalDailyAllowed.toFixed(3)}, already issued: ${totalAlreadyToday.toFixed(3)}, ` +
-          `remaining: ${Math.max(0, remainingToday).toFixed(3)}.`,
+          `Approved for ${dayKey}: ${fmtQty(totalDailyAllowed)}, already issued: ${fmtQty(totalAlreadyToday)}, ` +
+          `remaining: ${fmtQty(Math.max(0, remainingToday))}.`,
       );
     }
 
@@ -1202,8 +1213,8 @@ export class IssuancePlanService {
       await this.notifications.notifyRole(
         UserRole.STORE,
         NotificationType.FEED_ISSUANCE_DAILY_ALERT as any,
-        `Issue ${dailyKg.toFixed(1)} kg of ${item.storeItem.name} Today`,
-        `Daily feed issuance alert (plan ${item.plan.planRef}): Issue ${dailyKg.toFixed(1)} kg of ${item.storeItem.name} today per the approved issuance plan.`,
+        `Issue ${fmtQty(dailyKg)} kg of ${item.storeItem.name} Today`,
+        `Daily feed issuance alert (plan ${item.plan.planRef}): Issue ${fmtQty(dailyKg)} kg of ${item.storeItem.name} today per the approved issuance plan.`,
         { entityId: item.planId, entityType: 'IssuancePlan' },
       );
     }
@@ -1422,9 +1433,9 @@ export class IssuancePlanService {
 
       if (isEmergency) {
         doc.fontSize(6.5);
-        doc.text(qtyApproved.toFixed(2), cx + 3, rowY + 3, { width: colWidths[1] - 4, align: 'center' });
+        doc.text(fmtQty(qtyApproved), cx + 3, rowY + 3, { width: colWidths[1] - 4, align: 'center' });
         cx += colWidths[1];
-        doc.text(qtyIssued.toFixed(2), cx + 3, rowY + 3, { width: colWidths[2] - 4, align: 'center' });
+        doc.text(fmtQty(qtyIssued), cx + 3, rowY + 3, { width: colWidths[2] - 4, align: 'center' });
         cx += colWidths[2];
         doc.text(unitPrice.toFixed(2), cx + 3, rowY + 3, { width: colWidths[3] - 4, align: 'center' });
         cx += colWidths[3];
@@ -1437,7 +1448,7 @@ export class IssuancePlanService {
       } else {
         const breakdown = item.dailyBreakdown as Record<string, number> | null;
         DAY_KEYS.forEach((k, i) => {
-          const val = breakdown ? (breakdown[k] ?? 0).toFixed(1) : '—';
+          const val = breakdown ? fmtQty(breakdown[k] ?? 0) : '—';
           doc.text(val, cx + 3, rowY + 3, { width: colWidths[i + 1] - 4, align: 'center' });
           cx += colWidths[i + 1];
         });
@@ -1463,7 +1474,7 @@ export class IssuancePlanService {
           .fillColor('#666')
           .fontSize(6.5)
           .text(
-            `Approved: ${qtyApproved.toFixed(2)} ${item.storeItem.unit} · KES ${approvedValue.toLocaleString('en-KE', { minimumFractionDigits: 2 })}   |   Issued: ${qtyIssued.toFixed(2)} ${item.storeItem.unit} · KES ${issuedValue.toLocaleString('en-KE', { minimumFractionDigits: 2 })}`,
+            `Approved: ${fmtQty(qtyApproved)} ${item.storeItem.unit} · KES ${approvedValue.toLocaleString('en-KE', { minimumFractionDigits: 2 })}   |   Issued: ${fmtQty(qtyIssued)} ${item.storeItem.unit} · KES ${issuedValue.toLocaleString('en-KE', { minimumFractionDigits: 2 })}`,
             53,
             rowY + 1,
             { width: tableWidth - 6 },

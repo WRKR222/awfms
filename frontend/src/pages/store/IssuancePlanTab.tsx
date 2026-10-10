@@ -5,6 +5,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { useAuthStore } from '../../stores/auth.store';
 import dayjs from '../../lib/dayjs';
+import { fmtQty } from '../../lib/utils';
+import { DecimalInput } from '../../components/ui/DecimalInput';
 import {
   ClipboardList, Plus, X, CheckCircle, XCircle, FileDown,
   ChevronDown, ChevronUp, AlertTriangle, Zap, Pencil, Calculator, Trash2,
@@ -137,7 +139,7 @@ function ItemRow({
           {DAY_KEYS.map(d => (
             <div key={d} className="text-center">
               <p className="text-[9px] text-gray-400">{d}</p>
-              <p className="text-xs font-medium text-gray-600 dark:text-gray-300">{(breakdown[d] ?? 0).toFixed(1)}</p>
+              <p className="text-xs font-medium text-gray-600 dark:text-gray-300">{fmtQty(breakdown[d] ?? 0)}</p>
             </div>
           ))}
         </div>
@@ -151,11 +153,11 @@ function ItemRow({
       )}
 
       <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 flex-wrap gap-y-1">
-        <span>Requested: <span className="font-semibold text-gray-700 dark:text-gray-300">{Number(item.quantityPlanned).toFixed(2)} {item.storeItem?.unit ?? ''}</span></span>
+        <span>Requested: <span className="font-semibold text-gray-700 dark:text-gray-300">{fmtQty(item.quantityPlanned)} {item.storeItem?.unit ?? ''}</span></span>
         <span>Approved: <span className="font-semibold text-gray-700 dark:text-gray-300">
-          {item.quantityApproved != null ? Number(item.quantityApproved).toFixed(2) : '—'}
+          {item.quantityApproved != null ? fmtQty(item.quantityApproved) : '—'}
         </span></span>
-        <span>Issued: <span className="font-semibold text-gray-700 dark:text-gray-300">{Number(item.quantityIssued).toFixed(2)}</span></span>
+        <span>Issued: <span className="font-semibold text-gray-700 dark:text-gray-300">{fmtQty(item.quantityIssued)}</span></span>
       </div>
       <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 flex-wrap gap-y-1">
         <span>Approved value: <span className="font-semibold text-brand-green">
@@ -201,7 +203,7 @@ function ItemRow({
             />
           </div>
           <p className="text-[10px] text-gray-400 pb-1.5">
-            of {Number(item.quantityPlanned).toFixed(2)} requested
+            of {fmtQty(item.quantityPlanned)} requested
           </p>
         </div>
       )}
@@ -933,17 +935,16 @@ function CreatePlanForm({
                         {DAY_KEYS.map(d => (
                           <div key={d} className="text-center">
                             <p className="text-[10px] text-gray-400 mb-0.5">{d}</p>
-                            <input
-                              type="number" step="any" min="0"
-                              value={it.dailyBreakdown[d] || ''}
-                              onChange={e => updateDay(idx, d, e.target.value)}
+                            <DecimalInput
+                              value={it.dailyBreakdown[d] || 0}
+                              onValueChange={n => updateDay(idx, d, String(n))}
                               className="w-full border border-gray-200 dark:border-dark-border rounded-lg px-1 py-1.5 text-xs text-center bg-white dark:bg-dark-card text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-brand-green"
                             />
                           </div>
                         ))}
                       </div>
                       <p className="text-xs text-gray-400 mt-1 text-right">
-                        Week total: {Object.values(it.dailyBreakdown).reduce((a, b) => a + b, 0).toFixed(2)} {si?.unit ?? ''}
+                        Week total: {fmtQty(Object.values(it.dailyBreakdown).reduce((a, b) => a + b, 0))} {si?.unit ?? ''}
                       </p>
                     </div>
                   )}
@@ -952,10 +953,9 @@ function CreatePlanForm({
                   {type === 'EMERGENCY' && (
                     <div>
                       <label className={lCls}>Total Quantity ({si?.unit ?? 'units'})</label>
-                      <input
-                        type="number" step="any" min="0"
-                        value={it.emergencyQty || ''}
-                        onChange={e => updateItem(idx, 'emergencyQty', parseFloat(e.target.value) || 0)}
+                      <DecimalInput
+                        value={it.emergencyQty || 0}
+                        onValueChange={n => updateItem(idx, 'emergencyQty', n)}
                         className={iCls}
                       />
                     </div>

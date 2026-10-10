@@ -14,6 +14,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
+import { fmtQty } from '../../lib/utils';
+import { DecimalInput } from '../../components/ui/DecimalInput';
 import {
   Plus, Send, Trash2, AlertTriangle, CheckCircle,
   Clock, Package, History, PackagePlus, ListPlus, CalendarDays, X,
@@ -160,13 +162,12 @@ function DailyBreakdownGrid({
             <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">{d}</label>
             {readOnly ? (
               <div className="text-xs font-semibold text-gray-600 dark:text-gray-300 py-1.5">
-                {(value[d] || 0).toFixed(1)}
+                {fmtQty(value[d] || 0)}
               </div>
             ) : (
-              <input
-                type="number" step="any" min="0" inputMode="decimal"
-                value={value[d] || ''}
-                onChange={(e) => onChange?.({ ...value, [d]: parseFloat(e.target.value) || 0 })}
+              <DecimalInput
+                value={value[d] || 0}
+                onValueChange={(n) => onChange?.({ ...value, [d]: n })}
                 className="w-full border border-gray-200 dark:border-dark-border rounded-lg px-1 py-1.5 text-xs text-center bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-brand-green"
               />
             )}
@@ -174,7 +175,7 @@ function DailyBreakdownGrid({
         ))}
       </div>
       <p className="text-[11px] text-gray-400 mt-1 text-right">
-        Week total: {breakdownTotal(value).toFixed(2)} {unit ?? ''}
+        Week total: {fmtQty(breakdownTotal(value))} {unit ?? ''}
       </p>
     </div>
   );
@@ -407,7 +408,7 @@ export function RequisitionsPage() {
                       </span>
                       <div className="flex items-center gap-2">
                         <span className="text-gray-500 dark:text-gray-400">
-                          {Number(it.quantityNeeded).toFixed(2)} {it.storeItem?.unit ?? it.customItemUnit ?? ''}
+                          {fmtQty(it.quantityNeeded)} {it.storeItem?.unit ?? it.customItemUnit ?? ''}
                         </span>
                         <button
                           onClick={() => deleteSentItem.mutate({ requisitionId: req.id, itemId: it.id })}
