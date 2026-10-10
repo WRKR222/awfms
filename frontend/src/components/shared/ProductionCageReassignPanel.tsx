@@ -25,9 +25,9 @@ function errMsg(err: any): string {
 }
 
 const EXAMPLES =
-  'Moved 3 birds from A1 level 2 tier 5 cage 1 into isolation cage 2 because they were limping.\n' +
-  'Transferred two hens to cage 3 from B2 top level tier 10 cage 1.\n' +
-  'C1 bottom level tiers 1-6 now have 4 birds each.';
+  'Moved 3 birds from A1 level 2 cage 17 into isolation cage 2 because they were limping.\n' +
+  'Transferred two hens to cage 3 from B2 top level cage 37.\n' +
+  'C1 bottom level cages 1-24 now have 4 birds each.';
 
 export function ProductionCageReassignPanel({ houseCode, batchId }: { houseCode: HouseCode; batchId?: string }) {
   const qc = useQueryClient();
@@ -66,7 +66,8 @@ export function ProductionCageReassignPanel({ houseCode, batchId }: { houseCode:
       </p>
       <p className="text-[11px] text-gray-400">
         Write where the birds went in your own words — any order, any wording. Mention the row (A1–C2), level
-        (or top/bottom), tier and cage, or an isolation cage, and how many birds. Preview shows what will change.
+        (or top/bottom) and cage number along the level (no need for tiers), or an isolation cage, and how many
+        birds. Birds put into isolation must say which cage they came from. Preview shows what will change.
       </p>
       <textarea value={description} onChange={e => { setDescription(e.target.value); setMessage(null); }} rows={4}
         placeholder={EXAMPLES}

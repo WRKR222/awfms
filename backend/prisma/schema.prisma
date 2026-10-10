@@ -2944,6 +2944,8 @@ model ProductionCage {
   blockId     String   @map("block_id")
   rowId       String?  @map("row_id")
   levelNumber Int?     @map("level_number") // 1 (bottom) - 4 (top)
+  // Tiers are physical grouping only (4 cages each); people address a cage
+  // by its number along the level: (tierNumber - 1) * 4 + cageNumber.
   tierNumber  Int?     @map("tier_number")
   cageNumber  Int      @map("cage_number")  // 1-4 within a tier; 1-8 for isolation cages
   isIsolation Boolean  @default(false) @map("is_isolation")
@@ -2971,6 +2973,9 @@ model ProductionCageAssignment {
   placedDate      DateTime @map("placed_date") @db.Date
   notes           String?
   isolationReason String?  @map("isolation_reason")
+  /// Isolation cages: where these birds were taken from, e.g.
+  /// "Block 1 A2 · Level 3 · Cage 37" (several sources joined with "; ").
+  origin          String?
   assignedById    String   @map("assigned_by_id")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")

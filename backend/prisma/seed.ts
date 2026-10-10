@@ -257,7 +257,7 @@ async function main() {
               cages.push({
                 blockId: block.id, rowId: row.id, levelNumber: level, tierNumber: tier, cageNumber: cage,
                 code: `${block.code}-${rowCode}-L${level}-T${t}-C${cage}`,
-                label: `${rowCode} · ${levelName(level)} · Tier ${t} · Cage ${cage}`,
+                label: `${rowCode} · ${levelName(level)} · Cage ${(tier - 1) * block.cagesPerTier + cage}`,
                 capacity: block.birdsPerCage,
               });
             }
