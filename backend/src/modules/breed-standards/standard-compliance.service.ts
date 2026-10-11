@@ -36,8 +36,8 @@ const round = (v: number, dp = 2) => Math.round(v * 10 ** dp) / 10 ** dp;
 
 interface DayData {
   eggs: number;            // all eggs laid (good + starter + broken + damaged + soft + deformed)
-  goodEggs: number;
-  weightKg: number;        // weighed trays
+  weighedEggs: number;     // eggs covered by the weight entered = all laid except damaged
+  weightKg: number;        // weight entered at collection
   hasEggs: boolean;
   blockPop: Map<string, number>; // opening population per block (first shift of the day)
   feedKg: number | null;
@@ -149,7 +149,7 @@ export class StandardComplianceService {
       let v = days.get(k);
       if (!v) {
         v = {
-          eggs: 0, goodEggs: 0, weightKg: 0, hasEggs: false, blockPop: new Map(), feedKg: null, altFeedKg: null,
+          eggs: 0, weighedEggs: 0, weightKg: 0, hasEggs: false, blockPop: new Map(), feedKg: null, altFeedKg: null,
           waterL: null, deaths: 0, altDeaths: 0, temps: [], lux: [], feedTypes: new Set(),
         };
         days.set(k, v);
@@ -162,11 +162,12 @@ export class StandardComplianceService {
     sessions.sort((a, b) => a.sessionDate.getTime() - b.sessionDate.getTime() || a.shift.localeCompare(b.shift));
     for (const s of sessions) {
       const d = day(s.sessionDate);
-      const good = s.totalGoodEggs + s.totalStarterEggs;
-      d.eggs += good + s.totalBrokenEggs + s.totalDamaged + s.totalSoftShell + s.totalDeformed;
+      // The weight recorded at collection covers every egg except damaged ones.
+      const weighed = s.totalGoodEggs + s.totalStarterEggs + s.totalBrokenEggs + s.totalSoftShell + s.totalDeformed;
+      d.eggs += weighed + s.totalDamaged;
       d.hasEggs = true;
       const w = Number(s.totalWeightKg ?? 0);
-      if (w > 0 && good > 0) { d.weightKg += w; d.goodEggs += good; }
+      if (w > 0 && weighed > 0) { d.weightKg += w; d.weighedEggs += weighed; }
       if (!d.blockPop.has(s.block)) d.blockPop.set(s.block, s.openingPop);
       if (s.feedKg != null && Number(s.feedKg) > 0) d.feedKg = addTo(d.feedKg, Number(s.feedKg));
       if (s.waterLiters != null) d.waterL = addTo(d.waterL, Number(s.waterLiters));
@@ -289,7 +290,7 @@ export class StandardComplianceService {
     const eggDays = [...days.entries()].filter(([, d]) => d.hasEggs && d.eggs > 0).map(([k]) => k).sort();
     const firstEggDay = eggDays[0] ?? null;
     const weeklyHdp = new Map<number, number>();
-    const dailyAvgEggWt = (d: DayData) => (d.goodEggs > 0 ? (d.weightKg * 1000) / d.goodEggs : null);
+    const dailyAvgEggWt = (d: DayData) => (d.weighedEggs > 0 ? (d.weightKg * 1000) / d.weighedEggs : null);
     const validEggWt = (v: number | null) => v != null && v >= 30 && v <= 90;
 
     const feedPhases = (await this.standards.metricSeries(ctx.guide.id, 'FEED_PHASE')).filter(p => p.ageUnit === 'WEEK');
@@ -334,7 +335,7 @@ export class StandardComplianceService {
       }
       const wtDays = data.filter(x => validEggWt(dailyAvgEggWt(x.d)));
       if (wtDays.length) {
-        const g = wtDays.reduce((a, x) => a + x.d.weightKg, 0) * 1000 / wtDays.reduce((a, x) => a + x.d.goodEggs, 0);
+        const g = wtDays.reduce((a, x) => a + x.d.weightKg, 0) * 1000 / wtDays.reduce((a, x) => a + x.d.weighedEggs, 0);
         await push('EGG_WEIGHT', w, ws, we, g, { sampleSize: wtDays.length });
       }
 

@@ -118,7 +118,7 @@ Only **complete** weeks are scored: week *w* = hatch + 7(w−1) … hatch + 7w �
 
 **How each figure is built:**
 - **Lay mortality:** counted from the start of week 18. Rearing mortality is counted from arrival, and only for batches received in week 1.
-- **Egg weight:** trays weighed ÷ good eggs. Days averaging outside 30–90 g are ignored as data errors.
+- **Egg weight:** weight entered at collection ÷ all eggs laid **except damaged** (good + starter + broken + soft-shell + deformed). Days averaging outside 30–90 g are ignored as data errors. Egg mass = that average × all eggs laid.
 - **Feed phase:** recorded feed families vs the guide phase for the week, with one phase of tolerance either side for transitions. Two more checks:
   - pre-lay fed before week 15;
   - pre-lay fed once weekly HD% is 5% or more (lay has started).
@@ -233,7 +233,7 @@ A code seed is also possible: add a `GuideSeed` file and call `seedGuide()` in `
 
 ### A14. Assumptions and known limits
 
-- Egg weight assumes the tray weight entered covers the good (trayed) eggs.
+- Egg weight assumes the weight entered at collection covers every egg except damaged ones (confirmed by the farm).
 - Brooder temperature is compared with the guide's **cage** temperatures, because the brooder uses cages.
 - Weekly light hours use the guide's light-programme chart (p.12). The brooding chart's hours (p.9) differ slightly and are kept as reference.
 - `brooder_control_standards` and the synchronous feed helpers use the Hy-Line table for all layer batches, as before. Breed-aware comparisons go through `resolveBand`.
@@ -336,6 +336,6 @@ Parameters you chose not to record (or cannot measure, like egg grading) are men
 ### B7. Good habits that make this work
 
 - **Weigh birds regularly.** Enter individual bird weights (at least 10 birds) so uniformity can be worked out. The guide says to raise light only at 1.35 kg and 85% uniformity.
-- **Weigh trays at collection.** This gives egg weight, egg mass and feed conversion (kg feed per kg eggs).
+- **Weigh eggs at collection** (all eggs except damaged ones). This gives egg weight, egg mass and feed conversion (kg feed per kg eggs).
 - **Record water** on each session. Falling water use is the earliest sign of trouble.
 - **Note practices.** When the farm deliberately does something differently, record it with the reason. It then counts as a decision, not a mistake, in reports and in the lessons for the next batch.
