@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 // src/modules/store/production-report.service.ts
 import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import * as XLSX from 'xlsx';
@@ -303,7 +304,9 @@ export class ProductionReportService {
         NotificationType.PRODUCTION_REPORT_SUBMITTED,
         `Production report applied — ${batch.batchCode}`,
         `Report for ${batch.batchCode} matched or auto-filled cleanly (${autofillCount} auto-filled, ${matchedCount} matched) — no review needed.`,
-        { entityId: report.id, entityType: 'StoreProductionReport' },
+        // Re-uploading the same rows (counts shift from "auto-filled" to
+        // "matched" on a second pass) is not news — key on the content.
+        { entityId: report.id, entityType: 'StoreProductionReport', dedupeKey: `report:${batchId}:${createHash('sha1').update(JSON.stringify(parsedRows)).digest('hex')}` },
       ).catch(() => {});
     }
 

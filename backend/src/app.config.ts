@@ -30,6 +30,12 @@ const envSchema = z.object({
   // cheaper automated cron reports (weekly/improvement-suggestions) aren't
   // forced onto the pricier model too.
   ANTHROPIC_MODEL_BATCH_REPORT: z.string().optional(),
+  // Model that reads uploaded breed guides (PDF/photo) into draft guide rows.
+  ANTHROPIC_MODEL_GUIDE: z.string().optional(),
+  // Identical notifications are suppressed while the earlier one is unread or within this many hours.
+  NOTIFICATION_REPEAT_WINDOW_HOURS: z.coerce.number().default(168),
+  // Same-breed batches needed before the system proposes a farm standard.
+  FARM_STANDARD_MIN_BATCHES: z.coerce.number().default(3),
   FEED_ALERT_THRESHOLD_DAYS: z.coerce.number().default(3),
   MORTALITY_ALERT_PCT_ABOVE_AVG: z.coerce.number().default(15),
 });

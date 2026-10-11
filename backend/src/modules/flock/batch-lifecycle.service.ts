@@ -1,3 +1,5 @@
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { BATCH_TRANSFERRED_EVENT } from '../../common/events/app-event-bus';
 // src/modules/flock/batch-lifecycle.service.ts
 // OO Design: BatchLifecycleService — dedicated service for all batch state transitions
 // Class Diagram methods: markBatchAsSold(), discardSoldBatch(), closeSoldBatch(),
@@ -26,6 +28,7 @@ export class BatchLifecycleService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly productionCages: ProductionCageService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /** Validate that a stage transition is allowed. Throws BadRequestException if not. */
@@ -103,7 +106,9 @@ export class BatchLifecycleService {
     if (!batch) throw new NotFoundException(`Batch ${batchId} not found`);
     this.validateLifecycleTransition(batch.stage, newStage);
 
-    return this.prisma.$transaction(async (tx) => {
+    const movedToProduction = newStage === BatchStage.PRODUCTION
+      && (batch.stage === BatchStage.BROODING || batch.stage === BatchStage.GROWER);
+    const result = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.batch.update({
         where: { id: batchId },
         data: {
@@ -153,5 +158,10 @@ export class BatchLifecycleService {
 
       return updated;
     });
+    if (movedToProduction) {
+      // Breed standards check the transfer age against the guide.
+      this.eventEmitter.emit(BATCH_TRANSFERRED_EVENT, { batchId, sourceBatchId: batchId, transferDate: new Date(), userId: user.id });
+    }
+    return result;
   }
 }

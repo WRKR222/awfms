@@ -42,6 +42,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.WEIGHT_ALERT_VIEW,       // PM can see weight-standard flags for their batches
     Permission.BIRD_WEIGHT_REPORT_UPLOAD, // PM uploads bird weight reports to autofill Farm Events
     Permission.HDP_CONTROL_UPLOAD, Permission.HDP_CONTROL_VIEW, // PM uploads/reviews HDP% target curve
+    Permission.BREED_STANDARD_VIEW, Permission.BREED_STANDARD_MANAGE, // breed guide benchmarks; Director activates
   ],
   [UserRole.ACCOUNTANT]: [
     Permission.FLOCK_VIEW, Permission.FEED_VIEW, Permission.FEED_STOCK_VIEW,
@@ -58,6 +59,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.BREAKAGE_REVIEW,
     Permission.BREAKAGE_VIEW,
     Permission.HDP_CONTROL_VIEW, // Accountant can view the HDP target-vs-actual comparison
+    Permission.BREED_STANDARD_VIEW, // Accountant can view breed-guide benchmarks (FCR, egg mass)
   ],
   [UserRole.OWNER]: Object.values(Permission),
   [UserRole.SALES]: [

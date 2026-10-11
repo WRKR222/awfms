@@ -181,6 +181,10 @@ enum NotificationType {
   EGG_COLLECTION_SESSION_MISSED  // the AM (noon) or PM (4:30pm) egg collection cutoff passed and at least one active production-stage batch still has no session for it — Director-facing
   // Advance bookings
   BOOKING_FULFILLED  // an advance booking was converted into a sales order — Store-facing
+  // Breed standards (guide benchmarking)
+  STANDARD_DEVIATION      // a batch moved outside its breed guide / farm standard for a parameter (first week of a run only)
+  BREED_GUIDE_ACTIVATED   // a breed guide version became the active benchmark (supersedes the previous version)
+  FARM_STANDARD_PROPOSED  // the system found farm results better than the guide and proposed a farm standard for Director approval
 }
 
 enum IssuancePlanType {
@@ -465,6 +469,24 @@ model Batch {
   // Set when this batch was split off a brooder batch by a partial transfer
   // into a production house (the rest of the parent stayed in the brooder).
   parentBatchId        String?    @map("parent_batch_id")
+  // ── Breed standards ──
+  // Breed resolved from `strain` (alias match) or picked at registration.
+  breedId              String?    @map("breed_id")
+  // Variety text left after the breed name (e.g. "Brown Max") — informational
+  // unless a variety-specific guide exists.
+  breedVariety         String?    @map("breed_variety")
+  // Recording plan: guide parameters the farm said it will NOT record for this
+  // batch (metric keys). Parameters with no input in AWFMS (egg grading, egg
+  // quality, body condition, water tests) are always treated as not recorded.
+  untrackedMetrics     String[]   @default([]) @map("untracked_metrics")
+  recordingPlanSetAt   DateTime?  @map("recording_plan_set_at")
+  // LIGHT_CONTROLLED | OPEN_SIDED — picks the guide's lighting programme.
+  housingType          String?    @map("housing_type")
+  housingDescription   String?    @map("housing_description")
+  // Light hours per day the farm actually gives (declared, updated on change).
+  declaredLightHours   Decimal?   @map("declared_light_hours") @db.Decimal(4, 1)
+  // ECONOMICAL | OPTIMAL | BOTH — which guide nutrition programme(s) to show.
+  nutritionProgram     String     @default("BOTH") @map("nutrition_program")
 
   supplier              Supplier               @relation(fields: [supplierId], references: [id])
   house                 House                  @relation(fields: [houseId], references: [id])
@@ -491,8 +513,12 @@ model Batch {
   storeProductionReport       StoreProductionReport?
   weightTrackPoints           BatchWeightTrackPoint[]
   productionCageAssignments   ProductionCageAssignment[]
+  breed                       Breed?                  @relation(fields: [breedId], references: [id])
+  standardMetrics             BatchStandardMetric[]
+  practiceNotes               BatchPracticeNote[]
   @@index([stage])
   @@index([isActive])
+  @@index([breedId])
   @@map("batches")
 }
 
@@ -1341,11 +1367,18 @@ model Notification {
   isRead     Boolean          @default(false) @map("is_read")
   readAt     DateTime?        @map("read_at")
   createdAt  DateTime         @default(now()) @map("created_at")
+  // Anti-spam key — set automatically on every insert (see
+  // common/prisma/notification-dedupe.ts). "k:"-prefixed keys come from the
+  // caller and suppress repeats forever; "h:" keys are a hash of the
+  // notification's content and suppress repeats while the earlier one is
+  // unread or recent.
+  dedupeKey  String?          @map("dedupe_key")
 
   user User @relation(fields: [userId], references: [id])
 
   @@index([userId, isRead])
   @@index([userId, createdAt])
+  @@index([userId, dedupeKey])
   @@map("notifications")
 }
 
@@ -3150,4 +3183,178 @@ model RefCounter {
   value Int    @default(0)
 
   @@map("ref_counters")
+}
+
+// ─── BREED STANDARDS (performance-guide benchmarking) ───────────────────────
+// A breed (Hy-Line Brown, Lohmann …) has versioned guides; each guide is a
+// long list of (metric, age range, min/target/max) points so any breed's
+// notes fit without schema changes. Metric behaviour lives in code
+// (modules/breed-standards/breed-metrics.catalog.ts).
+
+model Breed {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+  birdType  BirdType @map("bird_type")
+  // Lower-case letters/digits only; matched as a substring of batch strain text.
+  aliases   String[] @default([])
+  notes     String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  guides        BreedGuide[]
+  batches       Batch[]
+  farmStandards FarmStandard[]
+
+  @@map("breeds")
+}
+
+model BreedGuide {
+  id              String    @id @default(uuid())
+  breedId         String    @map("breed_id")
+  title           String
+  // Edition shown everywhere, e.g. "January 2024"; versionYear sorts editions.
+  versionLabel    String    @map("version_label")
+  versionYear     Int       @map("version_year")
+  publisher       String?
+  housingSystem   String?   @map("housing_system")
+  // null = applies to every variety of the breed.
+  variety         String?
+  sourceFileName  String?   @map("source_file_name")
+  // DRAFT → ACTIVE (Director) → ARCHIVED (when superseded by a newer edition).
+  status          String    @default("DRAFT")
+  // How the points were read: SEED | TEMPLATE | AI (AI drafts must be checked).
+  sourceKind      String    @default("TEMPLATE") @map("source_kind")
+  aiInterpretation String?  @map("ai_interpretation")
+  notes           String?
+  uploadedById    String?   @map("uploaded_by_id")
+  activatedById   String?   @map("activated_by_id")
+  activatedAt     DateTime? @map("activated_at")
+  supersededById  String?   @map("superseded_by_id")
+  supersededAt    DateTime? @map("superseded_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  breed  Breed                @relation(fields: [breedId], references: [id])
+  points BreedStandardPoint[]
+
+  @@unique([breedId, versionLabel, variety])
+  @@index([breedId, status])
+  @@map("breed_guides")
+}
+
+model BreedStandardPoint {
+  id          String   @id @default(uuid())
+  guideId     String   @map("guide_id")
+  metric      String
+  // Programme / housing / size class etc. (ECONOMICAL, LIGHT_CONTROLLED, CAGE, SMALL …)
+  variant     String?
+  ageUnit     String   @default("WEEK") @map("age_unit")
+  ageFrom     Int      @map("age_from")
+  ageTo       Int      @map("age_to")
+  minValue    Decimal? @map("min_value") @db.Decimal(12, 3)
+  targetValue Decimal? @map("target_value") @db.Decimal(12, 3)
+  maxValue    Decimal? @map("max_value") @db.Decimal(12, 3)
+  unit        String?
+  label       String?
+  phase       String?
+  textValue   String?  @map("text_value")
+  // Row order as printed in the guide (keeps nutrient lists etc. in order).
+  seq         Int      @default(0)
+
+  guide BreedGuide @relation(fields: [guideId], references: [id])
+
+  @@index([guideId, metric, ageFrom])
+  @@map("breed_standard_points")
+}
+
+/// The farm's own standard for a parameter, layered over the guide (better
+/// results achieved at the farm, or a deliberate practice). PROPOSED by the
+/// system or a manager; only APPROVED (Director) rows are used for flags.
+model FarmStandard {
+  id           String    @id @default(uuid())
+  breedId      String    @map("breed_id")
+  metric       String
+  variant      String?
+  ageUnit      String    @default("WEEK") @map("age_unit")
+  // [{ ageFrom, ageTo, min?, target?, max? }]
+  points       Json
+  reason       String
+  // Batches and figures behind a system proposal.
+  evidence     Json?
+  status       String    @default("PROPOSED") // PROPOSED | APPROVED | REJECTED | RETIRED
+  proposedById String?   @map("proposed_by_id") // null = proposed by the system
+  approvedById String?   @map("approved_by_id")
+  approvedAt   DateTime? @map("approved_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  breed Breed @relation(fields: [breedId], references: [id])
+
+  @@index([breedId, metric, status])
+  @@map("farm_standards")
+}
+
+/// One evaluated period (guide week, or brooding day-range / milestone) for
+/// one parameter of one batch: actual vs the band in force. Upserted — a
+/// re-evaluation updates the row, never adds a sibling — so it doubles as the
+/// batch's benchmark history and the cross-batch comparison source.
+model BatchStandardMetric {
+  id           String   @id @default(uuid())
+  batchId      String   @map("batch_id")
+  metric       String
+  ageUnit      String   @default("WEEK") @map("age_unit")
+  ageIndex     Int      @map("age_index")
+  periodStart  DateTime @map("period_start") @db.Date
+  periodEnd    DateTime @map("period_end") @db.Date
+  actualValue  Decimal? @map("actual_value") @db.Decimal(12, 3)
+  actualText   String?  @map("actual_text")
+  // Band actually applied (farm standard when approved, else guide).
+  minValue     Decimal? @map("min_value") @db.Decimal(12, 3)
+  targetValue  Decimal? @map("target_value") @db.Decimal(12, 3)
+  maxValue     Decimal? @map("max_value") @db.Decimal(12, 3)
+  // GUIDE | GUIDE_EXTENDED (past the guide's last row) | FARM
+  basis        String
+  guideId      String?  @map("guide_id")
+  farmStandardId String? @map("farm_standard_id")
+  // IN_BAND | BELOW | ABOVE | MISMATCH
+  status       String
+  // Status against the guide alone (differs from `status` when a farm standard applies).
+  guideStatus  String?  @map("guide_status")
+  sampleSize   Int?     @map("sample_size")
+  notifiedAt   DateTime? @map("notified_at")
+  computedAt   DateTime @default(now()) @map("computed_at")
+
+  batch Batch @relation(fields: [batchId], references: [id])
+
+  @@unique([batchId, metric, ageUnit, ageIndex])
+  @@index([metric, ageIndex])
+  @@index([batchId, status])
+  @@map("batch_standard_metrics")
+}
+
+/// A practice the farm chose that differs from the guide (e.g. "14 h light
+/// in rearing", "transferred at week 18"), declared by the manager or noted
+/// automatically. Shown on the batch, carried into AI reports with its
+/// implications, and into the lessons for the next batch of the breed.
+model BatchPracticeNote {
+  id                  String    @id @default(uuid())
+  batchId             String    @map("batch_id")
+  metric              String
+  practice            String
+  guideRecommendation String?   @map("guide_recommendation")
+  reason              String?
+  // MANUAL | AUTO
+  source              String    @default("MANUAL")
+  effectiveFrom       DateTime  @map("effective_from") @db.Date
+  effectiveTo         DateTime? @map("effective_to") @db.Date
+  recordedById        String?   @map("recorded_by_id")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  deletedAt           DateTime? @map("deleted_at")
+
+  batch Batch @relation(fields: [batchId], references: [id])
+
+  @@index([batchId, metric])
+  @@map("batch_practice_notes")
 }

@@ -112,6 +112,36 @@ latest price on or before the date.
   of that kind; otherwise the previous report is returned (`reused: true`).
 - `GET /ai/readiness[?batchId=]` shows readiness + missing days without an AI call.
 
+## Breed standards (performance-guide benchmarking)
+
+`modules/breed-standards/` — see `docs/BREED_STANDARDS.md`.
+- `Breed` → versioned `BreedGuide` (DRAFT → ACTIVE → ARCHIVED; Director
+  activates, previous edition archived) → `BreedStandardPoint` rows
+  (metric, variant, age range, min/target/max). Hy-Line Brown Jan 2024 is
+  seeded on start-up from `guides/hyline-brown-2024.guide.ts`.
+- Metric behaviour (direction, capture, past-the-guide rule, implications)
+  lives in `breed-metrics.catalog.ts` — never per breed.
+- `Batch.breedId` comes from alias matching on `strain` ("hyline" etc.).
+  `Batch.untrackedMetrics` = recording plan; NO_INPUT metrics are always
+  untracked.
+- Always read standards through `BreedStandardService.resolveBand()`
+  (approved `FarmStandard` wins; HOLD_LAST metrics keep the last guide row).
+  `feed-standard.util.ts` sync helpers use the same Hy-Line data (De Heus
+  chart is gone, weeks 1–100).
+- `StandardComplianceService` upserts weekly `BatchStandardMetric` rows
+  (nightly 02:15 EAT + `POST /breed-standards/batches/:id/evaluate`) and
+  notifies `STANDARD_DEVIATION` once per run of off-standard weeks.
+- AI prompts get `buildAiContext()` / `buildAiContextForBatches()`.
+- HDP comparison prefers the guide's `HEN_DAY_PCT`; uploads are fallback.
+
+## Notifications never repeat
+
+`PrismaService` extends `notification.create/createMany` (even inside
+`$transaction`) with `common/prisma/notification-dedupe.ts`: pass
+`dedupeKey` for "this data point was already flagged" (permanent), else an
+identical notification is skipped while unread or within
+`NOTIFICATION_REPEAT_WINDOW_HOURS` (168).
+
 ## Vet visits
 
 Live on `HealthEvent` (single source of truth). Manager-only upload via
@@ -144,6 +174,9 @@ Models with soft delete: `User`, `Batch`, `Customer`, `EggCollectionSession`,
 - `VISITOR_NOTICE_APPROVE` — Owner
 - `HEALTH_VET_UPLOAD` — Manager
 - `CONSTRUCTION_LABOR_LOG` — Store
+- `BREED_STANDARD_VIEW` — Manager, Accountant, Owner
+- `BREED_STANDARD_MANAGE` — Manager, Owner (guide drafts, practices, farm-standard proposals)
+- `BREED_GUIDE_APPROVE` — Owner (activate editions, approve farm standards)
 
 ## Decimal handling
 
@@ -156,6 +189,9 @@ All money / weight / count fields use `Decimal`. When summing in JS, wrap with
 - `TALLY_EDITED` — Manager edited; re-sign required
 - `TALLY_SIGNED` — one party signed
 - `TALLY_LOCKED` — all three signed; finalised
+- `STANDARD_DEVIATION` — batch off its breed guide / farm standard (once per run)
+- `BREED_GUIDE_ACTIVATED` — a guide edition became the benchmark
+- `FARM_STANDARD_PROPOSED` — farm results beat the guide; Director to approve
 - `STOCK_REQUEST` — new SimpleStockRequest
 - `STOCK_REQUEST_FULFILLED` — Store issued / partial / rejected
 - `PURCHASE_REQUEST` — Store raised to Accountant

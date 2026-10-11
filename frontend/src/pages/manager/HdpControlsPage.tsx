@@ -20,6 +20,13 @@ function useActiveControl() {
   });
 }
 
+function useGuideCoverage() {
+  return useQuery<{ covered: { batchCode: string; breed: string; guide: string }[]; uncovered: string[]; uploadNeeded: boolean }>({
+    queryKey: ['hdp-guide-coverage'],
+    queryFn: () => api.get('/production/hdp-controls/guide-coverage').then(r => r.data),
+  });
+}
+
 function useBatches() {
   return useQuery({
     queryKey: ['batches', 'production'],
@@ -49,6 +56,11 @@ export function HdpControlsPage() {
   const [selectedBatchId, setSelectedBatchId] = useState('');
 
   const { data: comparison, isError: comparisonError, error: comparisonErrObj } = useComparison(selectedBatchId);
+  // Batches whose breed guide carries a hen-day % table are compared against
+  // the guide; an uploaded curve is only needed for the others.
+  const { data: coverage } = useGuideCoverage();
+  const [showUpload, setShowUpload] = useState(false);
+  const uploadVisible = showUpload || coverage?.uploadNeeded !== false;
 
   const upload = useMutation({
     mutationFn: () => {
@@ -84,8 +96,26 @@ export function HdpControlsPage() {
         </p>
       </div>
 
+      {coverage && coverage.covered.length > 0 && (
+        <div className="bg-brand-green/5 border border-brand-green/30 rounded-2xl p-4 text-sm">
+          <p className="font-semibold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+            <CheckCircle className="w-4 h-4 text-brand-green" /> Breed guide targets in use — no upload needed for these batches
+          </p>
+          <ul className="mt-1.5 text-xs text-gray-600 dark:text-gray-300 space-y-0.5">
+            {coverage.covered.map(c => <li key={c.batchCode}><strong>{c.batchCode}</strong> — {c.guide}</li>)}
+          </ul>
+          {coverage.uncovered.length > 0 ? (
+            <p className="text-xs text-amber-600 mt-2">No breed guide with HD% targets for: {coverage.uncovered.join(', ')} — they use the uploaded curve below.</p>
+          ) : !showUpload && (
+            <button onClick={() => setShowUpload(true)} className="text-xs text-brand-green font-semibold mt-2 underline">
+              Upload a curve anyway (for a breed without a guide)
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Upload card */}
-      <div className={cardCls}>
+      {uploadVisible && <div className={cardCls}>
         <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3 flex items-center gap-2">
           <UploadCloud className="w-4 h-4 text-brand-green" /> Upload Target Curve
         </p>
@@ -139,7 +169,7 @@ export function HdpControlsPage() {
         <p className="text-[11px] text-gray-400 mt-2">
           Uploading a new curve replaces the currently active one (history is kept, not deleted).
         </p>
-      </div>
+      </div>}
 
       {/* Active control summary */}
       <div className={cardCls}>
@@ -197,6 +227,11 @@ export function HdpControlsPage() {
           <p className="text-sm text-gray-400">Loading…</p>
         ) : (
           <div className="overflow-x-auto">
+            <p className="text-[11px] text-gray-400 mb-2">
+              {comparison.source === 'GUIDE'
+                ? <>Target from <strong>{comparison.controlFileName}</strong> — weekly hen-day % (AM+PM, all blocks). Rows marked “held” are past the guide’s last week and use its final values.</>
+                : <>Target from uploaded curve <strong>{comparison.controlFileName}</strong>.</>}
+            </p>
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-gray-400 border-b border-gray-100 dark:border-dark-border">
@@ -212,7 +247,10 @@ export function HdpControlsPage() {
                 {comparison.rows.map((r: any) => (
                   <tr key={r.periodIndex} className="border-b border-gray-50 dark:border-dark-border/50">
                     <td className="py-1.5 pr-3 font-semibold text-gray-700 dark:text-gray-200">{r.periodIndex}</td>
-                    <td className="text-right px-2 text-gray-500">{r.targetHdpPercent ?? '—'}</td>
+                    <td className="text-right px-2 text-gray-500">
+                      {r.minHdpPercent != null && r.maxHdpPercent != null ? `${r.minHdpPercent}–${r.maxHdpPercent}` : r.targetHdpPercent ?? '—'}
+                      {r.basis === 'GUIDE_EXTENDED' && <span className="text-[10px] text-gray-400"> (held)</span>}
+                    </td>
                     <td className="text-right px-2 text-gray-700 dark:text-gray-200">{r.actualHdpPercent ?? '—'}</td>
                     <td className={`text-right pl-2 font-semibold ${
                       r.varianceHdpPercent == null ? 'text-gray-400'

@@ -7,6 +7,7 @@ import { api } from '../../lib/api/client';
 import {
   LayoutDashboard, Package, ClipboardCheck, FileCheck, Bell, LogOut,
   Users, BarChart2, Heart, Settings, AlertTriangle, Syringe, ClipboardList, TrendingUp,
+  BookOpen,
 } from 'lucide-react';
 import { useLoginNotifications } from '../../hooks/useLoginNotifications';
 import { LoginNotificationModal } from '../../components/shared/LoginNotificationModal';
@@ -89,6 +90,7 @@ export function ManagerLayout() {
     },
     { to: '/manager/health',            label: 'Vaccinations',  icon: <Syringe className="w-5 h-5" /> },
     { to: '/manager/hdp-controls',      label: 'HDP% Controls', icon: <TrendingUp className="w-5 h-5" /> },
+    { to: '/manager/breed-standards',   label: 'Breed Standards', icon: <BookOpen className="w-5 h-5" /> },
     { to: '/manager/requisitions',      label: 'Store Requests', icon: <ClipboardList className="w-5 h-5" /> },
     { to: '/manager/culling',           label: 'Farm Events',   icon: <AlertTriangle className="w-5 h-5" /> },
     { to: '/manager/visitors',          label: 'Visitors',      icon: <Users className="w-5 h-5" /> },

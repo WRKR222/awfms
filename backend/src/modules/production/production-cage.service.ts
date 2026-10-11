@@ -25,7 +25,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BatchStage, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { DASHBOARD_REFRESH_EVENT } from '../../common/events/app-event-bus';
+import { BATCH_TRANSFERRED_EVENT, DASHBOARD_REFRESH_EVENT } from '../../common/events/app-event-bus';
 import { RequestUser } from '../../auth/types/request-user.type';
 import { CageRef, ParsedCageOp, parseProductionCageText } from './production-cage-text.util';
 
@@ -561,6 +561,15 @@ export class ProductionCageService {
             notes: `Split from ${batch.batchCode} on ${day}: ${birdCount} birds transferred from the brooder to ${target.name}.`,
             parentBatchId: batch.id,
             createdById: user.id,
+            // Same birds, same breed guide and recording plan as the parent.
+            breedId: batch.breedId,
+            breedVariety: batch.breedVariety,
+            untrackedMetrics: batch.untrackedMetrics,
+            recordingPlanSetAt: batch.recordingPlanSetAt,
+            housingType: batch.housingType,
+            housingDescription: batch.housingDescription,
+            declaredLightHours: batch.declaredLightHours,
+            nutritionProgram: batch.nutritionProgram,
           },
         });
         productionBatchId = child.id;
@@ -598,6 +607,10 @@ export class ProductionCageService {
     }, { timeout: 30_000 });
 
     this.refresh();
+    // Breed standards check the transfer age against the guide.
+    this.eventEmitter.emit(BATCH_TRANSFERRED_EVENT, {
+      batchId: result.productionBatchId, sourceBatchId: batchId, transferDate, userId: user.id,
+    });
     return result;
   }
 

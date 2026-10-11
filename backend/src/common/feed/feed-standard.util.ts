@@ -28,45 +28,63 @@
 // that's the actual clinical signal, not a reason to discount the schedule.
 
 import { FeedType } from '@prisma/client';
+import { HYLINE_BROWN_PRODUCTION, HYLINE_BROWN_REARING } from '../../modules/breed-standards/guides/hyline-brown-2024.guide';
 
-// ── HyLine Brown rearing schedule (weeks 1-19) ───────────────────────────────
-// Source: chart provided by farm management. "Surviving Birds" and
-// "Total Weekly Feed for Flock (Bags)" columns are excluded per spec —
-// they are batch-size-dependent. This table is the single truth used for:
-//   • Feed consumption control (g/bird/day)
-//   • Bird weight control (min/max g at end of week)
-//   • Mortality rate control (cumulative %)
+// ── HyLine Brown schedule (weeks 1-100) ─────────────────────────────────────
+// Source: Hy-Line Brown Commercial Layers Performance Guide (January 2024) —
+// see modules/breed-standards/guides/hyline-brown-2024.guide.ts. This
+// replaced the De Heus rearing chart (weeks 1-19) that used to live here.
+// It is the synchronous default layer standard used for:
+//   • Feed consumption control (g/bird/day = midpoint of the guide range)
+//   • Bird weight control (min/max g)
+//   • Mortality rate control (cumulative % from arrival)
+// Breed-aware, async checks (other breeds, farm standards, flags) go through
+// BreedStandardService instead.
 
 export interface HyLineWeekStandard {
   week: number;
   phase: string;
-  feedingGramsPerBird: number;   // g/bird/day
+  feedingGramsPerBird: number;   // g/bird/day (midpoint of the guide's range)
   weeklyIntakeKgPerBird: number; // kg/bird/week (= feedingGramsPerBird × 7 / 1000)
   weightMinG: number;            // expected weight lower bound (g)
   weightMaxG: number;            // expected weight upper bound (g)
-  cumulativeMortalityPct: number;// cumulative % ceiling at end of this week
+  cumulativeMortalityPct: number;// cumulative % ceiling at end of this week, from arrival
 }
 
+function rearingPhase(week: number): string {
+  if (week <= 3) return 'Starter 1';
+  if (week <= 6) return 'Starter 2';
+  if (week <= 12) return 'Grower';
+  if (week <= 15) return 'Developer';
+  if (week <= 17) return 'Pre-Lay';
+  return 'Laying';
+}
+
+const halfStep = (n: number) => Math.round(n * 2) / 2;
+const REARING_END_MORTALITY = HYLINE_BROWN_REARING[HYLINE_BROWN_REARING.length - 1][1];
+
 const HYLINE_SCHEDULE: HyLineWeekStandard[] = [
-  { week: 1,  phase: 'Starter Crumbs', feedingGramsPerBird: 16.5, weeklyIntakeKgPerBird: 0.12, weightMinG: 110,  weightMaxG: 117,  cumulativeMortalityPct: 0.4 },
-  { week: 2,  phase: 'Starter Crumbs', feedingGramsPerBird: 18.5, weeklyIntakeKgPerBird: 0.13, weightMinG: 119,  weightMaxG: 126,  cumulativeMortalityPct: 0.6 },
-  { week: 3,  phase: 'Starter Crumbs', feedingGramsPerBird: 22.0, weeklyIntakeKgPerBird: 0.15, weightMinG: 186,  weightMaxG: 197,  cumulativeMortalityPct: 0.7 },
-  { week: 4,  phase: 'Starter Crumbs', feedingGramsPerBird: 27.0, weeklyIntakeKgPerBird: 0.19, weightMinG: 266,  weightMaxG: 281,  cumulativeMortalityPct: 0.8 },
-  { week: 5,  phase: 'Starter Crumbs', feedingGramsPerBird: 32.0, weeklyIntakeKgPerBird: 0.22, weightMinG: 357,  weightMaxG: 377,  cumulativeMortalityPct: 0.9 },
-  { week: 6,  phase: 'Starter Crumbs', feedingGramsPerBird: 38.5, weeklyIntakeKgPerBird: 0.27, weightMinG: 456,  weightMaxG: 482,  cumulativeMortalityPct: 1.0 },
-  { week: 7,  phase: 'Grower',         feedingGramsPerBird: 44.5, weeklyIntakeKgPerBird: 0.31, weightMinG: 561,  weightMaxG: 593,  cumulativeMortalityPct: 1.1 },
-  { week: 8,  phase: 'Grower',         feedingGramsPerBird: 50.0, weeklyIntakeKgPerBird: 0.35, weightMinG: 668,  weightMaxG: 706,  cumulativeMortalityPct: 1.2 },
-  { week: 9,  phase: 'Grower',         feedingGramsPerBird: 55.0, weeklyIntakeKgPerBird: 0.39, weightMinG: 772,  weightMaxG: 816,  cumulativeMortalityPct: 1.3 },
-  { week: 10, phase: 'Grower',         feedingGramsPerBird: 59.0, weeklyIntakeKgPerBird: 0.41, weightMinG: 871,  weightMaxG: 921,  cumulativeMortalityPct: 1.4 },
-  { week: 11, phase: 'Developer',      feedingGramsPerBird: 63.0, weeklyIntakeKgPerBird: 0.44, weightMinG: 963,  weightMaxG: 1018, cumulativeMortalityPct: 1.5 },
-  { week: 12, phase: 'Developer',      feedingGramsPerBird: 65.5, weeklyIntakeKgPerBird: 0.46, weightMinG: 1046, weightMaxG: 1105, cumulativeMortalityPct: 1.6 },
-  { week: 13, phase: 'Developer',      feedingGramsPerBird: 68.0, weeklyIntakeKgPerBird: 0.48, weightMinG: 1120, weightMaxG: 1184, cumulativeMortalityPct: 1.6 },
-  { week: 14, phase: 'Developer',      feedingGramsPerBird: 70.5, weeklyIntakeKgPerBird: 0.49, weightMinG: 1186, weightMaxG: 1254, cumulativeMortalityPct: 1.7 },
-  { week: 15, phase: 'Developer',      feedingGramsPerBird: 72.5, weeklyIntakeKgPerBird: 0.51, weightMinG: 1246, weightMaxG: 1317, cumulativeMortalityPct: 1.8 },
-  { week: 16, phase: 'Developer',      feedingGramsPerBird: 75.5, weeklyIntakeKgPerBird: 0.53, weightMinG: 1302, weightMaxG: 1377, cumulativeMortalityPct: 1.9 },
-  { week: 17, phase: 'Prelayer',       feedingGramsPerBird: 79.5, weeklyIntakeKgPerBird: 0.56, weightMinG: 1357, weightMaxG: 1434, cumulativeMortalityPct: 2.0 },
-  { week: 18, phase: 'Prelayer',       feedingGramsPerBird: 83.5, weeklyIntakeKgPerBird: 0.58, weightMinG: 1411, weightMaxG: 1492, cumulativeMortalityPct: 2.0 },
-  { week: 19, phase: 'Prelayer',       feedingGramsPerBird: 89.0, weeklyIntakeKgPerBird: 0.62, weightMinG: 1467, weightMaxG: 1551, cumulativeMortalityPct: 2.1 },
+  ...HYLINE_BROWN_REARING.map(([week, mort, bwMin, bwMax, , , fMin, fMax]) => {
+    const g = halfStep((fMin + fMax) / 2);
+    return {
+      week, phase: rearingPhase(week), feedingGramsPerBird: g,
+      weeklyIntakeKgPerBird: Math.round(g * 7) / 1000,
+      weightMinG: bwMin, weightMaxG: bwMax, cumulativeMortalityPct: mort,
+    };
+  }),
+  // The guide's laying table counts mortality from week 18; the rearing
+  // ceiling (2.00%) is added so this stays "cumulative from arrival" like
+  // every caller of checkMortalityViolation expects.
+  ...HYLINE_BROWN_PRODUCTION.map(r => {
+    const [week, , , , , , , mort, bwMin, bwMax, , , fMin, fMax] = r as number[];
+    const g = halfStep((fMin + fMax) / 2);
+    return {
+      week, phase: rearingPhase(week), feedingGramsPerBird: g,
+      weeklyIntakeKgPerBird: Math.round(g * 7) / 1000,
+      weightMinG: Math.round(bwMin * 1000), weightMaxG: Math.round(bwMax * 1000),
+      cumulativeMortalityPct: Math.round((REARING_END_MORTALITY + mort) * 100) / 100,
+    };
+  }),
 ];
 
 /**
@@ -147,15 +165,12 @@ export function batchAgeWeeks(anchorDate: Date, referenceDate: Date = farmNow())
   return Math.max(1, Math.floor(Math.max(0, ageInDays) / 7) + 1);
 }
 
-/** Last week the HYLINE_SCHEDULE table has a real row for (19 = Prelayer,
- *  the end of the rearing chart — the farm has not yet supplied
- *  production-phase (in-lay) week rows past this point). Exported so
- *  callers that reuse this table for the production/laying stage can
- *  detect when a batch has aged past what the table actually covers,
- *  rather than silently trusting the clamped week-19 value. */
-export const HYLINE_SCHEDULE_MAX_WEEK = 19;
+/** Last week the HYLINE_SCHEDULE table has a real row for (100 — the end
+ *  of the guide's laying table). Past it, hylineStandard() holds week 100's
+ *  values, which is what the guide-follows-last-week rule asks for. */
+export const HYLINE_SCHEDULE_MAX_WEEK = 100;
 
-/** Returns the HyLine standard for a given age in weeks (1-indexed, clamped to 1-19). */
+/** Returns the HyLine standard for a given age in weeks (1-indexed, clamped to 1-100). */
 export function hylineStandard(ageWeeks: number): HyLineWeekStandard {
   const week = Math.max(1, Math.min(HYLINE_SCHEDULE_MAX_WEEK, Math.round(ageWeeks)));
   return HYLINE_SCHEDULE[week - 1];
@@ -167,21 +182,18 @@ export function hylineGramsPerBirdPerDay(ageWeeks: number): number {
 }
 
 /** Standard grams of feed per bird per day, by feed type and age in weeks.
- *  Matches FeedService's original getRecommendedIntake table exactly. */
+ *  Kienyeji feeds keep the farm's own table; every layer feed type follows
+ *  the Hy-Line Brown guide by age (this used to be a flat 30/80/115 g, or a
+ *  90 g fallback for chick/grower mash). */
 export function gramsPerBirdPerDay(feedType: FeedType | string, ageWeeks: number): number {
   const type = String(feedType);
 
-  if (type === FeedType.LAYER_MASH) {
-    if (ageWeeks < 6)  return 30;
-    if (ageWeeks < 18) return 80;
-    return 115; // production phase
-  }
   if (type.startsWith('KIENYEJI')) {
     if (ageWeeks < 4) return 25;
     if (ageWeeks < 8) return 60;
     return 100;
   }
-  return 90; // generic fallback (incl. CHICK_MASH / GROWER_MASH)
+  return hylineGramsPerBirdPerDay(ageWeeks);
 }
 
 /** Brooder-specific grams/bird/day using the HyLine Brown rearing schedule.

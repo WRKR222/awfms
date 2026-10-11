@@ -26,6 +26,7 @@ import { ManagerHome }      from './pages/manager/ManagerHome';
 import { ManagerBatches }   from './pages/manager/ManagerBatches';
 import { VerificationQueue } from './pages/manager/VerificationQueue';
 import { HdpControlsPage }  from './pages/manager/HdpControlsPage';
+import { BreedStandardsPage } from './pages/shared/BreedStandardsPage';
 import { BrooderDailyReviewPage } from './pages/manager/BrooderDailyReviewPage';
 
 // Accountant pages
@@ -220,6 +221,7 @@ function AppInner() {
           <Route path="brooder-review"    element={<BrooderDailyReviewPage />} />
           <Route path="verification"      element={<VerificationQueue />} />
           <Route path="hdp-controls"      element={<HdpControlsPage />} />
+          <Route path="breed-standards"   element={<BreedStandardsPage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="visitors"          element={<VisitorManagementPage />} />
           <Route path="analytics"         element={<AnalyticsDashboard role="MANAGER" />} />
@@ -263,6 +265,7 @@ function AppInner() {
           <Route path="reports"           element={<AiReportsPage />} />
           <Route path="data-upload"       element={<DataUploadPage />} />
           <Route path="production-reports" element={<ProductionReportReviewPage />} />
+          <Route path="breed-standards"   element={<BreedStandardsPage />} />
           <Route path="batch-cost"        element={<BatchCostPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="sales-orders"       element={<OwnerSalesOrdersPage />} />

@@ -21,6 +21,7 @@
 // Deliberately best-effort throughout: a failure gathering feed/mortality
 // context or calling the AI never blocks the weight sample itself from
 // being saved — this service only ever adds an alert on top.
+import { BreedStandardService } from '../breed-standards/breed-standard.service';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
@@ -39,7 +40,20 @@ export class WeightAlertService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly breedStandards: BreedStandardService,
   ) {}
+
+  /** The batch's own breed guide band (farm standard applied, last guide week
+   *  held past the end of the guide) — falls back to the default Hy-Line
+   *  schedule for batches with no breed guide. */
+  private async weightCheck(batchId: string, averageWeightG: number, ageWeeks: number) {
+    const ctx = await this.breedStandards.batchContext(batchId).catch(() => null);
+    const band = ctx?.guide ? await this.breedStandards.resolveBand(ctx, 'BODY_WEIGHT', ageWeeks) : null;
+    if (!band || band.min == null || band.max == null) return checkWeightViolation(averageWeightG, ageWeeks);
+    const standard = { ...hylineStandard(ageWeeks), week: ageWeeks, weightMinG: band.min, weightMaxG: band.max };
+    const violated = averageWeightG < band.min || averageWeightG > band.max;
+    return { violated, message: '', standard };
+  }
 
   /**
    * Checks one recorded average weight against the HyLine standard band for
@@ -85,7 +99,7 @@ export class WeightAlertService {
     if (!batch) return null;
 
     const ageWeeks = batchAgeWeeks(batch.dateOfHatch, params.sampleDate);
-    const check = checkWeightViolation(params.averageWeightG, ageWeeks);
+    const check = await this.weightCheck(params.batchId, params.averageWeightG, ageWeeks);
     if (!check.violated) return null;
 
     const direction: WeightAlertDirection =
@@ -170,7 +184,21 @@ export class WeightAlertService {
     // Only the very first time this (batch, day) is flagged does the
     // Director get notified — re-notifying on every re-upload of an
     // already-seen flag is exactly the duplication being fixed here.
-    if (!existing) {
+    // A run of out-of-band weighings in the same direction is one issue: if
+    // an earlier flag for this batch (same direction, last 14 days) is still
+    // open/acknowledged, this one is recorded but not re-notified.
+    const ongoing = existing ? null : await this.prisma.productionWeightAlert.findFirst({
+      where: {
+        batchId: params.batchId,
+        direction,
+        status: { not: 'RESOLVED' },
+        id: { not: alert.id },
+        sampleDate: { gte: dayjs(params.sampleDate).subtract(14, 'day').toDate(), lt: params.sampleDate },
+      },
+      select: { id: true },
+    });
+
+    if (!existing && !ongoing) {
       const directionLabel = direction === 'BELOW_MIN' ? 'below' : 'above';
       const boundaryLabel = direction === 'BELOW_MIN' ? 'minimum' : 'maximum';
       const title = direction === 'BELOW_MIN' ? 'Bird Weight Below Standard' : 'Bird Weight Above Standard';
@@ -185,6 +213,8 @@ export class WeightAlertService {
       ).catch(() => { /* best-effort */ });
 
       this.logger.warn(`Weight alert raised for batch ${batch.batchCode}: ${message}`);
+    } else if (ongoing) {
+      this.logger.log(`Weight alert recorded without re-notify (same issue still open: ${ongoing.id}) for batch ${batch.batchCode}`);
     } else {
       this.logger.log(`Weight alert refreshed (no re-notify) for batch ${batch.batchCode}, ${dayjs(params.sampleDate).format('D MMM YYYY')}: alert ${alert.id}`);
     }

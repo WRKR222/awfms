@@ -11,6 +11,8 @@ import * as XLSX from 'xlsx';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiService } from '../ai/ai.service';
 import { RequestUser } from '../../auth/types/request-user.type';
+import { BreedStandardService } from '../breed-standards/breed-standard.service';
+import { StandardComplianceService } from '../breed-standards/standard-compliance.service';
 import type { ParsedHdpControlPoint, UploadHdpControlsDto } from './hdp-control.dto';
 
 // Header words that can label the "period" column (day/week number).
@@ -23,7 +25,66 @@ export class HdpControlService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiService: AiService,
+    private readonly breedStandards: BreedStandardService,
+    private readonly compliance: StandardComplianceService,
   ) {}
+
+  // ── Breed-guide coverage ──────────────────────────────────────────────
+  // A breed guide that carries a hen-day % table (Hy-Line Brown does,
+  // weeks 18–100) makes an uploaded control curve unnecessary for that
+  // breed's batches; uploads remain for breeds without one.
+
+  async guideCoverage() {
+    const batches = await this.prisma.batch.findMany({
+      where: { isActive: true, deletedAt: null, birdType: 'LAYER_COMMERCIAL' },
+      select: { id: true, batchCode: true, breedId: true, breedVariety: true, breed: { select: { name: true } } },
+    });
+    const covered: { batchCode: string; breed: string; guide: string }[] = [];
+    const uncovered: string[] = [];
+    for (const b of batches) {
+      const guide = b.breedId ? await this.breedStandards.activeGuide(b.breedId, b.breedVariety) : null;
+      const hasHdp = guide ? (await this.breedStandards.metricSeries(guide.id, 'HEN_DAY_PCT')).length > 0 : false;
+      if (guide && hasHdp) covered.push({ batchCode: b.batchCode, breed: b.breed?.name ?? '', guide: `${guide.title} (${guide.versionLabel})` });
+      else uncovered.push(b.batchCode);
+    }
+    return { covered, uncovered, uploadNeeded: uncovered.length > 0 };
+  }
+
+  /** Weekly guide band vs the batch's weekly hen-day % (AM+PM, all blocks). */
+  private async guideComparison(batchId: string) {
+    const ctx = await this.breedStandards.batchContext(batchId);
+    if (!ctx?.guide) return null;
+    const series = (await this.breedStandards.metricSeries(ctx.guide.id, 'HEN_DAY_PCT')).filter(p => p.ageUnit === 'WEEK');
+    if (!series.length) return null;
+    await this.compliance.evaluateBatch(batchId).catch(() => null);
+    const actualRows = await this.prisma.batchStandardMetric.findMany({
+      where: { batchId, metric: 'HEN_DAY_PCT', ageUnit: 'WEEK' },
+      select: { ageIndex: true, actualValue: true, minValue: true, maxValue: true, basis: true },
+    });
+    const actualBy = new Map(actualRows.map(r => [r.ageIndex, r]));
+    const lastGuideWeek = Math.max(...series.map(p => p.ageTo));
+    const weeks = new Set<number>([...series.map(p => p.ageFrom), ...actualBy.keys()]);
+    const rows = [...weeks].sort((a, b) => a - b).map(week => {
+      const a = actualBy.get(week);
+      const g = series.find(p => week >= p.ageFrom && week <= p.ageTo) ?? (week > lastGuideWeek ? series[series.length - 1] : null);
+      const min = a?.minValue != null ? Number(a.minValue) : g?.min ?? null;
+      const max = a?.maxValue != null ? Number(a.maxValue) : g?.max ?? null;
+      const target = min != null && max != null ? Math.round(((min + max) / 2) * 100) / 100 : g?.target ?? null;
+      const actual = a?.actualValue != null ? Math.round(Number(a.actualValue) * 100) / 100 : null;
+      return {
+        periodIndex: week, targetHdpPercent: target, minHdpPercent: min, maxHdpPercent: max,
+        actualHdpPercent: actual,
+        varianceHdpPercent: target != null && actual != null ? Math.round((actual - target) * 100) / 100 : null,
+        basis: a?.basis ?? (week > lastGuideWeek ? 'GUIDE_EXTENDED' : 'GUIDE'),
+      };
+    });
+    return {
+      batchId, batchCode: ctx.batchCode, granularity: 'WEEKLY' as const,
+      source: 'GUIDE' as const, controlUploadId: null,
+      controlFileName: `${ctx.breedName} — ${ctx.guide.title} (${ctx.guide.versionLabel})`,
+      rows,
+    };
+  }
 
   // ── Upload ────────────────────────────────────────────────────────────
 
@@ -134,6 +195,8 @@ export class HdpControlService {
    * anchor convention as the brooder module's batchAgeWeeks()).
    */
   async getComparison(batchId: string) {
+    const fromGuide = await this.guideComparison(batchId);
+    if (fromGuide) return fromGuide;
     const [batch, control] = await Promise.all([
       this.prisma.batch.findFirst({ where: { id: batchId, deletedAt: null } }),
       this.getActive(),
@@ -196,6 +259,7 @@ export class HdpControlService {
       batchId,
       batchCode: batch.batchCode,
       granularity: control.granularity,
+      source: 'UPLOAD' as const,
       controlUploadId: control.id,
       controlFileName: control.fileName,
       rows,

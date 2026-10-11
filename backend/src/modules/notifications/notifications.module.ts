@@ -42,6 +42,7 @@ export class NotificationsService {
     message: string;
     entityId?: string;
     entityType?: string;
+    dedupeKey?: string;
   }) {
     return this.prisma.notification.create({ data: params });
   }

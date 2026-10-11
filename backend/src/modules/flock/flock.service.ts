@@ -1,3 +1,4 @@
+import { BreedStandardService } from '../breed-standards/breed-standard.service';
 import {
   BadRequestException,
   Injectable,
@@ -39,6 +40,7 @@ export class FlockService {
     private readonly storeInventory: StoreInventoryService,
     private readonly notifications: NotificationsService,
     private readonly productionCages: ProductionCageService,
+    private readonly breedStandards: BreedStandardService,
   ) {}
 
   // A vaccine/supplement/treatment can be logged against any active store
@@ -242,7 +244,9 @@ export class FlockService {
             supplierId: supplier.id,
             houseId: house.id,
             birdType: input.birdType as BirdType,
-            strain: input.strain ?? String(input.birdType).replace(/_/g, ' '),
+            // The registration form sends the typed breed as `birdBreed`; it
+            // used to land only in notes, leaving strain as "LAYER COMMERCIAL".
+            strain: String(input.strain ?? input.birdBreed ?? '').trim() || String(input.birdType).replace(/_/g, ' '),
             quantityReceived: quantity,
             currentBirdCount: quantity - Number(input.mortalityOnArrival ?? 0),
             dateOfHatch,
@@ -339,6 +343,11 @@ export class FlockService {
 
         return batch;
       });
+      // Breed guide + recording plan (what the farm will / won't record,
+      // housing, light hours, nutrition programme). Best-effort: a batch is
+      // never blocked from registering over benchmark settings.
+      await this.breedStandards.applyBatchSetup(result.id, input).catch(err =>
+        this.logger.warn(`Breed setup skipped for ${result.batchCode}: ${err?.message}`));
       return result;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
@@ -475,19 +484,27 @@ export class FlockService {
     // quantityReceived is only ever adjusted via the mortalityOnArrival delta
     // correction above, and only when that value actually changed.
 
-    if (Object.keys(data).length === 0) {
+    const strainChanged = data.strain !== undefined && data.strain !== batch.strain;
+    const setupKeys = ['breedId', 'breedVariety', 'untrackedMetrics', 'recordedMetrics', 'housingType', 'housingDescription', 'declaredLightHours', 'nutritionProgram'];
+    const hasSetup = strainChanged || setupKeys.some(k => input[k] !== undefined);
+
+    if (Object.keys(data).length === 0 && !hasSetup) {
       return this.getBatch(id);
     }
 
     try {
-      return await this.prisma.batch.update({
+      const updated = Object.keys(data).length ? await this.prisma.batch.update({
         where: { id },
         data,
         include: {
           house: { select: { id: true, name: true, code: true } },
           supplier: { select: { id: true, name: true } },
         },
-      });
+      }) : null;
+      if (hasSetup) {
+        await this.breedStandards.applyBatchSetup(id, input, { reresolveBreed: strainChanged && input.breedId === undefined });
+      }
+      return updated ?? this.getBatch(id);
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         throw new BadRequestException('A batch with this code already exists');

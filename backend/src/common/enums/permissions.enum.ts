@@ -38,6 +38,11 @@ export enum Permission {
   HDP_CONTROL_UPLOAD           = 'hdp_control:upload',            // MANAGER (PM), OWNER
   HDP_CONTROL_VIEW             = 'hdp_control:view',               // MANAGER, OWNER, ACCOUNTANT
 
+  // Breed guide benchmarking (Hy-Line etc.)
+  BREED_STANDARD_VIEW          = 'breed_standard:view',            // MANAGER, OWNER, ACCOUNTANT
+  BREED_STANDARD_MANAGE        = 'breed_standard:manage',          // MANAGER (guide drafts, practices, farm-standard proposals), OWNER
+  BREED_GUIDE_APPROVE          = 'breed_standard:approve',         // OWNER only — activate guide editions, approve farm standards
+
   PRODUCTION_VIEW              = 'production:view',
   PRODUCTION_ENTRY_CREATE      = 'production:entry:create',  // Lead Attendant
   PRODUCTION_ENTRY_APPROVE     = 'production:entry:approve', // Manager (same-evening verify + tally edit)

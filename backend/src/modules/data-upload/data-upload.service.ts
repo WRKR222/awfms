@@ -85,15 +85,21 @@ export class DataUploadService {
             create: { name: 'Imported Records', description: 'Auto-created for bulk imports', createdById: uploadedById },
             update: {},
           });
+          const expense = {
+            expenseDate:  mapped.date ? new Date(mapped.date) : new Date(),
+            description:  mapped.description ?? 'Imported record',
+            amount:       parseFloat(mapped.amount ?? '0') || 0,
+            categoryId:   importCat.id,
+          };
+          // Re-uploading the same sheet must not double the expenses: an
+          // identical imported row (date, description, amount) is skipped.
+          const already = mapped.date ? await this.prisma.expenseLog.findFirst({
+            where: { ...expense, batchId: null },
+            select: { id: true },
+          }) : null;
+          if (already) { skipped++; continue; }
           await this.prisma.expenseLog.create({
-            data: {
-              expenseDate:  mapped.date ? new Date(mapped.date) : new Date(),
-              description:  mapped.description ?? 'Imported record',
-              amount:       parseFloat(mapped.amount ?? '0') || 0,
-              batchId:      null,
-              categoryId:   importCat.id,
-              recordedById: uploadedById,
-            },
+            data: { ...expense, batchId: null, recordedById: uploadedById },
           });
           imported++;
         } else if (category === 'employees') {

@@ -7,6 +7,7 @@ import { NotificationsService } from '../../common/notifications/notifications.s
 import { NotificationType, UserRole, EntryStatus, BatchStage } from '@prisma/client';
 import dayjs from 'dayjs';
 import { AiReadinessService } from './ai-readiness.service';
+import { StandardComplianceService } from '../breed-standards/standard-compliance.service';
 
 @Injectable()
 export class AiService {
@@ -18,6 +19,7 @@ export class AiService {
     private notifications: NotificationsService,
     private config: ConfigService,
     private readiness: AiReadinessService,
+    private compliance: StandardComplianceService,
   ) {
     const apiKey = this.config.get<string>('ANTHROPIC_API_KEY');
     if (apiKey) {
@@ -81,6 +83,12 @@ export class AiService {
       if (err.status === 404) this.logger.error(`Claude API: model not found — check ANTHROPIC_MODEL / ANTHROPIC_MODEL_BATCH_REPORT env vars (current: ${resolvedModel})`);
       return null;
     }
+  }
+
+  // Breed-guide benchmark text for prompts — never blocks a report.
+  private async standardsContext(batchIds: string[]): Promise<string> {
+    try { return await this.compliance.buildAiContextForBatches(batchIds); }
+    catch (err: any) { this.logger.warn(`Breed-standard context skipped: ${err?.message}`); return ''; }
   }
 
   // ── HDP% Control image reader (vision) ──────────────────────────────────
@@ -148,6 +156,62 @@ export class AiService {
       return { transcription, interpretation };
     } catch (err: any) {
       this.logger.error(`Claude vision API error (HDP control image): ${err.message} (status: ${err.status ?? 'unknown'})`);
+      return null;
+    }
+  }
+
+  // ── Breed guide reader (PDF / photo → draft guide rows) ──────────────────
+  // Reads a breed performance guide (Hy-Line, Lohmann, ISA …) and returns
+  // its tables as CSV rows in the breed-standards template format, plus a
+  // short note of what was read. The result is only ever saved as a DRAFT
+  // guide that the Director must check and activate — nothing is applied
+  // automatically. Streams because a full guide is long output. Returns null
+  // (never throws) when the API key isn't configured or the call fails.
+  async extractBreedGuide(
+    fileBuffer: Buffer,
+    mimeType: string,
+    metricKeys: string[],
+    notes?: string,
+  ): Promise<{ csv: string; interpretation: string } | null> {
+    if (!this.anthropic) return null;
+    const data = fileBuffer.toString('base64');
+    const images = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
+    const source: Anthropic.ContentBlockParam = mimeType === 'application/pdf'
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } }
+      : { type: 'image', source: { type: 'base64', media_type: (images.includes(mimeType as any) ? mimeType : 'image/jpeg') as typeof images[number], data } };
+
+    const prompt =
+      'This is a poultry breed performance / management guide. Transcribe its standards tables into CSV rows for a farm system.\n\n' +
+      'Columns (exact header, in this order): metric,variant,age_unit,age_from,age_to,min,target,max,unit,label,phase,text\n' +
+      `metric must be one of: ${metricKeys.join(', ')}.\n` +
+      'Rules:\n' +
+      '- age_unit is WEEK (weeks of age from hatch) or DAY; one row per week where the guide gives weekly values; age_to = age_from for single weeks.\n' +
+      '- A range like "70 – 80" goes to min=70,max=80; a single value goes to target. Body weight in grams (convert kg ×1000). Mortality is cumulative %.\n' +
+      '- Rearing mortality (from arrival) is MORTALITY_CUM_REARING; laying-period mortality is MORTALITY_CUM_LAY.\n' +
+      '- Lighting programme hours: LIGHT_HOURS with variant LIGHT_CONTROLLED or OPEN_SIDED. Brooding temperature: BROODING_TEMP with variant CAGE or FLOOR and age_unit DAY.\n' +
+      '- Egg size shares: EGG_SIZE_DISTRIBUTION with variant SMALL/MEDIUM/LARGE/EXTRA_LARGE. Diet phases: FEED_PHASE with phase = phase name and target = change-over body weight in g.\n' +
+      '- Nutrition tables: NUTRIENT_REARING or NUTRIENT_DAILY (variant = programme name if the guide has more than one) with label = nutrient, unit, text = the value as printed.\n' +
+      '- Quote any field containing a comma. No commentary between CSV rows. Skip anything that is not a standard (marketing, disclaimers).\n' +
+      (notes?.trim() ? `The uploader added this note: "${notes.trim()}" — follow it where it applies.\n` : '') +
+      '\nReply in exactly two parts:\nCSV:\n(the header line, then the rows)\n\nINTERPRETATION:\n(2-4 sentences: breed, edition/year if printed, which tables you read, anything unreadable or skipped)';
+
+    try {
+      const message = await this.anthropic.messages.stream({
+        model: this.config.get<string>('ANTHROPIC_MODEL_GUIDE') || this.config.get<string>('ANTHROPIC_MODEL_BATCH_REPORT') || 'claude-opus-5-5',
+        max_tokens: 64000,
+        messages: [{ role: 'user', content: [source, { type: 'text', text: prompt }] }],
+      }).finalMessage();
+      if ((message.stop_reason as string) === 'refusal') {
+        this.logger.warn('Claude declined to read the breed guide upload');
+        return null;
+      }
+      const text = message.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join('\n');
+      const csv = /CSV:\s*([\s\S]*?)(?:INTERPRETATION:|$)/i.exec(text)?.[1]?.replace(/```[a-z]*\n?|```/gi, '').trim() ?? '';
+      const interpretation = /INTERPRETATION:([\s\S]*)$/i.exec(text)?.[1]?.trim()
+        || (message.stop_reason === 'max_tokens' ? 'The guide was too long to read in one pass — some tables may be missing.' : 'Claude could not summarise this guide.');
+      return { csv, interpretation };
+    } catch (err: any) {
+      this.logger.error(`Claude API error (breed guide reader): ${err.message} (status: ${err.status ?? 'unknown'})`);
       return null;
     }
   }
@@ -647,6 +711,7 @@ export class AiService {
       ? `Feed and mortality figures below are drawn from the uploaded, Store-verified production report for ${reportCoveredBatchIds.length} of ${activeBatches.length} active batch(es) this week (the more reliable source), and from system entry logs for the remaining batch(es) that had no report covering this week.${openDiscrepanciesThisWeek > 0 ? ` Note: ${openDiscrepanciesThisWeek} open discrepancy(ies) on those production reports are still awaiting your review.` : ''}`
       : `No active batch had an uploaded production report covering this week, so feed and mortality figures below come from system entry logs.`;
 
+    const standardsBlock = await this.standardsContext(readyIds);
     const prompt = `You are an expert poultry farm advisor. Write a concise weekly performance report for Anza Whole Foods farm in Kenya. Use plain English — no jargon. Address the Director directly. Be specific with numbers. End with 2-3 actionable recommendations.
 
 WEEK: ${rawData.week}
@@ -659,10 +724,10 @@ SALES: ${sales.ordersCount} order(s) placed worth KES ${sales.ordersValue.toLoca
 RECEIVABLES (as of today): KES ${sales.outstandingAR.toLocaleString()} outstanding, of which KES ${sales.overdueAR.toLocaleString()} is overdue
 EXPENSES: KES ${totalExpenses.toLocaleString()} · Net cash position this week: KES ${netIncome.toLocaleString()}
 BREAKAGE ADJUSTMENTS (post-collection, raised by Sales): ${breakages.count} adjustment(s), net change ${breakages.netDiff} eggs
-HEALTH: ${healthEvents.length} health event(s) logged
+HEALTH: ${healthEvents.length} health event(s) logged${standardsBlock ? `\n${standardsBlock}` : ''}
 DATA COMPLETENESS THIS WEEK — Egg collection: ${completeness.eggCollection.pending} pending approval, ${completeness.eggCollection.returned} returned for correction. Flock entries: ${completeness.flockEntries.pending} pending, ${completeness.flockEntries.returned} returned. Feed logs: ${completeness.feedLogs.pending} pending, ${completeness.feedLogs.returned} returned. Three-way tally sign-off (Manager+Sales+Store): ${completeness.tallySignOff.fullySigned}/${completeness.tallySignOff.total} fully signed.
 
-Format: one-sentence overall summary, then short paragraphs covering production, feed & flock health, finance (sales, receivables, expenses), and — only if something stands out — a brief note on data-entry discipline across roles. End with "Recommended actions:" as a short bulleted list. Keep the ENTIRE response under 400 words — be concise enough to finish completely rather than running long and getting cut off.`;
+Format: one-sentence overall summary, then short paragraphs covering production, feed & flock health, finance (sales, receivables, expenses), and — only if something stands out — a brief note on data-entry discipline across roles. If a BREED-GUIDE BENCHMARK block is present, fold the batches that are off their breed guide (and why it matters) into the feed & flock paragraph; mention parameters the farm chose not to record only where that gap limits a conclusion. End with "Recommended actions:" as a short bulleted list. Keep the ENTIRE response under 400 words — be concise enough to finish completely rather than running long and getting cut off.`;
 
     const content = await this.callClaude(prompt, 1100);
     if (!content) return null;
@@ -899,6 +964,7 @@ CURRENT BIRDS: ${batch.currentBirdCount.toLocaleString()}
 AVG HDP (last ${last14Days.length} fully-recorded day(s), AM+PM combined): ${avgHdp.toFixed(1)}%
 FCR: ${fcr} kg feed per egg
 PLACEMENT DATE: ${dayjs(batch.dateReceived).format('D MMM YYYY')}
+${await this.standardsContext([batch.id])}
 
 Based on this data, provide: (1) whether this batch should be closed now, in 4-8 weeks, or continue beyond 8 weeks, with reasoning, (2) the key metric that will signal when to close (HDP threshold or age milestone), (3) one operational note for the manager. Keep response to 3 short paragraphs. Be direct and specific.`;
 
@@ -1006,6 +1072,7 @@ Based on this data, provide: (1) whether this batch should be closed now, in 4-8
     const totalEggs   = sessions.reduce((s, e) => s + e.totalGoodEggs, 0);
     const overallFcr  = totalEggs > 0 ? (totalFeedKg / totalEggs).toFixed(3) : 'N/A';
 
+    const standardsBlock = await this.standardsContext(ready.readyBatchIds);
     const prompt = `You are a poultry farm improvement advisor for Anza Whole Foods, a commercial egg farm in Kenya. Review the last 30 days of operational data and provide 3-5 specific, actionable improvement suggestions.
 
 PRODUCTION SUMMARY (last 30 days):
@@ -1018,7 +1085,7 @@ PRODUCTION SUMMARY (last 30 days):
 - Eggs collected: ${totalEggs.toLocaleString()}
 - Data completeness: egg collection ${completeness.eggCollection.pending} pending / ${completeness.eggCollection.returned} returned; flock entries ${completeness.flockEntries.pending} pending / ${completeness.flockEntries.returned} returned; feed logs ${completeness.feedLogs.pending} pending / ${completeness.feedLogs.returned} returned; tally sign-off ${completeness.tallySignOff.fullySigned}/${completeness.tallySignOff.total} fully completed by Manager, Sales and Store
 
-Provide 3-5 improvement suggestions. Each should be: (a) specific to the data above, not generic advice, (b) actionable in the next 2 weeks, (c) one sentence of context + one sentence of recommended action. Where the data shows a role consistently lagging on approvals or sign-offs, include that as one of the suggestions. Format as a numbered list. Do not include suggestions where the data shows no issue. Keep the ENTIRE response under 350 words — be concise enough to finish completely rather than running long and getting cut off.`;
+${standardsBlock ? `${standardsBlock}\n\n` : ''}Provide 3-5 improvement suggestions. Where the breed-guide benchmark shows a batch off standard, or a practice outside the guide, base a suggestion on it (and on what earlier batches of the same breed showed). Each should be: (a) specific to the data above, not generic advice, (b) actionable in the next 2 weeks, (c) one sentence of context + one sentence of recommended action. Where the data shows a role consistently lagging on approvals or sign-offs, include that as one of the suggestions. Format as a numbered list. Do not include suggestions where the data shows no issue. Keep the ENTIRE response under 350 words — be concise enough to finish completely rather than running long and getting cut off.`;
 
     const content = await this.callClaude(prompt, 750);
     if (!content) return;
@@ -1519,6 +1586,10 @@ BROODER LOCATION: ${bd.levelsOccupied.length ? bd.levelsOccupied.join(', ') : 'n
       ? `An uploaded production report ("${prMetrics!.fileName}", ${prMetrics!.status.toLowerCase()}, ${prMetrics!.rowCount} day(s) covering ${dayjs(prMetrics!.dateRange!.from).format('D MMM YYYY')}–${dayjs(prMetrics!.dateRange!.to).format('D MMM YYYY')}) exists for this batch. Wherever a figure below is marked "source: uploaded production report", treat it as the reliable, Store-verified number — it is more trustworthy than a reconstruction from day-to-day system entries.${prMetrics!.openDiscrepancies > 0 ? ` ${prMetrics!.openDiscrepancies} discrepancy(ies) between the report and system entries are still open and awaiting your review — mention this as a data gap.` : ''}`
       : 'No production report has been uploaded for this batch — every figure below comes from system entry logs, which only count APPROVED entries and can therefore understate the true picture.';
 
+    // Breed guide benchmark: edition used, parameters not recorded (with
+    // implications), practices outside the guide, deviations, lessons from
+    // earlier batches of the same breed. Empty for batches with no guide.
+    const standardsSection = await this.compliance.buildAiContext(batch.id).catch(() => null) ?? '';
     const prompt = `You are a commercial poultry expert producing a FULL-SCALE, detailed report for the Director of Anza Whole Foods farm in Kenya, reviewing every data point collected for one specific batch. Plain English, specific numbers, no jargon — but do not shorten this into a summary. Go through EVERY section below individually. If a figure has no data, say so plainly and treat that itself as a gap worth flagging, rather than skipping it.
 
 BATCH: ${batch.batchCode} (${batch.birdType}, ${batch.strain}) in ${batch.house.name}
@@ -1528,6 +1599,7 @@ AGE: ${ageWeeks} week(s) since arrival (hatched ${dayjs(batch.dateOfHatch).forma
 BIRDS: started with ${batch.quantityReceived.toLocaleString()}, currently ${batch.currentBirdCount.toLocaleString()}${survivalRate ? ` (${survivalRate}% survival)` : ''}
 EGG PRODUCTION (source: system — production reports do not carry egg-count data): ${totalEggs > 0 ? `${totalEggs.toLocaleString()} eggs across ${dailyHdp.length} fully-recorded day(s)` : 'no egg collection data recorded for this batch'}${avgHdp != null ? `, average daily HDP (AM+PM combined) ${avgHdp.toFixed(1)}%` : ''}${fcr ? `. FCR ${fcr} kg feed per egg (using the feed figure below).` : ''}
 ${brooderSection}
+${standardsSection}
 DATA COMPLETENESS (egg/feed/flock approval workflow): ${completenessFlags
       ? `${eggPending} egg session(s) pending approval, ${eggReturned} returned for correction; ${feedPending} feed log(s) pending, ${feedReturned} returned; ${flockPending} flock entry pending, ${flockReturned} returned; ${storeDiscrepancies} store-intake discrepancy flag(s) raised.`
       : 'all egg, feed and flock entries for this batch are fully approved with no outstanding store discrepancies.'}${hasProductionReport && prMetrics!.openDiscrepancies > 0 ? ` Additionally, the uploaded production report has ${prMetrics!.openDiscrepancies} open discrepancy(ies) awaiting Director review.` : ''}
@@ -1538,7 +1610,7 @@ Write a full-scale report with these named sections, covering every data point a
 3. **Growth & Nutrition** — feed adherence and bird weight vs the expected band
 4. **Environmental Conditions** — brooder temperature/humidity/lighting and logging completeness
 5. **Vaccination & Health Events** — coverage gaps, unresolved health events, treatments given
-6. **Data Gaps & Issues** — an explicit list of every gap, anomaly, or missing data point found across all sections above (this section is mandatory even if the answer is "no significant gaps found")
+${standardsSection ? `5b. **Breed Guide Benchmark** — performance against the breed guide edition named above: what is on standard, what is off and for how long, the likely effect of any farm practice that differs from the guide, and what earlier batches of this breed suggest. Mention parameters the farm does not record only where their absence limits a conclusion.\n` : ''}6. **Data Gaps & Issues** — an explicit list of every gap, anomaly, or missing data point found across all sections above (this section is mandatory even if the answer is "no significant gaps found")
 7. **Recommendations** — ${batch.isActive ? '3-5 specific, actionable next steps' : 'a closing assessment of how this batch performed overall plus lessons for future batches'}
 
 This is meant to be read carefully by the Director, not skimmed — be thorough rather than brief. There is no strict word limit, but keep every sentence carrying real information (no filler).`;

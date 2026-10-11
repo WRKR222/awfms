@@ -35,6 +35,13 @@ export class HdpControlController {
     return this.service.upload(file, parsed.data, user);
   }
 
+  /** GET /production/hdp-controls/guide-coverage — batches whose breed guide already has a hen-day % table (no upload needed). */
+  @Get('guide-coverage')
+  @RequirePermission(Permission.HDP_CONTROL_VIEW)
+  guideCoverage() {
+    return this.service.guideCoverage();
+  }
+
   /** GET /production/hdp-controls/active — the currently active control curve. */
   @Get('active')
   @RequirePermission(Permission.HDP_CONTROL_VIEW)

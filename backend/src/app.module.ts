@@ -27,6 +27,7 @@ import { DataUploadModule } from './modules/data-upload/data-upload.module';
 import { UsersModule }    from './modules/users/users.module';  // FIX: was never registered
 import { BrooderModule }  from './modules/brooder/brooder.module';
 import { WeightModule }   from './modules/weight/weight.module';
+import { BreedStandardsCoreModule, BreedStandardsModule } from './modules/breed-standards/breed-standards.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { WeightModule }   from './modules/weight/weight.module';
     NotificationsModule,
     FeedWastageModule,
     AutoExpenseModule,
+    BreedStandardsCoreModule,
 
     AuthModule,
     UsersModule,      // FIX: was missing — /users routes did not exist at all
@@ -59,6 +61,7 @@ import { WeightModule }   from './modules/weight/weight.module';
     DataUploadModule,
     BrooderModule,
     WeightModule,
+    BreedStandardsModule,
   ],
 })
 export class AppModule {}

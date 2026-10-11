@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { BreedRecordingPlan, BreedSetup, breedSetupPayload, emptyBreedSetup } from '../../components/shared/BreedRecordingPlan';
 import { useForm } from 'react-hook-form';
 import { Bird, Calendar, Home, Info, ChevronRight, Plus, CheckCircle, Clock, XCircle, TrendingUp, Hash, Layers, X, AlertTriangle, Pencil, Flame } from 'lucide-react';
 import { useBatches, useUpdateBatch } from '../../hooks/useFlock';
@@ -314,6 +315,9 @@ function NewBatchModal({ onClose }: { onClose: () => void }) {
   });
 
   const location           = watch('location');
+  const birdBreed          = watch('birdBreed') ?? '';
+  // Breed guide recording plan (what the farm will record, housing, light, nutrition).
+  const [breedSetup, setBreedSetup] = useState<BreedSetup>(emptyBreedSetup);
   const { data: houses = [] } = useProductionHouses();
   const [houseCode, setHouseCode] = useState<HouseCode>('BLK1');
   const chosenHouse = houses.find(h => h.code === houseCode);
@@ -379,6 +383,7 @@ function NewBatchModal({ onClose }: { onClose: () => void }) {
         vaccinesGiven: data.vaccinatedOnArrival ? data.vaccinesGiven : undefined,
         notes: data.notes || undefined,
         isActive: true,
+        ...breedSetupPayload(breedSetup),
       };
       if (data.location === 'PRODUCTION_HOUSE') {
         payload.houseCode = houseCode;
@@ -528,6 +533,9 @@ function NewBatchModal({ onClose }: { onClose: () => void }) {
               )}
             </div>
           </div>
+
+          {/* Breed guide recording plan ──────────────────────────────────── */}
+          <BreedRecordingPlan strain={birdBreed} value={breedSetup} onChange={setBreedSetup} />
 
           {/* Vaccination on arrival ───────────────────────────────────────── */}
           <div className="bg-gray-50 dark:bg-dark-bg rounded-xl p-3 space-y-3">
