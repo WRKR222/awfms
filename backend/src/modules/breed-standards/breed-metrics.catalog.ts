@@ -7,6 +7,8 @@
 // once a batch is older than the guide's last row, and what it means for
 // the farm if it is not recorded or not followed — lives here, once.
 //
+import { COMPARED_NUTRIENTS } from './feed-nutrients.catalog';
+
 // Unknown metric keys in an uploaded guide are still stored and shown as
 // reference data; they are simply never evaluated.
 
@@ -50,6 +52,9 @@ export interface MetricDefinition {
   tolerancePct?: number;
   /** Same as tolerancePct but in the metric's own unit (e.g. ±0.5 h of light). */
   toleranceAbs?: number;
+  /** Recording-plan switch this metric belongs to (e.g. every DIET_* / INTAKE_*
+   *  metric follows the single FEED_NUTRIENTS choice). */
+  planKey?: string;
   /** Shown to the farmer (and passed to AI) when they choose not to record it. */
   ifNotRecorded: string;
   /** Plain-English consequence when a value is below / above the standard. */
@@ -237,6 +242,27 @@ export const METRICS: MetricDefinition[] = [
   { key: 'GUIDE_NOTE', label: 'Guide note', unit: '', group: 'MANAGEMENT', direction: 'IN_BAND', capture: 'REFERENCE', extrapolation: 'NONE', ifNotRecorded: '' },
 ];
 
+// ── Feed nutrients (from Store's feed lab tests) ───────────────────────────
+// One recording-plan choice (FEED_NUTRIENTS) switches every nutrient metric:
+// DIET_<KEY> compares the diet's concentration with the guide's rearing diet
+// specification; INTAKE_<KEY> compares daily intake per bird with the guide's
+// laying-phase intake. Guide figures are minimums, so only shortfalls flag
+// (energy keeps its range). The 3% tolerance is a system default.
+METRICS.push({
+  key: 'FEED_NUTRIENTS', label: 'Feed nutrients (from feed lab tests)', unit: '', group: 'NUTRITION',
+  direction: 'IN_BAND', capture: 'SYSTEM', extrapolation: 'HOLD_LAST',
+  ifNotRecorded: 'Without feed lab results the system cannot tell whether slow growth, small eggs, poor shells or a production drop comes from the feed itself (energy, protein, amino acids, calcium) or from management and health.',
+});
+for (const n of COMPARED_NUTRIENTS) {
+  const shared = {
+    group: 'NUTRITION' as const, capture: 'SYSTEM' as const, planKey: 'FEED_NUTRIENTS',
+    direction: (n.key === 'ENERGY' ? 'IN_BAND' : 'HIGHER_BETTER') as MetricDirection,
+    tolerancePct: 3, ifNotRecorded: '', ifBelow: n.ifLow, ifAbove: n.ifHigh,
+  };
+  METRICS.push({ ...shared, key: `DIET_${n.key}`, label: `Diet ${n.label.charAt(0).toLowerCase()}${n.label.slice(1)}`, unit: n.concUnit, extrapolation: 'NONE' });
+  METRICS.push({ ...shared, key: `INTAKE_${n.key}`, label: `${n.label} intake`, unit: n.intakeUnit, extrapolation: 'HOLD_LAST' });
+}
+
 const BY_KEY = new Map(METRICS.map(m => [m.key, m]));
 
 export function metricDef(key: string): MetricDefinition | undefined {
@@ -245,7 +271,12 @@ export function metricDef(key: string): MetricDefinition | undefined {
 
 /** Metrics a farmer can choose to record (or not) for a batch. */
 export function recordableMetrics(): MetricDefinition[] {
-  return METRICS.filter(m => m.capture === 'SYSTEM' || m.capture === 'DECLARED');
+  return METRICS.filter(m => (m.capture === 'SYSTEM' || m.capture === 'DECLARED') && !m.planKey);
+}
+
+/** Metric keys a recording-plan choice switches (itself + grouped metrics). */
+export function metricsUnderPlanKey(planKey: string): string[] {
+  return [planKey, ...METRICS.filter(m => m.planKey === planKey).map(m => m.key)];
 }
 
 /** Metrics the farm cannot record in AWFMS today — always "not recorded". */

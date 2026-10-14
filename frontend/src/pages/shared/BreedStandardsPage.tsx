@@ -12,6 +12,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, AlertTriangle, CheckCircle, RefreshCw, Plus, UploadCloud, Download, Award, History } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api } from '../../lib/api/client';
 import { useAuthStore } from '../../stores/auth.store';
 import dayjs from '../../lib/dayjs';
@@ -120,6 +121,8 @@ function NoGuide({ data }: { data: any }) {
 }
 
 function BatchDetail({ data }: { data: any }) {
+  const role = useAuthStore(st => st.user?.role);
+  const labLink = role === 'OWNER' ? '/owner/feed-lab-tests' : '/manager/feed-lab-tests';
   return (
     <div className="space-y-4">
       <div className={`${cardCls} flex flex-col md:flex-row md:items-center md:justify-between gap-2`}>
@@ -137,6 +140,12 @@ function BatchDetail({ data }: { data: any }) {
       </div>
 
       <Deviations data={data} />
+      {data.feedsWithoutLabTest?.length > 0 && (
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-2xl p-3 text-xs text-amber-800 dark:text-amber-300">
+          <strong>Feeds without a lab test (last 4 weeks):</strong> {data.feedsWithoutLabTest.map((f: any) => `${f.name} (${f.kg} kg)`).join(', ')}.
+          {' '}Nutrient intake can’t be checked for days on these feeds — Store can enter results under <Link to={labLink} className="underline font-semibold">Feed Lab Tests</Link>.
+        </div>
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Practices data={data} />
         <RecordingPlan data={data} />

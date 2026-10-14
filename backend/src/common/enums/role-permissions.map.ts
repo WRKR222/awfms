@@ -43,6 +43,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.BIRD_WEIGHT_REPORT_UPLOAD, // PM uploads bird weight reports to autofill Farm Events
     Permission.HDP_CONTROL_UPLOAD, Permission.HDP_CONTROL_VIEW, // PM uploads/reviews HDP% target curve
     Permission.BREED_STANDARD_VIEW, Permission.BREED_STANDARD_MANAGE, // breed guide benchmarks; Director activates
+    Permission.FEED_LAB_TEST_VIEW, // PM sees feed lab results Store entered
   ],
   [UserRole.ACCOUNTANT]: [
     Permission.FLOCK_VIEW, Permission.FEED_VIEW, Permission.FEED_STOCK_VIEW,
@@ -60,6 +61,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     Permission.BREAKAGE_VIEW,
     Permission.HDP_CONTROL_VIEW, // Accountant can view the HDP target-vs-actual comparison
     Permission.BREED_STANDARD_VIEW, // Accountant can view breed-guide benchmarks (FCR, egg mass)
+    Permission.FEED_LAB_TEST_VIEW,
   ],
   [UserRole.OWNER]: Object.values(Permission),
   [UserRole.SALES]: [
@@ -119,6 +121,8 @@ export const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     // day with nowhere yet to write into, etc.) is closed via approve/
     // reject/rollback, which is what PRODUCTION_REPORT_REVIEW gates.
     Permission.PRODUCTION_REPORT_REVIEW,
+    // Store enters feed lab test results (nutrient analysis of each feed)
+    Permission.FEED_LAB_TEST_VIEW, Permission.FEED_LAB_TEST_MANAGE,
   ],
   [UserRole.SECURITY1]: [
     Permission.VISITOR_LOG_VIEW,

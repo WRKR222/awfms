@@ -6,6 +6,8 @@ import { StandardComplianceService } from './standard-compliance.service';
 import { BreedGuideUploadService } from './breed-guide-upload.service';
 import { BreedStandardsController } from './breed-standards.controller';
 import { BreedStandardsCron } from './breed-standards.cron';
+import { FeedLabService } from './feed-lab.service';
+import { FeedLabController } from './feed-lab.controller';
 
 /** Core services (band resolution, compliance, AI context) only need Prisma
  *  and notifications, so they are global — AiService, FlockService,
@@ -19,7 +21,7 @@ export class BreedStandardsCoreModule {}
 
 @Module({
   imports: [AiModule],
-  controllers: [BreedStandardsController],
-  providers: [BreedGuideUploadService, BreedStandardsCron],
+  controllers: [BreedStandardsController, FeedLabController],
+  providers: [BreedGuideUploadService, BreedStandardsCron, FeedLabService],
 })
 export class BreedStandardsModule {}

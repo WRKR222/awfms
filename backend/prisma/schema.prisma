@@ -2257,6 +2257,7 @@ model StoreItem {
   brooderTreatmentLogs    BrooderTreatmentLog[]     @relation("BrooderTreatmentLogStoreItem")
   brooderGeneralFeedLogs  BrooderGeneralFeedLog[]   @relation("BrooderGeneralFeedLogStoreItem")
   reportAliases           StoreItemAlias[]
+  feedLabTests            FeedLabTest[]
 
   @@index([category])
   @@index([isActive])
@@ -3357,4 +3358,42 @@ model BatchPracticeNote {
 
   @@index([batchId, metric])
   @@map("batch_practice_notes")
+}
+
+/// One laboratory analysis of a feed, entered by Store. `values` holds the
+/// nutrient results keyed by FEED_NUTRIENTS key (feed-nutrients.catalog.ts),
+/// always stored AS FED (dry-matter results are converted on entry using
+/// the moisture result). A result applies to that feed from `effectiveFrom`
+/// until a newer test of the same feed takes over; breed-standard checks use
+/// it to work out each batch's nutrient intake. Soft-deleted only.
+model FeedLabTest {
+  id             String    @id @default(uuid())
+  storeItemId    String    @map("store_item_id") @db.Uuid
+  // Feed family (CHICK_MASH, GROWER_MASH, LAYER_MASH …) — matches feed
+  // records that name the type but not the store item.
+  feedFamily     String?   @map("feed_family")
+  // Optional link to the delivery the sample came from.
+  stockInId      String?   @map("stock_in_id")
+  labName        String?   @map("lab_name")
+  sampleRef      String?   @map("sample_ref")
+  sampleDate     DateTime  @map("sample_date") @db.Date
+  resultDate     DateTime? @map("result_date") @db.Date
+  effectiveFrom  DateTime  @map("effective_from") @db.Date
+  // { "PROTEIN": 17.2, "LYSINE": 0.86, "ENERGY": 2750, … } — as fed.
+  values         Json
+  // AS_FED | DRY_MATTER — what the lab printed (values above are as fed).
+  reportedBasis  String    @default("AS_FED") @map("reported_basis")
+  reportFileName String?   @map("report_file_name")
+  aiInterpretation String? @map("ai_interpretation")
+  notes          String?
+  recordedById   String    @map("recorded_by_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  storeItem StoreItem @relation(fields: [storeItemId], references: [id])
+
+  @@index([storeItemId, effectiveFrom])
+  @@index([feedFamily, effectiveFrom])
+  @@map("feed_lab_tests")
 }

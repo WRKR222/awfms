@@ -9,7 +9,14 @@ import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleIni
 import { BirdType, NotificationType, UserRole } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { METRICS, MetricDefinition, metricDef, noInputMetrics, recordableMetrics } from './breed-metrics.catalog';
+import { METRICS, MetricDefinition, metricDef, metricsUnderPlanKey, noInputMetrics, recordableMetrics } from './breed-metrics.catalog';
+
+/** Metric keys a guide covers, plus the plan switches whose metrics it covers. */
+function withPlanKeys(keys: string[]): Set<string> {
+  const set = new Set(keys);
+  for (const k of keys) { const pk = metricDef(k)?.planKey; if (pk) set.add(pk); }
+  return set;
+}
 import { GuidePointInput, GuideSeed, HYLINE_BROWN_2024 } from './guides/hyline-brown-2024.guide';
 
 export type AgeUnit = 'WEEK' | 'DAY';
@@ -373,8 +380,9 @@ export class BreedStandardService implements OnModuleInit {
       dateReceived: batch.dateReceived,
       housingType: batch.housingType ?? 'LIGHT_CONTROLLED',
       nutritionProgram: batch.nutritionProgram ?? 'BOTH',
+      // A recording-plan switch (e.g. FEED_NUTRIENTS) turns off every metric grouped under it.
       untracked: new Set([
-        ...batch.untrackedMetrics,
+        ...batch.untrackedMetrics.flatMap(k => metricsUnderPlanKey(k)),
         ...noInputMetrics().map(m => m.key),
         ...(batch.declaredLightHours == null ? ['LIGHT_HOURS'] : []),
       ]),
@@ -448,7 +456,7 @@ export class BreedStandardService implements OnModuleInit {
 
   /** What the guide covers, what the farm will record, and what it gives up. */
   async recordingPlan(ctx: BatchStandardContext) {
-    const covered = ctx.guide ? new Set((await this.guidePoints(ctx.guide.id)).map(p => p.metric)) : new Set<string>();
+    const covered = ctx.guide ? withPlanKeys((await this.guidePoints(ctx.guide.id)).map(p => p.metric)) : new Set<string>();
     const describe = (m: MetricDefinition) => ({ key: m.key, label: m.label, unit: m.unit, group: m.group, capture: m.capture });
     const recordable = recordableMetrics().filter(m => covered.has(m.key));
     const recorded = recordable.filter(m => !ctx.untracked.has(m.key)).map(describe);
@@ -467,7 +475,7 @@ export class BreedStandardService implements OnModuleInit {
   async registrationOptions(strain: string) {
     const match = await this.matchBreed(strain);
     const guide = match ? await this.activeGuide(match.breed.id, match.variety) : null;
-    const covered = guide ? new Set((await this.guidePoints(guide.id)).map(p => p.metric)) : null;
+    const covered = guide ? withPlanKeys((await this.guidePoints(guide.id)).map(p => p.metric)) : null;
     const inGuide = (m: MetricDefinition) => !covered || covered.has(m.key);
     return {
       breed: match ? { id: match.breed.id, name: match.breed.name, variety: match.variety } : null,

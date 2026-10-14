@@ -8,6 +8,8 @@
 //
 // Ages are WEEKS of age from hatch unless ageUnit = 'DAY'.
 
+import { NUTRIENT_BY_KEY, nutrientKeyFromLabel, parseGuideNutrient } from '../feed-nutrients.catalog';
+
 export interface GuidePointInput {
   metric: string;
   variant?: string | null;
@@ -424,6 +426,32 @@ function build(): GuidePointInput[] {
     add({ ...range, metric: 'CALCIUM_PHOSPHORUS', label: 'Phosphorus (available)', target: avP as number, unit: 'mg/day' });
     add({ ...range, metric: 'CALCIUM_PHOSPHORUS', label: 'Phosphorus (digestible)', target: digP as number, unit: 'mg/day' });
     add({ ...range, metric: 'CALCIUM_PHOSPHORUS', label: 'Calcium particle size (fine : coarse)', text: particle as string });
+  }
+  // Numeric nutrient targets for comparison with Store's feed lab tests —
+  // derived from the same tables above. Amino acids use the guide's TOTAL
+  // figure (labs report total amino acids).
+  REARING_PHASES.forEach((ph, i) => {
+    for (const [label, , ...vals] of REARING_NUTRIENTS) {
+      const key = nutrientKeyFromLabel(label);
+      const v = parseGuideNutrient(vals[i]);
+      if (!key || !v) continue;
+      add({ metric: `DIET_${key}`, ageFrom: ph.from, ageTo: ph.to, phase: ph.phase, ...v, unit: NUTRIENT_BY_KEY.get(key)!.concUnit });
+    }
+  });
+  for (const program of ['ECONOMICAL', 'OPTIMAL'] as const) {
+    LAYING_PHASES.forEach((phase, i) => {
+      for (const [label, , ...vals] of LAYING_DAILY[program]) {
+        const key = nutrientKeyFromLabel(label);
+        const v = parseGuideNutrient(vals[i]);
+        if (!key || !v) continue;
+        add({ metric: `INTAKE_${key}`, variant: program, ageFrom: 18, ageTo: 100, phase, ...v, unit: NUTRIENT_BY_KEY.get(key)!.intakeUnit });
+      }
+    });
+  }
+  // Calcium & available phosphorus intake go by age (same in both programmes).
+  for (const [from, to, ca, avP] of CA_P) {
+    add({ metric: 'INTAKE_CALCIUM', ageFrom: from as number, ageTo: to as number, target: ca as number, unit: 'g/day' });
+    add({ metric: 'INTAKE_AV_PHOSPHORUS', ageFrom: from as number, ageTo: to as number, target: avP as number, unit: 'mg/day' });
   }
   add({ metric: 'GUIDE_NOTE', ageFrom: 18, ageTo: 100, label: 'Energy vs temperature', text: 'For each 0.5 °C above or below 22 °C, subtract or add about 2 kcal/bird/day of energy.' });
   for (const [item, rearing, production] of VITAMINS) {

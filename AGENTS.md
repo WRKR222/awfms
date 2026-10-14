@@ -133,6 +133,10 @@ latest price on or before the date.
   notifies `STANDARD_DEVIATION` once per run of off-standard weeks.
 - AI prompts get `buildAiContext()` / `buildAiContextForBatches()`.
 - HDP comparison prefers the guide's `HEN_DAY_PCT`; uploads are fallback.
+- Feed nutrients: Store enters `FeedLabTest` (values as fed, keyed by
+  `feed-nutrients.catalog.ts`). Engine compares `DIET_*` (rearing diet
+  concentration) and `INTAKE_*` (laying daily intake per bird, by laying
+  phase + programme) — all switched by the `FEED_NUTRIENTS` plan key.
 
 ## Notifications never repeat
 
@@ -177,6 +181,7 @@ Models with soft delete: `User`, `Batch`, `Customer`, `EggCollectionSession`,
 - `BREED_STANDARD_VIEW` — Manager, Accountant, Owner
 - `BREED_STANDARD_MANAGE` — Manager, Owner (guide drafts, practices, farm-standard proposals)
 - `BREED_GUIDE_APPROVE` — Owner (activate editions, approve farm standards)
+- `FEED_LAB_TEST_MANAGE` — Store, Owner (enter feed lab results); `FEED_LAB_TEST_VIEW` — + Manager, Accountant
 
 ## Decimal handling
 

@@ -33,6 +33,7 @@ The design works for any breed's notes, not only Hy-Line.
 | Anti-spam | Every `notification.create/createMany` passes through one de-duplication layer in `PrismaService`, including inside transactions. |
 | Uploads | Re-uploading an unchanged production report does not notify again. Re-importing the same expense sheet does not duplicate expenses. |
 | UI | New **Breed Standards** page for Manager and Director. Recording-plan section in **New Batch**. HDP Controls shows guide coverage. |
+| Feed lab tests | Store enters each feed's laboratory nutrient analysis (`FeedLabTest`, migration `20261014090000_feed_lab_tests`). Diet concentration (rearing) and daily nutrient intake per bird (laying) are compared with the guide every week. See A12b. |
 
 ### A2. Data model
 
@@ -204,7 +205,7 @@ Also: `GET /production/hdp-controls/guide-coverage`. `GET /production/hdp-contro
 ### A11. Config
 
 ```
-ANTHROPIC_MODEL_GUIDE=            # model for reading uploaded guides (optional)
+ANTHROPIC_MODEL_GUIDE=            # model for reading uploaded guides and feed lab reports (optional)
 NOTIFICATION_REPEAT_WINDOW_HOURS=168
 FARM_STANDARD_MIN_BATCHES=3
 ```
@@ -218,6 +219,29 @@ FARM_STANDARD_MIN_BATCHES=3
 3. The Director clicks **Use this edition**. The old edition is archived, and all batches of that breed switch at the next evaluation.
 
 A code seed is also possible: add a `GuideSeed` file and call `seedGuide()` in `onModuleInit`. Re-seeding only adds metrics missing from an edition; it never rewrites existing ones.
+
+### A12b. Feed lab tests (nutrients)
+
+**Recording.** Store (`FEED_LAB_TEST_MANAGE`; view: Manager, Accountant, Owner) enters a `FeedLabTest` per laboratory analysis on **Store → Feed Lab Tests**:
+- feed item (FEED / FEED_SUPPLEMENT store items), lab, sample number, sample date, results date, and "applies from" (defaults to the sample date);
+- `values` JSON keyed by `feed-nutrients.catalog.ts`: energy, crude protein, total lysine / methionine / M+C / threonine / tryptophan / arginine / isoleucine / valine, calcium, available P, sodium, chloride, linoleic acid, choline — plus record-only moisture, fibre, fat, ash, digestible and total P, limestone coarse fraction;
+- stored **as fed**: dry-matter results are converted with the moisture result; energy in MJ/kg is converted to kcal/kg; impossible values are rejected.
+- A lab report PDF/photo can pre-fill the form (`POST /feed-lab-tests/read`, `AiService.readFeedLabReport`); nothing is saved until Store checks and saves. Soft delete only. Saving re-scores active batches.
+
+**Matching feed eaten to a test.** Each day's feed is tracked line by line (session feed breakdown, brooder feed logs, FeedIntakeLog fallback). A line uses the newest test in force on that day for the same store item, otherwise for the same feed family (CHICK_MASH, GROWER_MASH, LAYER_MASH …). A day where any feed has no test is skipped; a transition day is blended by kg.
+
+**Comparison** (metrics generated per nutrient; one recording-plan switch `FEED_NUTRIENTS` covers them all):
+
+| Age | Metric | Actual | Guide |
+|---|---|---|---|
+| Weeks 1–17 | `DIET_<NUTRIENT>` | Feed-weighted concentration for the week (needs ≥80% of feed kg tested) | Rearing diet spec for the phase (Starter 1 … Pre-Lay) |
+| Week 18+ | `INTAKE_<NUTRIENT>` | Average daily intake per bird = g feed per bird × concentration (≥4 tested days) | Daily intake for the laying phase (Peaking … Layer 5, from HD% and peak) and programme; calcium and available P by age |
+
+- Amino acids use the guide's **total** figure (labs report total).
+- With both programmes, the band starts at the economical figure (−3% tolerance, a system default) and the target is the optimal figure. Guide figures are minimums, so only shortfalls flag, except energy, which keeps its range and is adjusted about 2 kcal per 0.5 °C away from 22 °C using the recorded house temperature.
+- Flags, notifications (once per run), AI context, comparison and lessons work exactly as for other parameters. The batch page and AI reports also list feeds eaten in the last 4 weeks that have no lab test.
+
+Endpoints: `GET /feed-lab-tests/nutrients`, `GET /feed-lab-tests/feed-items`, `GET/POST /feed-lab-tests`, `PATCH/DELETE /feed-lab-tests/:id`, `POST /feed-lab-tests/read`.
 
 ### A13. Verification done
 
@@ -237,7 +261,7 @@ A code seed is also possible: add a `GuideSeed` file and call `seedGuide()` in `
 - Brooder temperature is compared with the guide's **cage** temperatures, because the brooder uses cages.
 - Weekly light hours use the guide's light-programme chart (p.12). The brooding chart's hours (p.9) differ slightly and are kept as reference.
 - `brooder_control_standards` and the synchronous feed helpers use the Hy-Line table for all layer batches, as before. Breed-aware comparisons go through `resolveBand`.
-- Nutrient specifications are reference only. Feed composition is not recorded, so it cannot be checked.
+- Feed nutrients are only checked for feeds with a lab test; vitamins and trace minerals remain reference only.
 - Store production report rows are not yet a data source for the engine. It uses system tables plus the report's weight track.
 - Pre-existing issues found while testing, not changed here:
   - `OrderStatus.DELIVERING` is in `schema.prisma` but in no migration, so sales/dashboard queries fail on a database built only from migrations;
@@ -333,9 +357,20 @@ AI reports now include, for each Hy-Line batch:
 
 Parameters you chose not to record (or cannot measure, like egg grading) are mentioned **only when that gap affects a conclusion**.
 
+### B6b. Feed lab tests
+
+- **Store** enters each feed's lab results under **Store → Feed Lab Tests**: choose the feed, type the figures from the lab report (or upload the report as a PDF/photo and check what is filled in), and save. If the lab reports on a dry-matter basis, choose that and enter the moisture %; the system converts it.
+- A result applies to that feed from its sample date until a newer test of the same feed is entered, so re-test whenever the supplier or formula changes.
+- Every week the system then works out what each batch actually received:
+  - **growing birds:** whether the diet itself meets the guide's Starter, Grower, Developer or Pre-Lay specification;
+  - **laying hens:** how much energy, protein, each amino acid, calcium, phosphorus and sodium each hen ate per day, compared with the guide for the flock's laying phase (both economical and optimal programmes).
+- A shortfall is flagged once, with what it means (e.g. low lysine → smaller eggs; low calcium → thin shells and breakage). The batch page shows any feed eaten in the last 4 weeks that has no lab test yet.
+- "Feed nutrients (from feed lab tests)" is one of the choices in a batch's recording plan.
+
 ### B7. Good habits that make this work
 
 - **Weigh birds regularly.** Enter individual bird weights (at least 10 birds) so uniformity can be worked out. The guide says to raise light only at 1.35 kg and 85% uniformity.
 - **Weigh eggs at collection** (all eggs except damaged ones). This gives egg weight, egg mass and feed conversion (kg feed per kg eggs).
+- **Test each feed** when it arrives from a new supplier or batch, and enter the results.
 - **Record water** on each session. Falling water use is the earliest sign of trouble.
 - **Note practices.** When the farm deliberately does something differently, record it with the reason. It then counts as a decision, not a mistake, in reports and in the lessons for the next batch.

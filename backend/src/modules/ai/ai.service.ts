@@ -216,6 +216,56 @@ export class AiService {
     }
   }
 
+  // ── Feed lab report reader (PDF / photo → nutrient values) ──────────────
+  // Pre-fills Store's feed lab test form from the lab's report. Nothing is
+  // saved here — Store checks the figures and saves them. Returns null
+  // (never throws) when the API key isn't configured or the call fails.
+  async readFeedLabReport(
+    fileBuffer: Buffer,
+    mimeType: string,
+    nutrients: { key: string; label: string; unit: string }[],
+  ): Promise<{ values: Record<string, number>; basis: 'AS_FED' | 'DRY_MATTER'; energyUnit: 'KCAL' | 'MJ'; labName: string | null; sampleRef: string | null; sampleDate: string | null; interpretation: string } | null> {
+    if (!this.anthropic) return null;
+    const data = fileBuffer.toString('base64');
+    const images = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
+    const source: Anthropic.ContentBlockParam = mimeType === 'application/pdf'
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } }
+      : { type: 'image', source: { type: 'base64', media_type: (images.includes(mimeType as any) ? mimeType : 'image/jpeg') as typeof images[number], data } };
+    const list = nutrients.map(n => `${n.key} = ${n.label} (${n.unit})`).join('; ');
+    const prompt =
+      'This is a laboratory analysis report for an animal (poultry) feed sample. Read the results.\n' +
+      `Map each result you can find to one of these keys: ${list}.\n` +
+      'Rules: give numbers only, in the unit shown for the key (percent values as percent, e.g. 17.2 not 0.172). ' +
+      'If amino acids are given as g/kg, divide by 10 to get percent. If energy is in MJ/kg, report it unchanged and set energyUnit "MJ". ' +
+      'basis is "DRY_MATTER" only if the report clearly states results are on a dry-matter basis, otherwise "AS_FED". ' +
+      'Leave out anything not on the report — never estimate.\n' +
+      'Reply with JSON only, no other text: {"values":{"KEY":number,...},"basis":"AS_FED|DRY_MATTER","energyUnit":"KCAL|MJ",' +
+      '"labName":string|null,"sampleRef":string|null,"sampleDate":"YYYY-MM-DD"|null,"interpretation":"1-2 sentences on what was read and anything unclear"}';
+    try {
+      const msg = await this.anthropic.messages.create({
+        model: this.config.get<string>('ANTHROPIC_MODEL_GUIDE') || this.config.get<string>('ANTHROPIC_MODEL_BATCH_REPORT') || 'claude-opus-5-5',
+        max_tokens: 4000,
+        messages: [{ role: 'user', content: [source, { type: 'text', text: prompt }] }],
+      });
+      if ((msg.stop_reason as string) === 'refusal') return null;
+      const text = msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join('');
+      const json = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+      const values: Record<string, number> = {};
+      for (const [k, v] of Object.entries(json.values ?? {})) if (Number.isFinite(Number(v))) values[k] = Number(v);
+      return {
+        values,
+        basis: json.basis === 'DRY_MATTER' ? 'DRY_MATTER' : 'AS_FED',
+        energyUnit: json.energyUnit === 'MJ' ? 'MJ' : 'KCAL',
+        labName: json.labName ?? null, sampleRef: json.sampleRef ?? null,
+        sampleDate: /^\d{4}-\d{2}-\d{2}$/.test(json.sampleDate ?? '') ? json.sampleDate : null,
+        interpretation: String(json.interpretation ?? ''),
+      };
+    } catch (err: any) {
+      this.logger.error(`Claude API error (feed lab report reader): ${err.message} (status: ${err.status ?? 'unknown'})`);
+      return null;
+    }
+  }
+
   // ── Helper: guess which store item a report's free-text cell means ─────────
   // Used by the Production Report upload flow when the plain fuzzy-name
   // matcher couldn't place a report cell (e.g. "ND drops") against any

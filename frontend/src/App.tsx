@@ -27,6 +27,7 @@ import { ManagerBatches }   from './pages/manager/ManagerBatches';
 import { VerificationQueue } from './pages/manager/VerificationQueue';
 import { HdpControlsPage }  from './pages/manager/HdpControlsPage';
 import { BreedStandardsPage } from './pages/shared/BreedStandardsPage';
+import { FeedLabTestsPage } from './pages/store/FeedLabTestsPage';
 import { BrooderDailyReviewPage } from './pages/manager/BrooderDailyReviewPage';
 
 // Accountant pages
@@ -222,6 +223,7 @@ function AppInner() {
           <Route path="verification"      element={<VerificationQueue />} />
           <Route path="hdp-controls"      element={<HdpControlsPage />} />
           <Route path="breed-standards"   element={<BreedStandardsPage />} />
+          <Route path="feed-lab-tests"    element={<FeedLabTestsPage />} />
           <Route path="tally"             element={<TallyVerificationPage />} />
           <Route path="visitors"          element={<VisitorManagementPage />} />
           <Route path="analytics"         element={<AnalyticsDashboard role="MANAGER" />} />
@@ -266,6 +268,7 @@ function AppInner() {
           <Route path="data-upload"       element={<DataUploadPage />} />
           <Route path="production-reports" element={<ProductionReportReviewPage />} />
           <Route path="breed-standards"   element={<BreedStandardsPage />} />
+          <Route path="feed-lab-tests"    element={<FeedLabTestsPage />} />
           <Route path="batch-cost"        element={<BatchCostPage />} />
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="sales-orders"       element={<OwnerSalesOrdersPage />} />
@@ -313,6 +316,7 @@ function AppInner() {
           <Route path="hr"                element={<StoreHRPage />} />           {/* GAP-01 */}
           <Route path="issuance-plans"    element={<StoreIssuancePlanPage />} /> {/* Issuance Plan (was Purchase Requests, GAP-02) */}
           <Route path="production-reports" element={<StoreProductionReportPage />} />
+          <Route path="feed-lab-tests"    element={<FeedLabTestsPage />} />
           <Route path="visitors"          element={<StoreVisitorsPage />} />     {/* GAP-06 */}
           <Route path="notifications"     element={<NotificationsPage />} />
           <Route path="settings"          element={<SettingsPage />} />

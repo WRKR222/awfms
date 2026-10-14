@@ -16,8 +16,9 @@ import { NotificationsService } from '../../common/notifications/notifications.s
 import { BATCH_TRANSFERRED_EVENT } from '../../common/events/app-event-bus';
 import { farmTodayUtcMidnight } from '../../common/feed/feed-standard.util';
 import { metricDef } from './breed-metrics.catalog';
+import { COMPARED_NUTRIENTS } from './feed-nutrients.catalog';
 import {
-  BatchStandardContext, BreedStandardService, ResolvedBand, bandStatus,
+  BatchStandardContext, BreedStandardService, ResolvedBand, applyTolerance, bandStatus,
 } from './breed-standard.service';
 
 const DAY_MS = 86_400_000;
@@ -48,6 +49,38 @@ interface DayData {
   temps: number[];
   lux: number[];
   feedTypes: Set<string>;
+  /** Feed eaten that day, line by line — matched to Store's lab tests. */
+  feedLines: FeedLine[];
+  altFeedLines: FeedLine[];      // FeedIntakeLog — used only when nothing else recorded feed
+  houseTemps: number[];          // production-house temperature (egg sessions)
+}
+
+interface FeedLine { kg: number; storeItemId: string | null; family: string | null }
+
+type LabTest = { storeItemId: string; feedFamily: string | null; effectiveFrom: Date; values: Record<string, number> };
+
+/** Latest lab test for this feed in force on `date`: the exact store item
+ *  first, otherwise a test of the same feed family. */
+export function labTestFor(tests: LabTest[], line: FeedLine, date: Date): LabTest | null {
+  const inForce = tests.filter(t => t.effectiveFrom <= date);
+  return (line.storeItemId && inForce.find(t => t.storeItemId === line.storeItemId))
+    || (line.family && inForce.find(t => t.feedFamily === line.family))
+    || null;
+}
+
+/** Feed-weighted nutrient concentration of a day's diet; null when any feed
+ *  eaten that day has no lab test. A nutrient missing from one of the tests
+ *  is left out for that day. */
+export function dayDiet(lines: FeedLine[], tests: LabTest[], date: Date): { kg: number; conc: Record<string, number> } | null {
+  const fed = lines.filter(l => l.kg > 0);
+  if (!fed.length) return null;
+  const matched = fed.map(l => ({ l, t: labTestFor(tests, l, date) }));
+  if (matched.some(m => !m.t)) return null;
+  const kg = fed.reduce((a, l) => a + l.kg, 0);
+  const keys = Object.keys(matched[0].t!.values).filter(k => matched.every(m => m.t!.values[k] != null));
+  const conc: Record<string, number> = {};
+  for (const k of keys) conc[k] = matched.reduce((a, m) => a + m.l.kg * Number(m.t!.values[k]), 0) / kg;
+  return { kg, conc };
 }
 
 interface Candidate {
@@ -106,16 +139,16 @@ export class StandardComplianceService {
           sessionDate: true, shift: true, block: true, openingPop: true, mortalities: true,
           totalGoodEggs: true, totalStarterEggs: true, totalBrokenEggs: true, totalDamaged: true,
           totalSoftShell: true, totalDeformed: true, totalWeightKg: true, feedKg: true,
-          feedTypeName: true, feedBreakdownJson: true, waterLiters: true, houseTempC: true,
+          feedTypeName: true, feedBreakdownJson: true, feedStoreItemId: true, waterLiters: true, houseTempC: true,
         },
       }),
       this.prisma.feedIntakeLog.findMany({
         where: { batchId, status: { not: 'RETURNED' }, entryDate: range },
-        select: { entryDate: true, quantityDispensedKg: true, feedType: true },
+        select: { entryDate: true, quantityDispensedKg: true, feedType: true, storeItemId: true },
       }),
       this.prisma.brooderGeneralFeedLog.findMany({
         where: { batchId, entryDate: range },
-        select: { entryDate: true, quantityDispensedKg: true, feedType: true },
+        select: { entryDate: true, quantityDispensedKg: true, feedType: true, storeItemId: true },
       }),
       this.prisma.brooderGeneralMortalityLog.findMany({
         where: { batchId, logDate: range },
@@ -151,6 +184,7 @@ export class StandardComplianceService {
         v = {
           eggs: 0, weighedEggs: 0, weightKg: 0, hasEggs: false, blockPop: new Map(), feedKg: null, altFeedKg: null,
           waterL: null, deaths: 0, altDeaths: 0, temps: [], lux: [], feedTypes: new Set(),
+          feedLines: [], altFeedLines: [], houseTemps: [],
         };
         days.set(k, v);
       }
@@ -172,19 +206,28 @@ export class StandardComplianceService {
       if (s.feedKg != null && Number(s.feedKg) > 0) d.feedKg = addTo(d.feedKg, Number(s.feedKg));
       if (s.waterLiters != null) d.waterL = addTo(d.waterL, Number(s.waterLiters));
       d.deaths += s.mortalities;
+      if (s.houseTempC != null) d.houseTemps.push(Number(s.houseTempC));
       const lines = Array.isArray(s.feedBreakdownJson) ? (s.feedBreakdownJson as any[]) : [];
-      for (const l of lines) { const t = canonicalFeedType(l?.feedType ?? l?.itemName); if (t) d.feedTypes.add(t); }
+      for (const l of lines) {
+        const t = canonicalFeedType(l?.feedType ?? l?.itemName); if (t) d.feedTypes.add(t);
+        // Current shape { feedType, kg }; older { storeItemId, itemName, issuedKg, dispensedKg }.
+        const kg = Number(l?.kg ?? l?.dispensedKg ?? l?.issuedKg ?? 0);
+        if (kg > 0) d.feedLines.push({ kg, family: t, storeItemId: l?.storeItemId ?? (lines.length === 1 ? s.feedStoreItemId : null) });
+      }
       const t = canonicalFeedType(s.feedTypeName); if (t) d.feedTypes.add(t);
+      if (!lines.length && Number(s.feedKg ?? 0) > 0) d.feedLines.push({ kg: Number(s.feedKg), family: t, storeItemId: s.feedStoreItemId });
     }
     for (const f of feedLogs) {
       const d = day(f.entryDate);
       d.altFeedKg = addTo(d.altFeedKg, Number(f.quantityDispensedKg));
       const t = canonicalFeedType(f.feedType); if (t) d.feedTypes.add(t);
+      d.altFeedLines.push({ kg: Number(f.quantityDispensedKg), family: t, storeItemId: f.storeItemId });
     }
     for (const f of brooderFeed) {
       const d = day(f.entryDate);
       d.feedKg = addTo(d.feedKg, Number(f.quantityDispensedKg));
       const t = canonicalFeedType(f.feedType); if (t) d.feedTypes.add(t);
+      d.feedLines.push({ kg: Number(f.quantityDispensedKg), family: t, storeItemId: f.storeItemId });
     }
     for (const m of brooderDeaths) day(m.logDate).deaths += m.mortalityCount + m.cullingCount;
     for (const e of flockEntries) {
@@ -201,6 +244,7 @@ export class StandardComplianceService {
     }
     for (const d of days.values()) {
       if (d.feedKg == null && d.altFeedKg != null) d.feedKg = d.altFeedKg;
+      if (!d.feedLines.length && d.altFeedLines.length) d.feedLines = d.altFeedLines;
       if (d.deaths === 0 && d.altDeaths > 0) d.deaths = d.altDeaths;
     }
     return { days, samples, track };
@@ -294,6 +338,8 @@ export class StandardComplianceService {
     const validEggWt = (v: number | null) => v != null && v >= 30 && v <= 90;
 
     const feedPhases = (await this.standards.metricSeries(ctx.guide.id, 'FEED_PHASE')).filter(p => p.ageUnit === 'WEEK');
+    // Store's feed lab tests (only needed when feed nutrients are recorded).
+    const labTests: LabTest[] = tracked('FEED_NUTRIENTS') ? await this.labTests() : [];
     const prelayEarliest = (await this.standards.resolveBand(ctx, 'PRELAY_EARLIEST_WEEK', 15))?.min ?? null;
 
     for (let w = firstWeek; w <= lastWeek; w++) {
@@ -384,6 +430,45 @@ export class StandardComplianceService {
         }
       }
 
+      // Feed nutrients from lab tests: diet concentration in rearing, daily
+      // intake per bird in lay (guide figures are total amino acids).
+      if (labTests.length) {
+        const diets = data.map(x => ({ ...x, diet: dayDiet(x.d.feedLines, labTests, new Date(x.k)) }));
+        const fedKg = data.reduce((a, x) => a + x.d.feedLines.reduce((b, l) => b + l.kg, 0), 0);
+        const covered = diets.filter(x => x.diet);
+        const coveredKg = covered.reduce((a, x) => a + x.diet!.kg, 0);
+        if (w <= 17 && fedKg > 0 && coveredKg / fedKg >= 0.8) {
+          for (const n of COMPARED_NUTRIENTS) {
+            const withN = covered.filter(x => x.diet!.conc[n.key] != null);
+            const kg = withN.reduce((a, x) => a + x.diet!.kg, 0);
+            if (!withN.length || kg / fedKg < 0.8) continue;
+            await push(`DIET_${n.key}`, w, ws, we, withN.reduce((a, x) => a + x.diet!.kg * x.diet!.conc[n.key], 0) / kg, { sampleSize: withN.length });
+          }
+        }
+        if (w >= 18) {
+          const days = covered.filter(x => pop(x.k) > 0);
+          if (days.length >= MIN_DAYS_PER_WEEK) {
+            const peak = Math.max(...[...weeklyHdp.entries()].filter(([wk]) => wk <= w).map(([, v]) => v), 0) || null;
+            const phases: Record<string, string | null> = {};
+            for (const program of ['ECONOMICAL', 'OPTIMAL']) phases[program] = await this.layingPhase(ctx, program, weeklyHdp.get(w) ?? null, peak);
+            const temps = data.flatMap(x => x.d.houseTemps);
+            const avgTemp = temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : null;
+            for (const n of COMPARED_NUTRIENTS) {
+              const withN = days.filter(x => x.diet!.conc[n.key] != null);
+              if (withN.length < MIN_DAYS_PER_WEEK || !tracked(`INTAKE_${n.key}`)) continue;
+              const intake = withN.reduce((a, x) => a + n.intake((x.diet!.kg * 1000) / pop(x.k), x.diet!.conc[n.key]), 0) / withN.length;
+              const band = await this.intakeBand(ctx, n.key, w, phases, n.key === 'ENERGY' ? avgTemp : null);
+              if (!band) continue;
+              out.push({
+                metric: `INTAKE_${n.key}`, ageUnit: 'WEEK', ageIndex: w, periodStart: ws, periodEnd: we,
+                actual: round(intake, 3), actualText: band.phase, band,
+                status: bandStatus(intake, band), guideStatus: bandStatus(intake, band.guide), sampleSize: withN.length,
+              });
+            }
+          }
+        }
+      }
+
       // Diet phase for age (with a one-phase transition allowance either side)
       if (tracked('FEED_PHASE') && feedPhases.length) {
         const types = new Set(data.flatMap(x => [...x.d.feedTypes]));
@@ -462,6 +547,87 @@ export class StandardComplianceService {
     const result = await this.persist(ctx, out);
     await this.autoPracticeNotes(ctx, batch, out);
     return { evaluated: out.length, ...result };
+  }
+
+  private async labTests(): Promise<LabTest[]> {
+    const rows = await this.prisma.feedLabTest.findMany({
+      where: { deletedAt: null },
+      select: { storeItemId: true, feedFamily: true, effectiveFrom: true, values: true },
+      orderBy: [{ effectiveFrom: 'desc' }, { createdAt: 'desc' }],
+    });
+    return rows.map(r => ({ ...r, values: (r.values ?? {}) as Record<string, number> }));
+  }
+
+  /**
+   * Guide daily intake for a laying week. The guide sets intake per laying
+   * phase (Peaking … Layer 5, chosen from the flock's HD% and peak) and per
+   * programme; calcium and phosphorus go by age. With both programmes the
+   * band starts at the lower (economical) figure and the target is the
+   * optimal one. Energy is adjusted ~2 kcal per 0.5 °C away from 22 °C.
+   */
+  private async intakeBand(
+    ctx: BatchStandardContext, key: string, week: number,
+    phases: Record<string, string | null>, houseTemp: number | null,
+  ): Promise<ResolvedBand | null> {
+    const metric = `INTAKE_${key}`;
+    const def = metricDef(metric);
+    const series = (await this.standards.metricSeries(ctx.guide!.id, metric)).filter(p => p.ageUnit === 'WEEK');
+    if (!series.length) return null;
+    const programs = ctx.nutritionProgram === 'BOTH' ? ['ECONOMICAL', 'OPTIMAL'] : [ctx.nutritionProgram];
+    const byAge = series.filter(p => !p.variant);
+    const lastAge = byAge.length ? byAge.reduce((a, b) => (b.ageTo > a.ageTo ? b : a)) : null;
+    const points = programs.map(program =>
+      series.find(p => p.variant === program && p.phase === phases[program])
+      ?? byAge.find(p => week >= p.ageFrom && week <= p.ageTo)
+      ?? (lastAge && week > lastAge.ageTo ? lastAge : null),
+    ).filter(Boolean) as typeof series;
+    if (!points.length) return null;
+    const bands = points.map(p => applyTolerance(p, def));
+    const pick = (vals: (number | null)[], f: (...n: number[]) => number) => {
+      const v = vals.filter((x): x is number => x != null);
+      return v.length ? f(...v) : null;
+    };
+    let min = pick(bands.map(b => b.min), Math.min);
+    let max = pick(bands.map(b => b.max), Math.max);
+    const target = pick(bands.map(b => b.target), Math.max);
+    let text = [...new Set(points.map(p => p.phase).filter(Boolean))].join(' / ') || null;
+    if (houseTemp != null && key === 'ENERGY') {
+      const adj = Math.round(-4 * (houseTemp - 22) * 10) / 10;
+      if (min != null) min += adj;
+      if (max != null) max += adj;
+      text = `${text ?? ''} (adjusted ${adj >= 0 ? '+' : ''}${adj} kcal for ${round(houseTemp, 1)} °C)`.trim();
+    }
+    const guide = { min, target, max };
+    return {
+      metric, ...guide, unit: points[0].unit, label: null, phase: text, text,
+      basis: 'GUIDE', guideId: ctx.guide!.id, farmStandardId: null, guide,
+    };
+  }
+
+  /** Feeds a batch ate in the last `days` days that have no lab test in force. */
+  async feedsWithoutLabTest(batchId: string, days = 28) {
+    const ctx = await this.standards.batchContext(batchId);
+    if (!ctx || ctx.untracked.has('FEED_NUTRIENTS')) return [];
+    const to = addDays(farmTodayUtcMidnight(), -1);
+    const from = addDays(to, -(days - 1));
+    const [{ days: daily }, tests] = await Promise.all([this.collectDaily(batchId, from, to), this.labTests()]);
+    const missing = new Map<string, { storeItemId: string | null; family: string | null; kg: number; lastUsed: string }>();
+    for (const [k, d] of daily) {
+      for (const l of d.feedLines) {
+        if (l.kg <= 0 || labTestFor(tests, l, new Date(k))) continue;
+        const id = l.storeItemId ?? `family:${l.family ?? 'unknown'}`;
+        const m = missing.get(id) ?? { storeItemId: l.storeItemId, family: l.family, kg: 0, lastUsed: k };
+        m.kg += l.kg;
+        if (k > m.lastUsed) m.lastUsed = k;
+        missing.set(id, m);
+      }
+    }
+    const ids = [...missing.values()].map(m => m.storeItemId).filter((x): x is string => !!x);
+    const names = new Map((await this.prisma.storeItem.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } })).map(i => [i.id, i.name]));
+    return [...missing.values()].map(m => ({
+      ...m, kg: round(m.kg, 1),
+      name: (m.storeItemId && names.get(m.storeItemId)) || (m.family ? m.family.replace(/_/g, ' ').toLowerCase() : 'unnamed feed'),
+    }));
   }
 
   /** Upserts only rows whose figures changed; notifies the first week of a run. */
@@ -666,6 +832,7 @@ export class StandardComplianceService {
       practiceNotes: await Promise.all(notes.map(async n => ({ ...n, implication: await this.practiceImplication(ctx, n) }))),
       reference: ctx.guide ? await this.currentReference(ctx, ageWeeks, rows) : null,
       lessons: ctx.breedId ? await this.lessons(ctx.breedId, batchId) : null,
+      feedsWithoutLabTest: ctx.guide ? await this.feedsWithoutLabTest(batchId).catch(() => []) : [],
     };
   }
 
@@ -902,6 +1069,9 @@ export class StandardComplianceService {
     }
     if (s.pastDeviations.length) {
       lines.push(`EARLIER IN THIS BATCH (resolved or no longer measured): ${s.pastDeviations.slice(0, 12).map((d: any) => `${d.label} ${d.status.toLowerCase()} ${d.ageUnit === 'DAY' ? 'days' : 'weeks'} ${d.from}–${d.to}`).join('; ')}.`);
+    }
+    if (s.feedsWithoutLabTest?.length) {
+      lines.push(`FEEDS WITHOUT A LAB TEST (last 4 weeks — nutrient intake for days on these feeds cannot be checked): ${s.feedsWithoutLabTest.map((f: any) => `${f.name} (${f.kg} kg)`).join(', ')}.`);
     }
     const inBand = s.metrics.filter((m: any) => m.latest.status === 'IN_BAND').map((m: any) => m.label);
     if (inBand.length) lines.push(`ON STANDARD (latest period): ${inBand.join(', ')}.`);

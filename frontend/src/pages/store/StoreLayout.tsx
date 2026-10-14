@@ -5,7 +5,7 @@ import { useNotificationsStore } from '../../stores/notifications.store';
 import { useLoginNotifications } from '../../hooks/useLoginNotifications';
 import { LoginNotificationModal } from '../../components/shared/LoginNotificationModal';
 import { MobileSidebar } from '../../components/shared/MobileSidebar';
-import { Home, LogOut, Bell, Settings, Package, ClipboardList, Users, CheckSquare, UserCheck } from 'lucide-react';
+import { Home, LogOut, Bell, Settings, Package, ClipboardList, Users, CheckSquare, UserCheck, FlaskConical } from 'lucide-react';
 import { Sidebar, SidebarBody, SidebarLink, SidebarLinkItem } from '../../components/ui/sidebar';
 import { motion } from 'framer-motion';
 import { FlockIcon } from '../../components/ui/icons';
@@ -15,6 +15,7 @@ const navDefs = [
   { label: 'Tally Sign-off', icon: CheckSquare,   to: '/store/tally' },
   { label: 'Inventory',      icon: Package,       to: '/store/inventory' },
   { label: 'Issuance Plans', icon: ClipboardList, to: '/store/issuance-plans' },
+  { label: 'Feed Lab Tests', icon: FlaskConical,  to: '/store/feed-lab-tests' },
   { label: 'HR Records',     icon: Users,         to: '/store/hr' },
   { label: 'Visitors',       icon: UserCheck,     to: '/store/visitors' },
   { label: 'Settings',       icon: Settings,      to: '/store/settings' },

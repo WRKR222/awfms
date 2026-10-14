@@ -42,6 +42,8 @@ export enum Permission {
   BREED_STANDARD_VIEW          = 'breed_standard:view',            // MANAGER, OWNER, ACCOUNTANT
   BREED_STANDARD_MANAGE        = 'breed_standard:manage',          // MANAGER (guide drafts, practices, farm-standard proposals), OWNER
   BREED_GUIDE_APPROVE          = 'breed_standard:approve',         // OWNER only — activate guide editions, approve farm standards
+  FEED_LAB_TEST_VIEW           = 'feed_lab_test:view',             // STORE, MANAGER, ACCOUNTANT, OWNER
+  FEED_LAB_TEST_MANAGE         = 'feed_lab_test:manage',           // STORE (enters lab results), OWNER
 
   PRODUCTION_VIEW              = 'production:view',
   PRODUCTION_ENTRY_CREATE      = 'production:entry:create',  // Lead Attendant
