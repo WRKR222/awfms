@@ -23,7 +23,7 @@ const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl p
 const hCls = 'text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3 flex items-center gap-2';
 const errMsg = (e: any) => e?.response?.data?.message ?? e?.message ?? 'Something went wrong';
 
-type Tab = 'batch' | 'compare' | 'guides' | 'farm';
+type Tab = 'overview' | 'batch' | 'compare' | 'guides' | 'farm' | 'decisions';
 
 const fmt = (v: number | null | undefined) => v == null ? '—' : Math.abs(v) >= 100 ? Math.round(v).toLocaleString() : String(Math.round(v * 100) / 100);
 const band = (r: { min?: number | null; max?: number | null; target?: number | null }) =>
@@ -38,7 +38,22 @@ const statusLabel = (s: string) => s === 'IN_BAND' ? 'on standard' : s.toLowerCa
 export function BreedStandardsPage() {
   const role = useAuthStore(s => s.user?.role);
   const isOwner = role === 'OWNER';
-  const [tab, setTab] = useState<Tab>('batch');
+  // The Director sees what is off, what it means and what needs a decision;
+  // the Production Manager keeps the working tabs (practices, recording plans,
+  // guide uploads, farm-standard proposals).
+  const [tab, setTab] = useState<Tab>(isOwner ? 'overview' : 'batch');
+  const [batchId, setBatchId] = useState('');
+  const { data: overview } = useQuery<any>({
+    queryKey: ['breed-standards', 'overview'],
+    queryFn: () => api.get('/breed-standards/overview').then(r => r.data),
+    enabled: isOwner,
+  });
+  const pending = overview
+    ? overview.decisions.draftGuides.length + overview.decisions.farmStandards.filter((f: any) => f.status === 'PROPOSED').length
+    : 0;
+  const tabs: [Tab, string][] = isOwner
+    ? [['overview', 'Overview'], ['batch', 'Batch detail'], ['compare', 'Compare batches'], ['decisions', `Decisions${pending ? ` (${pending})` : ''}`]]
+    : [['batch', 'Batch'], ['compare', 'Compare batches'], ['guides', 'Guides'], ['farm', 'Farm standards']];
 
   return (
     <div className="p-4 md:p-8 space-y-5 max-w-6xl mx-auto">
@@ -49,17 +64,19 @@ export function BreedStandardsPage() {
         <p className="text-xs text-gray-400 mt-0.5">Every batch checked against its breed guide — and against the farm’s own best results.</p>
       </div>
       <div className="flex gap-2 overflow-x-auto">
-        {([['batch', 'Batch'], ['compare', 'Compare batches'], ['guides', 'Guides'], ['farm', 'Farm standards']] as [Tab, string][]).map(([k, l]) => (
+        {tabs.map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-3 py-1.5 rounded-xl text-sm font-semibold whitespace-nowrap ${tab === k ? 'bg-brand-green text-white' : 'bg-gray-100 dark:bg-dark-bg text-gray-600 dark:text-gray-300'}`}>
             {l}
           </button>
         ))}
       </div>
-      {tab === 'batch' && <BatchTab />}
+      {tab === 'overview' && <OverviewTab data={overview} onOpen={id => { setBatchId(id); setTab('batch'); }} />}
+      {tab === 'batch' && <BatchTab readOnly={isOwner} batchId={batchId} setBatchId={setBatchId} />}
       {tab === 'compare' && <CompareTab />}
-      {tab === 'guides' && <GuidesTab isOwner={isOwner} />}
-      {tab === 'farm' && <FarmTab isOwner={isOwner} />}
+      {tab === 'guides' && <GuidesTab />}
+      {tab === 'farm' && <FarmTab />}
+      {tab === 'decisions' && <DecisionsTab data={overview} />}
     </div>
   );
 }
@@ -73,11 +90,10 @@ function useCatalog() {
   return useQuery<any[]>({ queryKey: ['breed-catalog'], queryFn: () => api.get('/breed-standards/catalog').then(r => r.data), staleTime: 3_600_000 });
 }
 
-function BatchTab() {
+function BatchTab({ readOnly, batchId, setBatchId }: { readOnly: boolean; batchId: string; setBatchId: (id: string) => void }) {
   const qc = useQueryClient();
   const { data: batches = [] } = useBatches();
-  const [batchId, setBatchId] = useState('');
-  useEffect(() => { if (!batchId && batches.length) setBatchId(batches[0].id); }, [batches, batchId]);
+  useEffect(() => { if (!batchId && batches.length) setBatchId(batches[0].id); }, [batches, batchId, setBatchId]);
   const { data, isLoading, error } = useQuery<any>({
     queryKey: ['breed-standards', 'batch', batchId],
     queryFn: () => api.get(`/breed-standards/batches/${batchId}`).then(r => r.data),
@@ -94,17 +110,19 @@ function BatchTab() {
         <select value={batchId} onChange={e => setBatchId(e.target.value)} className={iCls}>
           {batches.map(b => <option key={b.id} value={b.id}>{b.batchCode} — {b.strain}</option>)}
         </select>
-        <button onClick={() => evaluate.mutate()} disabled={!batchId || evaluate.isPending}
-          className="flex items-center justify-center gap-2 bg-brand-green text-white rounded-xl px-4 py-2 text-sm font-bold disabled:opacity-50 whitespace-nowrap">
-          <RefreshCw className={`w-4 h-4 ${evaluate.isPending ? 'animate-spin' : ''}`} /> Re-check now
-        </button>
+        {!readOnly && (
+          <button onClick={() => evaluate.mutate()} disabled={!batchId || evaluate.isPending}
+            className="flex items-center justify-center gap-2 bg-brand-green text-white rounded-xl px-4 py-2 text-sm font-bold disabled:opacity-50 whitespace-nowrap">
+            <RefreshCw className={`w-4 h-4 ${evaluate.isPending ? 'animate-spin' : ''}`} /> Re-check now
+          </button>
+        )}
       </div>
       {evaluate.data?.skipped && <p className="text-xs text-amber-600">{evaluate.data.skipped}</p>}
       {isLoading ? <p className="text-sm text-gray-400">Loading…</p>
         : error ? <p className="text-sm text-red-500">{errMsg(error)}</p>
         : !data ? null
         : !data.guide ? <NoGuide data={data} />
-        : <BatchDetail data={data} />}
+        : <BatchDetail data={data} readOnly={readOnly} />}
     </div>
   );
 }
@@ -120,7 +138,7 @@ function NoGuide({ data }: { data: any }) {
   );
 }
 
-function BatchDetail({ data }: { data: any }) {
+function BatchDetail({ data, readOnly }: { data: any; readOnly: boolean }) {
   const role = useAuthStore(st => st.user?.role);
   const labLink = role === 'OWNER' ? '/owner/feed-lab-tests' : '/manager/feed-lab-tests';
   return (
@@ -143,16 +161,28 @@ function BatchDetail({ data }: { data: any }) {
       {data.feedsWithoutLabTest?.length > 0 && (
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-2xl p-3 text-xs text-amber-800 dark:text-amber-300">
           <strong>Feeds without a lab test (last 4 weeks):</strong> {data.feedsWithoutLabTest.map((f: any) => `${f.name} (${f.kg} kg)`).join(', ')}.
-          {' '}Nutrient intake can’t be checked for days on these feeds — Store can enter results under <Link to={labLink} className="underline font-semibold">Feed Lab Tests</Link>.
+          {' '}Nutrient intake can’t be checked for days on these feeds{readOnly ? ' until Store enters their lab results' : <> — Store can enter results under <Link to={labLink} className="underline font-semibold">Feed Lab Tests</Link></>}.
         </div>
       )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Practices data={data} />
-        <RecordingPlan data={data} />
+        <Practices data={data} readOnly={readOnly} />
+        <RecordingPlan data={data} readOnly={readOnly} />
       </div>
-      <MetricsTable data={data} />
-      {data.reference && <Reference r={data.reference} nutritionProgram={data.setup.nutritionProgram} />}
       {data.lessons && <Lessons lessons={data.lessons} />}
+      {readOnly ? (
+        <details className={cardCls}>
+          <summary className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide cursor-pointer">All parameters and guide figures</summary>
+          <div className="mt-3 space-y-4">
+            <MetricsTable data={data} />
+            {data.reference && <Reference r={data.reference} nutritionProgram={data.setup.nutritionProgram} />}
+          </div>
+        </details>
+      ) : (
+        <>
+          <MetricsTable data={data} />
+          {data.reference && <Reference r={data.reference} nutritionProgram={data.setup.nutritionProgram} />}
+        </>
+      )}
     </div>
   );
 }
@@ -196,7 +226,7 @@ function Deviations({ data }: { data: any }) {
   );
 }
 
-function Practices({ data }: { data: any }) {
+function Practices({ data, readOnly }: { data: any; readOnly: boolean }) {
   const qc = useQueryClient();
   const { data: catalog = [] } = useCatalog();
   const [form, setForm] = useState({ metric: 'LIGHT_HOURS', practice: '', reason: '', effectiveFrom: dayjs().format('YYYY-MM-DD') });
@@ -224,12 +254,12 @@ function Practices({ data }: { data: any }) {
             {n.implication && <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-0.5">{n.implication}</p>}
             <p className="text-[10px] text-gray-400 mt-0.5">
               From {dayjs(n.effectiveFrom).format('D MMM YYYY')}{n.effectiveTo ? ` to ${dayjs(n.effectiveTo).format('D MMM YYYY')}` : ''}
-              {!n.effectiveTo && <button onClick={() => end.mutate(n.id)} className="ml-2 text-brand-green underline">ended today</button>}
+              {!n.effectiveTo && !readOnly && <button onClick={() => end.mutate(n.id)} className="ml-2 text-brand-green underline">ended today</button>}
             </p>
           </div>
         ))}
       </div>
-      <div className="space-y-2 border-t border-gray-100 dark:border-dark-border pt-3">
+      {!readOnly && <div className="space-y-2 border-t border-gray-100 dark:border-dark-border pt-3">
         <select value={form.metric} onChange={e => setForm({ ...form, metric: e.target.value })} className={iCls}>
           {choices.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
         </select>
@@ -243,12 +273,12 @@ function Practices({ data }: { data: any }) {
           className="w-full flex items-center justify-center gap-2 bg-brand-green text-white rounded-xl py-2 text-sm font-bold disabled:opacity-50">
           <Plus className="w-4 h-4" /> Note practice
         </button>
-      </div>
+      </div>}
     </div>
   );
 }
 
-function RecordingPlan({ data }: { data: any }) {
+function RecordingPlan({ data, readOnly }: { data: any; readOnly: boolean }) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const recordable = [...data.plan.recorded, ...data.plan.notRecorded.filter((p: any) => p.reason !== 'NO_INPUT')];
@@ -267,8 +297,8 @@ function RecordingPlan({ data }: { data: any }) {
   return (
     <div className={cardCls}>
       <div className="flex items-center justify-between mb-3">
-        <p className={`${hCls} mb-0`}>Recording plan</p>
-        <button onClick={() => setEditing(e => !e)} className="text-xs text-brand-green font-semibold">{editing ? 'Cancel' : 'Change'}</button>
+        <p className={`${hCls} mb-0`}>{readOnly ? 'Not recorded — what that means' : 'Recording plan'}</p>
+        {!readOnly && <button onClick={() => setEditing(e => !e)} className="text-xs text-brand-green font-semibold">{editing ? 'Cancel' : 'Change'}</button>}
       </div>
       {!editing ? (
         <>
@@ -510,7 +540,7 @@ function CompareTab() {
 
 // ── Guides ────────────────────────────────────────────────────────────────
 
-function GuidesTab({ isOwner }: { isOwner: boolean }) {
+function GuidesTab() {
   const qc = useQueryClient();
   const { data: breeds = [] } = useBreeds();
   const [form, setForm] = useState({ breedId: '', breedName: '', aliases: '', versionLabel: '', versionYear: String(new Date().getFullYear()), variety: '', title: '', notes: '' });
@@ -526,8 +556,6 @@ function GuidesTab({ isOwner }: { isOwner: boolean }) {
     },
     onSuccess: () => { setFile(null); invalidate(); },
   });
-  const activate = useMutation({ mutationFn: (id: string) => api.post(`/breed-standards/guides/${id}/activate`), onSuccess: invalidate });
-  const archive = useMutation({ mutationFn: (id: string) => api.post(`/breed-standards/guides/${id}/archive`), onSuccess: invalidate });
   const downloadTemplate = async () => {
     const r = await api.get('/breed-standards/guides/template', { responseType: 'blob' });
     const url = URL.createObjectURL(r.data);
@@ -550,18 +578,12 @@ function GuidesTab({ isOwner }: { isOwner: boolean }) {
                   <p className="text-[11px] text-gray-500">{g.title} · {g._count.points} data points · {g.sourceKind === 'AI' ? 'read by AI — check before activating' : g.sourceKind === 'SEED' ? 'built in' : 'from template'}
                     {g.supersededAt ? ` · superseded ${dayjs(g.supersededAt).format('D MMM YYYY')}` : ''}</p>
                 </div>
-                {isOwner && g.status !== 'ACTIVE' && (
-                  <div className="flex gap-2">
-                    <button onClick={() => activate.mutate(g.id)} className="text-xs bg-brand-green text-white rounded-lg px-3 py-1.5 font-semibold">Use this edition</button>
-                    {g.status === 'DRAFT' && <button onClick={() => archive.mutate(g.id)} className="text-xs bg-gray-100 dark:bg-dark-bg rounded-lg px-3 py-1.5">Discard</button>}
-                  </div>
-                )}
+                {g.status === 'DRAFT' && <span className="text-[11px] text-blue-600 dark:text-blue-400 self-start">Waiting for the Director to approve</span>}
               </div>
             ))}
           </div>
         </div>
       ))}
-      {activate.error && <p className="text-xs text-red-500">{errMsg(activate.error)}</p>}
 
       <div className={cardCls}>
         <p className={hCls}><UploadCloud className="w-4 h-4 text-brand-green" /> Add a guide (new breed or newer edition)</p>
@@ -599,7 +621,7 @@ function GuidesTab({ isOwner }: { isOwner: boolean }) {
 
 // ── Farm standards ────────────────────────────────────────────────────────
 
-function FarmTab({ isOwner }: { isOwner: boolean }) {
+function FarmTab() {
   const qc = useQueryClient();
   const { data: breeds = [] } = useBreeds();
   const { data: catalog = [] } = useCatalog();
@@ -612,8 +634,6 @@ function FarmTab({ isOwner }: { isOwner: boolean }) {
   });
   const invalidate = () => qc.invalidateQueries({ queryKey: ['breed-standards', 'farm', breedId] });
   const suggest = useMutation({ mutationFn: () => api.post(`/breed-standards/breeds/${breedId}/farm-standards/suggest`).then(r => r.data), onSuccess: invalidate });
-  const decide = useMutation({ mutationFn: (v: { id: string; approve: boolean }) => api.post(`/breed-standards/farm-standards/${v.id}/decide`, { approve: v.approve }), onSuccess: invalidate });
-  const retire = useMutation({ mutationFn: (id: string) => api.post(`/breed-standards/farm-standards/${id}/retire`), onSuccess: invalidate });
   const [form, setForm] = useState({ metric: 'HEN_DAY_PCT', from: '', to: '', min: '', target: '', max: '', reason: '' });
   const create = useMutation({
     mutationFn: () => api.post('/breed-standards/farm-standards', {
@@ -647,15 +667,7 @@ function FarmTab({ isOwner }: { isOwner: boolean }) {
               <p className="text-[11px] text-gray-500">{fs.reason}</p>
               <p className="text-[11px] text-gray-400">{(fs.points as any[]).slice(0, 12).map(p => `wk ${p.ageFrom}${p.ageTo !== p.ageFrom ? `–${p.ageTo}` : ''}: ${band(p)}`).join(' · ')}{fs.points.length > 12 ? ' …' : ''}</p>
             </div>
-            {isOwner && (
-              <div className="flex gap-2">
-                {fs.status === 'PROPOSED' && <>
-                  <button onClick={() => decide.mutate({ id: fs.id, approve: true })} className="text-xs bg-brand-green text-white rounded-lg px-3 py-1.5 font-semibold">Approve</button>
-                  <button onClick={() => decide.mutate({ id: fs.id, approve: false })} className="text-xs bg-gray-100 dark:bg-dark-bg rounded-lg px-3 py-1.5">Reject</button>
-                </>}
-                {fs.status === 'APPROVED' && <button onClick={() => retire.mutate(fs.id)} className="text-xs bg-gray-100 dark:bg-dark-bg rounded-lg px-3 py-1.5">Retire</button>}
-              </div>
-            )}
+            {fs.status === 'PROPOSED' && <span className="text-[11px] text-blue-600 dark:text-blue-400 self-start">Waiting for the Director</span>}
           </div>
         </div>
       ))}
@@ -675,6 +687,189 @@ function FarmTab({ isOwner }: { isOwner: boolean }) {
         {create.error && <p className="text-xs text-red-500 mt-2">{errMsg(create.error)}</p>}
         <button onClick={() => create.mutate()} disabled={!breedId || !form.from || !form.reason.trim() || create.isPending}
           className="mt-3 w-full bg-brand-green text-white rounded-xl py-2 text-sm font-bold disabled:opacity-50">Send to Director</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Director: overview ────────────────────────────────────────────────────
+
+function OverviewTab({ data, onOpen }: { data: any; onOpen: (batchId: string) => void }) {
+  if (!data) return <p className="text-sm text-gray-400">Loading…</p>;
+  const pendingGuides = data.decisions.draftGuides.length;
+  const pendingStandards = data.decisions.farmStandards.filter((f: any) => f.status === 'PROPOSED').length;
+  return (
+    <div className="space-y-4">
+      {(pendingGuides > 0 || pendingStandards > 0) && (
+        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-2xl p-3 text-xs text-blue-800 dark:text-blue-300">
+          <strong>Waiting for your decision:</strong>{' '}
+          {[pendingGuides ? `${pendingGuides} guide edition(s) to approve` : null, pendingStandards ? `${pendingStandards} farm standard(s) proposed` : null].filter(Boolean).join(' · ')} — see the Decisions tab.
+        </div>
+      )}
+      {data.batches.length === 0 && <div className={cardCls}><p className="text-sm text-gray-400 italic">No active batches with a breed guide.</p></div>}
+      {data.batches.map((b: any) => (
+        <div key={b.batchId} className={cardCls}>
+          <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-2 mb-2">
+            <div>
+              <p className="text-sm font-bold text-gray-800 dark:text-gray-100">{b.batchCode} · {b.breed?.name}{b.breed?.variety ? ` (${b.breed.variety})` : ''} · week {b.ageWeeks}</p>
+              <p className="text-[11px] text-gray-500">Measured against the {b.guide.versionLabel} guide · {b.onStandard} parameter(s) on standard</p>
+            </div>
+            <button onClick={() => onOpen(b.batchId)} className="text-xs text-brand-green font-semibold underline self-start">Open batch</button>
+          </div>
+
+          {b.openDeviations.length === 0 ? (
+            <p className="text-sm text-green-600 flex items-center gap-2"><CheckCircle className="w-4 h-4" /> Nothing off standard right now.</p>
+          ) : (
+            <div className="space-y-2">
+              {b.openDeviations.map((d: any) => (
+                <div key={d.key} className="border-l-4 border-amber-400 pl-3">
+                  <p className="text-xs text-gray-800 dark:text-gray-100">
+                    <strong>{d.label}</strong> {statusLabel(d.status)}
+                    {d.actual != null ? <> — {fmt(d.actual)} vs {d.basis === 'FARM' ? 'farm standard' : 'guide'} {band(d)}</> : d.actualText ? <> — {d.actualText}</> : null}
+                    <span className="text-gray-400"> · {d.runLength > 1 ? `${d.runLength} periods running` : period(d.ageUnit, d.ageIndex)}</span>
+                  </p>
+                  {d.implication && <p className="text-[11px] text-gray-500">{d.implication}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {b.practiceNotes.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[11px] font-semibold text-gray-600 dark:text-gray-300 mb-1">Done differently from the guide</p>
+              {b.practiceNotes.map((n: any, i: number) => (
+                <p key={i} className="text-[11px] text-gray-500 mb-0.5">
+                  <strong>{n.label}:</strong> {n.practice}{n.guideRecommendation ? ` (guide: ${n.guideRecommendation})` : ''}{n.reason ? ` — ${n.reason}` : ''}.
+                  {n.implication && <span className="text-amber-700 dark:text-amber-400"> {n.implication}</span>}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {(b.notRecordedByChoice.length > 0 || b.feedsWithoutLabTest?.length > 0) && (
+            <details className="mt-3">
+              <summary className="text-[11px] text-gray-500 cursor-pointer">
+                Blind spots: {[...b.notRecordedByChoice.map((p: any) => p.label), ...(b.feedsWithoutLabTest?.length ? ['feeds without a lab test'] : [])].join(', ')}
+              </summary>
+              <div className="mt-1 space-y-0.5">
+                {b.notRecordedByChoice.map((p: any) => <p key={p.label} className="text-[11px] text-gray-500"><strong>{p.label}</strong> not recorded: {p.implication}</p>)}
+                {b.feedsWithoutLabTest?.length > 0 && (
+                  <p className="text-[11px] text-gray-500"><strong>No lab test</strong> for {b.feedsWithoutLabTest.map((f: any) => f.name).join(', ')} — nutrient intake on those days can’t be checked.</p>
+                )}
+              </div>
+            </details>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Director: decisions ───────────────────────────────────────────────────
+
+function DecisionsTab({ data }: { data: any }) {
+  const qc = useQueryClient();
+  const { data: breeds = [] } = useBreeds();
+  const { data: catalog = [] } = useCatalog();
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['breed-standards'] });
+  const activate = useMutation({ mutationFn: (id: string) => api.post(`/breed-standards/guides/${id}/activate`), onSuccess: invalidate });
+  const discard = useMutation({ mutationFn: (id: string) => api.post(`/breed-standards/guides/${id}/archive`), onSuccess: invalidate });
+  const decide = useMutation({ mutationFn: (v: { id: string; approve: boolean }) => api.post(`/breed-standards/farm-standards/${v.id}/decide`, { approve: v.approve }), onSuccess: invalidate });
+  const retire = useMutation({ mutationFn: (id: string) => api.post(`/breed-standards/farm-standards/${id}/retire`), onSuccess: invalidate });
+  const [breedId, setBreedId] = useState('');
+  useEffect(() => { if (!breedId && breeds.length) setBreedId(breeds[0].id); }, [breeds, breedId]);
+  const suggest = useMutation({ mutationFn: () => api.post(`/breed-standards/breeds/${breedId}/farm-standards/suggest`).then(r => r.data), onSuccess: invalidate });
+  const [form, setForm] = useState({ metric: 'HEN_DAY_PCT', from: '', to: '', min: '', max: '', reason: '' });
+  const setStandard = useMutation({
+    mutationFn: () => api.post('/breed-standards/farm-standards', {
+      breedId, metric: form.metric, reason: form.reason,
+      points: [{ ageFrom: Number(form.from), ageTo: Number(form.to || form.from), min: form.min === '' ? null : Number(form.min), max: form.max === '' ? null : Number(form.max) }],
+    }),
+    onSuccess: () => { setForm(f => ({ ...f, from: '', to: '', min: '', max: '', reason: '' })); invalidate(); },
+  });
+  if (!data) return <p className="text-sm text-gray-400">Loading…</p>;
+  const proposed = data.decisions.farmStandards.filter((f: any) => f.status === 'PROPOSED');
+  const approved = data.decisions.farmStandards.filter((f: any) => f.status === 'APPROVED');
+  const err = activate.error || discard.error || decide.error || retire.error;
+
+  return (
+    <div className="space-y-4">
+      {err && <p className="text-xs text-red-500">{errMsg(err)}</p>}
+
+      <div className={cardCls}>
+        <p className={hCls}><BookOpen className="w-4 h-4 text-blue-500" /> Guide editions to approve</p>
+        {data.decisions.draftGuides.length === 0 ? <p className="text-xs text-gray-400 italic">None waiting.</p> : data.decisions.draftGuides.map((g: any) => (
+          <div key={g.id} className="border border-gray-100 dark:border-dark-border rounded-xl p-3 mb-2">
+            <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">{g.breed} — {g.versionLabel}{g.variety ? ` (${g.variety} only)` : ''}</p>
+            <p className="text-[11px] text-gray-500">{g.title} · {g.points} figures · uploaded {dayjs(g.createdAt).format('D MMM YYYY')}</p>
+            <p className="text-xs text-gray-700 dark:text-gray-300 mt-1.5">{g.implication}</p>
+            {g.aiInterpretation && <p className="text-[11px] text-blue-600 dark:text-blue-400 mt-1 italic">AI reading: {g.aiInterpretation}</p>}
+            <div className="flex gap-2 mt-2">
+              <button onClick={() => activate.mutate(g.id)} className="text-xs bg-brand-green text-white rounded-lg px-3 py-1.5 font-semibold">Use this edition</button>
+              <button onClick={() => discard.mutate(g.id)} className="text-xs bg-gray-100 dark:bg-dark-bg rounded-lg px-3 py-1.5">Discard</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className={cardCls}>
+        <p className={hCls}><Award className="w-4 h-4 text-purple-500" /> Farm standards proposed</p>
+        {proposed.length === 0 ? <p className="text-xs text-gray-400 italic">None waiting.</p> : proposed.map((f: any) => (
+          <div key={f.id} className="border border-gray-100 dark:border-dark-border rounded-xl p-3 mb-2">
+            <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">{f.breed} — {f.label}</p>
+            <p className="text-[11px] text-gray-500">Proposed by {f.proposedBy}. {f.reason}</p>
+            {f.summary && <p className="text-xs text-gray-700 dark:text-gray-300 mt-1.5">{f.summary}</p>}
+            {f.weeks?.length > 0 && (
+              <details className="mt-1">
+                <summary className="text-[11px] text-gray-500 cursor-pointer">Week by week ({f.weeks.length})</summary>
+                <p className="text-[11px] text-gray-500 mt-1">{f.weeks.map((w: any) => `wk ${w.ageFrom}${w.ageTo !== w.ageFrom ? `–${w.ageTo}` : ''}: guide ${w.guide} → farm ${w.farm}`).join(' · ')}</p>
+              </details>
+            )}
+            <div className="flex gap-2 mt-2">
+              <button onClick={() => decide.mutate({ id: f.id, approve: true })} className="text-xs bg-brand-green text-white rounded-lg px-3 py-1.5 font-semibold">Approve</button>
+              <button onClick={() => decide.mutate({ id: f.id, approve: false })} className="text-xs bg-gray-100 dark:bg-dark-bg rounded-lg px-3 py-1.5">Reject</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className={cardCls}>
+        <p className={hCls}>Farm standards in use</p>
+        {approved.length === 0 ? <p className="text-xs text-gray-400 italic">None — every batch is measured against its guide.</p> : approved.map((f: any) => (
+          <div key={f.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 border border-gray-100 dark:border-dark-border rounded-xl p-3 mb-2">
+            <div>
+              <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">{f.breed} — {f.label}</p>
+              <p className="text-[11px] text-gray-500">{f.reason}{f.approvedAt ? ` · since ${dayjs(f.approvedAt).format('D MMM YYYY')}` : ''}</p>
+            </div>
+            <button onClick={() => retire.mutate(f.id)} className="text-xs bg-gray-100 dark:bg-dark-bg rounded-lg px-3 py-1.5 self-start">Go back to the guide</button>
+          </div>
+        ))}
+      </div>
+
+      <div className={cardCls}>
+        <p className={hCls}><Plus className="w-4 h-4 text-brand-green" /> Set a farm standard</p>
+        <p className="text-[11px] text-gray-500 mb-2">Use when the farm should be held to its own figure instead of the guide. It applies from the next check.</p>
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+          <select value={breedId} onChange={e => setBreedId(e.target.value)} className={`${iCls} col-span-2`}>
+            {breeds.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <select value={form.metric} onChange={e => setForm({ ...form, metric: e.target.value })} className={`${iCls} col-span-2 md:col-span-4`}>
+            {catalog.filter(m => (m.capture === 'SYSTEM' || m.capture === 'DECLARED') && !m.planKey).map(m => <option key={m.key} value={m.key}>{m.label}{m.unit ? ` (${m.unit})` : ''}</option>)}
+          </select>
+          <input value={form.from} onChange={e => setForm({ ...form, from: e.target.value })} className={iCls} placeholder="From week" type="number" />
+          <input value={form.to} onChange={e => setForm({ ...form, to: e.target.value })} className={iCls} placeholder="To week" type="number" />
+          <input value={form.min} onChange={e => setForm({ ...form, min: e.target.value })} className={iCls} placeholder="At least" type="number" />
+          <input value={form.max} onChange={e => setForm({ ...form, max: e.target.value })} className={iCls} placeholder="At most" type="number" />
+          <input value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} className={`${iCls} col-span-2`} placeholder="Why" />
+        </div>
+        {setStandard.error && <p className="text-xs text-red-500 mt-2">{errMsg(setStandard.error)}</p>}
+        <div className="flex flex-col md:flex-row gap-2 mt-3">
+          <button onClick={() => setStandard.mutate()} disabled={!breedId || !form.from || (!form.min && !form.max) || !form.reason.trim() || setStandard.isPending}
+            className="flex-1 bg-brand-green text-white rounded-xl py-2 text-sm font-bold disabled:opacity-50">Set farm standard</button>
+          <button onClick={() => suggest.mutate()} disabled={!breedId || suggest.isPending}
+            className="bg-gray-100 dark:bg-dark-bg rounded-xl px-4 py-2 text-sm">Check where farm results beat the guide</button>
+        </div>
+        {suggest.data && <p className="text-xs text-gray-500 mt-2">{suggest.data.proposed ? `${suggest.data.proposed} suggestion(s) added above for you to approve or reject.` : 'No week yet where 3+ batches of this breed beat the guide.'}</p>}
       </div>
     </div>
   );

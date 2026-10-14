@@ -1105,7 +1105,9 @@ export class StandardComplianceService {
     return this.prisma.farmStandard.findMany({ where: { breedId }, orderBy: [{ status: 'asc' }, { createdAt: 'desc' }] });
   }
 
-  async createFarmStandard(input: any, userId: string) {
+  /** A manager's farm standard goes to the Director as a proposal; one the
+   *  Director sets applies straight away (no proposal to themselves). */
+  async createFarmStandard(input: any, userId: string, role?: string) {
     const breed = await this.prisma.breed.findUnique({ where: { id: String(input.breedId ?? '') } });
     if (!breed) throw new NotFoundException('Breed not found');
     const metric = String(input.metric ?? '');
@@ -1113,7 +1115,7 @@ export class StandardComplianceService {
     const points = Array.isArray(input.points) ? input.points : [];
     if (!points.length || points.some((p: any) => !Number.isFinite(Number(p.ageFrom)))) throw new BadRequestException('Give at least one age with a value');
     if (!String(input.reason ?? '').trim()) throw new BadRequestException('Say why the farm standard differs from the guide');
-    return this.prisma.farmStandard.create({
+    const created = await this.prisma.farmStandard.create({
       data: {
         breedId: breed.id, metric, variant: input.variant ?? null, ageUnit: input.ageUnit === 'DAY' ? 'DAY' : 'WEEK',
         points: points.map((p: any) => ({
@@ -1123,6 +1125,111 @@ export class StandardComplianceService {
         reason: String(input.reason).trim(), status: 'PROPOSED', proposedById: userId,
       },
     });
+    if (role === UserRole.OWNER) return this.decideFarmStandard(created.id, true, userId);
+    if (role === UserRole.MANAGER) {
+      await this.notifications.notifyRole(UserRole.OWNER, NotificationType.FARM_STANDARD_PROPOSED,
+        `Farm standard proposed — ${metricDef(metric)?.label ?? metric}`,
+        `${breed.name}: the Production Manager proposes a farm standard. Reason: ${String(input.reason).trim()} Review it under Breed Standards → Decisions.`,
+        { entityId: created.id, entityType: 'FarmStandard', dedupeKey: `farmstd-manual:${created.id}` },
+      ).catch(() => {});
+    }
+    return created;
+  }
+
+  /** Plain-English effect of approving a farm standard, week by week vs the
+   *  guide: whether it holds batches to a stricter figure (more flags) or
+   *  relaxes the guide (fewer flags). */
+  private async farmStandardImplication(fs: { breedId: string; metric: string; points: any; variant: string | null }) {
+    const guide = await this.standards.activeGuide(fs.breedId);
+    const def = metricDef(fs.metric);
+    if (!guide || !def) return { summary: null, weeks: [] as any[] };
+    const series = await this.standards.metricSeries(guide.id, fs.metric, fs.variant ?? undefined);
+    let stricter = 0, looser = 0, weekCount = 0;
+    const weeks = (fs.points as any[]).map(p => {
+      const ageFrom = Number(p.ageFrom), ageTo = Number(p.ageTo ?? p.ageFrom);
+      weekCount += ageTo - ageFrom + 1;
+      const g = series.find(x => ageFrom >= x.ageFrom && ageFrom <= x.ageTo);
+      const gb = g ? applyTolerance(g, def) : null;
+      const fmin = p.min != null ? Number(p.min) : null, fmax = p.max != null ? Number(p.max) : null;
+      let effect: 'STRICTER' | 'LOOSER' | 'SAME' | null = null;
+      if (gb) {
+        const up = fmin != null && gb.min != null ? Math.sign(fmin - gb.min) : 0;      // higher floor = stricter
+        const down = fmax != null && gb.max != null ? Math.sign(gb.max - fmax) : 0;    // lower ceiling = stricter
+        const score = up + down;
+        effect = score > 0 ? 'STRICTER' : score < 0 ? 'LOOSER' : 'SAME';
+        if (effect === 'STRICTER') stricter++;
+        if (effect === 'LOOSER') looser++;
+      }
+      return { ageFrom, ageTo, guide: gb ? bandText(gb, def.unit) : '—', farm: bandText({ min: fmin, max: fmax, target: p.target }, def.unit), effect };
+    });
+    const ex = weeks.find(w => w.effect === (stricter >= looser ? 'STRICTER' : 'LOOSER')) ?? weeks[0];
+    const e = ex ? ` — e.g. week ${ex.ageFrom}: guide ${ex.guide} → farm ${ex.farm}` : '';
+    const name = def.label.toLowerCase();
+    let summary: string;
+    if (stricter && !looser) {
+      summary = `Approving holds batches to a stricter ${name} figure than the guide over ${weekCount} week(s)${e}. Batches will be flagged against the farm figure, even while they are still within the guide.`;
+    } else if (looser && !stricter) {
+      summary = `Approving relaxes the guide for ${name} over ${weekCount} week(s)${e}. Batches that miss the guide but meet this figure will no longer be flagged in those weeks (the guide figure is still shown).`;
+    } else if (stricter && looser) {
+      summary = `Approving is stricter than the guide in some weeks and looser in others for ${name}${e}. Flags will follow the farm figure in all ${weekCount} week(s).`;
+    } else {
+      summary = `Approving makes little difference — the farm figure for ${name} matches the guide${e}.`;
+    }
+    return { summary, weeks };
+  }
+
+  /** Director's view: every benchmarked batch's current problems and their
+   *  meaning, plus the decisions waiting for the Director. */
+  async overview() {
+    const batches = await this.prisma.batch.findMany({
+      where: { isActive: true, deletedAt: null, breedId: { not: null } },
+      select: { id: true },
+      orderBy: { dateOfHatch: 'asc' },
+    });
+    const rows: any[] = [];
+    for (const b of batches) {
+      const s = await this.getBatchStandards(b.id).catch(() => null);
+      if (!s?.guide) continue;
+      rows.push({
+        batchId: s.batchId, batchCode: s.batchCode, ageWeeks: s.ageWeeks, breed: s.breed, guide: s.guide,
+        openDeviations: s.openDeviations,
+        practiceNotes: s.practiceNotes.filter((n: any) => !n.effectiveTo).slice(0, 5)
+          .map((n: any) => ({ metric: n.metric, label: metricDef(n.metric)?.label ?? n.metric, practice: n.practice, guideRecommendation: n.guideRecommendation, reason: n.reason, implication: n.implication, source: n.source })),
+        notRecordedByChoice: s.plan.notRecorded.filter((p: any) => p.reason !== 'NO_INPUT').map((p: any) => ({ label: p.label, implication: p.implication })),
+        feedsWithoutLabTest: s.feedsWithoutLabTest,
+        onStandard: s.metrics.filter((m: any) => m.latest.status === 'IN_BAND' && new Date(m.latest.periodEnd) >= addDays(farmTodayUtcMidnight(), -NOTIFY_WITHIN_DAYS)).length,
+      });
+    }
+    const drafts = await this.prisma.breedGuide.findMany({
+      where: { status: 'DRAFT' },
+      include: { breed: { select: { name: true } }, _count: { select: { points: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    const draftGuides = [];
+    for (const g of drafts) {
+      const current = await this.standards.activeGuide(g.breedId, g.variety);
+      const affected = await this.prisma.batch.count({ where: { breedId: g.breedId, isActive: true, deletedAt: null } });
+      draftGuides.push({
+        id: g.id, breed: g.breed.name, title: g.title, versionLabel: g.versionLabel, variety: g.variety,
+        sourceKind: g.sourceKind, aiInterpretation: g.aiInterpretation, points: g._count.points, createdAt: g.createdAt,
+        implication: `Using this edition ${current ? `replaces the ${current.versionLabel} edition` : 'starts benchmarking'} for ${affected} active ${g.breed.name}${g.variety ? ` ${g.variety}` : ''} batch(es) from the next check.`
+          + (g.sourceKind === 'AI' ? ' It was read from a PDF/photo by AI — ask the Production Manager to confirm the figures first.' : ''),
+      });
+    }
+    const standards = await this.prisma.farmStandard.findMany({
+      where: { status: { in: ['PROPOSED', 'APPROVED'] } },
+      include: { breed: { select: { name: true } } },
+      orderBy: [{ status: 'desc' }, { createdAt: 'desc' }],
+    });
+    const farmStandards = [];
+    for (const fs of standards) {
+      farmStandards.push({
+        id: fs.id, breed: fs.breed.name, metric: fs.metric, label: metricDef(fs.metric)?.label ?? fs.metric, status: fs.status,
+        reason: fs.reason, proposedBy: fs.proposedById ? 'Production Manager' : 'System (farm results)', approvedAt: fs.approvedAt,
+        ...(await this.farmStandardImplication(fs)),
+      });
+    }
+    return { batches: rows, decisions: { draftGuides, farmStandards } };
   }
 
   async decideFarmStandard(id: string, approve: boolean, userId: string) {

@@ -120,3 +120,15 @@ describe('notification de-duplication keys', () => {
     expect(w.OR[0].OR).toEqual([{ isRead: false }, { createdAt: { gte: new Date('2026-10-04T00:00:00Z') } }]);
   });
 });
+
+describe('pickActiveGuide', () => {
+  it('batches without a variety get the breed-wide guide', async () => {
+    const { pickActiveGuide } = await import('../breed-standard.service');
+    const guides = [{ id: 'max', variety: 'Brown Max' }, { id: 'all', variety: null }];
+    expect(pickActiveGuide(guides, null)?.id).toBe('all');
+    expect(pickActiveGuide(guides, '')?.id).toBe('all');
+    expect(pickActiveGuide(guides, 'Brown Max')?.id).toBe('max');
+    expect(pickActiveGuide(guides, 'Brown')?.id).toBe('all');
+    expect(pickActiveGuide([], null)).toBeNull();
+  });
+});

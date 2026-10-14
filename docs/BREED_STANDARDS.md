@@ -171,7 +171,8 @@ Other behaviour:
 | POST `batches/:id/evaluate` | BREED_STANDARD_VIEW | Re-check now |
 | POST `batches/:id/practices`, PATCH `practices/:id/end`, DELETE `practices/:id` | BREED_STANDARD_MANAGE | Practices outside the guide (DELETE is a soft delete) |
 | GET `breeds/:id/compare?metric=`, `breeds/:id/lessons` | BREED_STANDARD_VIEW | Same-breed comparison, lessons |
-| GET `breeds/:id/farm-standards`; POST `breeds/:id/farm-standards/suggest`, `farm-standards` | VIEW / MANAGE | List, system proposals, manual proposal |
+| GET `breeds/:id/farm-standards`; POST `breeds/:id/farm-standards/suggest`, `farm-standards` | VIEW / MANAGE | List, system proposals, manual proposal (Manager → proposal to the Director; Director → applies immediately) |
+| GET `overview` | BREED_STANDARD_VIEW | Director's summary: each active batch's current deviations, practices and blind spots with implications, plus pending decisions (draft editions, proposed farm standards) with the plain-English effect of approving |
 | POST `farm-standards/:id/decide`, `farm-standards/:id/retire` | BREED_GUIDE_APPROVE | Approve / reject / retire |
 
 Also: `GET /production/hdp-controls/guide-coverage`. `GET /production/hdp-controls/comparison/:batchId` now returns `source: GUIDE|UPLOAD` and the min/max band.
@@ -184,7 +185,8 @@ Also: `GET /production/hdp-controls/guide-coverage`. `GET /production/hdp-contro
   - considers only metrics with a clear "better" direction: HD%, HH/HD eggs, uniformity, egg mass, both mortalities, FCR;
   - for each week where ≥ `FARM_STANDARD_MIN_BATCHES` (default 3) batches have results, takes the farm's best quartile;
   - if that beats the guide in at least 3 weeks, creates a PROPOSED standard with evidence and notifies the Director.
-- **Manual proposals** need a reason. Approving one retires the previous approved standard for the same metric.
+- **Manual proposals** need a reason. A Production Manager's proposal goes to the Director (notified); a farm standard the Director sets is approved immediately. Approving one retires the previous approved standard for the same metric.
+- Each pending decision carries its implication, worked out week by week against the guide: stricter (batches flagged even within the guide) or looser (batches missing the guide no longer flagged).
 - **`lessons(breedId)`** returns:
   - repeated problems: the same metric off standard in ≥2 earlier batches, with weeks and implication;
   - strengths: the best batch per metric, ≥80% of weeks on standard;
@@ -316,6 +318,14 @@ All of this can be changed later on the Breed Standards page under **Recording p
 
 ### B4. The Breed Standards page
 
+**What the Director sees** (only what needs attention):
+- **Overview:** every batch with what is off standard right now, how long it has lasted and what it means; anything done differently from the guide and its likely effect; and "blind spots" (parameters not recorded, feeds without a lab test). A banner shows decisions waiting.
+- **Batch detail:** the same for one batch, read-only, with the full parameter table and guide figures folded away.
+- **Compare batches:** Hy-Line batches side by side.
+- **Decisions:** guide editions to approve and farm standards proposed, each with what approving will change (e.g. "holds batches to a stricter hen-day figure — batches will be flagged even while within the guide"). The Director can also set a farm standard directly, which applies straight away.
+
+**What the Production Manager sees** (the working tabs below):
+
 Menu: **Breed Standards** (Production Manager and Director).
 
 - **Batch tab:**
@@ -339,7 +349,7 @@ Menu: **Breed Standards** (Production Manager and Director).
   3. the old edition is kept but marked as replaced, so it is always clear which version is in use.
 
   Other breeds' guides are added the same way.
-- **Farm standards:** when the farm keeps doing **better than the guide**, the system can propose a stricter "farm standard". It needs results from 3 or more batches of the breed. The Production Manager can also propose one with a reason. The **Director approves** it. After that, flags use the farm standard, and the guide figure is still shown alongside.
+- **Farm standards:** when the farm keeps doing **better than the guide**, the system can propose a stricter "farm standard". It needs results from 3 or more batches of the breed. The Production Manager can also propose one with a reason. The **Director approves** it under Decisions (a standard the Director sets applies straight away). After that, flags use the farm standard, and the guide figure is still shown alongside.
 
 ### B5. When the batch is older than the guide
 

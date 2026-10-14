@@ -79,6 +79,11 @@ export class BreedStandardsController {
   @RequirePermission(Permission.FLOCK_VIEW)
   registrationOptions(@Query('strain') strain = '') { return this.standards.registrationOptions(strain); }
 
+  /** GET /breed-standards/overview — Director's summary: problems + implications, decisions waiting. */
+  @Get('overview')
+  @RequirePermission(Permission.BREED_STANDARD_VIEW)
+  overview() { return this.compliance.overview(); }
+
   @Get('batches/:id')
   @RequirePermission(Permission.BREED_STANDARD_VIEW)
   batch(@Param('id') id: string) { return this.compliance.getBatchStandards(id); }
@@ -132,7 +137,7 @@ export class BreedStandardsController {
 
   @Post('farm-standards')
   @RequirePermission(Permission.BREED_STANDARD_MANAGE)
-  createFarmStandard(@Body() body: any, @CurrentUser() user: RequestUser) { return this.compliance.createFarmStandard(body, user.id); }
+  createFarmStandard(@Body() body: any, @CurrentUser() user: RequestUser) { return this.compliance.createFarmStandard(body, user.id, user.role); }
 
   @Post('farm-standards/:id/decide')
   @RequirePermission(Permission.BREED_GUIDE_APPROVE)

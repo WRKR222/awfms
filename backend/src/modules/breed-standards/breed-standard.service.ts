@@ -235,10 +235,7 @@ export class BreedStandardService implements OnModuleInit {
       where: { breedId, status: 'ACTIVE' },
       orderBy: [{ versionYear: 'desc' }, { activatedAt: 'desc' }],
     });
-    const v = normaliseBreedText(variety);
-    return (v && guides.find(g => g.variety && normaliseBreedText(g.variety) === v))
-      ?? guides.find(g => !g.variety)
-      ?? null;
+    return pickActiveGuide(guides, variety);
   }
 
   async guidePoints(guideId: string): Promise<StandardPoint[]> {
@@ -537,6 +534,15 @@ export class BreedStandardService implements OnModuleInit {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
+
+/** Variety-specific active guide first, else the breed-wide one. (`||`, not
+ *  `??`: an empty variety must fall through to the breed-wide guide.) */
+export function pickActiveGuide<G extends { variety: string | null }>(guides: G[], variety?: string | null): G | null {
+  const v = normaliseBreedText(variety);
+  return (v ? guides.find(g => g.variety && normaliseBreedText(g.variety) === v) : undefined)
+    || guides.find(g => !g.variety)
+    || null;
+}
 
 /** Row covering `age`; else the latest row before it (gap inside the guide);
  *  else, past the last row, that last row when extrapolation is HOLD_LAST. */
