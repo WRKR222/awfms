@@ -32,7 +32,10 @@ export function FeedLabTestsPage() {
   const qc = useQueryClient();
   const canEdit = ['STORE', 'OWNER'].includes(useAuthStore(s => s.user?.role) ?? '');
   const { data: nutrients = [] } = useQuery<Nutrient[]>({ queryKey: ['feed-lab', 'nutrients'], queryFn: () => api.get('/feed-lab-tests/nutrients').then(r => r.data), staleTime: 3_600_000 });
-  const { data: items = [] } = useQuery<FeedItem[]>({ queryKey: ['feed-lab', 'items'], queryFn: () => api.get('/feed-lab-tests/feed-items').then(r => r.data) });
+  const { data: items = [], isLoading: itemsLoading, error: itemsError, refetch: refetchItems } = useQuery<FeedItem[]>({
+    queryKey: ['feed-lab', 'items'],
+    queryFn: () => api.get('/feed-lab-tests/feed-items').then(r => r.data),
+  });
   const [filter, setFilter] = useState('');
   const { data: tests = [] } = useQuery<any[]>({
     queryKey: ['feed-lab', 'tests', filter],
@@ -40,7 +43,11 @@ export function FeedLabTestsPage() {
   });
   const [form, setForm] = useState(emptyForm);
   const [readError, setReadError] = useState<string | null>(null);
-  useEffect(() => { if (!form.storeItemId && items.length) setForm(f => ({ ...f, storeItemId: items[0].id })); }, [items, form.storeItemId]);
+  // Keep the selection valid: default to the first feed, and reset if the
+  // chosen feed is no longer in the list.
+  useEffect(() => {
+    if (items.length && !items.some(i => i.id === form.storeItemId)) setForm(f => ({ ...f, storeItemId: items[0].id }));
+  }, [items, form.storeItemId]);
   const invalidate = () => qc.invalidateQueries({ queryKey: ['feed-lab'] });
 
   const save = useMutation({
@@ -127,9 +134,23 @@ export function FeedLabTestsPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
               <label className={lCls}>Feed tested *</label>
-              <select value={form.storeItemId} onChange={e => setForm({ ...form, storeItemId: e.target.value })} className={iCls}>
+              <select value={form.storeItemId} onChange={e => setForm(f => ({ ...f, storeItemId: e.target.value }))}
+                disabled={itemsLoading || !!itemsError || items.length === 0} className={iCls}>
+                {itemsLoading && <option value="">Loading feeds…</option>}
+                {!itemsLoading && items.length === 0 && <option value="">No feeds found</option>}
                 {items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
               </select>
+              {itemsError && (
+                <p className="text-[11px] text-red-500 mt-1">
+                  Couldn’t load the feed list: {errMsg(itemsError)}{' '}
+                  <button type="button" onClick={() => refetchItems()} className="underline font-semibold">Try again</button>
+                </p>
+              )}
+              {!itemsLoading && !itemsError && items.length === 0 && (
+                <p className="text-[11px] text-amber-600 mt-1">
+                  No feed items in Store inventory. Add the feed under Inventory → Items with category “Feed”, then come back.
+                </p>
+              )}
             </div>
             <div><label className={lCls}>Laboratory</label><input value={form.labName} onChange={e => setForm({ ...form, labName: e.target.value })} className={iCls} placeholder="e.g. KALRO" /></div>
             <div><label className={lCls}>Sample / report number</label><input value={form.sampleRef} onChange={e => setForm({ ...form, sampleRef: e.target.value })} className={iCls} /></div>

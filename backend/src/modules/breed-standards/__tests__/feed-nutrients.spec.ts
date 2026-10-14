@@ -80,3 +80,19 @@ describe('recording plan switch', () => {
     expect(metricDef('INTAKE_ENERGY')?.direction).toBe('IN_BAND');
   });
 });
+
+describe('isFeedItem (feed dropdown)', () => {
+  it('includes feeds filed under Feed, or Other/Supplement with a feed label or name', async () => {
+    const { isFeedItem } = await import('../feed-lab.service');
+    expect(isFeedItem({ name: 'Grower Mash 70kg', category: 'FEED' })).toBe(true);
+    expect(isFeedItem({ name: 'Kenchic Layers', category: 'OTHER', customCategoryLabel: 'Feeds' })).toBe(true);
+    expect(isFeedItem({ name: 'Layers Mash', category: 'OTHER' })).toBe(true);
+    expect(isFeedItem({ name: 'Chick Crumbs', category: 'SUPPLEMENT' })).toBe(true);
+  });
+  it('never includes medicines, vaccines or equipment', async () => {
+    const { isFeedItem } = await import('../feed-lab.service');
+    expect(isFeedItem({ name: 'Layer Booster Vitamins', category: 'MEDICATION' })).toBe(false);
+    expect(isFeedItem({ name: 'Feeder trough', category: 'EQUIPMENT' })).toBe(false);
+    expect(isFeedItem({ name: 'Charcoal', category: 'OTHER', customCategoryLabel: 'Fuel' })).toBe(false);
+  });
+});

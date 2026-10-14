@@ -13,6 +13,22 @@ import { FEED_NUTRIENTS, NUTRIENT_BY_KEY } from './feed-nutrients.catalog';
 import { StandardComplianceService, canonicalFeedType } from './standard-compliance.service';
 
 const FEED_CATEGORIES: StoreItemCategory[] = [StoreItemCategory.FEED, StoreItemCategory.FEED_SUPPLEMENT];
+// Never feeds, whatever the name says.
+const NON_FEED_CATEGORIES: StoreItemCategory[] = [
+  StoreItemCategory.MEDICATION, StoreItemCategory.VACCINE, StoreItemCategory.TREATMENT, StoreItemCategory.EQUIPMENT,
+  StoreItemCategory.PACKAGING, StoreItemCategory.CLEANING, StoreItemCategory.SAFETY,
+];
+
+/** A store item counts as a feed when it is filed under Feed, or under
+ *  Other/Supplement with a feed label or a feed name (e.g. "Layers Mash"
+ *  filed as Other → "Feeds"). */
+export function isFeedItem(item: { name: string; category: StoreItemCategory | string; customCategoryLabel?: string | null }) {
+  const category = item.category as StoreItemCategory;
+  if (FEED_CATEGORIES.includes(category)) return true;
+  if (NON_FEED_CATEGORIES.includes(category)) return false;
+  if (/feed|mash|crumb|pellet/i.test(item.customCategoryLabel ?? '')) return true;
+  return canonicalFeedType(item.name) != null || /\bfeed\b/i.test(item.name);
+}
 const MJ_TO_KCAL = 239.006;
 
 export interface FeedLabInput {
@@ -80,17 +96,19 @@ export class FeedLabService {
   }
 
   async feedItems() {
-    const items = await this.prisma.storeItem.findMany({
-      where: { category: { in: FEED_CATEGORIES }, isActive: true },
-      select: { id: true, name: true, unit: true, category: true },
+    const all = await this.prisma.storeItem.findMany({
+      where: { isActive: true, category: { notIn: NON_FEED_CATEGORIES } },
+      select: { id: true, name: true, unit: true, category: true, customCategoryLabel: true },
       orderBy: { name: 'asc' },
     });
+    const items = all.filter(isFeedItem);
+    // The item list must load even if the lab-test lookup fails.
     const latest = await this.prisma.feedLabTest.findMany({
       where: { deletedAt: null, storeItemId: { in: items.map(i => i.id) } },
       orderBy: { effectiveFrom: 'desc' },
       distinct: ['storeItemId'],
       select: { storeItemId: true, effectiveFrom: true, sampleDate: true },
-    });
+    }).catch(err => { this.logger.error(`Feed lab test lookup failed: ${err?.message}`); return []; });
     const byItem = new Map(latest.map(l => [l.storeItemId, l]));
     return items.map(i => ({ ...i, feedFamily: canonicalFeedType(i.name), latestTest: byItem.get(i.id) ?? null }));
   }
@@ -175,7 +193,7 @@ export class FeedLabService {
     if (!storeItemId) throw new BadRequestException('Choose the feed that was tested');
     const item = await this.prisma.storeItem.findUnique({ where: { id: storeItemId } });
     if (!item) throw new NotFoundException('Feed item not found');
-    if (!FEED_CATEGORIES.includes(item.category)) throw new BadRequestException(`${item.name} is not a feed item`);
+    if (!isFeedItem(item)) throw new BadRequestException(`${item.name} is not a feed item`);
     return item;
   }
 
