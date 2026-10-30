@@ -121,6 +121,15 @@ latest price on or before the date.
 - **Changed** = some record in scope was created/updated after the last report
   of that kind; otherwise the previous report is returned (`reused: true`).
 - `GET /ai/readiness[?batchId=]` shows readiness + missing days without an AI call.
+- **Guide vs actual diagnosis** (`AiGuideDiagnosisService`): weekly
+  `BatchStandardMetric` rows (production, mortality, growth, feed & water, egg
+  quality) side by side with the records for the same weeks (water / feed per
+  bird, house temp, deaths + causes + which row · level, shell problems, feed
+  changes, health events, vaccinations). The batch report has a mandatory
+  "Guide vs Actual — What Might Be Wrong" section; weekly, improvement,
+  forecast and disease reports get the compact block (off-guide areas only).
+  Suggestions are worded "possibly / likely"; no guide → compare the batch
+  with its own earlier weeks.
 
 ## Breed standards (performance-guide benchmarking)
 

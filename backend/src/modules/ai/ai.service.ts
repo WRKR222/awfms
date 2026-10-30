@@ -8,6 +8,7 @@ import { NotificationType, UserRole, EntryStatus, BatchStage } from '@prisma/cli
 import dayjs from 'dayjs';
 import { AiReadinessService } from './ai-readiness.service';
 import { StandardComplianceService } from '../breed-standards/standard-compliance.service';
+import { AiGuideDiagnosisService } from './ai-guide-diagnosis.service';
 
 @Injectable()
 export class AiService {
@@ -20,6 +21,7 @@ export class AiService {
     private config: ConfigService,
     private readiness: AiReadinessService,
     private compliance: StandardComplianceService,
+    private guideDiagnosis: AiGuideDiagnosisService,
   ) {
     const apiKey = this.config.get<string>('ANTHROPIC_API_KEY');
     if (apiKey) {
@@ -762,6 +764,7 @@ export class AiService {
       : `No active batch had an uploaded production report covering this week, so feed and mortality figures below come from system entry logs.`;
 
     const standardsBlock = await this.standardsContext(readyIds);
+    const diagnosisBlock = await this.guideDiagnosis.batchesBlock(readyIds, 4);
     const prompt = `You are an expert poultry farm advisor. Write a concise weekly performance report for Anza Whole Foods farm in Kenya. Use plain English — no jargon. Address the Director directly. Be specific with numbers. End with 2-3 actionable recommendations.
 
 WEEK: ${rawData.week}
@@ -774,12 +777,12 @@ SALES: ${sales.ordersCount} order(s) placed worth KES ${sales.ordersValue.toLoca
 RECEIVABLES (as of today): KES ${sales.outstandingAR.toLocaleString()} outstanding, of which KES ${sales.overdueAR.toLocaleString()} is overdue
 EXPENSES: KES ${totalExpenses.toLocaleString()} · Net cash position this week: KES ${netIncome.toLocaleString()}
 BREAKAGE ADJUSTMENTS (post-collection, raised by Sales): ${breakages.count} adjustment(s), net change ${breakages.netDiff} eggs
-HEALTH: ${healthEvents.length} health event(s) logged${standardsBlock ? `\n${standardsBlock}` : ''}
+HEALTH: ${healthEvents.length} health event(s) logged${standardsBlock ? `\n${standardsBlock}` : ''}${diagnosisBlock ? `\n${diagnosisBlock}` : ''}
 DATA COMPLETENESS THIS WEEK — Egg collection: ${completeness.eggCollection.pending} pending approval, ${completeness.eggCollection.returned} returned for correction. Flock entries: ${completeness.flockEntries.pending} pending, ${completeness.flockEntries.returned} returned. Feed logs: ${completeness.feedLogs.pending} pending, ${completeness.feedLogs.returned} returned. Three-way tally sign-off (Manager+Sales+Store): ${completeness.tallySignOff.fullySigned}/${completeness.tallySignOff.total} fully signed.
 
-Format: one-sentence overall summary, then short paragraphs covering production, feed & flock health, finance (sales, receivables, expenses), and — only if something stands out — a brief note on data-entry discipline across roles. If a BREED-GUIDE BENCHMARK block is present, fold the batches that are off their breed guide (and why it matters) into the feed & flock paragraph; mention parameters the farm chose not to record only where that gap limits a conclusion. End with "Recommended actions:" as a short bulleted list. Keep the ENTIRE response under 400 words — be concise enough to finish completely rather than running long and getting cut off.`;
+Format: one-sentence overall summary, then short paragraphs covering production, feed & flock health, finance (sales, receivables, expenses), and — only if something stands out — a brief note on data-entry discipline across roles. If a BREED-GUIDE BENCHMARK block is present, fold the batches that are off their breed guide (and why it matters) into the feed & flock paragraph; mention parameters the farm chose not to record only where that gap limits a conclusion. If a GUIDE vs ACTUAL block is present, for each batch that is off the guide say in one or two sentences what might be wrong — the most likely cause the RECORDS FOR THE SAME WEEKS support (quote the week and figure, e.g. low water per bird, a feed change, high house temperature, a cause or level where deaths cluster), and what to check to confirm it. Say "possibly" — these are suggestions from the records, not a diagnosis — and say when the records are too thin to tell. End with "Recommended actions:" as a short bulleted list. Keep the ENTIRE response under 450 words — be concise enough to finish completely rather than running long and getting cut off.`;
 
-    const content = await this.callClaude(prompt, 1100);
+    const content = await this.callClaude(prompt, 1300);
     if (!content) return null;
 
     // ── Save and notify ───────────────────────────────────────────────────────
@@ -876,7 +879,8 @@ Format: one-sentence overall summary, then short paragraphs covering production,
       }),
     ]);
 
-    if (healthEvents.length === 0 && flockEntries.length === 0) {
+    const productionDeaths = await this.prisma.productionCageMortalityLog.count({ where: { logDate: { gte: since } } });
+    if (healthEvents.length === 0 && flockEntries.length === 0 && productionDeaths === 0) {
       this.logger.log('AI-04: No health data to analyse');
       return;
     }
@@ -904,6 +908,22 @@ Format: one-sentence overall summary, then short paragraphs covering production,
       .map((e: any) => `${dayjs(e.entryDate).format('D MMM')}: ${e.mortalityCount} deaths (cause: ${e.mortalityCause ?? 'unknown'})`)
       .join('\n');
 
+    // Production-house deaths are recorded per row · level with a cause.
+    const levelDeaths = await this.prisma.productionCageMortalityLog.groupBy({
+      by: ['batchId', 'cageId', 'cause'], where: { logDate: { gte: since } }, _sum: { count: true },
+    });
+    const unitLabels = new Map((await this.prisma.productionCage.findMany({
+      where: { id: { in: [...new Set(levelDeaths.map(d => d.cageId))] } }, select: { id: true, label: true, block: { select: { code: true } } },
+    })).map(u => [u.id, `${u.block.code === 'BLK2' ? 'Block 2' : 'Block 1'} ${u.label}`]));
+    const levelDeathSummary = levelDeaths
+      .sort((a, b) => (b._sum.count ?? 0) - (a._sum.count ?? 0)).slice(0, 15)
+      .map(d => `${unitLabels.get(d.cageId) ?? 'unknown place'}: ${d._sum.count} dead (cause: ${d.cause ?? 'not given'})`)
+      .join('\n');
+    const activeIds = (await this.prisma.batch.findMany({
+      where: { isActive: true, deletedAt: null }, select: { id: true },
+    })).map(b => b.id);
+    const diagnosisBlock = await this.guideDiagnosis.batchesBlock(activeIds, 4);
+
     const prompt = `You are a poultry health expert. Analyse the last 90 days of health data from Anza Whole Foods farm in Kenya and identify any concerning patterns. Be specific and practical.
 
 HEALTH EVENTS (${healthEvents.length} total):
@@ -912,12 +932,15 @@ ${eventSummary || 'None recorded'}
 HIGH MORTALITY DAYS (>5 birds):
 ${mortalitySummary || 'None recorded'}
 
-VACCINATIONS: ${vaccinations.length} vaccination records in period
+PRODUCTION-HOUSE DEATHS BY ROW · LEVEL AND CAUSE (top 15):
+${levelDeathSummary || 'None recorded'}
 
-Identify: (1) any recurring disease patterns, (2) correlation between health events and mortality spikes, (3) any vaccination gaps. 
+VACCINATIONS: ${vaccinations.length} vaccination records in period
+${diagnosisBlock ? `\n${diagnosisBlock}\n` : ''}
+Identify: (1) any recurring disease patterns, (2) correlation between health events and mortality spikes, (3) any vaccination gaps, (4) where mortality or production is off the breed guide, what in the records might explain it (deaths clustering on one level or with one cause, water/feed/temperature changes in the same weeks) — say "possibly" and what to check.
 Write 2-3 short paragraphs. If no concerning patterns exist, say so clearly. End with 1-2 specific preventive recommendations. Be concise.`;
 
-    const content = await this.callClaude(prompt, 500);
+    const content = await this.callClaude(prompt, 650);
     if (!content) return;
 
     const hasPattern = !content.toLowerCase().includes('no concerning') &&
@@ -1015,10 +1038,11 @@ AVG HDP (last ${last14Days.length} fully-recorded day(s), AM+PM combined): ${avg
 FCR: ${fcr} kg feed per egg
 PLACEMENT DATE: ${dayjs(batch.dateReceived).format('D MMM YYYY')}
 ${await this.standardsContext([batch.id])}
+${await this.guideDiagnosis.batchesBlock([batch.id], 4)}
 
-Based on this data, provide: (1) whether this batch should be closed now, in 4-8 weeks, or continue beyond 8 weeks, with reasoning, (2) the key metric that will signal when to close (HDP threshold or age milestone), (3) one operational note for the manager. Keep response to 3 short paragraphs. Be direct and specific.`;
+Based on this data, provide: (1) whether this batch should be closed now, in 4-8 weeks, or continue beyond 8 weeks, with reasoning — if production is below the guide, say whether the records suggest a fixable cause (e.g. water, feed, heat, disease) before recommending closure, (2) the key metric that will signal when to close (HDP threshold or age milestone), (3) one operational note for the manager. Keep response to 3 short paragraphs. Be direct and specific.`;
 
-      const content = await this.callClaude(prompt, 450);
+      const content = await this.callClaude(prompt, 550);
       if (!content) continue;
 
       const report = await this.prisma.aiReport.create({
@@ -1123,6 +1147,7 @@ Based on this data, provide: (1) whether this batch should be closed now, in 4-8
     const overallFcr  = totalEggs > 0 ? (totalFeedKg / totalEggs).toFixed(3) : 'N/A';
 
     const standardsBlock = await this.standardsContext(ready.readyBatchIds);
+    const diagnosisBlock = await this.guideDiagnosis.batchesBlock(ready.readyBatchIds, 4);
     const prompt = `You are a poultry farm improvement advisor for Anza Whole Foods, a commercial egg farm in Kenya. Review the last 30 days of operational data and provide 3-5 specific, actionable improvement suggestions.
 
 PRODUCTION SUMMARY (last 30 days):
@@ -1135,7 +1160,7 @@ PRODUCTION SUMMARY (last 30 days):
 - Eggs collected: ${totalEggs.toLocaleString()}
 - Data completeness: egg collection ${completeness.eggCollection.pending} pending / ${completeness.eggCollection.returned} returned; flock entries ${completeness.flockEntries.pending} pending / ${completeness.flockEntries.returned} returned; feed logs ${completeness.feedLogs.pending} pending / ${completeness.feedLogs.returned} returned; tally sign-off ${completeness.tallySignOff.fullySigned}/${completeness.tallySignOff.total} fully completed by Manager, Sales and Store
 
-${standardsBlock ? `${standardsBlock}\n\n` : ''}Provide 3-5 improvement suggestions. Where the breed-guide benchmark shows a batch off standard, or a practice outside the guide, base a suggestion on it (and on what earlier batches of the same breed showed). Each should be: (a) specific to the data above, not generic advice, (b) actionable in the next 2 weeks, (c) one sentence of context + one sentence of recommended action. Where the data shows a role consistently lagging on approvals or sign-offs, include that as one of the suggestions. Format as a numbered list. Do not include suggestions where the data shows no issue. Keep the ENTIRE response under 350 words — be concise enough to finish completely rather than running long and getting cut off.`;
+${standardsBlock ? `${standardsBlock}\n\n` : ''}${diagnosisBlock ? `${diagnosisBlock}\n\n` : ''}Provide 3-5 improvement suggestions. Where the breed-guide benchmark shows a batch off standard, or a practice outside the guide, base a suggestion on it (and on what earlier batches of the same breed showed). Where a GUIDE vs ACTUAL block is present, aim each such suggestion at the most likely cause the records for those weeks support (quote the week and figure) rather than at the symptom, and say "possibly" where the records only hint at it. Each should be: (a) specific to the data above, not generic advice, (b) actionable in the next 2 weeks, (c) one sentence of context + one sentence of recommended action. Where the data shows a role consistently lagging on approvals or sign-offs, include that as one of the suggestions. Format as a numbered list. Do not include suggestions where the data shows no issue. Keep the ENTIRE response under 350 words — be concise enough to finish completely rather than running long and getting cut off.`;
 
     const content = await this.callClaude(prompt, 750);
     if (!content) return;
@@ -1529,6 +1554,13 @@ ${standardsBlock ? `${standardsBlock}\n\n` : ''}Provide 3-5 improvement suggesti
       }),
     ]);
 
+    // Production-stage deaths recorded at egg collection (per level since
+    // records went per row · level). Brooder logs don't cover this stage.
+    const sessionMortality = (await this.prisma.eggCollectionSession.aggregate({
+      where: { batchId, deletedAt: null, status: EntryStatus.APPROVED },
+      _sum: { mortalities: true },
+    }))._sum.mortalities ?? 0;
+
     const storeDiscrepancies = allSessionIds.length
       ? await this.prisma.storeEggIntake.count({
           where: { sessionId: { in: allSessionIds.map(s => s.id) }, hasDiscrepancy: true },
@@ -1595,7 +1627,7 @@ ${standardsBlock ? `${standardsBlock}\n\n` : ''}Provide 3-5 improvement suggesti
     // covers the brooder-stage tables and has no source at all for
     // production-stage mortality, so once a report exists it is materially
     // more complete, not merely a duplicate of the same numbers.
-    const totalMortality = hasProductionReport ? prMetrics!.totalMortality : bd.mortality.total;
+    const totalMortality = hasProductionReport ? prMetrics!.totalMortality : bd.mortality.total + sessionMortality;
     const totalCulling = hasProductionReport ? prMetrics!.totalCulling : bd.mortality.culling;
     const cumulativeMortalityPct = batch.quantityReceived > 0 ? (totalMortality / batch.quantityReceived) * 100 : 0;
     // The ceiling itself is a fixed HyLine control-standard constant for the
@@ -1625,7 +1657,7 @@ BROODER ENVIRONMENT: ${bd.environment.logCount} log(s) recorded out of a rough e
       ? ` Cross-check from the uploaded production report: avg temperature ${prMetrics!.avgTemperature != null ? `${prMetrics!.avgTemperature.toFixed(1)}°C` : 'not recorded'}, avg humidity ${prMetrics!.avgHumidity != null ? `${prMetrics!.avgHumidity.toFixed(1)}%` : 'not recorded'} across ${prMetrics!.rowCount} report day(s) — note any material difference from the system logs above.`
       : ''}
 FEED (source: ${feedDataSource === 'production_report' ? 'uploaded production report, whole-batch lifecycle' : 'system FeedIntakeLog, production-house only'}): ${totalFeedKg > 0 ? `${totalFeedKg.toFixed(1)} kg total dispensed${feedDataSource === 'production_report' ? ` across ${prMetrics!.rowCount} report day(s)` : ''}.` : 'no feed data recorded for this batch.'}${feedDataSource === 'system' && bd.feed.entryCount > 0 ? ` (Brooder-stage feed alone, from system logs: ${bd.feed.totalDispensedKg.toFixed(1)} kg across ${bd.feed.entryCount} logged feeding(s), already excluded from the production-house figure above.)` : ''}${hasProductionReport && prMetrics!.avgWaterLts != null ? ` Water: avg ${prMetrics!.avgWaterLts.toFixed(1)} L/day from the production report.` : ''}
-MORTALITY/CULLING (source: ${mortalityDataSource === 'production_report' ? 'uploaded production report, whole-batch lifecycle' : 'system brooder logs only — no production-stage mortality source exists for this batch'}): ${totalMortality} death(s), ${totalCulling} culled. Cumulative mortality ${cumulativeMortalityPct.toFixed(2)}%${mortalityCeilingPct != null ? ` vs the HyLine control-standard ceiling of ${mortalityCeilingPct.toFixed(2)}% for week ${ageWeeks} — ${mortalityOverCeiling ? 'THIS BATCH IS OVER THE CEILING, flag it clearly' : 'within the expected ceiling'}.` : ' (no matching control-standard week found to compare against).'}${bd.mortality.byCause.length ? ` Causes recorded in system logs (brooder-stage only, may be incomplete relative to the total above): ${bd.mortality.byCause.map(c => `${c.cause} (${c.count})`).join(', ')}.` : ''}
+MORTALITY/CULLING (source: ${mortalityDataSource === 'production_report' ? 'uploaded production report, whole-batch lifecycle' : `system brooder logs (${bd.mortality.total}) + approved egg-collection sessions in the production house (${sessionMortality})`}): ${totalMortality} death(s), ${totalCulling} culled. Cumulative mortality ${cumulativeMortalityPct.toFixed(2)}%${mortalityCeilingPct != null ? ` vs the HyLine control-standard ceiling of ${mortalityCeilingPct.toFixed(2)}% for week ${ageWeeks} — ${mortalityOverCeiling ? 'THIS BATCH IS OVER THE CEILING, flag it clearly' : 'within the expected ceiling'}.` : ' (no matching control-standard week found to compare against).'}${bd.mortality.byCause.length ? ` Causes recorded in system logs (brooder-stage only, may be incomplete relative to the total above): ${bd.mortality.byCause.map(c => `${c.cause} (${c.count})`).join(', ')}.` : ''}
 BIRD WEIGHT (source: ${weightSource === 'production_report' ? 'uploaded production report' : weightSource === 'system' ? 'system weight sample' : 'none'}): ${weightValueG != null ? `latest reading ${weightDateLabel}: average ${weightValueG}g${weightSource === 'system' && bd.weight ? ` from ${bd.weight.sampleCount} bird(s) sampled` : ''}.${weightSource === 'system' && bd.weight?.expectedMinG != null ? ` Expected band for that age: ${bd.weight.expectedMinG}–${bd.weight.expectedMaxG}g — this batch is ${bd.weight!.status.replace('_', ' ')}.` : weightSource === 'production_report' ? ' (No age-matched HyLine band comparison shown — this reading came from the production report rather than a dated system weight sample.)' : ''}` : 'no weight samples recorded for this batch.'}
 VACCINATION: ${bd.vaccination.given.length} record(s) administered${bd.vaccination.given.length ? ` (${bd.vaccination.given.map(v => v.name).join(', ')})` : ''}.${bd.vaccination.missed.length ? ` GAP: ${bd.vaccination.missed.length} vaccine(s) due by this age were not found in the records — ${bd.vaccination.missed.map(m => `${m.name} (due wk ${m.dueAtWeek})`).join(', ')}. Flag this clearly.` : ' No overdue vaccines found against the active schedule.'}
 HEALTH EVENTS: ${bd.health.totalEvents} total logged, ${bd.health.unresolved.length} UNRESOLVED.${bd.health.unresolved.length ? ` Unresolved: ${bd.health.unresolved.map(e => `${e.type} on ${dayjs(e.date).format('D MMM')} affecting ${e.affected} bird(s)${e.symptoms ? ` (symptoms: ${e.symptoms})` : ''}`).join('; ')}.` : ''}
@@ -1640,6 +1672,10 @@ BROODER LOCATION: ${bd.levelsOccupied.length ? bd.levelsOccupied.join(', ') : 'n
     // implications), practices outside the guide, deviations, lessons from
     // earlier batches of the same breed. Empty for batches with no guide.
     const standardsSection = await this.compliance.buildAiContext(batch.id).catch(() => null) ?? '';
+    // Week-by-week guide vs actual plus the records around it, so the report
+    // can suggest what might be causing a gap (or, with no guide, compare the
+    // batch against its own earlier weeks).
+    const diagnosisSection = await this.guideDiagnosis.batchBlock(batch.id, 8);
     const prompt = `You are a commercial poultry expert producing a FULL-SCALE, detailed report for the Director of Anza Whole Foods farm in Kenya, reviewing every data point collected for one specific batch. Plain English, specific numbers, no jargon — but do not shorten this into a summary. Go through EVERY section below individually. If a figure has no data, say so plainly and treat that itself as a gap worth flagging, rather than skipping it.
 
 BATCH: ${batch.batchCode} (${batch.birdType}, ${batch.strain}) in ${batch.house.name}
@@ -1650,6 +1686,7 @@ BIRDS: started with ${batch.quantityReceived.toLocaleString()}, currently ${batc
 EGG PRODUCTION (source: system — production reports do not carry egg-count data): ${totalEggs > 0 ? `${totalEggs.toLocaleString()} eggs across ${dailyHdp.length} fully-recorded day(s)` : 'no egg collection data recorded for this batch'}${avgHdp != null ? `, average daily HDP (AM+PM combined) ${avgHdp.toFixed(1)}%` : ''}${fcr ? `. FCR ${fcr} kg feed per egg (using the feed figure below).` : ''}
 ${brooderSection}
 ${standardsSection}
+${diagnosisSection}
 DATA COMPLETENESS (egg/feed/flock approval workflow): ${completenessFlags
       ? `${eggPending} egg session(s) pending approval, ${eggReturned} returned for correction; ${feedPending} feed log(s) pending, ${feedReturned} returned; ${flockPending} flock entry pending, ${flockReturned} returned; ${storeDiscrepancies} store-intake discrepancy flag(s) raised.`
       : 'all egg, feed and flock entries for this batch are fully approved with no outstanding store discrepancies.'}${hasProductionReport && prMetrics!.openDiscrepancies > 0 ? ` Additionally, the uploaded production report has ${prMetrics!.openDiscrepancies} open discrepancy(ies) awaiting Director review.` : ''}
@@ -1660,7 +1697,7 @@ Write a full-scale report with these named sections, covering every data point a
 3. **Growth & Nutrition** — feed adherence and bird weight vs the expected band
 4. **Environmental Conditions** — brooder temperature/humidity/lighting and logging completeness
 5. **Vaccination & Health Events** — coverage gaps, unresolved health events, treatments given
-${standardsSection ? `5b. **Breed Guide Benchmark** — performance against the breed guide edition named above: what is on standard, what is off and for how long, the likely effect of any farm practice that differs from the guide, and what earlier batches of this breed suggest. Mention parameters the farm does not record only where their absence limits a conclusion.\n` : ''}6. **Data Gaps & Issues** — an explicit list of every gap, anomaly, or missing data point found across all sections above (this section is mandatory even if the answer is "no significant gaps found")
+${standardsSection ? `5b. **Breed Guide Benchmark** — performance against the breed guide edition named above: what is on standard, what is off and for how long, the likely effect of any farm practice that differs from the guide, and what earlier batches of this breed suggest. Mention parameters the farm does not record only where their absence limits a conclusion.\n` : ''}${diagnosisSection ? `5c. **Guide vs Actual — What Might Be Wrong** — go area by area (production, mortality, growth, feed & water, egg quality) using the GUIDE vs ACTUAL weeks above${standardsSection ? '' : ' (there is no breed guide: compare the batch against its own earlier weeks and say the comparison is weaker)'}. For each area that is off: (a) the gap in numbers and since which week, (b) the most likely causes, ranked, each tied to a specific record from RECORDS FOR THE SAME WEEKS (week + figure — e.g. water per bird falling, house temperature, a feed change, deaths clustering on one level or with one cause, a health event, a missed vaccination), (c) common causes the records do NOT support, (d) what the Manager should check on the farm to confirm, and (e) the fix. Use "possibly" / "likely" — this is a suggestion from the records, not a diagnosis — and say plainly when missing records stop you from telling. For areas on the guide, one line is enough.\n` : ''}6. **Data Gaps & Issues** — an explicit list of every gap, anomaly, or missing data point found across all sections above (this section is mandatory even if the answer is "no significant gaps found")
 7. **Recommendations** — ${batch.isActive ? '3-5 specific, actionable next steps' : 'a closing assessment of how this batch performed overall plus lessons for future batches'}
 
 This is meant to be read carefully by the Director, not skimmed — be thorough rather than brief. There is no strict word limit, but keep every sentence carrying real information (no filler).`;
@@ -1672,7 +1709,7 @@ This is meant to be read carefully by the Director, not skimmed — be thorough 
       || this.config.get<string>('ANTHROPIC_MODEL')
       || 'claude-sonnet-4-6';
 
-    const content = await this.callClaude(prompt, 4000, batchReportModel);
+    const content = await this.callClaude(prompt, 5000, batchReportModel);
     if (!content) {
       throw new BadRequestException('The AI service did not return a report. Please try again in a moment.');
     }
