@@ -232,12 +232,18 @@ export class CageMapService {
 
     const byRowCode = new Map(assignments.map(a => [(a as any).row?.rowCode, a]));
 
-    let changed = false;
+    // Sessions are recorded per row · level — a row's birds are its levels' sum.
+    const birdsByRow = new Map<string, number>();
     for (const entry of rowData) {
-      const totalBirds = Number(entry?.totalBirds);
-      if (!entry?.rowCode || !Number.isFinite(totalBirds) || totalBirds < 0) continue;
+      const birds = Number(entry?.totalBirds);
+      if (!entry?.rowCode || !Number.isFinite(birds) || birds < 0) continue;
+      const code = entry.rowCode.toUpperCase();
+      birdsByRow.set(code, (birdsByRow.get(code) ?? 0) + birds);
+    }
 
-      const match = byRowCode.get(entry.rowCode.toUpperCase());
+    let changed = false;
+    for (const [rowCode, totalBirds] of birdsByRow) {
+      const match = byRowCode.get(rowCode);
       if (!match || match.birdCount === totalBirds) continue;
 
       await this.prisma.batchCageAssignment.update({

@@ -44,6 +44,8 @@ import { ProductionCageService, houseCodeForSessionBlock } from './production-ca
 
 interface RowDataEntry {
   rowCode: string;
+  /** 1 = bottom … 4 = top; absent on sessions recorded per row. */
+  level?: number;
   totalBirds: number;
   totalEggs: number;
   starterEggs: number;

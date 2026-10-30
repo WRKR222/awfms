@@ -37,7 +37,8 @@ import { LAYER_FEED_TYPES } from '../../lib/feedTypes';
 import dayjs from '../../lib/dayjs';
 import { ProductionCageMap, type PickedCage } from '../../components/shared/ProductionCageMap';
 import { ProductionCageReassignPanel } from '../../components/shared/ProductionCageReassignPanel';
-import { useHouseMap, type HouseCode } from '../../hooks/useProductionHouses';
+import { levelCode, levelLabel, useHouseMap, type HouseCode } from '../../hooks/useProductionHouses';
+import { PRODUCTION_LEVELS_TOP_DOWN, PRODUCTION_ROWS, PRODUCTION_UNITS } from '../../lib/rowLevel';
 
 const inputCls  = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2.5 text-base bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
 const numInput  = 'w-full text-center border border-gray-200 dark:border-dark-border rounded-lg px-1 py-2 text-sm bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-green';
@@ -52,11 +53,12 @@ function eggsToTrays(eggs: number): string {
   return `${trays} trays + ${remainder} eggs`;
 }
 
-const UNIT_LETTERS = ['A', 'B', 'C'] as const;
-type UnitLetter = typeof UNIT_LETTERS[number];
+const UNIT_LETTERS = PRODUCTION_UNITS;
 
+/** One entry per row · level — eggs and their data are recorded per level. */
 interface RowEntry {
   rowCode: string;
+  level: number;
   totalBirds: number;
   totalEggs: number;
   starterEggs: number;
@@ -100,20 +102,32 @@ interface MortalityEntry {
 }
 const birdsOf = (m: MortalityEntry) => m.batches.find(b => b.batchId === m.batchId)?.birdCount ?? 0;
 
+const emptyEntry = (rowCode: string, level: number): RowEntry => ({
+  rowCode, level,
+  totalBirds: 0, totalEggs: 0, starterEggs: 0,
+  broken: 0, damaged: 0,
+  softShell: 0, deformed: 0,
+  weightKg: 0, attendantName: '',
+});
+
+/** Rows A1 … C2, each with its levels top to bottom (same order as the map). */
 function buildDefaultBlock(): { rows: RowEntry[] } {
-  const rows: RowEntry[] = [];
-  for (const letter of UNIT_LETTERS) {
-    for (const rowNum of [1, 2]) {
-      rows.push({
-        rowCode: `${letter}${rowNum}`,
-        totalBirds: 0, totalEggs: 0, starterEggs: 0,
-        broken: 0, damaged: 0,
-        softShell: 0, deformed: 0,
-        weightKg: 0, attendantName: '',
-      });
-    }
+  return { rows: PRODUCTION_ROWS.flatMap(rowCode => PRODUCTION_LEVELS_TOP_DOWN.map(level => emptyEntry(rowCode, level))) };
+}
+
+/** Puts a returned session's rowData onto the per-level form. Entries saved
+ *  per row (before levels) land on that row's top level, flagged so the
+ *  attendant spreads them over the right levels before resubmitting. */
+function rowsFromSession(saved: any[]): { rows: RowEntry[]; movedFromRows: boolean } {
+  const rows = buildDefaultBlock().rows;
+  let movedFromRows = false;
+  for (const e of saved ?? []) {
+    const level = Number(e?.level) || PRODUCTION_LEVELS_TOP_DOWN[0];
+    if (!e?.level) movedFromRows = true;
+    const i = rows.findIndex(r => r.rowCode === e?.rowCode && r.level === level);
+    if (i >= 0) rows[i] = { ...rows[i], ...e, level };
   }
-  return { rows };
+  return { rows, movedFromRows };
 }
 
 // ── Page Mode ──────────────────────────────────────────────────────────────────
@@ -332,6 +346,7 @@ export function EggCollectionPage() {
   const [selectedBlock, setSelectedBlock] = useState<BlockKey>('BLOCK1');
   const [blockChosenByUser, setBlockChosenByUser] = useState(false);
   const [rows, setRows] = useState<RowEntry[]>(() => buildDefaultBlock().rows);
+  const [rowsMovedToTopLevel, setRowsMovedToTopLevel] = useState(false);
   const [vaccines, setVaccines] = useState<VaccineEntry[]>([]);
   const [mortalityEntries, setMortalityEntries] = useState<MortalityEntry[]>([]);
   const [pickingCage, setPickingCage] = useState(false);
@@ -389,6 +404,7 @@ export function EggCollectionPage() {
   // Switching block starts a clean form — nothing carries over between houses.
   useEffect(() => {
     setRows(buildDefaultBlock().rows);
+    setRowsMovedToTopLevel(false);
     setVaccines([]);
     setMortalityEntries([]);
     setFeedLines([{ feedType: '', kg: '' }]);
@@ -435,7 +451,9 @@ export function EggCollectionPage() {
   useEffect(() => {
     const returned = pageMode === 'AM_RETURNED' ? amSession : (pageMode === 'PM_RETURNED' ? pmSession : null);
     if (!returned?.rowData) return;
-    setRows(returned.rowData);
+    const restored = rowsFromSession(returned.rowData);
+    setRows(restored.rows);
+    setRowsMovedToTopLevel(restored.movedFromRows);
     if (returned.batchId) setValue('batchId', returned.batchId);
     if (Array.isArray(returned.mortalityCagesJson)) {
       setMortalityEntries(returned.mortalityCagesJson.map((m: any) => ({
@@ -501,6 +519,20 @@ export function EggCollectionPage() {
       return next;
     });
   }
+
+  /** The attendant on a row covers all of its levels. */
+  function setRowAttendant(rowCode: string, name: string) {
+    setRows(prev => prev.map(r => (r.rowCode === rowCode ? { ...r, attendantName: name } : r)));
+  }
+
+  // Birds per level come from the production map (all batches on the level);
+  // only empty entries are filled so nothing the attendant typed is replaced.
+  const levelBirds = (rowCode: string, level: number) =>
+    houseMap?.levels.find(l => l.code === levelCode(selectedHouse, rowCode, level))?.birds ?? 0;
+  useEffect(() => {
+    if (!houseMap || houseMap.block.code !== selectedHouse) return;
+    setRows(prev => prev.map(r => (Number(r.totalBirds) > 0 ? r : { ...r, totalBirds: levelBirds(r.rowCode, r.level) })));
+  }, [houseMap, selectedHouse]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function addMortalityCage(unit: PickedCage) {
     setPickingCage(false);
@@ -586,6 +618,7 @@ export function EggCollectionPage() {
         block: selectedBlock,
         rowData: allRows.map(r => ({
           rowCode: r.rowCode,
+          level: r.level,
           totalBirds: Number(r.totalBirds),
           totalEggs: Number(r.totalEggs),
           starterEggs: Number(r.starterEggs),
@@ -853,16 +886,22 @@ export function EggCollectionPage() {
           <p className="text-[11px] text-gray-400 mt-1">Level counts drop once the Production Manager verifies this session.</p>
         </div>
 
-        {/* ── Unit rows for the selected block ── */}
+        {/* ── Rows × levels for the selected block ── */}
         <div className={cardCls}>
-          <p className="font-bold text-gray-800 dark:text-gray-100 mb-4">
-            {blockLabel} — Units A, B, C
+          <p className="font-bold text-gray-800 dark:text-gray-100">
+            {blockLabel} — Units A, B, C · per row, per level
           </p>
+          <p className="text-[11px] text-gray-400 mb-4">
+            Record each level of every row (Level 4 is the top). Birds are filled in from the {blockLabel} map — change them if the count differs.
+          </p>
+          {rowsMovedToTopLevel && (
+            <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 rounded-lg p-2 mb-3">
+              This session was first recorded per row, so each row's figures were put on its top level. Spread them over the right levels before resubmitting.
+            </p>
+          )}
           {UNIT_LETTERS.map(letter => {
-            const rowIdxOffset = UNIT_LETTERS.indexOf(letter) * 2;
-            const row1 = rows[rowIdxOffset];
-            const row2 = rows[rowIdxOffset + 1];
-            const unitEggs = Number(row1?.totalEggs ?? 0) + Number(row2?.totalEggs ?? 0);
+            const unitRows = rows.filter(r => r.rowCode.startsWith(letter));
+            const unitEggs = unitRows.reduce((s, r) => s + Number(r.totalEggs ?? 0), 0);
             return (
               <div
                 key={letter}
@@ -878,49 +917,57 @@ export function EggCollectionPage() {
                     </span>
                   )}
                 </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs min-w-[640px]">
-                    <thead>
-                      <tr>
-                        {[
-                          'Row', 'Total Birds', 'Total Eggs', 'Starter Eggs',
-                          'Broken', 'Damaged',
-                          'Soft Shell', 'Deformed', 'kg', 'Attendant',
-                        ].map(h => (
-                          <th key={h} className="text-center text-gray-400 font-medium pb-1.5 px-1">
-                            {h}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[0, 1].map(offset => {
-                        const rowIdx = rowIdxOffset + offset;
-                        const row = rows[rowIdx];
-                        return (
-                          <tr key={row.rowCode}>
-                            <td className="px-1 py-1">
-                              <div className="flex items-center justify-center">
-                                <span className="text-xs font-bold text-brand-green bg-brand-green/10 rounded-lg px-2 py-1">
-                                  {row.rowCode}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.totalBirds || ''} onChange={e => updateRow(rowIdx, 'totalBirds', e.target.value)} className={numInput} placeholder="0" /></td>
-                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.totalEggs || ''} onChange={e => updateRow(rowIdx, 'totalEggs', e.target.value)} className={numInput} placeholder="0" /></td>
-                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.starterEggs || ''} onChange={e => updateRow(rowIdx, 'starterEggs', e.target.value)} className={numInput} placeholder="0" /></td>
-                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.broken || ''} onChange={e => updateRow(rowIdx, 'broken', e.target.value)} className={numInput} placeholder="0" /></td>
-                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.damaged || ''} onChange={e => updateRow(rowIdx, 'damaged', e.target.value)} className={numInput} placeholder="0" /></td>
-                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.softShell || ''} onChange={e => updateRow(rowIdx, 'softShell', e.target.value)} className={numInput} placeholder="0" /></td>
-                            <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.deformed || ''} onChange={e => updateRow(rowIdx, 'deformed', e.target.value)} className={numInput} placeholder="0" /></td>
-                            <td className="px-1 py-1"><input type="number" min="0" step="0.1" inputMode="decimal" value={row.weightKg || ''} onChange={e => updateRow(rowIdx, 'weightKg', e.target.value)} className={numInput} placeholder="0" /></td>
-                            <td className="px-1 py-1"><input type="text" value={row.attendantName} onChange={e => updateRow(rowIdx, 'attendantName', e.target.value)} placeholder="Name" className={`${numInput} text-left px-2`} /></td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                {[`${letter}1`, `${letter}2`].map(rowCode => {
+                  const levelRows = rows
+                    .map((row, idx) => ({ row, idx }))
+                    .filter(x => x.row.rowCode === rowCode);
+                  const rowEggs = levelRows.reduce((s, x) => s + Number(x.row.totalEggs ?? 0), 0);
+                  return (
+                    <div key={rowCode} className="mb-3 rounded-xl border border-gray-100 dark:border-dark-border p-2">
+                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                        <span className="text-xs font-bold text-brand-green bg-brand-green/10 rounded-lg px-2 py-1">Row {rowCode}</span>
+                        {rowEggs > 0 && <span className="text-[11px] text-gray-500">{rowEggs} eggs · {eggsToTrays(rowEggs)}</span>}
+                        <input type="text" value={levelRows[0]?.row.attendantName ?? ''}
+                          onChange={e => setRowAttendant(rowCode, e.target.value)}
+                          placeholder="Attendant on this row"
+                          className={`${numInput} text-left px-2 ml-auto max-w-[12rem]`} />
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs min-w-[640px]">
+                          <thead>
+                            <tr>
+                              {[
+                                'Level', 'Total Birds', 'Total Eggs', 'Starter Eggs',
+                                'Broken', 'Damaged', 'Soft Shell', 'Deformed', 'kg',
+                              ].map(h => (
+                                <th key={h} className="text-center text-gray-400 font-medium pb-1.5 px-1">
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {levelRows.map(({ row, idx: rowIdx }) => (
+                              <tr key={`${row.rowCode}-${row.level}`}>
+                                <td className="px-1 py-1 text-center whitespace-nowrap font-semibold text-gray-600 dark:text-gray-300">
+                                  {levelLabel(row.level)}
+                                </td>
+                                <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.totalBirds || ''} onChange={e => updateRow(rowIdx, 'totalBirds', e.target.value)} className={numInput} placeholder="0" /></td>
+                                <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.totalEggs || ''} onChange={e => updateRow(rowIdx, 'totalEggs', e.target.value)} className={numInput} placeholder="0" /></td>
+                                <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.starterEggs || ''} onChange={e => updateRow(rowIdx, 'starterEggs', e.target.value)} className={numInput} placeholder="0" /></td>
+                                <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.broken || ''} onChange={e => updateRow(rowIdx, 'broken', e.target.value)} className={numInput} placeholder="0" /></td>
+                                <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.damaged || ''} onChange={e => updateRow(rowIdx, 'damaged', e.target.value)} className={numInput} placeholder="0" /></td>
+                                <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.softShell || ''} onChange={e => updateRow(rowIdx, 'softShell', e.target.value)} className={numInput} placeholder="0" /></td>
+                                <td className="px-1 py-1"><input type="number" min="0" inputMode="numeric" value={row.deformed || ''} onChange={e => updateRow(rowIdx, 'deformed', e.target.value)} className={numInput} placeholder="0" /></td>
+                                <td className="px-1 py-1"><input type="number" min="0" step="0.1" inputMode="decimal" value={row.weightKg || ''} onChange={e => updateRow(rowIdx, 'weightKg', e.target.value)} className={numInput} placeholder="0" /></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             );
           })}

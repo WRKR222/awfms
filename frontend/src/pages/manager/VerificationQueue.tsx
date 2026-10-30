@@ -17,6 +17,7 @@ import {
 import { usePendingEntries, useVerifyEntry } from '../../hooks/useFlock';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
+import { rowLevelLabel } from '../../lib/rowLevel';
 import dayjs from '../../lib/dayjs';
 
 // ─── Shared helpers ────────────────────────────────────────────────────────────
@@ -441,7 +442,7 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
           const allStarterOnly = _s > 0 && (session.totalEggs ?? (session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalDamaged ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0))) === _nonStd;
           return (
         <div className="grid grid-cols-3 md:grid-cols-4 gap-2">
-          <StatPill label="Total Eggs" value={(session.totalGoodEggs + (session.totalBrokenEggs ?? 0) + (session.totalDamaged ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0)).toLocaleString()} accent="green" />
+          <StatPill label="Total Eggs" value={(session.totalGoodEggs + (session.totalStarterEggs ?? 0) + (session.totalBrokenEggs ?? 0) + (session.totalDamaged ?? 0) + (session.totalSoftShell ?? 0) + (session.totalDeformed ?? 0)).toLocaleString()} accent="green" />
           {allStarterOnly
             ? <StatPill label="All Starter Eggs" value={(session.totalStarterEggs ?? 0).toLocaleString()} accent="blue"
                 tip="Only starter eggs were collected this session — these are the total good eggs" />
@@ -479,15 +480,15 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
         )}
       </div>
 
-      {/* Per-row breakdown */}
+      {/* Per row · level breakdown */}
       {rows.length > 0 && (
         <div>
-          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Per-Row Breakdown</p>
+          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Per Row · Level Breakdown</p>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-gray-400 border-b border-gray-100 dark:border-dark-border">
-                  <th className="text-left py-1.5 pr-3 font-medium">Row</th>
+                  <th className="text-left py-1.5 pr-3 font-medium">Row · Level</th>
                   <th className="text-right py-1.5 px-2 font-medium">Total Eggs</th>
                   <th className="text-right py-1.5 px-2 font-medium">Starter</th>
                   <th className="text-right py-1.5 px-2 font-medium">Broken</th>
@@ -504,7 +505,7 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
                   return (
                     <tr key={i} className="border-b border-gray-50 dark:border-dark-border/50">
                       <td className="py-1.5 pr-3">
-                        <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5">{row.rowCode}</span>
+                        <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5 whitespace-nowrap">{rowLevelLabel(row)}</span>
                       </td>
                       <td className="text-right px-2 font-semibold text-gray-700 dark:text-gray-200">{rowEggs}</td>
                       <td className="text-right px-2 text-blue-500">{row.starterEggs ?? 0}</td>
