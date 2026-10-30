@@ -79,6 +79,10 @@ arrangement only sets capacity — **records are kept per row · level.**
   Refused when the chosen house has no room; both full = no transfer.
 - Egg collection sessions carry `block` (`BLOCK1`/`BLOCK2`). Each block is
   recorded **once per shift per day** (eggs, feed, vaccines, mortalities).
+  `rowData` has one entry per row · level (`rowCode` + `level` 1–4, 24 per
+  block; birds pre-filled from the map); totals sum the entries. Older
+  sessions have per-row entries without `level` — read rows through
+  `rowLevelLabel()` (frontend) and sum per `rowCode` where a row total is needed.
   Mortalities are per level + batch (`mortalityCagesJson`, the batch is asked
   for when a level holds several) and hit the map + `Batch.currentBirdCount`
   only when the Manager approves.

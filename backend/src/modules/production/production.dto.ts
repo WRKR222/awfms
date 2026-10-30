@@ -15,8 +15,12 @@
 //     name, Store item link now optional too (same pattern as feed).
 import { z } from 'zod';
 
+// One entry per row · level (A1 level 4 … C2 level 1), matching how the
+// production houses are recorded. `level` is absent on sessions recorded
+// per row before that change.
 const RowDataEntrySchema = z.object({
   rowCode: z.string().min(1),                  // e.g. "A1", "B2", "C1"
+  level: z.number().int().min(1).max(4).optional(), // 1 = bottom … 4 = top
   totalBirds: z.number().int().min(0),
   totalEggs: z.number().int().min(0),
   starterEggs: z.number().int().min(0).default(0),
@@ -117,7 +121,10 @@ export const CreateEggCollectionSessionSchema = z.object({
     count: z.number().int().positive(),
     cause: z.string().optional(),
   })).default([]),
-  rowData: z.array(RowDataEntrySchema).min(1),
+  rowData: z.array(RowDataEntrySchema).min(1).refine(
+    rows => new Set(rows.map(r => `${r.rowCode.toUpperCase()}:${r.level ?? ''}`)).size === rows.length,
+    { message: 'Each row · level may only be entered once' },
+  ),
   sessionFeed: SessionFeedSchema,                    // required — bundled w/ submission
   environment: EnvironmentSchema,                    // required — bundled w/ submission
   vaccinesGiven: z.array(VaccineGivenSchema).default([]),

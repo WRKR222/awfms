@@ -16,10 +16,14 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../lib/api/client';
 import { useAuthStore } from '../../stores/auth.store';
 import { CheckCircle, Clock, Lock, AlertTriangle, Edit2, Save, X } from 'lucide-react';
+import { rowLevelLabel } from '../../lib/rowLevel';
 import dayjs from '../../lib/dayjs';
 
 interface RowData {
   rowCode: string;
+  /** 1 = bottom … 4 = top; absent on sessions recorded per row. */
+  level?: number;
+  totalBirds?: number;
   totalEggs: number;
   starterEggs: number;
   broken: number;
@@ -238,6 +242,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
     // Store all numeric fields as strings so inputs start empty-able
     setEditRows(originalRows.map(r => ({
       rowCode: r.rowCode,
+      level: r.level ?? '',
       totalEggs: String(r.totalEggs ?? 0),
       starterEggs: String(r.starterEggs ?? 0),
       broken: String(r.broken ?? 0),
@@ -254,9 +259,11 @@ function TallyCard({ tally }: { tally: TallySession }) {
     setEditRows(prev => prev.map((r, i) => i === idx ? { ...r, [field]: value } : r));
   };
 
-  // Convert string edit rows back to numbers for the API call
+  // Convert string edit rows back to numbers for the API call. Fields the
+  // tally doesn't edit (level, totalBirds, …) are kept from the original row.
   const buildRowDataForSave = () =>
-    editRows.map(r => ({
+    editRows.map((r, i) => ({
+      ...originalRows[i],
       rowCode: r.rowCode as string,
       totalEggs: Number(r.totalEggs) || 0,
       starterEggs: Number(r.starterEggs) || 0,
@@ -405,7 +412,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
       {originalRows.length > 0 && (
         <div className="px-4 py-3 border-b border-gray-100 dark:border-dark-border">
           <div className="flex items-center justify-between mb-2">
-            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Per-Row Breakdown (Block 1 Units)</p>
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Per Row · Level Breakdown</p>
             {isPM && !tally.isLocked && !isEditing && (
               <button onClick={startEdit} className="flex items-center gap-1 text-xs text-brand-green hover:text-green-700 font-semibold">
                 <Edit2 className="w-3 h-3" /> Edit Values
@@ -429,7 +436,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-gray-400 border-b border-gray-100 dark:border-dark-border">
-                    <th className="text-left py-1.5 pr-2 font-medium">Row</th>
+                    <th className="text-left py-1.5 pr-2 font-medium">Row · Level</th>
                     <th className="text-right py-1.5 px-1 font-medium">Total Eggs</th>
                     <th className="text-right py-1.5 px-1 font-medium">Starter</th>
                     <th className="text-right py-1.5 px-1 font-medium">Broken</th>
@@ -443,7 +450,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
                   {editRows.map((row, i) => (
                     <tr key={i} className="border-b border-gray-50 dark:border-dark-border/50">
                       <td className="py-1.5 pr-2">
-                        <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5">{row.rowCode as string}</span>
+                        <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5 whitespace-nowrap">{rowLevelLabel({ rowCode: row.rowCode as string, level: Number(row.level) || undefined })}</span>
                       </td>
                       {(['totalEggs', 'starterEggs', 'broken', 'damaged', 'softShell', 'deformed'] as const).map(field => (
                         <td key={field} className="px-1 py-1">
@@ -486,7 +493,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-gray-400 border-b border-gray-100 dark:border-dark-border">
-                    <th className="text-left py-1.5 pr-3 font-medium">Row</th>
+                    <th className="text-left py-1.5 pr-3 font-medium">Row · Level</th>
                     <th className="text-right py-1.5 px-2 font-medium">Total Eggs</th>
                     <th className="text-right py-1.5 px-2 font-medium">Starter</th>
                     <th className="text-right py-1.5 px-2 font-medium">Broken</th>
@@ -501,7 +508,7 @@ function TallyCard({ tally }: { tally: TallySession }) {
                   {originalRows.map((row, i) => (
                     <tr key={i} className="border-b border-gray-50 dark:border-dark-border/50">
                       <td className="py-1.5 pr-3">
-                        <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5">{row.rowCode}</span>
+                        <span className="font-bold text-brand-green bg-brand-green/10 rounded px-2 py-0.5 whitespace-nowrap">{rowLevelLabel(row)}</span>
                       </td>
                       <td className="text-right px-2 font-semibold text-gray-700 dark:text-gray-200">{row.totalEggs}</td>
                       <td className="text-right px-2 text-blue-500">{row.starterEggs ?? 0}</td>
