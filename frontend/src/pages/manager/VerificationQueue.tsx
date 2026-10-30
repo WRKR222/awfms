@@ -379,16 +379,16 @@ function EggSessionDetail({ session, allSessions, onApprove, onReturn, onCosign,
   return (
     <div className="border-t border-gray-100 dark:border-dark-border bg-gray-50/50 dark:bg-dark-bg/50 p-4 md:p-6 space-y-5">
 
-      {/* Per-cage mortalities — applied to the cage map on approval */}
+      {/* Per-level mortalities — applied to the production map on approval */}
       {Array.isArray(session.mortalityCagesJson) && session.mortalityCagesJson.length > 0 && (
         <div className="rounded-xl border border-red-100 dark:border-red-900/40 bg-red-50/60 dark:bg-red-900/10 p-3">
           <p className="text-xs font-semibold text-red-700 dark:text-red-400 mb-1.5">
-            Mortalities by cage ({session.mortalities}) {session.mortalitiesAppliedAt ? '· applied to cage map' : '· applied when approved'}
+            Mortalities by level ({session.mortalities}) {session.mortalitiesAppliedAt ? '· applied to the map' : '· applied when approved'}
           </p>
           <div className="space-y-0.5 text-xs text-gray-700 dark:text-gray-300">
             {session.mortalityCagesJson.map((m: any) => (
-              <div key={m.cageCode} className="flex justify-between gap-2">
-                <span>{m.cageLabel ?? m.cageCode}{m.cause ? ` — ${m.cause}` : ''}</span>
+              <div key={`${m.cageCode}:${m.batchId ?? ''}`} className="flex justify-between gap-2">
+                <span>{m.cageLabel ?? m.cageCode}{m.batchCode ? ` · ${m.batchCode}` : ''}{m.cause ? ` — ${m.cause}` : ''}</span>
                 <span className="font-semibold">{m.count}</span>
               </div>
             ))}

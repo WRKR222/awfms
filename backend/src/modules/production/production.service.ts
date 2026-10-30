@@ -264,7 +264,7 @@ export class ProductionService {
       }
     }
 
-    // Per-cage mortalities: each entry names the cage (code) a bird died in.
+    // Per-level mortalities: each entry names the level (code) a bird died on.
     // When given they must add up to the session's mortality total.
     const mortalityCages = await this.productionCages.resolveMortalityEntries(
       houseCode, (dto as any).mortalityCages ?? [],
@@ -273,7 +273,7 @@ export class ProductionService {
       const perCage = mortalityCages.reduce((sum, m) => sum + m.count, 0);
       if (perCage !== dto.mortalities) {
         throw new BadRequestException(
-          `Per-cage mortalities add up to ${perCage} but the mortality total is ${dto.mortalities}.`,
+          `Per-level mortalities add up to ${perCage} but the mortality total is ${dto.mortalities}.`,
         );
       }
     }
@@ -558,11 +558,11 @@ export class ProductionService {
       } catch (err) {
         this.logger.warn(`Cage map row-population sync failed for session ${id}: ${err}`);
       }
-      // Per-cage mortalities reach the production cage map only once verified.
+      // Per-level mortalities reach the production map only once verified.
       try {
         await this.productionCages.applySessionMortalities(session.id, user.id);
       } catch (err) {
-        this.logger.warn(`Per-cage mortality apply failed for session ${id}: ${err}`);
+        this.logger.warn(`Per-level mortality apply failed for session ${id}: ${err}`);
       }
 
       // FIX-1: Notify attendant that their session has been approved

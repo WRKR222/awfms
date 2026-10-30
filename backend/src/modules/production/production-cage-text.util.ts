@@ -1,7 +1,9 @@
 // src/modules/production/production-cage-text.util.ts
 //
-// Reads a production-house cage reassignment written in the attendant's own
-// words and turns it into operations the cage map can apply. No fixed
+// Reads a production-house reassignment written in the attendant's own
+// words and turns it into operations the map can apply. Records are kept per
+// row · level, so for levels the service uses the row and level and ignores
+// any cage / tier number (still parsed so old phrasing keeps working). No fixed
 // grammar — each clause is scanned for whatever it mentions, in any order:
 //
 //   "Moved 3 birds from A1 level 2 cage 17 into isolation cage 2 because they were limping"

@@ -137,10 +137,10 @@ export class BatchLifecycleService {
         await this.productionCages.releaseBatch(tx, batchId, user.id);
       }
 
-      // When moving to PRODUCTION, place the birds into empty cages of the
+      // When moving to PRODUCTION, place the birds into free space on the levels of the
       // chosen production house (Block 1 by default), optionally pinned per
       // row. The per-row BatchCageAssignment rollup is maintained from the
-      // cages. Partial transfers go through ProductionCageService.transferFromBrooder.
+      // levels. Partial transfers go through ProductionCageService.transferFromBrooder.
       if (newStage === BatchStage.PRODUCTION && rowPlacements?.length) {
         const code = (houseCode ?? 'BLK1').toUpperCase();
         if (!HOUSE_CODES.includes(code as any)) throw new BadRequestException('Unknown production house');

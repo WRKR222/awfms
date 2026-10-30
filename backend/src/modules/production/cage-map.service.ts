@@ -218,13 +218,13 @@ export class CageMapService {
     if (!Array.isArray(rowData) || rowData.length === 0) return;
 
     // Row codes repeat across production houses (A1 … C2 in both blocks), so
-    // only this session's block is considered. Rows tracked per cage are
-    // skipped — their headcount comes from the cages themselves (see
+    // only this session's block is considered. Rows tracked per level are
+    // skipped — their headcount comes from the levels themselves (see
     // ProductionCageService.recomputeRowRollups).
     const assignments = await this.prisma.batchCageAssignment.findMany({
       where: {
         batchId,
-        row: { section: { block: { code: blockCode } }, cages: { none: { assignment: { isNot: null } } } },
+        row: { section: { block: { code: blockCode } }, cages: { none: { assignments: { some: {} } } } },
       },
       include: { row: { select: { rowCode: true } } },
     });

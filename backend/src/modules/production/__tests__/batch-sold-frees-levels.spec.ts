@@ -9,17 +9,17 @@ function fakeDb() {
       { id: 'sold', batchCode: 'B-SOLD', stage: 'PRODUCTION', isActive: true, createdById: 'u1' },
       { id: 'live', batchCode: 'B-LIVE', stage: 'PRODUCTION', isActive: true, createdById: 'u1' },
     ] as any[],
-    // cage → assignment; row R1 is shared by both batches, ISO has no row
+    // level unit → batches on it; R1-L4 is shared by both batches, ISO has no row
     cageAssignments: [
-      { cageId: 'c1', rowId: 'R1', batchId: 'sold', birdCount: 4, placedDate: new Date('2026-01-01') },
-      { cageId: 'c2', rowId: 'R1', batchId: 'sold', birdCount: 4, placedDate: new Date('2026-01-01') },
-      { cageId: 'c3', rowId: 'R1', batchId: 'live', birdCount: 3, placedDate: new Date('2026-02-01') },
-      { cageId: 'c4', rowId: 'R2', batchId: 'sold', birdCount: 4, placedDate: new Date('2026-01-01') },
+      { cageId: 'R1-L4', rowId: 'R1', batchId: 'sold', birdCount: 200, placedDate: new Date('2026-01-01') },
+      { cageId: 'R1-L4', rowId: 'R1', batchId: 'live', birdCount: 3, placedDate: new Date('2026-02-01') },
+      { cageId: 'R1-L3', rowId: 'R1', batchId: 'sold', birdCount: 384, placedDate: new Date('2026-01-01') },
+      { cageId: 'R2-L4', rowId: 'R2', batchId: 'sold', birdCount: 384, placedDate: new Date('2026-01-01') },
       { cageId: 'iso1', rowId: null, batchId: 'sold', birdCount: 2, placedDate: new Date('2026-03-01') },
     ] as any[],
     rollups: [
-      { rowId: 'R1', batchId: 'sold', birdCount: 8 },
-      { rowId: 'R2', batchId: 'sold', birdCount: 4 },
+      { rowId: 'R1', batchId: 'sold', birdCount: 584 },
+      { rowId: 'R2', batchId: 'sold', birdCount: 384 },
     ] as any[],
     brooderCages: [{ batchId: 'sold' }] as any[],
     brooderLevels: [{ batchId: 'sold' }] as any[],
@@ -32,7 +32,7 @@ function fakeDb() {
   const db: any = {
     productionCage: {
       findMany: async ({ where }: any) => state.cageAssignments
-        .filter(a => a.batchId === where.assignment.batchId).map(a => ({ rowId: a.rowId })),
+        .filter(a => a.batchId === where.assignments.some.batchId).map(a => ({ rowId: a.rowId })),
     },
     productionCageAssignment: {
       deleteMany: async ({ where }: any) => removeWhere('cageAssignments', a => a.batchId === where.batchId),
@@ -60,18 +60,18 @@ function fakeDb() {
 
 const cagesFor = (db: any) => new ProductionCageService(db, { emit: vi.fn() } as any, {} as any);
 
-describe('selling a whole batch empties its production cages', () => {
-  it('releaseBatch frees every cage incl. isolation and fixes shared-row rollups', async () => {
+describe('selling a whole batch empties its production levels', () => {
+  it('releaseBatch frees every level incl. isolation and fixes shared-row rollups', async () => {
     const { db, state } = fakeDb();
     const freed = await cagesFor(db).releaseBatch(db, 'sold', 'u1');
 
     expect(freed).toBe(4);
-    expect(state.cageAssignments.map(a => a.cageId)).toEqual(['c3']);
+    expect(state.cageAssignments.map(a => [a.cageId, a.batchId])).toEqual([['R1-L4', 'live']]);
     // R1 now rolls up to the remaining batch; R2 is empty so its rollup is gone
     expect(state.rollups).toEqual([{ rowId: 'R1', batchId: 'live', birdCount: 3 }]);
   });
 
-  it('Farm Events BATCH_SOLD marks the batch sold and clears production + brooder cages', async () => {
+  it('Farm Events BATCH_SOLD marks the batch sold and clears production levels + brooder cages', async () => {
     const { db, state } = fakeDb();
     const notifications = { notifyRole: vi.fn().mockResolvedValue(undefined) };
     const health = new HealthService(db, notifications as any, {} as any, cagesFor(db));
@@ -85,6 +85,6 @@ describe('selling a whole batch empties its production cages', () => {
     expect(state.brooderCages).toHaveLength(0);
     expect(state.brooderLevels).toHaveLength(0);
     // the other batch in the house is untouched
-    expect(state.cageAssignments).toEqual([expect.objectContaining({ cageId: 'c3', batchId: 'live' })]);
+    expect(state.cageAssignments).toEqual([expect.objectContaining({ cageId: 'R1-L4', batchId: 'live' })]);
   });
 });

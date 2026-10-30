@@ -1029,7 +1029,7 @@ function TransferModal({ batch, onClose }: { batch: any; onClose: () => void }) 
                       <p className="text-[11px] text-gray-500 mt-0.5">
                         {full ? 'Full' : `Room for ${h.freeSpaces.toLocaleString()} birds`}
                       </p>
-                      <p className="text-[10px] text-gray-400">{h.emptyCages.toLocaleString()} empty / {h.totalCages.toLocaleString()} cages</p>
+                      <p className="text-[10px] text-gray-400">{h.birds.toLocaleString()} / {h.capacityBirds.toLocaleString()} birds · {h.fullLevels} of {h.totalLevels} levels full</p>
                     </button>
                   );
                 })}

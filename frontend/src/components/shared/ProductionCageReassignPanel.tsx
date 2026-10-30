@@ -1,8 +1,8 @@
 // src/components/shared/ProductionCageReassignPanel.tsx
 //
-// Record a production-house cage reassignment in plain words — no fixed
-// format. The server reads it, shows exactly which cages change (Preview),
-// then applies it to the cage map. Anything it can't place can still be saved
+// Record a production-house reassignment in plain words — no fixed format.
+// Records are kept per row · level, so the server reads it, shows exactly
+// which levels / isolation cages change (Preview), then applies it to the map. Anything it can't place can still be saved
 // as a written note so nothing the attendant typed is lost.
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -15,7 +15,7 @@ interface Preview {
   steps: { clause: string; summary: string }[];
   problems: { clause: string; reason: string }[];
   ignored: string[];
-  changes: { cageCode: string; cageLabel: string; beforeCount: number; afterCount: number }[];
+  changes: { cageCode: string; cageLabel: string; batchId: string; batchCode?: string; beforeCount: number; afterCount: number }[];
   canApply: boolean;
 }
 
@@ -25,9 +25,9 @@ function errMsg(err: any): string {
 }
 
 const EXAMPLES =
-  'Moved 3 birds from A1 level 2 cage 17 into isolation cage 2 because they were limping.\n' +
-  'Transferred two hens to cage 3 from B2 top level cage 37.\n' +
-  'C1 bottom level cages 1-24 now have 4 birds each.';
+  'Moved 3 birds from A1 level 2 into isolation cage 2 because they were limping.\n' +
+  'Transferred 40 hens from B2 top level to C1 level 3.\n' +
+  'C1 bottom level now has 380 birds.';
 
 export function ProductionCageReassignPanel({ houseCode, batchId }: { houseCode: HouseCode; batchId?: string }) {
   const qc = useQueryClient();
@@ -54,7 +54,7 @@ export function ProductionCageReassignPanel({ houseCode, batchId }: { houseCode:
     onSuccess: (rec: any) => {
       HOUSE_QUERY_KEYS.forEach(k => qc.invalidateQueries({ queryKey: k }));
       qc.invalidateQueries({ queryKey: ['production-reassignments', houseCode] });
-      setMessage(rec.applied ? 'Reassignment applied to the cage map.' : 'Saved as a note — cage map unchanged.');
+      setMessage(rec.applied ? 'Reassignment applied to the map.' : 'Saved as a note — map unchanged.');
       setDescription('');
     },
   });
@@ -62,12 +62,12 @@ export function ProductionCageReassignPanel({ houseCode, batchId }: { houseCode:
   return (
     <div className="bg-white dark:bg-dark-card rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-dark-border space-y-3">
       <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide flex items-center gap-2">
-        <ArrowRightLeft className="w-4 h-4 text-emerald-500" /> Cage Reassignment ({houseCode === 'BLK2' ? 'Block 2' : 'Block 1'})
+        <ArrowRightLeft className="w-4 h-4 text-emerald-500" /> Bird Reassignment ({houseCode === 'BLK2' ? 'Block 2' : 'Block 1'})
       </p>
       <p className="text-[11px] text-gray-400">
-        Write where the birds went in your own words — any order, any wording. Mention the row (A1–C2), level
-        (or top/bottom) and cage number along the level (no need for tiers), or an isolation cage, and how many
-        birds. Birds put into isolation must say which cage they came from. Preview shows what will change.
+        Write where the birds went in your own words — any order, any wording. Records are kept per level:
+        mention the row (A1–C2) and level (or top/bottom), or an isolation cage, and how many birds. Birds put
+        into isolation must say which level they came from. Preview shows what will change.
       </p>
       <textarea value={description} onChange={e => { setDescription(e.target.value); setMessage(null); }} rows={4}
         placeholder={EXAMPLES}
@@ -80,7 +80,7 @@ export function ProductionCageReassignPanel({ houseCode, batchId }: { houseCode:
         </button>
         <button type="button" disabled={!preview?.canApply || save.isPending} onClick={() => save.mutate(false)}
           className="flex-1 min-w-[8rem] bg-emerald-500 text-white rounded-xl py-2 text-sm font-semibold disabled:opacity-50">
-          Apply to cage map
+          Apply to map
         </button>
         <button type="button" disabled={!description.trim() || save.isPending} onClick={() => save.mutate(true)}
           className="flex-1 min-w-[8rem] border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300 rounded-xl py-2 text-sm font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50">
@@ -103,13 +103,13 @@ export function ProductionCageReassignPanel({ houseCode, batchId }: { houseCode:
             </p>
           ))}
           {preview.ignored.length > 0 && (
-            <p className="text-gray-400">Not about a cage (kept in the note): {preview.ignored.map(c => `“${c}”`).join(', ')}</p>
+            <p className="text-gray-400">Not about a level (kept in the note): {preview.ignored.map(c => `“${c}”`).join(', ')}</p>
           )}
           {preview.changes.length > 0 && (
             <div className="max-h-40 overflow-y-auto divide-y divide-gray-100 dark:divide-dark-border">
               {preview.changes.map(c => (
-                <div key={c.cageCode} className="flex justify-between py-1 text-gray-600 dark:text-gray-300">
-                  <span>{c.cageLabel}</span>
+                <div key={`${c.cageCode}:${c.batchId}`} className="flex justify-between py-1 text-gray-600 dark:text-gray-300">
+                  <span>{c.cageLabel}{c.batchCode ? ` · ${c.batchCode}` : ''}</span>
                   <span className="font-semibold">{c.beforeCount} → {c.afterCount}</span>
                 </div>
               ))}

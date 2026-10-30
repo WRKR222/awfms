@@ -40,22 +40,18 @@ export class ProductionCageController {
     return this.svc.listCageMortality(code.toUpperCase(), days ? Number(days) : 30);
   }
 
-  @Post(':code/cages/assign')
+  /** Set one batch's birds on a level (0 removes it), or an isolation cage. */
+  @Post(':code/units/set')
   @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
-  assign(@Param('code') code: string, @Body() body: any, @Request() req: any) {
-    return this.svc.assignCages(code.toUpperCase(), body, req.user.id);
+  setUnit(@Param('code') code: string, @Body() body: any, @Request() req: any) {
+    return this.svc.setUnit(code.toUpperCase(), body, req.user.id);
   }
 
-  @Post(':code/cages/fill')
+  /** Empty a level (or just one batch on it with ?batchId=) / isolation cage. */
+  @Delete(':code/units/:unitCode')
   @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
-  fill(@Param('code') code: string, @Body() body: any, @Request() req: any) {
-    return this.svc.fillCages(code.toUpperCase(), body, req.user.id);
-  }
-
-  @Delete(':code/cages/:cageCode')
-  @RequirePermission(Permission.FLOCK_ENTRY_CREATE)
-  remove(@Param('code') code: string, @Param('cageCode') cageCode: string, @Request() req: any) {
-    return this.svc.removeCage(code.toUpperCase(), cageCode, req.user.id);
+  clearUnit(@Param('code') code: string, @Param('unitCode') unitCode: string, @Query('batchId') batchId: string | undefined, @Request() req: any) {
+    return this.svc.clearUnit(code.toUpperCase(), unitCode, batchId || undefined, req.user.id);
   }
 
   @Get(':code/reassignments')
