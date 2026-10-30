@@ -157,9 +157,9 @@ export class FlockService {
     // Determine location first — needed for duplicate check and stage derivation
     const location: string = input.location ?? 'BROODER';
 
-    // Direct production-house registration: birds go into empty cages of the
+    // Direct production-house registration: birds go into free space on the levels of the
     // chosen house (Block 1 or Block 2). Several batches can share the
-    // production houses — the only limit is free cage space (4 birds/cage).
+    // production houses — the only limit is free space on the levels (4 birds/cage).
     const houseCode = String(input.houseCode ?? 'BLK1').toUpperCase();
     if (location === 'PRODUCTION_HOUSE') {
       if (!HOUSE_CODES.includes(houseCode as any)) {
@@ -168,7 +168,7 @@ export class FlockService {
       const cap = await this.productionCages.capacity(houseCode);
       const toPlace = quantity - Number(input.mortalityOnArrival ?? 0);
       if (cap.freeSpaces === 0) {
-        throw new BadRequestException(`${cap.name} is full — no empty cages left.`);
+        throw new BadRequestException(`${cap.name} is full — no space left on any level.`);
       }
       if (toPlace > cap.freeSpaces) {
         throw new BadRequestException(
@@ -266,7 +266,7 @@ export class FlockService {
           },
         });
 
-        // Direct production-house registration: fill empty cages of the chosen
+        // Direct production-house registration: fill free space on the levels of the chosen
         // house, per row when row counts were given, else anywhere in the house.
         if (stage === BatchStage.PRODUCTION && location === 'PRODUCTION_HOUSE') {
           const rows: { rowCode?: string; birds: number }[] =

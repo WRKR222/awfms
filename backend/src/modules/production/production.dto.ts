@@ -108,10 +108,12 @@ export const CreateEggCollectionSessionSchema = z.object({
   mortalityRowBreakdown: z.array(MortalityRowEntrySchema).default([]),
   mortalityFedBeforeDeath: z.enum(['YES', 'NO', 'MIXED']).optional(),
   mortalityFeedAlreadyEatenKg: z.number().min(0).optional(),
-  // Per-cage mortalities (cage code e.g. "BLK2-A1-L4-T07-C2" or "BLK1-ISO-3").
-  // Must sum to `mortalities` when given; applied to the cage map on approval.
+  // Per-level mortalities (level code e.g. "BLK2-A1-L4" or isolation "BLK1-ISO-3";
+  // batchId when the level holds several batches). Must sum to `mortalities`
+  // when given; applied to the production map on approval.
   mortalityCages: z.array(z.object({
     cageCode: z.string().min(1),
+    batchId: z.string().optional(),
     count: z.number().int().positive(),
     cause: z.string().optional(),
   })).default([]),

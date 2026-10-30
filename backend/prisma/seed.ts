@@ -250,18 +250,14 @@ async function main() {
             data: { sectionId: section.id, rowCode, isActive: true },
           });
         }
+        // Records are kept per row · level; the level's cages set its capacity.
         for (let level = 1; level <= block.levelsPerRow; level++) {
-          for (let tier = 1; tier <= block.tiersPerLevel; tier++) {
-            for (let cage = 1; cage <= block.cagesPerTier; cage++) {
-              const t = String(tier).padStart(2, '0');
-              cages.push({
-                blockId: block.id, rowId: row.id, levelNumber: level, tierNumber: tier, cageNumber: cage,
-                code: `${block.code}-${rowCode}-L${level}-T${t}-C${cage}`,
-                label: `${rowCode} · ${levelName(level)} · Cage ${(tier - 1) * block.cagesPerTier + cage}`,
-                capacity: block.birdsPerCage,
-              });
-            }
-          }
+          cages.push({
+            blockId: block.id, rowId: row.id, levelNumber: level, cageNumber: 0, isLevel: true,
+            code: `${block.code}-${rowCode}-L${level}`,
+            label: `${rowCode} · ${levelName(level)}`,
+            capacity: block.tiersPerLevel * block.cagesPerTier * block.birdsPerCage,
+          });
         }
       }
     }

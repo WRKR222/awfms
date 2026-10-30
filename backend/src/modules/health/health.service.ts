@@ -1,8 +1,9 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
-import { HealthEventType, VaccinationRoute, UserRole, NotificationType } from '@prisma/client';
+import { HealthEventType, VaccinationRoute, UserRole, NotificationType, Prisma } from '@prisma/client';
 import { WeightAlertService } from '../weight/weight-alert.service';
+import { ProductionCageService } from '../production/production-cage.service';
 import { batchAgeWeeks } from '../../common/feed/feed-standard.util';
 import dayjs from 'dayjs';
 
@@ -12,6 +13,7 @@ export class HealthService {
     private prisma: PrismaService,
     private notifications: NotificationsService,
     private weightAlerts: WeightAlertService,
+    private productionCages: ProductionCageService,
   ) {}
 
   // ── Health Events ──────────────────────────────────────────────────────────
@@ -111,19 +113,10 @@ export class HealthService {
     // When a batch is sold or discarded, update its stage explicitly so the
     // BatchStage enum is correct (SOLD vs DISCARDED — not just CLOSED).
     if (dto.eventType === 'BATCH_SOLD') {
-      await this.prisma.batch.update({
-        where: { id: dto.batchId },
-        data: { isActive: false, stage: 'SOLD' as any, soldAt: new Date() },
-      });
-      // Clear production-house cage-row assignments so cage map shows rows as vacant
-      await this.prisma.batchCageAssignment.deleteMany({ where: { batchId: dto.batchId } });
-      // FIX: also clear brooder level assignments so the brooder cage map vacates
-      // correctly when a batch is sold while still in BROODING stage.
-      // Previously only BatchLifecycleService.updateBatchStage() cleared this table,
-      // but Farm Events bypass that path — leaving orphaned BrooderLevelAssignment
-      // rows that kept the brooder map occupied and the feed requirement non-zero.
-      await this.prisma.brooderCageAssignment.deleteMany({ where: { batchId: dto.batchId } });
-      await this.prisma.brooderLevelAssignment.deleteMany({ where: { batchId: dto.batchId } });
+      // Farm Events bypass BatchLifecycleService, so the whole batch leaves
+      // every cage here: production cages (the house map's source of truth,
+      // isolation included) + row rollups, and brooder cages/levels.
+      await this.endBatch(dto.batchId, { isActive: false, stage: 'SOLD', soldAt: new Date() }, recordedById);
       // ── Notify Director (OWNER) — batch sold ─────────────────────────────
       const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId }, select: { batchCode: true } });
       await this.notifications.notifyRole(
@@ -133,15 +126,7 @@ export class HealthService {
         { entityId: event.id, entityType: 'HealthEvent' },
       ).catch(() => { /* best-effort */ });
     } else if (dto.eventType === 'BATCH_DISCARDED') {
-      await this.prisma.batch.update({
-        where: { id: dto.batchId },
-        data: { isActive: false, stage: 'DISCARDED' as any, discardedAt: new Date() },
-      });
-      // Clear production-house cage-row assignments so cage map shows rows as vacant
-      await this.prisma.batchCageAssignment.deleteMany({ where: { batchId: dto.batchId } });
-      // FIX: also clear brooder level assignments (same reason as BATCH_SOLD above)
-      await this.prisma.brooderCageAssignment.deleteMany({ where: { batchId: dto.batchId } });
-      await this.prisma.brooderLevelAssignment.deleteMany({ where: { batchId: dto.batchId } });
+      await this.endBatch(dto.batchId, { isActive: false, stage: 'DISCARDED', discardedAt: new Date() }, recordedById);
       // ── Notify Director (OWNER) — batch discarded ─────────────────────────
       const batch = await this.prisma.batch.findUnique({ where: { id: dto.batchId }, select: { batchCode: true } });
       await this.notifications.notifyRole(
@@ -190,6 +175,16 @@ export class HealthService {
     }
 
     return event;
+  }
+
+  /** Sold / discarded: mark the batch ended and empty every cage it held. */
+  private endBatch(batchId: string, data: Prisma.BatchUpdateInput, userId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.batch.update({ where: { id: batchId }, data });
+      await this.productionCages.releaseBatch(tx, batchId, userId);
+      await tx.brooderCageAssignment.deleteMany({ where: { batchId } });
+      await tx.brooderLevelAssignment.deleteMany({ where: { batchId } });
+    });
   }
 
   async getHealthEvents(batchId: string) {

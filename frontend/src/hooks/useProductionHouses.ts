@@ -1,9 +1,9 @@
 // src/hooks/useProductionHouses.ts
 //
-// Production houses (Block 1 / Block 2) and their per-cage maps. The server
-// only returns OCCUPIED cages; the full grid is built here from the block's
-// dimensions (rows × 4 levels × tiers × 4 cages + isolation cages), using the
-// same deterministic cage codes the backend uses (BLK1-A1-L4-T07-C2).
+// Production houses (Block 1 / Block 2) and their maps. Records are kept per
+// row · level (one unit per level, code BLK1-A1-L4, a level may hold several
+// batches) plus the 8 isolation cages per house (BLK1-ISO-3). The physical
+// arrangement (tiers × cages, 4 birds per cage) only sets each level's capacity.
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api/client';
 
@@ -17,9 +17,10 @@ export interface HouseSummary {
   code: HouseCode;
   name: string;
   isActive: boolean;
-  totalCages: number;
-  occupiedCages: number;
-  emptyCages: number;
+  totalLevels: number;
+  occupiedLevels: number;
+  fullLevels: number;
+  cagesPerLevel: number;
   birds: number;
   capacityBirds: number;
   freeSpaces: number;
@@ -30,25 +31,36 @@ export interface HouseSummary {
   isolationCageCount: number;
 }
 
-export interface OccupiedCage {
-  cageId: string;
+export interface UnitBatch {
+  batchId: string;
+  batchCode: string;
+  birdCount: number;
+  placedDate: string;
+}
+
+export interface LevelUnit {
+  unitId: string;
   code: string;
   label: string;
   rowCode: string | null;
   level: number | null;
-  tier: number | null;
-  cage: number;
-  isIsolation: boolean;
   capacity: number;
-  batchId: string;
-  batchCode: string;
-  birdCount: number;
-  isolationReason: string | null;
-  /** Isolation cages: where the birds were taken from. */
-  origin: string | null;
-  /** Cage number along the level (tiers ignored); isolation cage number for ISO. */
+  birds: number;
+  batches: UnitBatch[];
+  mortality7d: number;
+}
+
+export interface IsolationUnit {
+  unitId: string;
+  code: string;
+  label: string;
   cageNo: number;
-  placedDate: string;
+  capacity: number;
+  birds: number;
+  batches: UnitBatch[];
+  isolationReason: string | null;
+  /** Where the birds were taken from. */
+  origin: string | null;
   mortality7d: number;
 }
 
@@ -56,11 +68,12 @@ export interface HouseMap {
   block: {
     id: string; code: HouseCode; name: string; isActive: boolean; isUnderConstruction: boolean;
     levelsPerRow: number; tiersPerLevel: number; cagesPerTier: number; birdsPerCage: number;
-    isolationCageCount: number;
+    cagesPerLevel: number; isolationCageCount: number;
   };
   sections: { code: string; rows: { rowId: string; rowCode: string; isActive: boolean }[] }[];
-  occupied: OccupiedCage[];
-  batches: { id: string; batchCode: string; birds: number; cages: number; currentBirdCount: number }[];
+  levels: LevelUnit[];
+  isolation: IsolationUnit[];
+  batches: { id: string; batchCode: string; birds: number; levels: number; currentBirdCount: number }[];
   totals: HouseSummary;
 }
 
@@ -83,30 +96,14 @@ export function useHouseMap(code: HouseCode | null) {
   });
 }
 
-export const pad2 = (n: number) => String(n).padStart(2, '0');
-
-export function cageCode(house: string, rowCode: string, level: number, tier: number, cage: number) {
-  return `${house}-${rowCode}-L${level}-T${pad2(tier)}-C${cage}`;
-}
-export function isolationCode(house: string, n: number) {
-  return `${house}-ISO-${n}`;
+export function levelCode(house: string, rowCode: string, level: number) {
+  return `${house}-${rowCode}-L${level}`;
 }
 export function levelLabel(level: number, levels = 4) {
   if (level === 1) return 'Level 1 (Bottom)';
   if (level === levels) return `Level ${level} (Top)`;
   return `Level ${level}`;
 }
-/** Cage number along a level — tiers are only physical grouping of 4 cages. */
-export function cageNumberOnLevel(tier: number, cage: number, cagesPerTier = 4) {
-  return (tier - 1) * cagesPerTier + cage;
-}
-/** Inverse of cageNumberOnLevel → the stable cage code used by the API. */
-export function cageCodeFromNumber(house: string, rowCode: string, level: number, n: number, cagesPerTier = 4) {
-  return cageCode(house, rowCode, level, Math.ceil(n / cagesPerTier), ((n - 1) % cagesPerTier) + 1);
-}
-export function cageLabel(rowCode: string, level: number, tier: number, cage: number, cagesPerTier = 4) {
-  return `${rowCode} · ${levelLabel(level)} · Cage ${cageNumberOnLevel(tier, cage, cagesPerTier)}`;
-}
 
-/** Query keys to refresh after any write that changes cages. */
+/** Query keys to refresh after any write that changes the production map. */
 export const HOUSE_QUERY_KEYS = [['production-houses'], ['production-house-map'], ['cage-map'], ['batches'], ['flock', 'batches']];

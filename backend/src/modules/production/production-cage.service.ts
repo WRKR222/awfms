@@ -1,25 +1,21 @@
 // src/modules/production/production-cage.service.ts
 //
-// Per-cage production house map (Block 1 and Block 2).
+// Production house map (Block 1 and Block 2), recorded per row · level.
 //
 // Layout of each house: sections A, B, C × rows 1, 2 (A1 … C2). Every row has
 // 4 levels (1 = bottom … 4 = top, same order as the brooder), each level has
-// `tiersPerLevel` tiers (Block 1: 24, Block 2: 38) and every tier has 4 cages.
-// Plus 8 isolation cages per house. A cage holds at most 4 birds.
+// `tiersPerLevel` tiers (Block 1: 24, Block 2: 38) of 4 cages, 4 birds per
+// cage. That arrangement still sets the capacity, but records (placements,
+// mortalities, moves) are kept per row · level: one unit per level, code
+// BLK1-A1-L4, capacity = cages on the level × birds per cage. A level may hold
+// several batches. Plus 8 isolation cages per house, still kept per cage; they
+// always record where their birds came from (`origin`).
 //
-// People address a cage as row · level · cage number along the level (Block 1:
-// 1–96, Block 2: 1–152); tiers are only the physical grouping of 4 cages and
-// never need to be mentioned. Isolation cages always record where their birds
-// came from (`origin`).
-//
-// Cages are addressed by a stable code — BLK1-A1-L4-T07-C2, BLK2-ISO-3 — so
-// the UI can build the full grid from the block dimensions and only needs the
-// occupied cages from the server. BatchCageAssignment (one batch per row) is
-// kept as an automatic per-row rollup so existing row-level reports, HDP and
-// culling logic keep working.
+// BatchCageAssignment (one batch per row) is kept as an automatic per-row
+// rollup so existing row-level reports, HDP and culling logic keep working.
 
 import {
-  BadRequestException, ConflictException, Injectable, Logger, NotFoundException,
+  BadRequestException, Injectable, Logger, NotFoundException, OnApplicationBootstrap,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BatchStage, Prisma, UserRole } from '@prisma/client';
@@ -27,7 +23,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { BATCH_TRANSFERRED_EVENT, DASHBOARD_REFRESH_EVENT } from '../../common/events/app-event-bus';
 import { RequestUser } from '../../auth/types/request-user.type';
-import { CageRef, ParsedCageOp, parseProductionCageText } from './production-cage-text.util';
+import { CageRef, parseProductionCageText } from './production-cage-text.util';
 
 type Db = Prisma.TransactionClient | PrismaService;
 
@@ -48,21 +44,25 @@ export function levelLabel(level: number, levelCount = 4) {
   return `Level ${level}`;
 }
 
-export interface MortalityCageEntry {
+/** Where a bird died: a level (or isolation cage) code, plus the batch when
+ *  the level holds more than one. */
+export interface MortalityUnitEntry {
   cageCode: string;
   count: number;
   cause?: string | null;
+  batchId?: string | null;
 }
 
-export interface SimCage {
+/** A level or isolation cage while a reassignment is being worked out. */
+export interface SimUnit {
   id: string;
   code: string;
   label: string;
   rowId: string | null;
   capacity: number;
   isIsolation: boolean;
-  batchId: string | null;
-  birdCount: number;
+  /** batchId → birds of that batch here */
+  batches: Map<string, number>;
   isolationReason: string | null;
   origin: string | null;
 }
@@ -71,20 +71,22 @@ export interface PlannedChange {
   cageId: string;
   cageCode: string;
   cageLabel: string;
-  beforeBatchId: string | null;
+  rowId: string | null;
+  batchId: string;
   beforeCount: number;
-  afterBatchId: string | null;
   afterCount: number;
   isolationReason: string | null;
   origin: string | null;
 }
 
-/** Cage number along a level, ignoring tiers: (tier − 1) × cagesPerTier + cage. */
-export function levelCageNumber(tier: number | null, cage: number, cagesPerTier = 4) {
-  return tier ? (tier - 1) * cagesPerTier + cage : cage;
-}
+/** Active record units: levels and isolation cages (per-cage rows are history). */
+const UNIT: Prisma.ProductionCageWhereInput = { isActive: true, OR: [{ isLevel: true }, { isIsolation: true }] };
 
-/** Joins source labels into a short origin text ("A1 · Level 4 · Cage 2; …"). */
+const used = (u: { assignments: { birdCount: number }[] }) => u.assignments.reduce((s, a) => s + a.birdCount, 0);
+const simUsed = (u: SimUnit) => [...u.batches.values()].reduce((s, n) => s + n, 0);
+const houseName = (code: string) => (code === 'BLK2' ? 'Block 2' : 'Block 1');
+
+/** Joins source labels into a short origin text ("A1 · Level 4; …"). */
 function originText(labels: string[]) {
   const uniq = [...new Set(labels)];
   return uniq.length > 3 ? `${uniq.slice(0, 3).join('; ')} and ${uniq.length - 3} more` : uniq.join('; ');
@@ -97,7 +99,7 @@ const toDate = (s?: string | null) => {
 };
 
 @Injectable()
-export class ProductionCageService {
+export class ProductionCageService implements OnApplicationBootstrap {
   private readonly logger = new Logger(ProductionCageService.name);
 
   constructor(
@@ -120,26 +122,28 @@ export class ProductionCageService {
 
   async capacity(code: string, db: Db = this.prisma, rowCodes?: string[]) {
     const block = await this.getBlockOrThrow(code, db);
-    const where: Prisma.ProductionCageWhereInput = {
-      blockId: block.id, isActive: true, isIsolation: false,
-      ...(rowCodes?.length ? { row: { rowCode: { in: rowCodes.map(r => r.toUpperCase()) } } } : {}),
-    };
-    const [totalCages, emptyCages, birds] = await Promise.all([
-      db.productionCage.count({ where }),
-      db.productionCage.count({ where: { ...where, assignment: { is: null } } }),
-      db.productionCageAssignment.aggregate({ where: { cage: where }, _sum: { birdCount: true } }),
-    ]);
+    const levels = await db.productionCage.findMany({
+      where: {
+        blockId: block.id, isActive: true, isLevel: true,
+        ...(rowCodes?.length ? { row: { rowCode: { in: rowCodes.map(r => r.toUpperCase()) } } } : {}),
+      },
+      select: { capacity: true, assignments: { select: { birdCount: true } } },
+    });
+    const open = block.isActive && !block.isUnderConstruction;
+    const birds = levels.reduce((s, l) => s + used(l), 0);
+    const capacityBirds = levels.reduce((s, l) => s + l.capacity, 0);
     return {
       code: block.code,
       name: block.name,
-      isActive: block.isActive && !block.isUnderConstruction,
-      totalCages,
-      occupiedCages: totalCages - emptyCages,
-      emptyCages,
-      birds: birds._sum.birdCount ?? 0,
-      capacityBirds: totalCages * block.birdsPerCage,
-      /** Birds that can still be placed into completely empty cages. */
-      freeSpaces: block.isActive && !block.isUnderConstruction ? emptyCages * block.birdsPerCage : 0,
+      isActive: open,
+      totalLevels: levels.length,
+      occupiedLevels: levels.filter(l => used(l) > 0).length,
+      fullLevels: levels.filter(l => used(l) >= l.capacity).length,
+      cagesPerLevel: block.tiersPerLevel * block.cagesPerTier,
+      birds,
+      capacityBirds,
+      /** Birds that can still be placed (room left on every level). */
+      freeSpaces: open ? levels.reduce((s, l) => s + Math.max(0, l.capacity - used(l)), 0) : 0,
     };
   }
 
@@ -169,16 +173,14 @@ export class ProductionCageService {
     });
     if (!block) throw new NotFoundException(`Production house ${code} not found`);
 
-    const assignments = await this.prisma.productionCageAssignment.findMany({
-      where: { cage: { blockId: block.id } },
+    const units = await this.prisma.productionCage.findMany({
+      where: { blockId: block.id, ...UNIT },
       include: {
-        cage: {
-          select: {
-            id: true, code: true, label: true, levelNumber: true, tierNumber: true, cageNumber: true,
-            isIsolation: true, capacity: true, row: { select: { rowCode: true } },
-          },
+        row: { select: { rowCode: true } },
+        assignments: {
+          include: { batch: { select: { id: true, batchCode: true, currentBirdCount: true, dateOfHatch: true, stage: true } } },
+          orderBy: { placedDate: 'asc' },
         },
-        batch: { select: { id: true, batchCode: true, currentBirdCount: true, dateOfHatch: true, stage: true } },
       },
     });
 
@@ -189,19 +191,24 @@ export class ProductionCageService {
       where: { cage: { blockId: block.id }, logDate: { gte: since } },
       _sum: { count: true },
     });
-    const mortalityByCage = new Map(mortality.map(m => [m.cageId, m._sum.count ?? 0]));
+    const mortalityByUnit = new Map(mortality.map(m => [m.cageId, m._sum.count ?? 0]));
 
-    const batches = new Map<string, { id: string; batchCode: string; birds: number; cages: number; currentBirdCount: number; dateOfHatch: Date; stage: BatchStage }>();
-    for (const a of assignments) {
-      const b = batches.get(a.batchId) ?? {
-        id: a.batch.id, batchCode: a.batch.batchCode, birds: 0, cages: 0,
-        currentBirdCount: a.batch.currentBirdCount, dateOfHatch: a.batch.dateOfHatch, stage: a.batch.stage,
-      };
-      b.birds += a.birdCount;
-      b.cages += 1;
-      batches.set(a.batchId, b);
+    const batches = new Map<string, { id: string; batchCode: string; birds: number; levels: number; currentBirdCount: number; dateOfHatch: Date; stage: BatchStage }>();
+    for (const u of units) {
+      for (const a of u.assignments) {
+        const b = batches.get(a.batchId) ?? {
+          id: a.batch.id, batchCode: a.batch.batchCode, birds: 0, levels: 0,
+          currentBirdCount: a.batch.currentBirdCount, dateOfHatch: a.batch.dateOfHatch, stage: a.batch.stage,
+        };
+        b.birds += a.birdCount;
+        if (u.isLevel) b.levels += 1;
+        batches.set(a.batchId, b);
+      }
     }
 
+    const occupants = (u: (typeof units)[number]) => u.assignments.map(a => ({
+      batchId: a.batchId, batchCode: a.batch.batchCode, birdCount: a.birdCount, placedDate: a.placedDate,
+    }));
     const cap = await this.capacity(block.code);
     return {
       block: {
@@ -209,52 +216,59 @@ export class ProductionCageService {
         isActive: block.isActive, isUnderConstruction: block.isUnderConstruction,
         levelsPerRow: block.levelsPerRow, tiersPerLevel: block.tiersPerLevel,
         cagesPerTier: block.cagesPerTier, birdsPerCage: block.birdsPerCage,
+        cagesPerLevel: block.tiersPerLevel * block.cagesPerTier,
         isolationCageCount: block.isolationCageCount,
       },
       sections: block.farm_sections.map(s => ({
         code: s.code,
         rows: s.farm_rows.map(r => ({ rowId: r.id, rowCode: r.rowCode, isActive: r.isActive })),
       })),
-      occupied: assignments.map(a => ({
-        cageId: a.cage.id,
-        code: a.cage.code,
-        label: a.cage.label,
-        rowCode: a.cage.row?.rowCode ?? null,
-        level: a.cage.levelNumber,
-        tier: a.cage.tierNumber,
-        cage: a.cage.cageNumber,
-        isIsolation: a.cage.isIsolation,
-        capacity: a.cage.capacity,
-        batchId: a.batchId,
-        batchCode: a.batch.batchCode,
-        birdCount: a.birdCount,
-        isolationReason: a.isolationReason,
-        origin: a.origin,
-        cageNo: a.cage.isIsolation ? a.cage.cageNumber : levelCageNumber(a.cage.tierNumber, a.cage.cageNumber, block.cagesPerTier),
-        placedDate: a.placedDate,
-        mortality7d: mortalityByCage.get(a.cage.id) ?? 0,
+      levels: units.filter(u => u.isLevel).map(u => ({
+        unitId: u.id,
+        code: u.code,
+        label: u.label,
+        rowCode: u.row?.rowCode ?? null,
+        level: u.levelNumber,
+        capacity: u.capacity,
+        birds: used(u),
+        batches: occupants(u),
+        mortality7d: mortalityByUnit.get(u.id) ?? 0,
       })),
+      isolation: units.filter(u => u.isIsolation).sort((a, b) => a.cageNumber - b.cageNumber).map(u => {
+        const a = u.assignments[0];
+        return {
+          unitId: u.id,
+          code: u.code,
+          label: u.label,
+          cageNo: u.cageNumber,
+          capacity: u.capacity,
+          birds: used(u),
+          batches: occupants(u),
+          isolationReason: a?.isolationReason ?? null,
+          origin: a?.origin ?? null,
+          mortality7d: mortalityByUnit.get(u.id) ?? 0,
+        };
+      }),
       batches: [...batches.values()],
       totals: cap,
     };
   }
 
-  /** Cage codes are deterministic; resolve a list of them inside one block. */
-  private async cagesByCode(db: Db, blockId: string, codes: string[]) {
-    const cages = await db.productionCage.findMany({
-      where: { blockId, code: { in: codes.map(c => c.toUpperCase()) }, isActive: true },
-      include: { assignment: true },
+  /** Finds one active level / isolation cage of a house by its code. */
+  private async unitByCode(db: Db, blockId: string, code: string) {
+    const unit = await db.productionCage.findFirst({
+      where: { blockId, code: code.toUpperCase(), ...UNIT },
+      include: { assignments: true, block: { select: { code: true } } },
     });
-    const missing = codes.filter(c => !cages.some(cg => cg.code === c.toUpperCase()));
-    if (missing.length) throw new BadRequestException(`Unknown cage(s): ${missing.join(', ')}`);
-    return cages;
+    if (!unit) throw new BadRequestException(`Unknown level or isolation cage: ${code}`);
+    return unit;
   }
 
   // ── Row rollup (BatchCageAssignment) ───────────────────────────────────
 
-  /** Per row: the batch with the most birds in that row's cages becomes the
+  /** Per row: the batch with the most birds on that row's levels becomes the
    *  row's BatchCageAssignment, birdCount = that batch's birds in the row. A
-   *  row whose cages are all empty loses its rollup. */
+   *  row with no birds loses its rollup. */
   async recomputeRowRollups(db: Db, rowIds: Iterable<string>, userId: string) {
     for (const rowId of new Set(rowIds)) {
       if (!rowId) continue;
@@ -278,143 +292,158 @@ export class ProductionCageService {
         where: { rowId },
         create: {
           rowId, batchId, birdCount: top.birds, transferDate: top.placed,
-          notes: 'Auto-maintained rollup of this row\'s cages.', assignedById: userId,
+          notes: 'Auto-maintained rollup of this row\'s levels.', assignedById: userId,
         },
         update: { batchId, birdCount: top.birds },
       });
     }
   }
 
-  // ── Manual assign / fill / remove ─────────────────────────────────────
+  /** A batch that has left the farm (sold / discarded / closed) gives up
+   *  every level and isolation cage it held, and its row rollups.
+   *  Returns the number of level / isolation records freed. */
+  async releaseBatch(db: Db, batchId: string, userId: string) {
+    const units = await db.productionCage.findMany({
+      where: { assignments: { some: { batchId } } }, select: { rowId: true },
+    });
+    const { count } = await db.productionCageAssignment.deleteMany({ where: { batchId } });
+    await this.recomputeRowRollups(db, units.map(u => u.rowId!).filter(Boolean), userId);
+    await db.batchCageAssignment.deleteMany({ where: { batchId } });
+    if (count > 0) this.refresh();
+    return count;
+  }
 
-  async assignCages(code: string, input: any, userId: string) {
-    const cageCodes: string[] = Array.isArray(input?.cageCodes) ? input.cageCodes.map(String) : [];
-    if (!cageCodes.length) throw new BadRequestException('Pick at least one cage');
+  /** Self-heal on start-up: frees space still held by batches that are no
+   *  longer live (sold / discarded / closed / deleted before releaseBatch
+   *  existed on every exit path). */
+  async onApplicationBootstrap() {
+    try {
+      const stale = await this.prisma.productionCageAssignment.findMany({
+        where: {
+          batch: {
+            OR: [
+              { isActive: false },
+              { deletedAt: { not: null } },
+              { stage: { in: [BatchStage.SOLD, BatchStage.DISCARDED, BatchStage.CLOSED] } },
+            ],
+          },
+        },
+        distinct: ['batchId'],
+        select: { batchId: true, batch: { select: { batchCode: true, createdById: true } } },
+      });
+      for (const s of stale) {
+        const freed = await this.prisma.$transaction(tx => this.releaseBatch(tx, s.batchId, s.batch.createdById));
+        this.logger.warn(`Freed ${freed} production level/isolation record(s) still held by ended batch ${s.batch.batchCode}`);
+      }
+    } catch (e) {
+      this.logger.error(`Stale production clean-up failed: ${(e as Error).message}`);
+    }
+  }
+
+  // ── Manual set / empty ────────────────────────────────────────────────
+
+  /**
+   * Sets how many birds of one batch are on a level (0 removes it), or
+   * fills / changes an isolation cage. Birds going INTO an isolation cage are
+   * always taken from a named level (or isolation cage), which drops.
+   */
+  async setUnit(code: string, input: any, userId: string) {
+    const unitCode = String(input?.unitCode ?? '').trim();
+    if (!unitCode) throw new BadRequestException('Pick a level or isolation cage');
     const birdCount = Number(input?.birdCount);
     if (!Number.isInteger(birdCount) || birdCount < 0) throw new BadRequestException('birdCount must be a whole number ≥ 0');
     const placedDate = toDate(input?.placedDate);
     const block = await this.getBlockOrThrow(code);
-    if (birdCount > block.birdsPerCage) {
-      throw new BadRequestException(`A cage holds at most ${block.birdsPerCage} birds`);
-    }
-    const fromCageCode: string | undefined = input?.fromCageCode ? String(input.fromCageCode).toUpperCase() : undefined;
+    const fromCode: string | undefined = input?.fromCode ? String(input.fromCode).toUpperCase() : undefined;
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const cages = await this.cagesByCode(tx, block.id, cageCodes);
-      let batchId: string | undefined = input?.batchId || undefined;
-      const rows = new Set<string>(cages.map(c => c.rowId!).filter(Boolean));
+      const unit = await this.unitByCode(tx, block.id, unitCode);
+      const rows = new Set<string>(unit.rowId ? [unit.rowId] : []);
 
-      // Birds going INTO an isolation cage are always taken from a named
-      // cage, so it's known where they came from (and that cage drops).
-      let source: (typeof cages)[number] | null = null;
-      const isoGrowth = cages.filter(c => c.isIsolation && birdCount > (c.assignment?.birdCount ?? 0));
-      if (isoGrowth.length) {
-        if (cages.length !== 1) throw new BadRequestException('Fill isolation cages one at a time, naming where the birds came from');
-        if (!fromCageCode) {
-          throw new BadRequestException(`Say which cage the birds moved into ${cages[0].label} came from`);
+      if (!unit.isIsolation) {
+        const batchId = String(input?.batchId ?? '');
+        if (!batchId) throw new BadRequestException(`Pick the batch on ${unit.label}`);
+        const mine = unit.assignments.find(a => a.batchId === batchId);
+        const others = unit.assignments.filter(a => a.batchId !== batchId).reduce((s, a) => s + a.birdCount, 0);
+        if (others + birdCount > unit.capacity) {
+          throw new BadRequestException(
+            `${unit.label} holds at most ${unit.capacity} birds — ${others} already there from other batches.`,
+          );
         }
-        const [src] = await tx.productionCage.findMany({
-          where: { code: fromCageCode, isActive: true }, include: { assignment: true, block: { select: { code: true } } },
-        });
-        if (!src) throw new BadRequestException(`Unknown cage ${fromCageCode}`);
-        if (src.id === cages[0].id) throw new BadRequestException('Pick a different cage to take the birds from');
-        const moving = birdCount - (cages[0].assignment?.birdCount ?? 0);
-        if (!src.assignment || src.assignment.birdCount < moving) {
-          throw new BadRequestException(`${src.label} has ${src.assignment?.birdCount ?? 0} bird(s) — ${moving} needed`);
-        }
-        if (cages[0].assignment && cages[0].assignment.batchId !== src.assignment.batchId) {
-          throw new ConflictException(`${cages[0].label} already holds another batch — empty it first`);
-        }
-        batchId = src.assignment.batchId;
-        source = src as any;
-        const left = src.assignment.birdCount - moving;
-        if (left > 0) await tx.productionCageAssignment.update({ where: { id: src.assignment.id }, data: { birdCount: left } });
-        else await tx.productionCageAssignment.delete({ where: { id: src.assignment.id } });
-        if (src.rowId) rows.add(src.rowId);
-      }
-
-      if (birdCount > 0) {
-        for (const c of cages) {
-          const target = batchId ?? c.assignment?.batchId;
-          if (!target) throw new BadRequestException(`Pick a batch for ${c.label}`);
-          if (c.assignment && c.assignment.batchId !== target) {
-            throw new ConflictException(`${c.label} already holds another batch — empty it first`);
-          }
-        }
-        if (batchId && !source) await this.assertPlaceableBatch(tx, batchId);
-      }
-      for (const c of cages) {
         if (birdCount === 0) {
-          await tx.productionCageAssignment.deleteMany({ where: { cageId: c.id } });
-          continue;
+          if (mine) await tx.productionCageAssignment.delete({ where: { id: mine.id } });
+        } else {
+          if (!mine) await this.assertPlaceableBatch(tx, batchId);
+          await tx.productionCageAssignment.upsert({
+            where: { cageId_batchId: { cageId: unit.id, batchId } },
+            create: { cageId: unit.id, batchId, birdCount, placedDate, notes: input?.notes ?? null, assignedById: userId },
+            update: { birdCount, notes: input?.notes ?? undefined, assignedById: userId },
+          });
         }
-        const target = (batchId ?? c.assignment!.batchId) as string;
-        const isolationReason = c.isIsolation ? (input?.isolationReason?.trim() || c.assignment?.isolationReason || 'Isolation') : null;
-        const sourceLabel = source ? `${(source as any).block.code === 'BLK2' ? 'Block 2' : 'Block 1'} ${source.label}` : null;
-        const origin = c.isIsolation
-          ? originText([...(c.assignment?.origin ? c.assignment.origin.split('; ') : []), ...(sourceLabel ? [sourceLabel] : [])]) || null
-          : null;
-        await tx.productionCageAssignment.upsert({
-          where: { cageId: c.id },
-          create: {
-            cageId: c.id, batchId: target, birdCount, placedDate, isolationReason, origin,
-            notes: input?.notes ?? null, assignedById: userId,
-          },
-          update: { batchId: target, birdCount, isolationReason, origin, notes: input?.notes ?? undefined, assignedById: userId },
-        });
+        await this.recomputeRowRollups(tx, rows, userId);
+        return { unit: unit.code, birdCount };
       }
+
+      // Isolation cage: one batch, at most `capacity` birds.
+      if (birdCount > unit.capacity) throw new BadRequestException(`${unit.label} holds at most ${unit.capacity} birds`);
+      const current = unit.assignments[0] ?? null;
+      const before = current?.birdCount ?? 0;
+      if (birdCount === 0) {
+        await tx.productionCageAssignment.deleteMany({ where: { cageId: unit.id } });
+        return { unit: unit.code, birdCount };
+      }
+      let batchId = current?.batchId ?? null;
+      let origin = current?.origin ?? null;
+      if (birdCount > before) {
+        if (!fromCode) throw new BadRequestException(`Say which level the birds moved into ${unit.label} came from`);
+        const src = await this.unitByCode(tx, block.id, fromCode);
+        if (src.id === unit.id) throw new BadRequestException('Pick a different level to take the birds from');
+        const wanted = batchId ?? (input?.batchId ? String(input.batchId) : null);
+        const srcRow = wanted
+          ? src.assignments.find(a => a.batchId === wanted)
+          : src.assignments.length === 1 ? src.assignments[0] : undefined;
+        if (!srcRow) {
+          throw new BadRequestException(src.assignments.length > 1 && !wanted
+            ? `${src.label} holds several batches — pick which batch the birds belong to`
+            : `${src.label} has no birds of that batch on the map`);
+        }
+        const moving = birdCount - before;
+        if (srcRow.birdCount < moving) {
+          throw new BadRequestException(`${src.label} has ${srcRow.birdCount} bird(s) of that batch — ${moving} needed`);
+        }
+        if (srcRow.birdCount > moving) {
+          await tx.productionCageAssignment.update({ where: { id: srcRow.id }, data: { birdCount: srcRow.birdCount - moving } });
+        } else {
+          await tx.productionCageAssignment.delete({ where: { id: srcRow.id } });
+        }
+        if (src.rowId) rows.add(src.rowId);
+        batchId = srcRow.batchId;
+        origin = originText([...(origin ? origin.split('; ') : []), `${houseName(src.block.code)} ${src.label}`]) || null;
+      }
+      if (!batchId) throw new BadRequestException(`${unit.label} is empty — say where the birds came from`);
+      const isolationReason = input?.isolationReason?.trim() || current?.isolationReason || 'Isolation';
+      await tx.productionCageAssignment.upsert({
+        where: { cageId_batchId: { cageId: unit.id, batchId } },
+        create: { cageId: unit.id, batchId, birdCount, placedDate, isolationReason, origin, notes: input?.notes ?? null, assignedById: userId },
+        update: { birdCount, isolationReason, origin, assignedById: userId },
+      });
       await this.recomputeRowRollups(tx, rows, userId);
-      return { cagesUpdated: cages.length, birdCount };
+      return { unit: unit.code, birdCount };
     });
     this.refresh();
     return result;
   }
 
-  async removeCage(code: string, cageCode: string, userId: string) {
-    return this.assignCages(code, { cageCodes: [cageCode], birdCount: 0 }, userId);
-  }
-
-  /** Fills EMPTY cages within a row / level scope for one batch (tier optional). */
-  async fillCages(code: string, input: any, userId: string) {
+  /** Empties a level (one batch when batchId is given) or an isolation cage. */
+  async clearUnit(code: string, unitCode: string, batchId: string | undefined, userId: string) {
     const block = await this.getBlockOrThrow(code);
-    const batchId = String(input?.batchId ?? '');
-    if (!batchId) throw new BadRequestException('Pick a batch');
-    const birdsPerCage = Number(input?.birdsPerCage ?? block.birdsPerCage);
-    if (!Number.isInteger(birdsPerCage) || birdsPerCage < 1 || birdsPerCage > block.birdsPerCage) {
-      throw new BadRequestException(`Birds per cage must be between 1 and ${block.birdsPerCage}`);
-    }
-    const totalBirds = input?.totalBirds != null && input.totalBirds !== '' ? Number(input.totalBirds) : null;
-    const placedDate = toDate(input?.placedDate);
-
     const result = await this.prisma.$transaction(async (tx) => {
-      await this.assertPlaceableBatch(tx, batchId);
-      const cages = await tx.productionCage.findMany({
-        where: {
-          blockId: block.id, isActive: true, isIsolation: false, assignment: { is: null },
-          ...(input?.rowCode ? { row: { rowCode: String(input.rowCode).toUpperCase() } } : {}),
-          ...(input?.level ? { levelNumber: Number(input.level) } : {}),
-          ...(input?.tier ? { tierNumber: Number(input.tier) } : {}),
-        },
-        orderBy: [{ levelNumber: 'desc' }, { tierNumber: 'asc' }, { cageNumber: 'asc' }],
+      const unit = await this.unitByCode(tx, block.id, unitCode);
+      const { count } = await tx.productionCageAssignment.deleteMany({
+        where: { cageId: unit.id, ...(batchId ? { batchId } : {}) },
       });
-      if (!cages.length) throw new BadRequestException('No empty cages in that part of the house');
-      let remaining = totalBirds ?? cages.length * birdsPerCage;
-      if (totalBirds != null && totalBirds > cages.length * birdsPerCage) {
-        throw new BadRequestException(
-          `Only ${cages.length} empty cages here (${cages.length * birdsPerCage} birds at ${birdsPerCage}/cage) — ${totalBirds} requested`,
-        );
-      }
-      let placed = 0, used = 0;
-      for (const c of cages) {
-        if (remaining <= 0) break;
-        const n = Math.min(birdsPerCage, remaining);
-        await tx.productionCageAssignment.create({
-          data: { cageId: c.id, batchId, birdCount: n, placedDate, assignedById: userId, notes: input?.notes ?? null },
-        });
-        remaining -= n; placed += n; used += 1;
-      }
-      await this.recomputeRowRollups(tx, cages.map(c => c.rowId!).filter(Boolean), userId);
-      return { cagesFilled: used, birdsPlaced: placed };
+      if (unit.rowId) await this.recomputeRowRollups(tx, [unit.rowId], userId);
+      return { unit: unit.code, removed: count };
     });
     this.refresh();
     return result;
@@ -429,9 +458,9 @@ export class ProductionCageService {
   }
 
   /**
-   * Places birds of a batch into EMPTY cages of a house, 4 per cage (the last
-   * cage takes the remainder), top level first, tier 1 onwards. Each
-   * placement may be pinned to a row; unpinned placements use any row.
+   * Places birds of a batch into the free space of a house's levels, row by
+   * row, top level first. Each placement may be pinned to a row; unpinned
+   * placements use any row.
    */
   async placeBatchInHouse(db: Db, args: {
     batchId: string; houseCode: string; placements: { rowCode?: string | null; birds: number }[];
@@ -445,39 +474,42 @@ export class ProductionCageService {
     let placedTotal = 0;
     for (const p of args.placements) {
       if (!(p.birds > 0)) continue;
-      const cages = await db.productionCage.findMany({
+      const levels = await db.productionCage.findMany({
         where: {
-          blockId: block.id, isActive: true, isIsolation: false, assignment: { is: null },
+          blockId: block.id, isActive: true, isLevel: true,
           ...(p.rowCode ? { row: { rowCode: p.rowCode.toUpperCase() } } : {}),
         },
-        include: { row: { select: { rowCode: true, section: { select: { sortOrder: true } } } } },
+        include: {
+          assignments: { select: { birdCount: true } },
+          row: { select: { rowCode: true, section: { select: { sortOrder: true } } } },
+        },
       });
-      cages.sort((a, b) =>
+      levels.sort((a, b) =>
         (a.row!.section.sortOrder - b.row!.section.sortOrder) ||
         a.row!.rowCode.localeCompare(b.row!.rowCode) ||
-        ((b.levelNumber ?? 0) - (a.levelNumber ?? 0)) ||
-        ((a.tierNumber ?? 0) - (b.tierNumber ?? 0)) ||
-        (a.cageNumber - b.cageNumber));
-      const space = cages.length * block.birdsPerCage;
+        ((b.levelNumber ?? 0) - (a.levelNumber ?? 0)));
+      const space = levels.reduce((s, l) => s + Math.max(0, l.capacity - used(l)), 0);
       if (p.birds > space) {
         throw new BadRequestException(
-          `${block.name}${p.rowCode ? ` row ${p.rowCode.toUpperCase()}` : ''} has room for ${space} more birds ` +
-          `(${cages.length} empty cages × ${block.birdsPerCage}) — ${p.birds} requested.`,
+          `${block.name}${p.rowCode ? ` row ${p.rowCode.toUpperCase()}` : ''} has room for ${space} more birds — ${p.birds} requested.`,
         );
       }
       let remaining = p.birds;
-      const rows: Prisma.ProductionCageAssignmentCreateManyInput[] = [];
-      for (const c of cages) {
+      for (const l of levels) {
         if (remaining <= 0) break;
-        const n = Math.min(block.birdsPerCage, remaining);
-        rows.push({
-          cageId: c.id, batchId: args.batchId, birdCount: n, placedDate: args.placedDate,
-          assignedById: args.userId, notes: 'Placed on transfer into the production house',
+        const n = Math.min(Math.max(0, l.capacity - used(l)), remaining);
+        if (n <= 0) continue;
+        await db.productionCageAssignment.upsert({
+          where: { cageId_batchId: { cageId: l.id, batchId: args.batchId } },
+          create: {
+            cageId: l.id, batchId: args.batchId, birdCount: n, placedDate: args.placedDate,
+            assignedById: args.userId, notes: 'Placed on transfer into the production house',
+          },
+          update: { birdCount: { increment: n } },
         });
         remaining -= n;
-        if (c.rowId) touchedRows.add(c.rowId);
+        if (l.rowId) touchedRows.add(l.rowId);
       }
-      await db.productionCageAssignment.createMany({ data: rows });
       placedTotal += p.birds;
     }
     await this.recomputeRowRollups(db, touchedRows, args.userId);
@@ -491,7 +523,7 @@ export class ProductionCageService {
    * bird moves the batch itself (stage → PRODUCTION). Moving only some splits
    * them off into a new production batch (`<code>-B1` / `-B2`, parentBatchId
    * set) and the rest stay in the brooder under the original batch. Refused
-   * when the chosen house — or both houses — have no empty cages left.
+   * when the chosen house — or both houses — have no free space left.
    */
   async transferFromBrooder(input: any, user: RequestUser) {
     const batchId = String(input?.batchId ?? '');
@@ -513,7 +545,7 @@ export class ProductionCageService {
 
     const [b1, b2] = await Promise.all([this.capacity('BLK1'), this.capacity('BLK2')]);
     if (b1.freeSpaces === 0 && b2.freeSpaces === 0) {
-      throw new BadRequestException('Both production houses are full — no birds can be transferred until cages are freed.');
+      throw new BadRequestException('Both production houses are full — no birds can be transferred until space is freed.');
     }
     const target = houseCode === 'BLK1' ? b1 : b2;
     const free = rowCodes.length ? (await this.capacity(houseCode, this.prisma, rowCodes)).freeSpaces : target.freeSpaces;
@@ -664,40 +696,58 @@ export class ProductionCageService {
     }
   }
 
-  // ── Per-cage mortality (egg collection) ───────────────────────────────
+  // ── Mortality per level (egg collection) ──────────────────────────────
 
-  /** Validates an attendant's per-cage mortality list against the house and
-   *  returns it with cage ids/labels resolved (stored on the session). */
-  async resolveMortalityEntries(houseCode: string, entries: MortalityCageEntry[]) {
+  /** Validates an attendant's per-level mortality list against the house and
+   *  returns it with level ids/labels and batches resolved (stored on the
+   *  session). */
+  async resolveMortalityEntries(houseCode: string, entries: MortalityUnitEntry[]) {
     const clean = (entries ?? []).filter(e => e && e.cageCode && Number(e.count) > 0);
     if (!clean.length) return [];
     const block = await this.getBlockOrThrow(houseCode);
-    const cages = await this.cagesByCode(this.prisma, block.id, clean.map(e => e.cageCode));
-    const byCode = new Map(cages.map(c => [c.code, c]));
-    const merged = new Map<string, { cageId: string; cageCode: string; cageLabel: string; count: number; cause: string | null; batchId: string | null }>();
+    const merged = new Map<string, {
+      cageId: string; cageCode: string; cageLabel: string; count: number; cause: string | null;
+      batchId: string; batchCode: string;
+    }>();
+    const birdsThere = new Map<string, number>();
     for (const e of clean) {
-      const c = byCode.get(e.cageCode.toUpperCase())!;
-      if (!Number.isInteger(Number(e.count))) throw new BadRequestException(`Mortality for ${c.label} must be a whole number`);
-      const cur = merged.get(c.id) ?? {
-        cageId: c.id, cageCode: c.code, cageLabel: c.label, count: 0,
-        cause: e.cause?.trim() || null, batchId: c.assignment?.batchId ?? null,
+      const unit = await this.prisma.productionCage.findFirst({
+        where: { blockId: block.id, code: String(e.cageCode).toUpperCase(), ...UNIT },
+        include: { assignments: { include: { batch: { select: { batchCode: true } } } } },
+      });
+      if (!unit) throw new BadRequestException(`Unknown level or isolation cage: ${e.cageCode}`);
+      if (!Number.isInteger(Number(e.count))) throw new BadRequestException(`Mortality for ${unit.label} must be a whole number`);
+      if (!unit.assignments.length) throw new BadRequestException(`${unit.label} is empty on the map — record the birds there first`);
+      const a = e.batchId
+        ? unit.assignments.find(x => x.batchId === e.batchId)
+        : unit.assignments.length === 1 ? unit.assignments[0] : undefined;
+      if (!a) {
+        throw new BadRequestException(e.batchId
+          ? `${unit.label} has no birds of that batch`
+          : `${unit.label} holds several batches — pick which batch the bird was from`);
+      }
+      const key = `${unit.id}:${a.batchId}`;
+      const cur = merged.get(key) ?? {
+        cageId: unit.id, cageCode: unit.code, cageLabel: unit.label, count: 0,
+        cause: e.cause?.trim() || null, batchId: a.batchId, batchCode: a.batch.batchCode,
       };
       cur.count += Number(e.count);
-      merged.set(c.id, cur);
+      merged.set(key, cur);
+      birdsThere.set(key, a.birdCount);
     }
-    for (const m of merged.values()) {
-      const c = byCode.get(m.cageCode)!;
-      if (!c.assignment) throw new BadRequestException(`${c.label} is empty on the cage map — record the bird there first`);
-      if (m.count > c.assignment.birdCount) {
-        throw new BadRequestException(`${c.label} only has ${c.assignment.birdCount} bird(s) — ${m.count} mortalities entered`);
+    for (const [key, m] of merged) {
+      if (m.count > birdsThere.get(key)!) {
+        throw new BadRequestException(`${m.cageLabel} only has ${birdsThere.get(key)} bird(s) of ${m.batchCode} — ${m.count} mortalities entered`);
       }
     }
     return [...merged.values()];
   }
 
-  /** Applies a session's per-cage mortalities once the Manager approves it:
-   *  cage counts drop, a mortality log is written per cage, the batch's live
-   *  count drops and the row rollups are refreshed. Idempotent. */
+  /** Applies a session's per-level mortalities once the Manager approves it:
+   *  level counts drop, a mortality log is written per level, the batch's
+   *  live count drops and the row rollups are refreshed. Idempotent. Entries
+   *  saved before records went per level (a single cage) count against that
+   *  cage's level. */
   async applySessionMortalities(sessionId: string, userId: string) {
     const session = await this.prisma.eggCollectionSession.findUnique({ where: { id: sessionId } });
     if (!session || session.mortalitiesAppliedAt) return null;
@@ -708,23 +758,32 @@ export class ProductionCageService {
       const rows = new Set<string>();
       const byBatch = new Map<string, number>();
       for (const e of entries) {
-        const cage = await tx.productionCage.findUnique({ where: { id: String(e.cageId) }, include: { assignment: true } });
-        if (!cage) continue;
+        let unit = await tx.productionCage.findUnique({ where: { id: String(e.cageId) }, include: { assignments: true } });
+        if (unit && !unit.isLevel && !unit.isIsolation) {
+          unit = await tx.productionCage.findFirst({
+            where: { rowId: unit.rowId, levelNumber: unit.levelNumber, isLevel: true },
+            include: { assignments: true },
+          });
+        }
+        if (!unit) continue;
         const count = Math.max(0, Number(e.count) || 0);
         if (!count) continue;
-        const batchId = cage.assignment?.batchId ?? e.batchId ?? session.batchId;
-        if (cage.assignment) {
-          const left = cage.assignment.birdCount - count;
-          if (left > 0) await tx.productionCageAssignment.update({ where: { id: cage.assignment.id }, data: { birdCount: left } });
-          else await tx.productionCageAssignment.delete({ where: { id: cage.assignment.id } });
+        const a = e.batchId
+          ? unit.assignments.find(x => x.batchId === e.batchId)
+          : unit.assignments.length === 1 ? unit.assignments[0] : unit.assignments.find(x => x.batchId === session.batchId);
+        const batchId = a?.batchId ?? e.batchId ?? session.batchId;
+        if (a) {
+          const left = a.birdCount - count;
+          if (left > 0) await tx.productionCageAssignment.update({ where: { id: a.id }, data: { birdCount: left } });
+          else await tx.productionCageAssignment.delete({ where: { id: a.id } });
         }
         await tx.productionCageMortalityLog.create({
           data: {
-            cageId: cage.id, batchId, sessionId, logDate: session.sessionDate, count,
+            cageId: unit.id, batchId, sessionId, logDate: session.sessionDate, count,
             cause: e.cause ?? null, notes: `${session.shift} egg collection`, recordedById: session.collectedById,
           },
         });
-        if (cage.rowId) rows.add(cage.rowId);
+        if (unit.rowId) rows.add(unit.rowId);
         byBatch.set(batchId, (byBatch.get(batchId) ?? 0) + count);
       }
       for (const [batchId, n] of byBatch) {
@@ -733,7 +792,7 @@ export class ProductionCageService {
       }
       await this.recomputeRowRollups(tx, rows, userId);
       await tx.eggCollectionSession.update({ where: { id: sessionId }, data: { mortalitiesAppliedAt: new Date() } });
-      return { cages: entries.length, birds: [...byBatch.values()].reduce((s, n) => s + n, 0) };
+      return { levels: entries.length, birds: [...byBatch.values()].reduce((s, n) => s + n, 0) };
     });
     this.refresh();
     return result;
@@ -755,66 +814,58 @@ export class ProductionCageService {
 
   private async loadSim(db: Db) {
     const blocks = await db.farmBlock.findMany({ where: { code: { in: HOUSE_CODES } } });
-    return { blocks, cages: new Map<string, SimCage>() };
+    return { blocks, units: new Map<string, SimUnit>() };
   }
 
-  private async resolveRef(db: Db, sim: { blocks: any[]; cages: Map<string, SimCage> }, ref: CageRef, defaultCode: string): Promise<SimCage[] | string> {
+  /** Levels (cage / tier numbers are only physical places on the level and
+   *  are ignored) or isolation cages a reference names. */
+  private async resolveRef(db: Db, sim: { blocks: any[]; units: Map<string, SimUnit> }, ref: CageRef, defaultCode: string): Promise<SimUnit[] | string> {
     const code = ref.blockCode ?? defaultCode;
     const block = sim.blocks.find(b => b.code === code);
     if (!block) return `Production house ${code} not found.`;
     if (!ref.isolation && !ref.rowCode) return 'Say which row (A1, A2, B1, B2, C1, C2) or isolation cage.';
-    // Without a tier, a cage number counts along the whole level (1 … tiers × 4).
-    const cpt = block.cagesPerTier as number;
-    const levelNumbered = !ref.isolation && !ref.tiers?.length && !!ref.cages?.length;
-    const maxCage = (block.tiersPerLevel as number) * cpt;
-    if (levelNumbered && ref.cages!.some(n => n < 1 || n > maxCage)) {
-      return `${block.name} has cages 1–${maxCage} on each level.`;
-    }
-    const where: Prisma.ProductionCageWhereInput = {
-      blockId: block.id, isActive: true, isIsolation: !!ref.isolation,
-      ...(ref.rowCode ? { row: { rowCode: ref.rowCode } } : {}),
-      ...(ref.levels?.length ? { levelNumber: { in: ref.levels } } : {}),
-      ...(ref.tiers?.length ? { tierNumber: { in: ref.tiers } } : {}),
-      ...(levelNumbered
-        ? { OR: ref.cages!.map(n => ({ tierNumber: Math.ceil(n / cpt), cageNumber: ((n - 1) % cpt) + 1 })) }
-        : ref.cages?.length ? { cageNumber: { in: ref.cages } } : {}),
-    };
-    const cages = await db.productionCage.findMany({
-      where, include: { assignment: true },
-      orderBy: [{ levelNumber: 'desc' }, { tierNumber: 'asc' }, { cageNumber: 'asc' }],
+    const where: Prisma.ProductionCageWhereInput = ref.isolation
+      ? { blockId: block.id, isActive: true, isIsolation: true, ...(ref.cages?.length ? { cageNumber: { in: ref.cages } } : {}) }
+      : {
+          blockId: block.id, isActive: true, isLevel: true, row: { rowCode: ref.rowCode },
+          ...(ref.levels?.length ? { levelNumber: { in: ref.levels } } : {}),
+        };
+    const units = await db.productionCage.findMany({
+      where, include: { assignments: true },
+      orderBy: [{ levelNumber: 'desc' }, { cageNumber: 'asc' }],
     });
-    if (!cages.length) {
-      const bits = [ref.isolation ? 'isolation' : ref.rowCode,
-        ref.levels?.length ? `level ${ref.levels.join(',')}` : '',
-        ref.tiers?.length ? `tier ${ref.tiers.join(',')}` : '',
-        ref.cages?.length ? `cage ${ref.cages.join(',')}` : ''].filter(Boolean).join(' ');
-      return `No such cage in ${block.name}: ${bits}.`;
+    if (!units.length) {
+      const bits = [ref.isolation ? 'isolation cage' : ref.rowCode,
+        ref.isolation && ref.cages?.length ? ref.cages.join(',') : '',
+        !ref.isolation && ref.levels?.length ? `level ${ref.levels.join(',')}` : ''].filter(Boolean).join(' ');
+      return `No such level or isolation cage in ${block.name}: ${bits}.`;
     }
-    return cages.map(c => {
-      const existing = sim.cages.get(c.id);
+    return units.map(u => {
+      const existing = sim.units.get(u.id);
       if (existing) return existing;
-      const s: SimCage = {
-        id: c.id, code: c.code, label: `${block.code === 'BLK2' ? 'Block 2' : 'Block 1'} ${c.label}`,
-        rowId: c.rowId, capacity: c.capacity, isIsolation: c.isIsolation,
-        batchId: c.assignment?.batchId ?? null, birdCount: c.assignment?.birdCount ?? 0,
-        isolationReason: c.assignment?.isolationReason ?? null,
-        origin: c.assignment?.origin ?? null,
+      const s: SimUnit = {
+        id: u.id, code: u.code, label: `${houseName(block.code)} ${u.label}`,
+        rowId: u.rowId, capacity: u.capacity, isIsolation: u.isIsolation,
+        batches: new Map(u.assignments.map(a => [a.batchId, a.birdCount])),
+        isolationReason: u.assignments[0]?.isolationReason ?? null,
+        origin: u.assignments[0]?.origin ?? null,
       };
-      sim.cages.set(c.id, s);
+      sim.units.set(u.id, s);
       return s;
     });
   }
 
-  /** Works out every cage change a description implies, without writing. */
+  /** Works out every level / isolation change a description implies, without writing. */
   private async planReassignment(db: Db, houseCode: string, description: string, fallbackBatchId?: string) {
     const parsed = parseProductionCageText(description);
     const sim = await this.loadSim(db);
-    const original = new Map<string, { batchId: string | null; birdCount: number }>();
-    const remember = (cs: SimCage[]) => cs.forEach(c => {
-      if (!original.has(c.id)) original.set(c.id, { batchId: c.batchId, birdCount: c.birdCount });
+    const original = new Map<string, Map<string, number>>();
+    const remember = (us: SimUnit[]) => us.forEach(u => {
+      if (!original.has(u.id)) original.set(u.id, new Map(u.batches));
     });
     const steps: { clause: string; summary: string }[] = [];
     const problems = [...parsed.problems];
+    const names = (us: SimUnit[]) => `${us.map(u => u.label).slice(0, 3).join(', ')}${us.length > 3 ? '…' : ''}`;
 
     for (const op of parsed.ops) {
       if (op.kind === 'MOVE') {
@@ -822,96 +873,112 @@ export class ProductionCageService {
         const dst = await this.resolveRef(db, sim, op.to, houseCode);
         if (typeof src === 'string') { problems.push({ clause: op.clause, reason: `From: ${src}` }); continue; }
         if (typeof dst === 'string') { problems.push({ clause: op.clause, reason: `To: ${dst}` }); continue; }
+        if (dst.every(d => src.some(s => s.id === d.id))) {
+          problems.push({ clause: op.clause, reason: 'Birds stay on the same level — records are per level, so nothing changes.' });
+          continue;
+        }
         remember(src); remember(dst);
-        const available = src.filter(c => c.birdCount > 0);
-        const have = available.reduce((s, c) => s + c.birdCount, 0);
+        const available = src.filter(u => simUsed(u) > 0);
+        const have = available.reduce((s, u) => s + simUsed(u), 0);
         const want = op.count ?? have;
-        if (have === 0) { problems.push({ clause: op.clause, reason: 'The cage(s) moved from have no birds on the map.' }); continue; }
-        if (want > have) { problems.push({ clause: op.clause, reason: `Only ${have} bird(s) in the cage(s) moved from — ${want} stated.` }); continue; }
-        const batchIds = new Set(available.map(c => c.batchId));
-        const destSpace = dst.reduce((s, c) =>
-          s + (c.batchId && !batchIds.has(c.batchId) ? 0 : c.capacity - c.birdCount), 0);
+        if (have === 0) { problems.push({ clause: op.clause, reason: 'The level(s) moved from have no birds on the map.' }); continue; }
+        if (want > have) { problems.push({ clause: op.clause, reason: `Only ${have} bird(s) where they were moved from — ${want} stated.` }); continue; }
+        const batchIds = new Set(available.flatMap(u => [...u.batches.keys()]));
+        const destSpace = dst.reduce((s, u) => s + (u.isIsolation && [...u.batches.keys()].some(b => !batchIds.has(b))
+          ? 0 : u.capacity - simUsed(u)), 0);
         if (want > destSpace) {
-          problems.push({ clause: op.clause, reason: `Not enough room where the birds went (space for ${destSpace}, ${want} moved; 4 birds max per cage).` });
+          problems.push({ clause: op.clause, reason: `Not enough room where the birds went (space for ${destSpace}, ${want} moved).` });
           continue;
         }
         let toTake = want;
         const taken: { batchId: string; n: number }[] = [];
         const fromLabels: string[] = [];
-        for (const c of available) {
-          if (toTake <= 0) break;
-          const n = Math.min(c.birdCount, toTake);
-          c.birdCount -= n; toTake -= n;
-          taken.push({ batchId: c.batchId!, n });
-          fromLabels.push(c.label);
-          if (c.birdCount === 0) { c.batchId = null; c.isolationReason = null; c.origin = null; }
+        for (const u of available) {
+          for (const [batchId, count] of u.batches) {
+            if (toTake <= 0) break;
+            const n = Math.min(count, toTake);
+            toTake -= n;
+            taken.push({ batchId, n });
+            fromLabels.push(u.label);
+            if (count - n > 0) u.batches.set(batchId, count - n); else u.batches.delete(batchId);
+          }
+          if (!u.batches.size) { u.isolationReason = null; u.origin = null; }
         }
         for (const t of taken) {
           let left = t.n;
-          for (const c of dst) {
+          for (const u of dst) {
             if (left <= 0) break;
-            if (c.batchId && c.batchId !== t.batchId) continue;
-            const n = Math.min(c.capacity - c.birdCount, left);
+            if (u.isIsolation && [...u.batches.keys()].some(b => b !== t.batchId)) continue;
+            const n = Math.min(u.capacity - simUsed(u), left);
             if (n <= 0) continue;
-            c.batchId = t.batchId; c.birdCount += n; left -= n;
-            if (c.isIsolation) {
-              c.isolationReason = op.isolationReason ?? c.isolationReason ?? 'Isolation';
-              c.origin = originText([...(c.origin ? c.origin.split('; ') : []), ...fromLabels]);
+            u.batches.set(t.batchId, (u.batches.get(t.batchId) ?? 0) + n);
+            left -= n;
+            if (u.isIsolation) {
+              u.isolationReason = op.isolationReason ?? u.isolationReason ?? 'Isolation';
+              u.origin = originText([...(u.origin ? u.origin.split('; ') : []), ...fromLabels]);
             }
           }
         }
-        steps.push({
-          clause: op.clause,
-          summary: `Move ${want} bird(s): ${available.map(c => c.label).slice(0, 3).join(', ')}${available.length > 3 ? '…' : ''} → ` +
-            `${dst.map(c => c.label).slice(0, 3).join(', ')}${dst.length > 3 ? '…' : ''}`,
-        });
+        steps.push({ clause: op.clause, summary: `Move ${want} bird(s): ${names(available)} → ${names(dst)}` });
       } else {
         const target = await this.resolveRef(db, sim, op.target, houseCode);
         if (typeof target === 'string') { problems.push({ clause: op.clause, reason: target }); continue; }
-        remember(target);
-        if (op.birdsPerCage > Math.min(...target.map(c => c.capacity))) {
-          problems.push({ clause: op.clause, reason: `A cage holds at most ${target[0].capacity} birds — ${op.birdsPerCage} stated.` });
-          continue;
-        }
-        // Isolation needs a source: birds can't appear in isolation without
-        // saying which cage they were taken from.
-        if (op.birdsPerCage > 0 && target.some(c => c.isIsolation && op.birdsPerCage > c.birdCount)) {
+        const onLevels = !target[0].isIsolation;
+        if (onLevels && (op.target.cages?.length || op.target.tiers?.length) && op.birdsPerCage > 0) {
           problems.push({
             clause: op.clause,
-            reason: 'Say where the isolated birds came from, e.g. "moved 2 birds from A1 level 3 cage 10 to isolation cage 1".',
+            reason: 'Records are per level — say how many birds are on the whole level, e.g. "A1 level 4 has 380 birds".',
           });
           continue;
         }
-        const needsBatch = op.birdsPerCage > 0 && target.some(c => !c.batchId) && !fallbackBatchId;
-        if (needsBatch) {
-          problems.push({ clause: op.clause, reason: 'Some of these cages are empty — pick which batch the birds belong to.' });
+        remember(target);
+        const n = op.birdsPerCage;
+        const over = target.find(u => n > u.capacity);
+        if (over) { problems.push({ clause: op.clause, reason: `${over.label} holds at most ${over.capacity} birds — ${n} stated.` }); continue; }
+        // Isolation needs a source: birds can't appear in isolation without
+        // saying where they were taken from.
+        if (n > 0 && target.some(u => u.isIsolation && n > simUsed(u))) {
+          problems.push({
+            clause: op.clause,
+            reason: 'Say where the isolated birds came from, e.g. "moved 2 birds from A1 level 3 to isolation cage 1".',
+          });
           continue;
         }
-        for (const c of target) {
-          if (op.birdsPerCage === 0) { c.batchId = null; c.birdCount = 0; c.isolationReason = null; c.origin = null; continue; }
-          c.batchId = c.batchId ?? fallbackBatchId!;
-          c.birdCount = op.birdsPerCage;
-          if (c.isIsolation) c.isolationReason = op.isolationReason ?? c.isolationReason ?? 'Isolation';
+        if (n > 0 && target.some(u => u.batches.size > 1)) {
+          problems.push({ clause: op.clause, reason: 'That level holds several batches — change each batch on the map instead.' });
+          continue;
         }
+        if (n > 0 && target.some(u => u.batches.size === 0) && !fallbackBatchId) {
+          problems.push({ clause: op.clause, reason: 'Some of these levels are empty — pick which batch the birds belong to.' });
+          continue;
+        }
+        for (const u of target) {
+          if (n === 0) { u.batches.clear(); u.isolationReason = null; u.origin = null; continue; }
+          const batchId = [...u.batches.keys()][0] ?? fallbackBatchId!;
+          u.batches = new Map([[batchId, n]]);
+          if (u.isIsolation) u.isolationReason = op.isolationReason ?? u.isolationReason ?? 'Isolation';
+        }
+        const what = onLevels ? 'level' : 'isolation cage';
         steps.push({
           clause: op.clause,
-          summary: op.birdsPerCage === 0
-            ? `Empty ${target.length} cage(s) (${target[0].label}${target.length > 1 ? ' …' : ''})`
-            : `Set ${target.length} cage(s) to ${op.birdsPerCage} bird(s) each (${target[0].label}${target.length > 1 ? ' …' : ''})`,
+          summary: n === 0
+            ? `Empty ${target.length} ${what}(s) (${names(target)})`
+            : `Set ${target.length} ${what}(s) to ${n} bird(s) each (${names(target)})`,
         });
       }
     }
 
     const changes: PlannedChange[] = [];
     for (const [id, before] of original) {
-      const c = sim.cages.get(id)!;
-      if (before.batchId === c.batchId && before.birdCount === c.birdCount) continue;
-      changes.push({
-        cageId: id, cageCode: c.code, cageLabel: c.label,
-        beforeBatchId: before.batchId, beforeCount: before.birdCount,
-        afterBatchId: c.batchId, afterCount: c.birdCount, isolationReason: c.isolationReason,
-        origin: c.isIsolation ? c.origin : null,
-      });
+      const u = sim.units.get(id)!;
+      for (const batchId of new Set([...before.keys(), ...u.batches.keys()])) {
+        const b = before.get(batchId) ?? 0, a = u.batches.get(batchId) ?? 0;
+        if (a === b) continue;
+        changes.push({
+          cageId: id, cageCode: u.code, cageLabel: u.label, rowId: u.rowId, batchId, beforeCount: b, afterCount: a,
+          isolationReason: u.isIsolation ? u.isolationReason : null, origin: u.isIsolation ? u.origin : null,
+        });
+      }
     }
     changes.sort((a, b) => a.cageCode.localeCompare(b.cageCode, undefined, { numeric: true }));
     return { parsed, steps, problems, changes, ignored: parsed.ignored };
@@ -922,12 +989,15 @@ export class ProductionCageService {
     if (!description) throw new BadRequestException('Describe where the birds were moved');
     await this.getBlockOrThrow(houseCode);
     const plan = await this.planReassignment(this.prisma, houseCode.toUpperCase(), description, input?.batchId || undefined);
-    const birdsMoved = plan.changes.reduce((s, c) => s + Math.max(0, c.afterCount - (c.beforeBatchId === c.afterBatchId ? c.beforeCount : 0)), 0);
+    const birdsMoved = plan.changes.reduce((s, c) => s + Math.max(0, c.afterCount - c.beforeCount), 0);
+    const codes = new Map((await this.prisma.batch.findMany({
+      where: { id: { in: [...new Set(plan.changes.map(c => c.batchId))] } }, select: { id: true, batchCode: true },
+    })).map(b => [b.id, b.batchCode]));
     return {
       steps: plan.steps,
       problems: plan.problems,
       ignored: plan.ignored,
-      changes: plan.changes,
+      changes: plan.changes.map(c => ({ ...c, batchCode: codes.get(c.batchId) ?? null })),
       canApply: plan.problems.length === 0 && plan.changes.length > 0,
       birdsMoved,
     };
@@ -935,8 +1005,8 @@ export class ProductionCageService {
 
   /**
    * Records a reassignment description. When everything in it is understood
-   * it is applied to the cage map in one transaction; otherwise (or when the
-   * user chooses) it is saved as a written note only — nothing typed is lost.
+   * it is applied to the map in one transaction; otherwise (or when the user
+   * chooses) it is saved as a written note only — nothing typed is lost.
    */
   async recordReassignment(houseCode: string, input: any, userId: string) {
     const code = houseCode.toUpperCase();
@@ -950,7 +1020,7 @@ export class ProductionCageService {
       return this.prisma.productionCageReassignment.create({
         data: {
           blockCode: code, batchId: input?.batchId || null, description, applied: false,
-          appliedSummary: 'Saved as a note — cage map not changed.', effectiveDate, recordedById: userId,
+          appliedSummary: 'Saved as a note — map not changed.', effectiveDate, recordedById: userId,
         },
       });
     }
@@ -963,22 +1033,21 @@ export class ProductionCageService {
           plan.problems.map(p => `"${p.clause}" — ${p.reason}`).join(' | '),
         );
       }
-      if (!plan.changes.length) throw new BadRequestException('Nothing in the description changes the cage map — save it as a note instead.');
+      if (!plan.changes.length) throw new BadRequestException('Nothing in the description changes the map — save it as a note instead.');
       const rows = new Set<string>();
       for (const ch of plan.changes) {
-        const cage = await tx.productionCage.findUnique({ where: { id: ch.cageId }, select: { rowId: true } });
-        if (cage?.rowId) rows.add(cage.rowId);
-        if (!ch.afterBatchId || ch.afterCount === 0) {
-          await tx.productionCageAssignment.deleteMany({ where: { cageId: ch.cageId } });
+        if (ch.rowId) rows.add(ch.rowId);
+        if (ch.afterCount === 0) {
+          await tx.productionCageAssignment.deleteMany({ where: { cageId: ch.cageId, batchId: ch.batchId } });
           continue;
         }
         await tx.productionCageAssignment.upsert({
-          where: { cageId: ch.cageId },
+          where: { cageId_batchId: { cageId: ch.cageId, batchId: ch.batchId } },
           create: {
-            cageId: ch.cageId, batchId: ch.afterBatchId, birdCount: ch.afterCount, placedDate: effectiveDate,
-            isolationReason: ch.isolationReason, origin: ch.origin, assignedById: userId, notes: 'Cage reassignment',
+            cageId: ch.cageId, batchId: ch.batchId, birdCount: ch.afterCount, placedDate: effectiveDate,
+            isolationReason: ch.isolationReason, origin: ch.origin, assignedById: userId, notes: 'Reassignment',
           },
-          update: { batchId: ch.afterBatchId, birdCount: ch.afterCount, isolationReason: ch.isolationReason, origin: ch.origin, assignedById: userId },
+          update: { birdCount: ch.afterCount, isolationReason: ch.isolationReason, origin: ch.origin, assignedById: userId },
         });
       }
       await this.recomputeRowRollups(tx, rows, userId);
@@ -1006,7 +1075,7 @@ export class ProductionCageService {
     });
   }
 
-  /** Director heads-up when a batch's caged birds exceed its live count. */
+  /** Director heads-up when a batch's placed birds exceed its live count. */
   private async flagOverCapacity(houseCode: string) {
     try {
       const block = await this.getBlockOrThrow(houseCode);
@@ -1016,12 +1085,12 @@ export class ProductionCageService {
       for (const s of sums) {
         const total = await this.prisma.productionCageAssignment.aggregate({ where: { batchId: s.batchId }, _sum: { birdCount: true } });
         const batch = await this.prisma.batch.findUnique({ where: { id: s.batchId }, select: { batchCode: true, currentBirdCount: true } });
-        const caged = total._sum.birdCount ?? 0;
-        if (batch && caged > batch.currentBirdCount) {
+        const placed = total._sum.birdCount ?? 0;
+        if (batch && placed > batch.currentBirdCount) {
           await this.notifications.notifyRole(
             UserRole.OWNER, 'BROODER_CAGE_REASSIGN_OVER_CAPACITY' as any,
-            `Production cage map exceeds live bird count — ${batch.batchCode}`,
-            `After a cage reassignment, ${batch.batchCode} has ${caged} birds on the production cage map but ` +
+            `Production house map exceeds live bird count — ${batch.batchCode}`,
+            `After a reassignment, ${batch.batchCode} has ${placed} birds on the production house map but ` +
             `${batch.currentBirdCount} live birds on record. Please review.`,
             { entityId: s.batchId, entityType: 'Batch' },
           ).catch(() => {});

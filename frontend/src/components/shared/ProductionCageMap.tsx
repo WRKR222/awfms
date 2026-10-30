@@ -1,49 +1,33 @@
 // src/components/shared/ProductionCageMap.tsx
 //
-// Interactive per-cage map of the production houses (Block 1 & Block 2),
-// mirroring the brooder cage map: sections A/B/C → rows A1…C2 → 4 levels
-// (top to bottom) → cages numbered along the level (Block 1: 1–96, Block 2:
-// 1–152; drawn in groups of 4 = the physical tiers, which never need naming),
-// plus 8 isolation cages per house. A cage holds at most 4 birds. Birds put
-// into an isolation cage are always taken from a named cage (their origin).
+// Interactive map of the production houses (Block 1 & Block 2), recorded per
+// row · level: sections A/B/C → rows A1…C2 → 4 levels (top to bottom). Each
+// level still has its cages (Block 1: 96, Block 2: 152, 4 birds each), which
+// set its capacity, but birds, mortalities and moves are kept per level. A
+// level may hold several batches. Plus 8 isolation cages per house; birds put
+// into an isolation cage are always taken from a named level (their origin).
 //
-//   • Tap a level           → expands its tiers and cages.
-//   • Tap a cage (editable) → assign a batch / change the bird count / empty it.
-//   • "Fill empty cages"    → place a batch into every empty cage of a level.
-//   • Picker mode (onPickCage) → tapping a cage hands it back to the caller
-//     instead (used to record per-cage mortality on the egg collection page).
-import { useMemo, useState } from 'react';
+//   • Tap a level (editable) → set each batch's birds on it, add a batch, empty it.
+//   • Tap an isolation cage  → change its birds (taken from a level) or empty it.
+//   • Picker mode (onPickCage) → tapping a level / isolation cage hands it back
+//     to the caller instead (used to record mortality on the egg collection page).
+import { useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bird, ChevronDown, Grid3x3, Layers, Lock, Skull, Warehouse, X } from 'lucide-react';
+import { Bird, Layers, Lock, Skull, Trash2, Warehouse, X } from 'lucide-react';
 import { api } from '../../lib/api/client';
 import dayjs from '../../lib/dayjs';
 import {
-  HOUSES, HOUSE_QUERY_KEYS, cageCode, cageCodeFromNumber, cageLabel, cageNumberOnLevel, isolationCode, levelLabel,
-  useHouseMap, type HouseCode, type HouseMap, type OccupiedCage,
+  HOUSES, HOUSE_QUERY_KEYS, levelCode, levelLabel, useHouseMap,
+  type HouseCode, type HouseMap, type IsolationUnit, type LevelUnit, type UnitBatch,
 } from '../../hooks/useProductionHouses';
 
-const PALETTE = [
-  'bg-emerald-500/30 border-emerald-400/60 text-emerald-100',
-  'bg-sky-500/30 border-sky-400/60 text-sky-100',
-  'bg-fuchsia-500/30 border-fuchsia-400/60 text-fuchsia-100',
-  'bg-amber-500/30 border-amber-400/60 text-amber-100',
-  'bg-orange-500/30 border-orange-400/60 text-orange-100',
-  'bg-violet-500/30 border-violet-400/60 text-violet-100',
-];
-const DOT = ['bg-emerald-400', 'bg-sky-400', 'bg-fuchsia-400', 'bg-amber-400', 'bg-orange-400', 'bg-violet-400'];
+const BAR = ['bg-emerald-400', 'bg-sky-400', 'bg-fuchsia-400', 'bg-amber-400', 'bg-orange-400', 'bg-violet-400'];
 
 export interface PickedCage {
   code: string;
   label: string;
   birdCount: number;
-  batchCode: string | null;
-}
-
-interface CageTarget {
-  code: string;
-  label: string;
-  isIsolation: boolean;
-  occupied: OccupiedCage | null;
+  batches: UnitBatch[];
 }
 
 function errMsg(err: any): string {
@@ -65,283 +49,265 @@ function invalidateAll(qc: ReturnType<typeof useQueryClient>) {
   HOUSE_QUERY_KEYS.forEach(k => qc.invalidateQueries({ queryKey: k }));
 }
 
-// ── Cage edit modal ──────────────────────────────────────────────────────────
+const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2 bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 text-sm';
 
-function CageModal({ house, map, target, editable, onClose }: {
-  house: HouseCode; map: HouseMap; target: CageTarget; editable: boolean; onClose: () => void;
-}) {
-  const qc = useQueryClient();
-  const { data: batches = [] } = useProductionBatches(editable);
-  const [batchId, setBatchId] = useState(target.occupied?.batchId ?? '');
-  const [count, setCount] = useState(String(target.occupied?.birdCount ?? (target.isIsolation ? 1 : 4)));
-  const [reason, setReason] = useState(target.occupied?.isolationReason ?? '');
-  const [error, setError] = useState<string | null>(null);
-  // Isolation: which cage the birds were taken from.
-  const rowCodes = map.sections.flatMap(sec => sec.rows.map(r => r.rowCode));
-  const [fromRow, setFromRow] = useState(rowCodes[0] ?? 'A1');
-  const [fromLevel, setFromLevel] = useState(String(map.block.levelsPerRow));
-  const [fromCage, setFromCage] = useState('');
-  const maxCage = map.block.tiersPerLevel * map.block.cagesPerTier;
-  const fromCode = fromCage && Number(fromCage) >= 1 && Number(fromCage) <= maxCage
-    ? cageCodeFromNumber(house, fromRow, Number(fromLevel), Number(fromCage), map.block.cagesPerTier)
-    : null;
-  const fromOccupant = fromCode ? map.occupied.find(o => o.code === fromCode) ?? null : null;
-  const isoGrowing = target.isIsolation && Number(count) > (target.occupied?.birdCount ?? 0);
-
-  const save = useMutation({
-    mutationFn: (birdCount: number) => api.post(`/production/houses/${house}/cages/assign`, {
-      cageCodes: [target.code], batchId: (isoGrowing ? undefined : batchId) || undefined, birdCount,
-      isolationReason: target.isIsolation ? reason : undefined,
-      fromCageCode: isoGrowing ? fromCode : undefined,
-    }),
-    onSuccess: () => { invalidateAll(qc); onClose(); },
-    onError: (e: any) => setError(errMsg(e)),
-  });
-
-  const occ = target.occupied;
+function Sheet({ title, sub, onClose, children }: { title: string; sub?: string; onClose: () => void; children: ReactNode }) {
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4" onClick={onClose}>
-      <div className="bg-white dark:bg-dark-card w-full md:max-w-sm rounded-t-3xl md:rounded-2xl shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-white dark:bg-dark-card w-full md:max-w-md rounded-t-3xl md:rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-dark-border">
           <div>
-            <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">{target.label}</p>
-            <p className="text-[11px] text-gray-400 font-mono">{target.code}</p>
+            <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">{title}</p>
+            {sub && <p className="text-[11px] text-gray-400">{sub}</p>}
           </div>
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg"><X className="w-4 h-4 text-gray-500" /></button>
         </div>
-        <div className="p-4 space-y-3 text-sm">
-          {occ ? (
-            <div className="rounded-xl bg-gray-50 dark:bg-dark-bg p-3 text-xs text-gray-600 dark:text-gray-300 space-y-0.5">
-              <p><span className="text-gray-400">Batch:</span> <strong>{occ.batchCode}</strong></p>
-              <p><span className="text-gray-400">Birds:</span> <strong>{occ.birdCount}</strong> / {occ.capacity}</p>
-              <p><span className="text-gray-400">Placed:</span> {dayjs(occ.placedDate).format('D MMM YYYY')}</p>
-              {occ.mortality7d > 0 && <p className="text-red-500">Mortalities (7 days): {occ.mortality7d}</p>}
-              {occ.isolationReason && <p className="text-purple-600 dark:text-purple-300">Isolation: {occ.isolationReason}</p>}
-              {occ.origin && <p className="text-purple-600 dark:text-purple-300">Came from: {occ.origin}</p>}
-            </div>
-          ) : (
-            <p className="text-xs text-gray-400">Empty cage.</p>
-          )}
-
-          {editable && (
-            <>
-              {!target.isIsolation && (
-              <div>
-                <label className="block text-[11px] font-semibold text-gray-500 mb-1 uppercase tracking-wide">Batch</label>
-                <select value={batchId} onChange={e => setBatchId(e.target.value)}
-                  className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2 bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100">
-                  <option value="">Select batch…</option>
-                  {batches.map(b => <option key={b.id} value={b.id}>{b.batchCode}</option>)}
-                </select>
-              </div>
-              )}
-              <div>
-                <label className="block text-[11px] font-semibold text-gray-500 mb-1 uppercase tracking-wide">Birds in cage (max 4)</label>
-                <div className="grid grid-cols-5 gap-1.5">
-                  {[0, 1, 2, 3, 4].map(n => (
-                    <button key={n} type="button" onClick={() => setCount(String(n))}
-                      className={`rounded-lg py-2 font-bold border ${count === String(n)
-                        ? 'border-brand-green bg-brand-green/10 text-brand-green'
-                        : 'border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300'}`}>
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {isoGrowing && (
-                <div className="rounded-xl border border-purple-200 dark:border-purple-800 bg-purple-50/60 dark:bg-purple-900/20 p-2.5 space-y-1.5">
-                  <p className="text-[11px] font-semibold text-purple-700 dark:text-purple-300 uppercase tracking-wide">Came from (required)</p>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    <select value={fromRow} onChange={e => setFromRow(e.target.value)}
-                      className="border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1.5 text-xs bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100">
-                      {rowCodes.map(r => <option key={r} value={r}>Row {r}</option>)}
-                    </select>
-                    <select value={fromLevel} onChange={e => setFromLevel(e.target.value)}
-                      className="border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1.5 text-xs bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100">
-                      {Array.from({ length: map.block.levelsPerRow }, (_, i) => map.block.levelsPerRow - i).map(l => (
-                        <option key={l} value={l}>{levelLabel(l, map.block.levelsPerRow)}</option>
-                      ))}
-                    </select>
-                    <input type="number" min={1} max={maxCage} value={fromCage} onChange={e => setFromCage(e.target.value)}
-                      placeholder={`Cage 1–${maxCage}`}
-                      className="border border-gray-200 dark:border-dark-border rounded-lg px-2 py-1.5 text-xs bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100" />
-                  </div>
-                  <p className="text-[11px] text-gray-500">
-                    {fromCode
-                      ? fromOccupant
-                        ? `${fromOccupant.batchCode} · ${fromOccupant.birdCount} bird(s) there — the moved birds are taken from it.`
-                        : 'That cage is empty on the map.'
-                      : 'Pick the row, level and cage number the birds were taken from.'}
-                  </p>
-                </div>
-              )}
-              {target.isIsolation && (
-                <div>
-                  <label className="block text-[11px] font-semibold text-gray-500 mb-1 uppercase tracking-wide">Isolation reason</label>
-                  <input value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. limping, under observation"
-                    className="w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2 bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100" />
-                </div>
-              )}
-              {error && <p className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-lg p-2">{error}</p>}
-              <div className="flex gap-2 pt-1">
-                {occ && (
-                  <button type="button" disabled={save.isPending} onClick={() => save.mutate(0)}
-                    className="flex-1 border border-red-200 dark:border-red-800 text-red-600 rounded-xl py-2.5 font-semibold disabled:opacity-60">
-                    Empty cage
-                  </button>
-                )}
-                <button type="button" disabled={save.isPending || (isoGrowing ? !fromOccupant : Number(count) > 0 && !batchId)}
-                  onClick={() => { setError(null); save.mutate(Number(count)); }}
-                  className="flex-1 bg-brand-green text-white rounded-xl py-2.5 font-semibold disabled:opacity-60">
-                  {save.isPending ? 'Saving…' : 'Save'}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+        <div className="p-4 space-y-3 text-sm">{children}</div>
       </div>
     </div>
   );
 }
 
-// ── Fill-level modal ─────────────────────────────────────────────────────────
+// ── Level modal ──────────────────────────────────────────────────────────────
 
-function FillModal({ house, rowCode, level, emptyCages, onClose }: {
-  house: HouseCode; rowCode: string; level: number; emptyCages: number; onClose: () => void;
+function LevelModal({ house, map, level, editable, onClose }: {
+  house: HouseCode; map: HouseMap; level: LevelUnit; editable: boolean; onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const { data: batches = [] } = useProductionBatches(true);
-  const [batchId, setBatchId] = useState('');
-  const [perCage, setPerCage] = useState('4');
-  const [total, setTotal] = useState('');
+  const { data: batches = [] } = useProductionBatches(editable);
+  const [counts, setCounts] = useState<Record<string, string>>(
+    Object.fromEntries(level.batches.map(b => [b.batchId, String(b.birdCount)])),
+  );
+  const [newBatch, setNewBatch] = useState('');
+  const [newCount, setNewCount] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const fill = useMutation({
-    mutationFn: () => api.post(`/production/houses/${house}/cages/fill`, {
-      batchId, rowCode, level, birdsPerCage: Number(perCage), totalBirds: total ? Number(total) : undefined,
+  const done = () => { invalidateAll(qc); onClose(); };
+
+  const set = useMutation({
+    mutationFn: (v: { batchId: string; birdCount: number }) =>
+      api.post(`/production/houses/${house}/units/set`, { unitCode: level.code, ...v }),
+    onSuccess: done,
+    onError: (e: any) => setError(errMsg(e)),
+  });
+  const clear = useMutation({
+    mutationFn: (batchId?: string) =>
+      api.delete(`/production/houses/${house}/units/${level.code}`, { params: batchId ? { batchId } : {} }),
+    onSuccess: done,
+    onError: (e: any) => setError(errMsg(e)),
+  });
+  const busy = set.isPending || clear.isPending;
+  const free = level.capacity - level.birds;
+  const choosable = batches.filter(b => !level.batches.some(x => x.batchId === b.id));
+
+  return (
+    <Sheet title={level.label} sub={`${map.block.cagesPerLevel} cages · holds up to ${level.capacity.toLocaleString()} birds · records kept per level`} onClose={onClose}>
+      <div className="rounded-xl bg-gray-50 dark:bg-dark-bg p-3 text-xs text-gray-600 dark:text-gray-300 space-y-0.5">
+        <p><span className="text-gray-400">Birds:</span> <strong>{level.birds.toLocaleString()}</strong> / {level.capacity.toLocaleString()} · room for {free.toLocaleString()}</p>
+        {level.mortality7d > 0 && <p className="text-red-500">Mortalities (7 days): {level.mortality7d}</p>}
+      </div>
+
+      {level.batches.length === 0 && <p className="text-xs text-gray-400">Empty level.</p>}
+      {level.batches.map(b => (
+        <div key={b.batchId} className="border border-gray-100 dark:border-dark-border rounded-xl p-2.5">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-mono font-semibold text-gray-800 dark:text-gray-100">{b.batchCode}</span>
+            <span className="text-gray-400">placed {dayjs(b.placedDate).format('D MMM YYYY')}</span>
+          </div>
+          {editable ? (
+            <div className="flex gap-2 mt-2">
+              <input type="number" min={0} max={level.capacity} value={counts[b.batchId] ?? ''}
+                onChange={e => setCounts(c => ({ ...c, [b.batchId]: e.target.value }))} className={iCls} />
+              <button type="button" disabled={busy || counts[b.batchId] === String(b.birdCount) || counts[b.batchId] === ''}
+                onClick={() => { setError(null); set.mutate({ batchId: b.batchId, birdCount: Number(counts[b.batchId]) }); }}
+                className="px-3 rounded-xl bg-brand-green text-white font-semibold text-xs disabled:opacity-50">Save</button>
+              <button type="button" disabled={busy} title={`Remove ${b.batchCode} from this level`}
+                onClick={() => { setError(null); clear.mutate(b.batchId); }}
+                className="px-2.5 rounded-xl border border-red-200 dark:border-red-800 text-red-600 disabled:opacity-50"><Trash2 className="w-4 h-4" /></button>
+            </div>
+          ) : (
+            <p className="text-sm font-bold text-gray-800 dark:text-gray-100 mt-1">{b.birdCount.toLocaleString()} birds</p>
+          )}
+        </div>
+      ))}
+
+      {editable && free > 0 && (
+        <div className="rounded-xl border border-dashed border-gray-200 dark:border-dark-border p-2.5 space-y-2">
+          <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Add a batch to this level</p>
+          <select value={newBatch} onChange={e => setNewBatch(e.target.value)} className={iCls}>
+            <option value="">Select batch…</option>
+            {choosable.map(b => <option key={b.id} value={b.id}>{b.batchCode}</option>)}
+          </select>
+          <div className="flex gap-2">
+            <input type="number" min={1} max={free} value={newCount} onChange={e => setNewCount(e.target.value)}
+              placeholder={`Birds (up to ${free.toLocaleString()})`} className={iCls} />
+            <button type="button" disabled={busy || !newBatch || !(Number(newCount) > 0)}
+              onClick={() => { setError(null); set.mutate({ batchId: newBatch, birdCount: Number(newCount) }); }}
+              className="px-3 rounded-xl bg-brand-green text-white font-semibold text-xs disabled:opacity-50">Add</button>
+          </div>
+        </div>
+      )}
+
+      {error && <p className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-lg p-2">{error}</p>}
+      {editable && level.batches.length > 0 && (
+        <button type="button" disabled={busy} onClick={() => { setError(null); clear.mutate(undefined); }}
+          className="w-full border border-red-200 dark:border-red-800 text-red-600 rounded-xl py-2.5 font-semibold disabled:opacity-60">
+          Empty level
+        </button>
+      )}
+    </Sheet>
+  );
+}
+
+// ── Isolation modal ──────────────────────────────────────────────────────────
+
+function IsolationModal({ house, map, iso, editable, onClose }: {
+  house: HouseCode; map: HouseMap; iso: IsolationUnit; editable: boolean; onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const occ = iso.batches[0] ?? null;
+  const [count, setCount] = useState(String(occ?.birdCount ?? 1));
+  const [reason, setReason] = useState(iso.isolationReason ?? '');
+  const [error, setError] = useState<string | null>(null);
+  const rowCodes = map.sections.flatMap(sec => sec.rows.map(r => r.rowCode));
+  const [fromRow, setFromRow] = useState(rowCodes[0] ?? 'A1');
+  const [fromLevel, setFromLevel] = useState(String(map.block.levelsPerRow));
+  const fromCode = levelCode(house, fromRow, Number(fromLevel));
+  const fromUnit = map.levels.find(l => l.code === fromCode) ?? null;
+  const sourceBatches = occ ? (fromUnit?.batches ?? []).filter(b => b.batchId === occ.batchId) : (fromUnit?.batches ?? []);
+  const [fromBatch, setFromBatch] = useState('');
+  const pickedBatch = sourceBatches.length === 1 ? sourceBatches[0].batchId : fromBatch;
+  const growing = Number(count) > (occ?.birdCount ?? 0);
+
+  const save = useMutation({
+    mutationFn: (birdCount: number) => api.post(`/production/houses/${house}/units/set`, {
+      unitCode: iso.code, birdCount, isolationReason: reason,
+      fromCode: growing ? fromCode : undefined, batchId: growing ? pickedBatch || undefined : undefined,
     }),
     onSuccess: () => { invalidateAll(qc); onClose(); },
     onError: (e: any) => setError(errMsg(e)),
   });
-  const iCls = 'w-full border border-gray-200 dark:border-dark-border rounded-xl px-3 py-2 bg-white dark:bg-dark-bg text-gray-800 dark:text-gray-100 text-sm';
+
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4" onClick={onClose}>
-      <div className="bg-white dark:bg-dark-card w-full md:max-w-sm rounded-t-3xl md:rounded-2xl shadow-2xl p-4 space-y-3" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">Fill empty cages — {rowCode} · {levelLabel(level)}</p>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-dark-bg"><X className="w-4 h-4 text-gray-500" /></button>
+    <Sheet title={iso.label} sub={iso.code} onClose={onClose}>
+      {occ ? (
+        <div className="rounded-xl bg-gray-50 dark:bg-dark-bg p-3 text-xs text-gray-600 dark:text-gray-300 space-y-0.5">
+          <p><span className="text-gray-400">Batch:</span> <strong>{occ.batchCode}</strong></p>
+          <p><span className="text-gray-400">Birds:</span> <strong>{occ.birdCount}</strong> / {iso.capacity}</p>
+          <p><span className="text-gray-400">Placed:</span> {dayjs(occ.placedDate).format('D MMM YYYY')}</p>
+          {iso.mortality7d > 0 && <p className="text-red-500">Mortalities (7 days): {iso.mortality7d}</p>}
+          {iso.isolationReason && <p className="text-purple-600 dark:text-purple-300">Isolation: {iso.isolationReason}</p>}
+          {iso.origin && <p className="text-purple-600 dark:text-purple-300">Came from: {iso.origin}</p>}
         </div>
-        <p className="text-xs text-gray-500">{emptyCages} empty cage{emptyCages === 1 ? '' : 's'} on this level · room for {emptyCages * 4} birds.</p>
-        <select value={batchId} onChange={e => setBatchId(e.target.value)} className={iCls}>
-          <option value="">Select batch…</option>
-          {batches.map(b => <option key={b.id} value={b.id}>{b.batchCode}</option>)}
-        </select>
-        <div className="grid grid-cols-2 gap-2">
+      ) : <p className="text-xs text-gray-400">Empty isolation cage.</p>}
+
+      {editable && (
+        <>
           <div>
-            <label className="block text-[11px] text-gray-500 mb-1">Birds per cage</label>
-            <select value={perCage} onChange={e => setPerCage(e.target.value)} className={iCls}>
-              {[1, 2, 3, 4].map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
+            <label className="block text-[11px] font-semibold text-gray-500 mb-1 uppercase tracking-wide">Birds in cage (max {iso.capacity})</label>
+            <div className="grid grid-cols-5 gap-1.5">
+              {Array.from({ length: iso.capacity + 1 }, (_, n) => n).map(n => (
+                <button key={n} type="button" onClick={() => setCount(String(n))}
+                  className={`rounded-lg py-2 font-bold border ${count === String(n)
+                    ? 'border-brand-green bg-brand-green/10 text-brand-green'
+                    : 'border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300'}`}>{n}</button>
+              ))}
+            </div>
           </div>
+          {growing && (
+            <div className="rounded-xl border border-purple-200 dark:border-purple-800 bg-purple-50/60 dark:bg-purple-900/20 p-2.5 space-y-1.5">
+              <p className="text-[11px] font-semibold text-purple-700 dark:text-purple-300 uppercase tracking-wide">Came from (required)</p>
+              <div className="grid grid-cols-2 gap-1.5">
+                <select value={fromRow} onChange={e => setFromRow(e.target.value)} className={iCls}>
+                  {rowCodes.map(r => <option key={r} value={r}>Row {r}</option>)}
+                </select>
+                <select value={fromLevel} onChange={e => setFromLevel(e.target.value)} className={iCls}>
+                  {Array.from({ length: map.block.levelsPerRow }, (_, i) => map.block.levelsPerRow - i).map(l => (
+                    <option key={l} value={l}>{levelLabel(l, map.block.levelsPerRow)}</option>
+                  ))}
+                </select>
+              </div>
+              {sourceBatches.length > 1 && (
+                <select value={fromBatch} onChange={e => setFromBatch(e.target.value)} className={iCls}>
+                  <option value="">Which batch?</option>
+                  {sourceBatches.map(b => <option key={b.batchId} value={b.batchId}>{b.batchCode} · {b.birdCount} birds</option>)}
+                </select>
+              )}
+              <p className="text-[11px] text-gray-500">
+                {sourceBatches.length
+                  ? `${sourceBatches.map(b => `${b.batchCode}: ${b.birdCount}`).join(' · ')} on that level — the moved birds are taken from it.`
+                  : occ ? `No ${occ.batchCode} birds on that level.` : 'That level is empty on the map.'}
+              </p>
+            </div>
+          )}
           <div>
-            <label className="block text-[11px] text-gray-500 mb-1">Total birds (optional)</label>
-            <input type="number" min={1} value={total} onChange={e => setTotal(e.target.value)} className={iCls} placeholder={`up to ${emptyCages * Number(perCage)}`} />
+            <label className="block text-[11px] font-semibold text-gray-500 mb-1 uppercase tracking-wide">Isolation reason</label>
+            <input value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. limping, under observation" className={iCls} />
           </div>
-        </div>
-        {error && <p className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-lg p-2">{error}</p>}
-        <button disabled={!batchId || fill.isPending} onClick={() => { setError(null); fill.mutate(); }}
-          className="w-full bg-brand-green text-white rounded-xl py-2.5 font-semibold text-sm disabled:opacity-60">
-          {fill.isPending ? 'Placing…' : 'Place birds'}
-        </button>
-      </div>
-    </div>
+          {error && <p className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-lg p-2">{error}</p>}
+          <div className="flex gap-2 pt-1">
+            {occ && (
+              <button type="button" disabled={save.isPending} onClick={() => save.mutate(0)}
+                className="flex-1 border border-red-200 dark:border-red-800 text-red-600 rounded-xl py-2.5 font-semibold disabled:opacity-60">
+                Empty cage
+              </button>
+            )}
+            <button type="button" disabled={save.isPending || (growing && (!sourceBatches.length || !pickedBatch))}
+              onClick={() => { setError(null); save.mutate(Number(count)); }}
+              className="flex-1 bg-brand-green text-white rounded-xl py-2.5 font-semibold disabled:opacity-60">
+              {save.isPending ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </>
+      )}
+    </Sheet>
   );
 }
 
-// ── Level (expandable) ───────────────────────────────────────────────────────
+// ── Level row ────────────────────────────────────────────────────────────────
 
-function LevelBlock({
-  house, rowCode, level, levels, tiers, cagesPerTier, byCode, colorOf, editable, onCage, onFill,
-}: {
-  house: HouseCode; rowCode: string; level: number; levels: number; tiers: number; cagesPerTier: number;
-  byCode: Map<string, OccupiedCage>; colorOf: (batchId: string) => number; editable: boolean;
-  onCage: (t: CageTarget) => void; onFill: (rowCode: string, level: number, empty: number) => void;
+function LevelRow({ unit, levels, colorOf, onTap }: {
+  unit: LevelUnit; levels: number; colorOf: (batchId: string) => number; onTap: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  let birds = 0, occupied = 0, mortality = 0;
-  for (let t = 1; t <= tiers; t++) {
-    for (let c = 1; c <= cagesPerTier; c++) {
-      const o = byCode.get(cageCode(house, rowCode, level, t, c));
-      if (o) { birds += o.birdCount; occupied++; mortality += o.mortality7d; }
-    }
-  }
-  const total = tiers * cagesPerTier;
+  const pct = (n: number) => `${Math.min(100, (n / unit.capacity) * 100)}%`;
   return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.03]">
-      <button type="button" onClick={() => setOpen(v => !v)} className="w-full flex items-center gap-2 px-2.5 py-2 text-left">
-        <span className="text-[10px] font-bold text-white/60 uppercase tracking-wider w-28 shrink-0">{levelLabel(level, levels)}</span>
-        <span className="text-[11px] text-emerald-200 flex items-center gap-1"><Bird className="w-3 h-3" />{birds.toLocaleString()}</span>
-        <span className="text-[10px] text-white/40 flex items-center gap-1"><Grid3x3 className="w-3 h-3" />{occupied}/{total}</span>
-        {mortality > 0 && <span className="text-[10px] text-red-300 flex items-center gap-0.5"><Skull className="w-3 h-3" />{mortality}</span>}
-        <ChevronDown className={`w-3.5 h-3.5 ml-auto text-white/40 transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && (
-        <div className="px-2 pb-2">
-          {editable && occupied < total && (
-            <button type="button" onClick={() => onFill(rowCode, level, total - occupied)}
-              className="mb-2 text-[10px] font-semibold text-emerald-300 hover:text-emerald-200 underline">
-              Fill empty cages on this level
-            </button>
-          )}
-          <div className="grid grid-cols-4 sm:grid-cols-6 lg:grid-cols-8 gap-1">
-            {Array.from({ length: tiers }, (_, i) => i + 1).map(t => (
-              <div key={t} className="rounded-md border border-white/5 bg-black/20 p-1">
-                <p className="text-[8px] text-white/30 font-mono mb-0.5">{cageNumberOnLevel(t, 1, cagesPerTier)}–{cageNumberOnLevel(t, cagesPerTier, cagesPerTier)}</p>
-                <div className="grid grid-cols-4 gap-0.5">
-                  {Array.from({ length: cagesPerTier }, (_, j) => j + 1).map(c => {
-                    const code = cageCode(house, rowCode, level, t, c);
-                    const o = byCode.get(code) ?? null;
-                    return (
-                      <button key={c} type="button"
-                        title={`${cageLabel(rowCode, level, t, c, cagesPerTier)}${o ? ` — ${o.batchCode}: ${o.birdCount} birds` : ' — empty'}`}
-                        onClick={() => onCage({ code, label: cageLabel(rowCode, level, t, c, cagesPerTier), isIsolation: false, occupied: o })}
-                        className={`relative h-5 rounded-[3px] border text-[9px] font-bold leading-none flex items-center justify-center ${o
-                          ? PALETTE[colorOf(o.batchId) % PALETTE.length]
-                          : 'bg-white/5 border-white/10 text-white/20 hover:border-white/30'}`}>
-                        {o ? o.birdCount : ''}
-                        {o && o.mortality7d > 0 && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-500" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
+    <button type="button" onClick={onTap}
+      className="w-full rounded-lg border border-white/10 bg-white/[0.03] hover:border-white/30 px-2.5 py-2 text-left">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-bold text-white/60 uppercase tracking-wider w-28 shrink-0">{levelLabel(unit.level ?? 0, levels)}</span>
+        <span className="text-[11px] text-emerald-200 flex items-center gap-1"><Bird className="w-3 h-3" />{unit.birds.toLocaleString()}</span>
+        <span className="text-[10px] text-white/40">/ {unit.capacity.toLocaleString()}</span>
+        {unit.mortality7d > 0 && <span className="text-[10px] text-red-300 flex items-center gap-0.5"><Skull className="w-3 h-3" />{unit.mortality7d}</span>}
+        <span className="ml-auto text-[10px] text-white/50 font-mono truncate">{unit.batches.map(b => b.batchCode).join(' · ')}</span>
+      </div>
+      <div className="mt-1.5 h-1.5 rounded-full bg-white/10 overflow-hidden flex">
+        {unit.batches.map(b => (
+          <span key={b.batchId} className={`h-full ${BAR[colorOf(b.batchId) % BAR.length]}`} style={{ width: pct(b.birdCount) }} />
+        ))}
+      </div>
+    </button>
   );
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 export function ProductionCageMap({
-  houseCode, editable = false, onPickCage, title = 'Production Houses — Cage Map',
+  houseCode, editable = false, onPickCage, title = 'Production Houses — Map',
 }: {
   /** Lock to one house (hides the Block 1 / Block 2 tabs). */
   houseCode?: HouseCode;
-  /** Attendant / PM can assign, change and empty cages. */
+  /** Attendant / PM can set the birds on levels and isolation cages. */
   editable?: boolean;
-  /** Picker mode: tapping a cage returns it instead of opening the editor. */
-  onPickCage?: (cage: PickedCage) => void;
+  /** Picker mode: tapping a level / isolation cage returns it instead of opening the editor. */
+  onPickCage?: (unit: PickedCage) => void;
   title?: string;
 }) {
   const [tab, setTab] = useState<HouseCode>(houseCode ?? 'BLK1');
   const house = houseCode ?? tab;
   const { data, isLoading, isError } = useHouseMap(house);
-  const [target, setTarget] = useState<CageTarget | null>(null);
-  const [fill, setFill] = useState<{ rowCode: string; level: number; empty: number } | null>(null);
+  const [openLevel, setOpenLevel] = useState<LevelUnit | null>(null);
+  const [openIso, setOpenIso] = useState<IsolationUnit | null>(null);
 
-  const byCode = useMemo(() => new Map((data?.occupied ?? []).map(o => [o.code, o])), [data]);
+  const levelsByCode = useMemo(() => new Map((data?.levels ?? []).map(l => [l.code, l])), [data]);
   const colorIndex = useMemo(() => {
     const m = new Map<string, number>();
     (data?.batches ?? []).forEach((b, i) => m.set(b.id, i));
@@ -349,12 +315,12 @@ export function ProductionCageMap({
   }, [data]);
   const colorOf = (id: string) => colorIndex.get(id) ?? 0;
 
-  const handleCage = (t: CageTarget) => {
+  const tap = (u: LevelUnit | IsolationUnit, isIso: boolean) => {
     if (onPickCage) {
-      onPickCage({ code: t.code, label: t.label, birdCount: t.occupied?.birdCount ?? 0, batchCode: t.occupied?.batchCode ?? null });
+      onPickCage({ code: u.code, label: u.label, birdCount: u.birds, batches: u.batches });
       return;
     }
-    setTarget(t);
+    if (isIso) setOpenIso(u as IsolationUnit); else setOpenLevel(u as LevelUnit);
   };
 
   const block = data?.block;
@@ -371,7 +337,9 @@ export function ProductionCageMap({
           <div>
             <p className="text-sm font-bold text-white">{title}</p>
             <p className="text-[11px] text-white/40">
-              {block ? `${block.name} · 6 rows × 4 levels × ${block.tiersPerLevel * block.cagesPerTier} cages per level · max 4 birds/cage` : 'Loading…'}
+              {block
+                ? `${block.name} · 6 rows × ${block.levelsPerRow} levels · ${block.cagesPerLevel} cages per level (max ${block.birdsPerCage} birds/cage) · records per level`
+                : 'Loading…'}
             </p>
           </div>
         </div>
@@ -390,8 +358,8 @@ export function ProductionCageMap({
       {totals && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-white/5 border-b border-white/10">
           {[
-            ['Birds', totals.birds.toLocaleString(), 'text-emerald-300'],
-            ['Occupied cages', `${totals.occupiedCages.toLocaleString()} / ${totals.totalCages.toLocaleString()}`, 'text-sky-300'],
+            ['Birds', `${totals.birds.toLocaleString()} / ${totals.capacityBirds.toLocaleString()}`, 'text-emerald-300'],
+            ['Levels in use', `${totals.occupiedLevels} / ${totals.totalLevels}`, 'text-sky-300'],
             ['Free space', `${totals.freeSpaces.toLocaleString()} birds`, totals.freeSpaces > 0 ? 'text-amber-300' : 'text-red-400'],
             ['Batches', String(data?.batches.length ?? 0), 'text-violet-300'],
           ].map(([l, v, c]) => (
@@ -403,21 +371,21 @@ export function ProductionCageMap({
         </div>
       )}
 
-      {data && data.batches.length > 0 && (
+      {data && (data.batches.length > 0 || onPickCage) && (
         <div className="px-4 pt-3 flex flex-wrap gap-3">
           {data.batches.map((b, i) => (
             <span key={b.id} className="text-[10px] text-white/60 flex items-center gap-1.5">
-              <span className={`w-2.5 h-2.5 rounded-sm ${DOT[i % DOT.length]}`} />
-              <span className="font-mono font-semibold text-white/80">{b.batchCode}</span> {b.birds.toLocaleString()} birds · {b.cages} cages
+              <span className={`w-2.5 h-2.5 rounded-sm ${BAR[i % BAR.length]}`} />
+              <span className="font-mono font-semibold text-white/80">{b.batchCode}</span> {b.birds.toLocaleString()} birds · {b.levels} level{b.levels === 1 ? '' : 's'}
             </span>
           ))}
-          {onPickCage && <span className="text-[10px] text-amber-300">Tap the cage the bird died in.</span>}
+          {onPickCage && <span className="text-[10px] text-amber-300">Tap the level (or isolation cage) the bird died on.</span>}
         </div>
       )}
 
       <div className="p-4 space-y-3">
         {isLoading && <div className="h-40 rounded-xl bg-white/5 animate-pulse" />}
-        {isError && <p className="text-sm text-red-300">Could not load the cage map.</p>}
+        {isError && <p className="text-sm text-red-300">Could not load the map.</p>}
 
         {block && (
           <>
@@ -427,16 +395,15 @@ export function ProductionCageMap({
                 <Lock className="w-3.5 h-3.5" /> Isolation cages ({block.isolationCageCount})
               </p>
               <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
-                {Array.from({ length: block.isolationCageCount }, (_, i) => i + 1).map(n => {
-                  const code = isolationCode(house, n);
-                  const o = byCode.get(code) ?? null;
+                {data!.isolation.map(iso => {
+                  const o = iso.batches[0];
                   return (
-                    <button key={n} type="button" title={[o?.isolationReason, o?.origin ? `From ${o.origin}` : ''].filter(Boolean).join(' · ')}
-                      onClick={() => handleCage({ code, label: `Isolation Cage ${n}`, isIsolation: true, occupied: o })}
+                    <button key={iso.code} type="button" title={[iso.isolationReason, iso.origin ? `From ${iso.origin}` : ''].filter(Boolean).join(' · ')}
+                      onClick={() => tap(iso, true)}
                       className={`rounded-lg border px-1.5 py-1.5 text-left ${o ? 'bg-purple-500/25 border-purple-400/60' : 'bg-white/5 border-white/10 hover:border-white/30'}`}>
-                      <p className="text-[9px] text-purple-200/70">ISO {n}</p>
+                      <p className="text-[9px] text-purple-200/70">ISO {iso.cageNo}</p>
                       <p className="text-xs font-bold text-white">{o ? `${o.birdCount} · ${o.batchCode}` : '—'}</p>
-                      {o?.origin && <p className="text-[9px] text-purple-200/80 truncate">from {o.origin}</p>}
+                      {iso.origin && <p className="text-[9px] text-purple-200/80 truncate">from {iso.origin}</p>}
                     </button>
                   );
                 })}
@@ -449,8 +416,10 @@ export function ProductionCageMap({
                 <p className="text-xs font-bold text-white mb-2">Section {section.code}</p>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                   {section.rows.map(row => {
-                    const levelsTopDown = Array.from({ length: block.levelsPerRow }, (_, i) => block.levelsPerRow - i);
-                    const rowBirds = data!.occupied.filter(o => o.rowCode === row.rowCode).reduce((s, o) => s + o.birdCount, 0);
+                    const units = Array.from({ length: block.levelsPerRow }, (_, i) => block.levelsPerRow - i)
+                      .map(l => levelsByCode.get(levelCode(house, row.rowCode, l)))
+                      .filter((u): u is LevelUnit => !!u);
+                    const rowBirds = units.reduce((s, u) => s + u.birds, 0);
                     return (
                       <div key={row.rowId} className="rounded-lg border border-white/10 p-2">
                         <p className="text-[11px] font-bold text-emerald-200 flex items-center gap-1.5 mb-1.5">
@@ -458,11 +427,8 @@ export function ProductionCageMap({
                           <span className="text-white/40 font-normal">{rowBirds.toLocaleString()} birds</span>
                         </p>
                         <div className="space-y-1">
-                          {levelsTopDown.map(level => (
-                            <LevelBlock key={level} house={house} rowCode={row.rowCode} level={level}
-                              levels={block.levelsPerRow} tiers={block.tiersPerLevel} cagesPerTier={block.cagesPerTier}
-                              byCode={byCode} colorOf={colorOf} editable={editable && !onPickCage}
-                              onCage={handleCage} onFill={(r, l, e) => setFill({ rowCode: r, level: l, empty: e })} />
+                          {units.map(u => (
+                            <LevelRow key={u.code} unit={u} levels={block.levelsPerRow} colorOf={colorOf} onTap={() => tap(u, false)} />
                           ))}
                         </div>
                       </div>
@@ -477,12 +443,12 @@ export function ProductionCageMap({
 
       <div className="px-4 py-2 border-t border-white/5">
         <p className="text-[10px] text-white/25">
-          Tap a level to see its tiers · {editable ? 'tap a cage to assign, change or empty it · ' : ''}red dot = mortality in the last 7 days · refreshes every minute
+          {editable ? 'Tap a level to set its birds per batch · ' : 'Tap a level for details · '}red skull = mortality in the last 7 days · refreshes every minute
         </p>
       </div>
 
-      {target && data && <CageModal house={house} map={data} target={target} editable={editable} onClose={() => setTarget(null)} />}
-      {fill && <FillModal house={house} rowCode={fill.rowCode} level={fill.level} emptyCages={fill.empty} onClose={() => setFill(null)} />}
+      {openLevel && data && <LevelModal house={house} map={data} level={openLevel} editable={editable} onClose={() => setOpenLevel(null)} />}
+      {openIso && data && <IsolationModal house={house} map={data} iso={openIso} editable={editable} onClose={() => setOpenIso(null)} />}
     </div>
   );
 }

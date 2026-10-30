@@ -61,27 +61,33 @@ Store is running low on equipment / consumables.
 
 Both houses are live. Layout per house: sections A/B/C × rows 1/2 (A1 … C2);
 every row has 4 levels (1 = bottom, 4 = top) × tiers (Block 1: 24, Block 2: 38)
-× 4 cages; plus 8 isolation cages. **A cage holds at most 4 birds.**
+× 4 cages; plus 8 isolation cages. **A cage holds at most 4 birds.** That
+arrangement only sets capacity — **records are kept per row · level.**
 
-- `ProductionCage` (code `BLK1-A1-L4-T07-C2`, `BLK2-ISO-3`) +
-  `ProductionCageAssignment` (one batch per cage) are the source of truth.
+- Record units are `ProductionCage` rows with `isLevel` (code `BLK1-A1-L4`,
+  capacity = cages on the level × 4) and the isolation cages (`BLK2-ISO-3`).
+  `ProductionCageAssignment` is one row per (unit, batch) — a level can hold
+  several batches; an isolation cage holds one. The old per-cage rows
+  (`BLK1-A1-L4-T07-C2`) are inactive and kept only for historical logs.
   `BatchCageAssignment` is an auto-maintained per-row rollup
   (`ProductionCageService.recomputeRowRollups`) — never write it directly.
+- A batch that is sold / discarded / closed (Farm Events or stage change) is
+  removed from every level and isolation cage (`ProductionCageService.releaseBatch`).
 - Transfer brooder → production: `POST /production/houses/transfer`
   (`houseCode`, `birdCount`, optional `rowCodes`). All birds = batch moves;
   some birds = split into a child batch `<code>-B1|B2` (`parentBatchId`).
   Refused when the chosen house has no room; both full = no transfer.
 - Egg collection sessions carry `block` (`BLOCK1`/`BLOCK2`). Each block is
   recorded **once per shift per day** (eggs, feed, vaccines, mortalities).
-  Mortalities are per cage (`mortalityCagesJson`) and hit the cage map +
-  `Batch.currentBirdCount` only when the Manager approves.
-- Cages are addressed as row · level · **cage number along the level**
-  (Block 1: 1–96, Block 2: 1–152). Tiers are only physical grouping —
-  never required in UI, descriptions or placement (still understood if given).
+  Mortalities are per level + batch (`mortalityCagesJson`, the batch is asked
+  for when a level holds several) and hit the map + `Batch.currentBirdCount`
+  only when the Manager approves.
+- Places are addressed as row · level (or isolation cage N). Cage and tier
+  numbers in a description are understood but ignored for levels.
 - Isolation cages record `origin` (where the birds were taken from). Birds can
-  only enter isolation by moving them from a named cage (map: "Came from";
-  text: "moved 2 from A2 level 3 cage 37 to isolation cage 1").
-- Cage reassignments are written in plain words (no grammar):
+  only enter isolation by moving them from a named level (map: "Came from";
+  text: "moved 2 from A2 level 3 to isolation cage 1").
+- Reassignments are written in plain words (no grammar):
   `production-cage-text.util.ts` (production) and
   `cage-layout-parser.util.ts` (brooder). Always previewed before applying;
   production descriptions can also be saved as a note only.

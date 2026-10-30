@@ -2981,8 +2981,12 @@ model ProductionCage {
   // Tiers are physical grouping only (4 cages each); people address a cage
   // by its number along the level: (tierNumber - 1) * 4 + cageNumber.
   tierNumber  Int?     @map("tier_number")
-  cageNumber  Int      @map("cage_number")  // 1-4 within a tier; 1-8 for isolation cages
+  cageNumber  Int      @map("cage_number")  // 1-4 within a tier; 1-8 for isolation cages; 0 for a level
   isIsolation Boolean  @default(false) @map("is_isolation")
+  /// Records are kept per row · level: one unit per level (code BLK1-A1-L4,
+  /// capacity = cages on the level × birds per cage). The per-cage rows
+  /// (tierNumber set) are inactive and only kept for historical logs.
+  isLevel     Boolean  @default(false) @map("is_level")
   code        String   @unique
   label       String
   capacity    Int      @default(4)
@@ -2991,7 +2995,7 @@ model ProductionCage {
 
   block         FarmBlock                    @relation(fields: [blockId], references: [id], onDelete: Cascade)
   row           FarmRow?                     @relation(fields: [rowId], references: [id])
-  assignment    ProductionCageAssignment?
+  assignments   ProductionCageAssignment[]
   mortalityLogs ProductionCageMortalityLog[]
 
   @@index([blockId])
@@ -3001,7 +3005,7 @@ model ProductionCage {
 
 model ProductionCageAssignment {
   id              String   @id @default(uuid())
-  cageId          String   @unique @map("cage_id")
+  cageId          String   @map("cage_id")
   batchId         String   @map("batch_id")
   birdCount       Int      @default(0) @map("bird_count")
   placedDate      DateTime @map("placed_date") @db.Date
@@ -3017,6 +3021,9 @@ model ProductionCageAssignment {
   cage  ProductionCage @relation(fields: [cageId], references: [id], onDelete: Cascade)
   batch Batch          @relation(fields: [batchId], references: [id])
 
+  /// A level can hold several batches; one row per batch on it.
+  @@unique([cageId, batchId])
+  @@index([cageId])
   @@index([batchId])
   @@map("production_cage_assignments")
 }

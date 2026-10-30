@@ -35,7 +35,7 @@ import {
 } from '../../hooks/useIssuableStoreItems';
 import { LAYER_FEED_TYPES } from '../../lib/feedTypes';
 import dayjs from '../../lib/dayjs';
-import { ProductionCageMap } from '../../components/shared/ProductionCageMap';
+import { ProductionCageMap, type PickedCage } from '../../components/shared/ProductionCageMap';
 import { ProductionCageReassignPanel } from '../../components/shared/ProductionCageReassignPanel';
 import { useHouseMap, type HouseCode } from '../../hooks/useProductionHouses';
 
@@ -88,13 +88,17 @@ const BLOCKS: { key: BlockKey; house: HouseCode; label: string }[] = [
 ];
 const FORM_MODES = ['AM_FORM', 'AM_RETURNED', 'PM_FORM', 'PM_RETURNED'];
 
+/** Mortality recorded per level (or isolation cage) and batch. */
 interface MortalityEntry {
   cageCode: string;
   label: string;
-  birdsInCage: number;
+  /** Batches on that level — the attendant picks one when there are several. */
+  batches: { batchId: string; batchCode: string; birdCount: number }[];
+  batchId: string;
   count: string;
   cause: string;
 }
+const birdsOf = (m: MortalityEntry) => m.batches.find(b => b.batchId === m.batchId)?.birdCount ?? 0;
 
 function buildDefaultBlock(): { rows: RowEntry[] } {
   const rows: RowEntry[] = [];
@@ -435,8 +439,9 @@ export function EggCollectionPage() {
     if (returned.batchId) setValue('batchId', returned.batchId);
     if (Array.isArray(returned.mortalityCagesJson)) {
       setMortalityEntries(returned.mortalityCagesJson.map((m: any) => ({
-        cageCode: m.cageCode, label: m.cageLabel ?? m.cageCode, birdsInCage: m.count,
-        count: String(m.count), cause: m.cause ?? '',
+        cageCode: m.cageCode, label: m.cageLabel ?? m.cageCode,
+        batches: [{ batchId: m.batchId ?? returned.batchId, batchCode: m.batchCode ?? '', birdCount: m.count }],
+        batchId: m.batchId ?? returned.batchId, count: String(m.count), cause: m.cause ?? '',
       })));
     }
     if (returned.openingPop  != null) setValue('openingPop',  returned.openingPop);
@@ -475,7 +480,7 @@ export function EggCollectionPage() {
 
   const batchId = watch('batchId');
   const openingPop = Number(watch('openingPop') ?? 0);
-  // Mortalities are recorded per cage — the session total is their sum.
+  // Mortalities are recorded per level — the session total is their sum.
   const mortalities = mortalityEntries.reduce((s, m) => s + (Number(m.count) || 0), 0);
   const closingStock = openingPop - mortalities;
   const allRows = rows;
@@ -497,16 +502,19 @@ export function EggCollectionPage() {
     });
   }
 
-  function addMortalityCage(cage: { code: string; label: string; birdCount: number; batchCode: string | null }) {
+  function addMortalityCage(unit: PickedCage) {
     setPickingCage(false);
-    if (!cage.batchCode) {
-      setSubmitError(`${cage.label} is empty on the cage map — pick the cage the bird was in.`);
+    if (!unit.batches.length) {
+      setSubmitError(`${unit.label} is empty on the map — pick the level the bird was on.`);
       return;
     }
     setSubmitError(null);
-    setMortalityEntries(prev => prev.some(m => m.cageCode === cage.code)
+    // Default to the session's batch when it is on that level.
+    const picked = unit.batches.length === 1 ? unit.batches[0].batchId
+      : unit.batches.find(b => b.batchId === batchId)?.batchId ?? '';
+    setMortalityEntries(prev => prev.some(m => m.cageCode === unit.code)
       ? prev
-      : [...prev, { cageCode: cage.code, label: cage.label, birdsInCage: cage.birdCount, count: '1', cause: '' }]);
+      : [...prev, { cageCode: unit.code, label: unit.label, batches: unit.batches, batchId: picked, count: '1', cause: '' }]);
   }
 
   async function onSubmit(data: any) {
@@ -549,9 +557,14 @@ export function EggCollectionPage() {
     }
 
     const totalMortalities = mortalities;
-    const badMortality = mortalityEntries.find(m => !(Number(m.count) > 0) || Number(m.count) > m.birdsInCage);
+    const noBatch = mortalityEntries.find(m => !m.batchId);
+    if (noBatch) {
+      setSubmitError(`${noBatch.label}: pick which batch the dead bird(s) were from.`);
+      return;
+    }
+    const badMortality = mortalityEntries.find(m => !(Number(m.count) > 0) || Number(m.count) > birdsOf(m));
     if (badMortality) {
-      setSubmitError(`${badMortality.label}: mortality must be between 1 and the ${badMortality.birdsInCage} bird(s) in that cage.`);
+      setSubmitError(`${badMortality.label}: mortality must be between 1 and the ${birdsOf(badMortality)} bird(s) of that batch there.`);
       return;
     }
 
@@ -568,7 +581,7 @@ export function EggCollectionPage() {
         openingPop: Number(data.openingPop),
         mortalities: totalMortalities,
         mortalityCages: mortalityEntries.map(m => ({
-          cageCode: m.cageCode, count: Number(m.count), cause: m.cause.trim() || undefined,
+          cageCode: m.cageCode, batchId: m.batchId, count: Number(m.count), cause: m.cause.trim() || undefined,
         })),
         block: selectedBlock,
         rowData: allRows.map(r => ({
@@ -794,25 +807,34 @@ export function EggCollectionPage() {
         <div className={cardCls}>
           <div className="flex items-center justify-between mb-2">
             <p className={sectionLbl + ' flex items-center gap-2 mb-0'}>
-              <Skull className="w-4 h-4 text-red-500" /> Mortalities — per cage
+              <Skull className="w-4 h-4 text-red-500" /> Mortalities — per level
             </p>
             <button type="button" onClick={() => setPickingCage(true)}
               className="text-xs font-semibold text-brand-green hover:underline flex items-center gap-1">
-              <Plus className="w-3 h-3" /> Add mortality (pick cage)
+              <Plus className="w-3 h-3" /> Add mortality (pick level)
             </button>
           </div>
           {mortalityEntries.length === 0 && (
-            <p className="text-xs text-gray-400 italic">No mortalities this session. Tap "Add mortality" and pick the cage on the {blockLabel} cage map.</p>
+            <p className="text-xs text-gray-400 italic">No mortalities this session. Tap "Add mortality" and pick the level on the {blockLabel} map.</p>
           )}
           {mortalityEntries.map((m, i) => (
             <div key={m.cageCode} className="grid grid-cols-12 gap-2 items-end border border-gray-100 dark:border-dark-border rounded-xl p-2 mb-2">
               <div className="col-span-12 md:col-span-5">
                 <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">{m.label}</p>
-                <p className="text-[10px] text-gray-400">{m.birdsInCage} bird(s) in cage</p>
+                {m.batches.length > 1 ? (
+                  <select value={m.batchId}
+                    onChange={e => setMortalityEntries(prev => prev.map((x, j) => j === i ? { ...x, batchId: e.target.value } : x))}
+                    className={`${numInput} text-left px-2 mt-0.5`}>
+                    <option value="">Which batch?</option>
+                    {m.batches.map(b => <option key={b.batchId} value={b.batchId}>{b.batchCode} · {b.birdCount} birds</option>)}
+                  </select>
+                ) : (
+                  <p className="text-[10px] text-gray-400">{m.batches[0]?.batchCode} · {birdsOf(m)} bird(s) on this level</p>
+                )}
               </div>
               <div className="col-span-3 md:col-span-2">
                 <label className="block text-[10px] text-gray-500 mb-0.5">Dead</label>
-                <input type="number" min={1} max={m.birdsInCage} value={m.count}
+                <input type="number" min={1} max={birdsOf(m) || undefined} value={m.count}
                   onChange={e => setMortalityEntries(prev => prev.map((x, j) => j === i ? { ...x, count: e.target.value } : x))}
                   className={numInput} />
               </div>
@@ -828,7 +850,7 @@ export function EggCollectionPage() {
               </div>
             </div>
           ))}
-          <p className="text-[11px] text-gray-400 mt-1">Cage counts drop once the Production Manager verifies this session.</p>
+          <p className="text-[11px] text-gray-400 mt-1">Level counts drop once the Production Manager verifies this session.</p>
         </div>
 
         {/* ── Unit rows for the selected block ── */}
@@ -1145,11 +1167,11 @@ export function EggCollectionPage() {
       <div className={cardCls}>
         <button type="button" onClick={() => setShowMap(v => !v)} className="w-full flex items-center justify-between">
           <span className={sectionLbl + ' flex items-center gap-2 mb-0'}>
-            <MapIcon className="w-4 h-4 text-emerald-500" /> {blockLabel} Cage Map
+            <MapIcon className="w-4 h-4 text-emerald-500" /> {blockLabel} Map
           </span>
           <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${showMap ? 'rotate-180' : ''}`} />
         </button>
-        {showMap && <div className="mt-3"><ProductionCageMap houseCode={selectedHouse} editable title={`${blockLabel} — Cage Map`} /></div>}
+        {showMap && <div className="mt-3"><ProductionCageMap houseCode={selectedHouse} editable title={`${blockLabel} — Map`} /></div>}
       </div>
 
       {/* ── Cage reassignment in plain words (separate from the session) ── */}
@@ -1161,7 +1183,7 @@ export function EggCollectionPage() {
             <div className="flex justify-end bg-black/40 p-2">
               <button type="button" onClick={() => setPickingCage(false)} className="p-2 rounded-xl text-white/70 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-            <ProductionCageMap houseCode={selectedHouse} onPickCage={addMortalityCage} title={`Pick the cage — ${blockLabel}`} />
+            <ProductionCageMap houseCode={selectedHouse} onPickCage={addMortalityCage} title={`Pick the level — ${blockLabel}`} />
           </div>
         </div>
       )}
