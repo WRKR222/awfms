@@ -437,6 +437,17 @@ export function EggCollectionPage() {
   // (missed cutoff) — see resolvePageMode. Used to pick the right banner copy.
   const amWasMissed = activeShift === 'PM' && !amSession;
 
+  // Closed / already-recorded / day-locked: the page stays viewable — the form
+  // shows what was recorded (or stays blank) but nothing can be submitted.
+  // The server enforces the same windows (assertEggCollectionSessionOpen).
+  const readOnly = !FORM_MODES.includes(pageMode);
+  const defaultViewShift: 'AM' | 'PM' = pageMode === 'DAY_LOCKED' ? (pmSession ? 'PM' : 'AM') : activeShift;
+  const [viewShiftChoice, setViewShiftChoice] = useState<'AM' | 'PM' | null>(null);
+  const viewShift = viewShiftChoice ?? defaultViewShift;
+  const viewSession = readOnly ? (viewShift === 'AM' ? amSession : pmSession) ?? null : null;
+  const shownShift = readOnly ? viewShift : activeShift;
+  useEffect(() => { setViewShiftChoice(null); }, [pageMode, selectedBlock]);
+
   // Clear localSubmitPending once server catches up
   useEffect(() => {
     if (localSubmitPending) {
@@ -447,9 +458,22 @@ export function EggCollectionPage() {
     }
   }, [amSession, pmSession, localSubmitPending]);
 
-  // Pre-populate form for RETURNED sessions
+  // Pre-populate the form for RETURNED sessions (to correct) and, read-only,
+  // for the session being viewed after its window closed / it was recorded.
   useEffect(() => {
-    const returned = pageMode === 'AM_RETURNED' ? amSession : (pageMode === 'PM_RETURNED' ? pmSession : null);
+    const returned = pageMode === 'AM_RETURNED' ? amSession
+      : pageMode === 'PM_RETURNED' ? pmSession
+      : viewSession;
+    if (readOnly && !returned) {
+      // Nothing recorded for this shift — show the blank form.
+      setRows(buildDefaultBlock().rows);
+      setRowsMovedToTopLevel(false);
+      setMortalityEntries([]);
+      setFeedLines([{ feedType: '', kg: '' }]);
+      (['openingPop', 'mortalities'] as const).forEach(f => setValue(f, 0));
+      (['waterLiters', 'houseTempC', 'remarks'] as const).forEach(f => setValue(f, ''));
+      return;
+    }
     if (!returned?.rowData) return;
     const restored = rowsFromSession(returned.rowData);
     setRows(restored.rows);
@@ -474,7 +498,7 @@ export function EggCollectionPage() {
     } else if (returned.feedTypeName) {
       setFeedLines([{ feedType: returned.feedTypeName, kg: returned.feedKg != null ? String(returned.feedKg) : '' }]);
     }
-  }, [pageMode, selectedBlock]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pageMode, selectedBlock, viewSession?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { mutate: offlineMutate } = useOfflineMutation({
     endpoint: '/production/sessions',
@@ -530,9 +554,9 @@ export function EggCollectionPage() {
   const levelBirds = (rowCode: string, level: number) =>
     houseMap?.levels.find(l => l.code === levelCode(selectedHouse, rowCode, level))?.birds ?? 0;
   useEffect(() => {
-    if (!houseMap || houseMap.block.code !== selectedHouse) return;
+    if (readOnly || !houseMap || houseMap.block.code !== selectedHouse) return;
     setRows(prev => prev.map(r => (Number(r.totalBirds) > 0 ? r : { ...r, totalBirds: levelBirds(r.rowCode, r.level) })));
-  }, [houseMap, selectedHouse]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [houseMap, selectedHouse, readOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function addMortalityCage(unit: PickedCage) {
     setPickingCage(false);
@@ -550,6 +574,7 @@ export function EggCollectionPage() {
   }
 
   async function onSubmit(data: any) {
+    if (readOnly) return; // closed / already recorded — viewing only
     setSubmitError(null);
 
     const waterL = Number(data.waterLiters);
@@ -683,7 +708,6 @@ export function EggCollectionPage() {
   }
 
   const blockLabel = selectedBlock === 'BLOCK2' ? 'Block 2' : 'Block 1';
-  const isForm = FORM_MODES.includes(pageMode);
 
   function blockStatus(block: BlockKey): { text: string; cls: string } {
     const mode = modeFor(block);
@@ -727,7 +751,8 @@ export function EggCollectionPage() {
         <div className="flex-1">
           <h1 className="text-xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
             <Egg className="w-5 h-5 text-amber-500" />
-            Egg Collection — <span className="text-brand-green">{blockLabel} · {activeShift} Session</span>
+            Egg Collection — <span className="text-brand-green">{blockLabel} · {shownShift} Session</span>
+            {readOnly && <span className="text-xs font-semibold text-gray-500 bg-gray-100 dark:bg-dark-bg rounded-full px-2 py-0.5">View only</span>}
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">
             {dayjs().format('dddd, D MMMM YYYY')}
@@ -764,7 +789,35 @@ export function EggCollectionPage() {
 
       {statusPanel}
 
-      {isForm && (<>
+      {readOnly && (
+        <div className="bg-gray-50 dark:bg-dark-card border border-gray-200 dark:border-dark-border rounded-2xl p-4 space-y-2">
+          <div className="flex items-start gap-3">
+            <Lock className="w-5 h-5 text-gray-500 shrink-0 mt-0.5" />
+            <p className="text-sm text-gray-600 dark:text-gray-300">
+              <strong>View only.</strong>{' '}
+              {viewSession
+                ? `${blockLabel} ${viewShift} as recorded${viewSession.status ? ` (${String(viewSession.status).toLowerCase()})` : ''} — nothing can be changed or submitted here.`
+                : `${blockLabel} ${viewShift} is closed and nothing was recorded — the form is shown for reference, but it can't be submitted.`}
+            </p>
+          </div>
+          {amSession && pmSession && (
+            <div className="flex gap-1.5">
+              {(['AM', 'PM'] as const).map(sh => (
+                <button key={sh} type="button" onClick={() => setViewShiftChoice(sh)}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold border ${viewShift === sh
+                    ? 'border-brand-green bg-brand-green/10 text-brand-green'
+                    : 'border-gray-200 dark:border-dark-border text-gray-500'}`}>
+                  View {sh}
+                </button>
+              ))}
+            </div>
+          )}
+          {viewSession?.vaccineGiven && (
+            <p className="text-xs text-gray-500">Vaccines / supplements / treatments recorded: {viewSession.vaccineGiven}</p>
+          )}
+        </div>
+      )}
+
       {/* Return alert banner */}
       {(pageMode === 'AM_RETURNED' || pageMode === 'PM_RETURNED') && (
         <ReturnAlert reason={
@@ -792,6 +845,9 @@ export function EggCollectionPage() {
       )}
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        {/* A disabled fieldset turns every input, select and button inside off
+            while the page is view-only. */}
+        <fieldset disabled={readOnly} className="space-y-4 min-w-0 border-0 p-0 m-0">
 
         {/* ── Batch (shift is no longer user-controlled) ── */}
         <div className={cardCls}>
@@ -810,8 +866,8 @@ export function EggCollectionPage() {
             ))}
           </select>
           <p className="mt-2 text-xs text-gray-400">
-            Recording <span className="font-semibold text-brand-green">{blockLabel} {activeShift} session</span>
-            {activeShift === 'PM' && (amWasMissed ? ' · AM session was not recorded' : ' · AM session has been approved')}
+            {readOnly ? 'Viewing' : 'Recording'} <span className="font-semibold text-brand-green">{blockLabel} {shownShift} session</span>
+            {!readOnly && activeShift === 'PM' && (amWasMissed ? ' · AM session was not recorded' : ' · AM session has been approved')}
           </p>
         </div>
 
@@ -896,7 +952,9 @@ export function EggCollectionPage() {
           </p>
           {rowsMovedToTopLevel && (
             <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 rounded-lg p-2 mb-3">
-              This session was first recorded per row, so each row's figures were put on its top level. Spread them over the right levels before resubmitting.
+              {readOnly
+                ? 'This session was recorded per row, before levels — each row\'s figures are shown on its top level.'
+                : 'This session was first recorded per row, so each row\'s figures were put on its top level. Spread them over the right levels before resubmitting.'}
             </p>
           )}
           {UNIT_LETTERS.map(letter => {
@@ -1194,6 +1252,7 @@ export function EggCollectionPage() {
           </div>
         )}
 
+        {!readOnly && (<>
         <button
           type="submit"
           disabled={!batchId}
@@ -1207,8 +1266,9 @@ export function EggCollectionPage() {
           Submission locks {blockLabel}'s egg counts, feed, environmental, vaccine and mortality records together
           for this session. Only the Production Manager may edit after this.
         </p>
+        </>)}
+        </fieldset>
       </form>
-      </>)}
 
       {/* ── Cage map (view / assign) ── */}
       <div className={cardCls}>
