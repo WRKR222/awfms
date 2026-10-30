@@ -19,7 +19,7 @@
 // culling logic keep working.
 
 import {
-  BadRequestException, ConflictException, Injectable, Logger, NotFoundException,
+  BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnApplicationBootstrap,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BatchStage, Prisma, UserRole } from '@prisma/client';
@@ -97,7 +97,7 @@ const toDate = (s?: string | null) => {
 };
 
 @Injectable()
-export class ProductionCageService {
+export class ProductionCageService implements OnApplicationBootstrap {
   private readonly logger = new Logger(ProductionCageService.name);
 
   constructor(
@@ -282,6 +282,47 @@ export class ProductionCageService {
         },
         update: { batchId, birdCount: top.birds },
       });
+    }
+  }
+
+  /** A batch that has left the farm (sold / discarded / closed) gives up
+   *  every production cage it held, isolation included, and its row rollups.
+   *  Returns the number of cages freed. */
+  async releaseBatch(db: Db, batchId: string, userId: string) {
+    const cages = await db.productionCage.findMany({
+      where: { assignment: { batchId } }, select: { rowId: true },
+    });
+    const { count } = await db.productionCageAssignment.deleteMany({ where: { batchId } });
+    await this.recomputeRowRollups(db, cages.map(c => c.rowId!).filter(Boolean), userId);
+    await db.batchCageAssignment.deleteMany({ where: { batchId } });
+    if (count > 0) this.refresh();
+    return count;
+  }
+
+  /** Self-heal on start-up: frees cages still held by batches that are no
+   *  longer live (sold / discarded / closed / deleted before releaseBatch
+   *  existed on every exit path). */
+  async onApplicationBootstrap() {
+    try {
+      const stale = await this.prisma.productionCageAssignment.findMany({
+        where: {
+          batch: {
+            OR: [
+              { isActive: false },
+              { deletedAt: { not: null } },
+              { stage: { in: [BatchStage.SOLD, BatchStage.DISCARDED, BatchStage.CLOSED] } },
+            ],
+          },
+        },
+        distinct: ['batchId'],
+        select: { batchId: true, batch: { select: { batchCode: true, createdById: true } } },
+      });
+      for (const s of stale) {
+        const freed = await this.prisma.$transaction(tx => this.releaseBatch(tx, s.batchId, s.batch.createdById));
+        this.logger.warn(`Freed ${freed} production cage(s) still held by ended batch ${s.batch.batchCode}`);
+      }
+    } catch (e) {
+      this.logger.error(`Stale cage clean-up failed: ${(e as Error).message}`);
     }
   }
 

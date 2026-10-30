@@ -23,6 +23,8 @@ const VALID_TRANSITIONS: Record<BatchStage, BatchStage[]> = {
   [BatchStage.CLOSED]:     [],
 };
 
+const ENDED_STAGES: BatchStage[] = [BatchStage.SOLD, BatchStage.DISCARDED, BatchStage.CLOSED];
+
 @Injectable()
 export class BatchLifecycleService {
   constructor(
@@ -115,7 +117,7 @@ export class BatchLifecycleService {
           stage:    newStage,
           location: newStage === BatchStage.PRODUCTION ? 'PRODUCTION_HOUSE' : 'BROODER',
           // If transitioning back from sold/discarded (edge case) keep isActive true
-          isActive: !([BatchStage.SOLD, BatchStage.DISCARDED, BatchStage.CLOSED] as BatchStage[]).includes(newStage),
+          isActive: !ENDED_STAGES.includes(newStage),
         },
       });
 
@@ -129,13 +131,10 @@ export class BatchLifecycleService {
         await tx.brooderLevelAssignment.deleteMany({ where: { batchId } });
       }
 
-      // Leaving the production house (sold / discarded / closed) frees its cages.
-      if (batch.stage === BatchStage.PRODUCTION && newStage !== BatchStage.PRODUCTION) {
-        const rows = await tx.productionCage.findMany({
-          where: { assignment: { batchId } }, select: { rowId: true },
-        });
-        await tx.productionCageAssignment.deleteMany({ where: { batchId } });
-        await this.productionCages.recomputeRowRollups(tx, rows.map(r => r.rowId!).filter(Boolean), user.id);
+      // Leaving the farm (sold / discarded / closed) from any stage frees
+      // every production cage it held, isolation included.
+      if (batch.stage === BatchStage.PRODUCTION || ENDED_STAGES.includes(newStage)) {
+        await this.productionCages.releaseBatch(tx, batchId, user.id);
       }
 
       // When moving to PRODUCTION, place the birds into empty cages of the

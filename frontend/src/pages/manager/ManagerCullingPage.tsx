@@ -261,6 +261,9 @@ export function ManagerCullingPage() {
         qc.invalidateQueries({ queryKey: ['brooder-cage-map'] });
         qc.invalidateQueries({ queryKey: ['brooder-feed-summary'] });
         qc.invalidateQueries({ queryKey: ['brooder-rows-and-levels'] });
+        // The sold/discarded batch's production cages are emptied too.
+        qc.invalidateQueries({ queryKey: ['production-house-map'] });
+        qc.invalidateQueries({ queryKey: ['production-houses'] });
       }
 
       setSubmitted(true);
