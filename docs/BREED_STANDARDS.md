@@ -267,7 +267,6 @@ Endpoints: `GET /feed-lab-tests/nutrients`, `GET /feed-lab-tests/feed-items`, `G
 - Store production report rows are not yet a data source for the engine. It uses system tables plus the report's weight track.
 - Pre-existing issues found while testing, not changed here:
   - `OrderStatus.DELIVERING` is in `schema.prisma` but in no migration, so sales/dashboard queries fail on a database built only from migrations;
-  - `prisma/seed.ts` fails (`deleteMany` on an undefined model);
   - the migrations folder drifts from `schema.prisma` in other places.
 
 ---

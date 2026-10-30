@@ -1,9 +1,12 @@
 /**
- * AWFMS Database Seed — v2.0
- * Updated March 2026 — new username conventions per director requirements.
- * Creates: 6 test users (updated usernames), 8 houses, suppliers,
- * vaccination schedules, price tiers, and system config.
- * Run: npx ts-node prisma/seed.ts
+ * AWFMS Database Seed
+ * Creates reference data only — never deletes anything, so it is safe to run
+ * again on any database: system config, legacy houses, suppliers, the 8 role
+ * users, feed store items, egg price tiers, vaccination schedules, both
+ * production houses (per-level units + isolation cages) and the brooder map.
+ * Run: npm run db:seed  (or `npx prisma db seed`).
+ * For an empty local database use `npx prisma migrate reset`, which drops it,
+ * re-runs every migration and then this seed.
  */
 
 import { PrismaClient, UserRole, BirdType, SalesTier, VaccinationRoute } from '@prisma/client';
@@ -13,33 +16,6 @@ const prisma = new PrismaClient();
 
 async function main() {
   console.log('🌱 Seeding AWFMS database...');
-
-  // ── CLEANUP: Delete all historical test/transactional data before seeding ──
-  // Order matters — children before parents to respect FK constraints
-  console.log('🗑️  Clearing historical test data...');
-  await prisma.eggBreakageAdjustment.deleteMany({});
-  await prisma.eggTallyVerification.deleteMany({});
-  await prisma.eggCollectionSession.deleteMany({});
-  await prisma.invoicePayment.deleteMany({});
-  await prisma.arEntry.deleteMany({});
-  await prisma.invoice.deleteMany({});
-  await prisma.salesOrderItem.deleteMany({});
-  await prisma.salesOrder.deleteMany({});
-  await prisma.advanceBooking.deleteMany({});
-  await prisma.expenseLog.deleteMany({});
-  await prisma.dailyEggPrice.deleteMany({});
-  await prisma.storeStockOut.deleteMany({});
-  await prisma.storeStockIn.deleteMany({});
-  await prisma.feedIntakeLog.deleteMany({});
-  await prisma.vaccinationRecord.deleteMany({});
-  await prisma.mortalityLog.deleteMany({});
-  await prisma.notification.deleteMany({});
-  await prisma.localPurchaseOrderItem.deleteMany({});
-  await prisma.localPurchaseOrder.deleteMany({});
-  await prisma.purchaseRequestItem.deleteMany({});
-  await prisma.purchaseRequest.deleteMany({});
-  await prisma.batch.deleteMany({});
-  console.log('✓ Historical test data cleared');
 
   // ── System Config ──────────────────────────────────────────────────────────
   await prisma.systemConfig.upsert({
@@ -54,15 +30,11 @@ async function main() {
   });
 
   // ── Houses ─────────────────────────────────────────────────────────────────
+  // Legacy House rows (Batch.houseId). Block 1 / Block 2 and the brooder map
+  // below are the real layout; these two just give batches a house to point at.
   const houseData = [
-    { name: 'House D — Layers', code: 'HD', capacity: 3000, birdType: BirdType.LAYER_COMMERCIAL },
-    { name: 'House E — Layers', code: 'HE', capacity: 3000, birdType: BirdType.LAYER_COMMERCIAL },
-    { name: 'House F — Layers', code: 'HF', capacity: 3000, birdType: BirdType.LAYER_COMMERCIAL },
-    { name: 'House 4 — Layers', code: 'H4', capacity: 3000, birdType: BirdType.LAYER_COMMERCIAL },
-    { name: 'House 5 — Layers', code: 'H5', capacity: 3000, birdType: BirdType.LAYER_COMMERCIAL },
-    { name: 'House 6 — Layers', code: 'H6', capacity: 3000, birdType: BirdType.LAYER_COMMERCIAL },
-    { name: 'Kienyeji House A', code: 'KA', capacity: 1500, birdType: BirdType.KIENYEJI },
-    { name: 'Kienyeji House B', code: 'KB', capacity: 1500, birdType: BirdType.KIENYEJI },
+    { name: 'Production House', code: 'PH', capacity: 9000, birdType: BirdType.LAYER_COMMERCIAL },
+    { name: 'Brooder House',    code: 'BH', capacity: 9000, birdType: BirdType.LAYER_COMMERCIAL },
   ];
 
   const houses: any[] = [];

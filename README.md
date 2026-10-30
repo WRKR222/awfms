@@ -49,8 +49,10 @@ npx prisma generate
 # Run migrations
 npx prisma migrate dev
 
-# Seed test data (5 users, 8 houses, suppliers)
-npx ts-node prisma/seed.ts
+# Seed reference data (8 role users, houses, suppliers, production + brooder maps).
+# Safe to re-run — it never deletes anything. For an empty local DB use
+# `npx prisma migrate reset` (drops it, re-runs migrations, then seeds).
+npm run db:seed
 ```
 
 ### 4. Run Development Servers
