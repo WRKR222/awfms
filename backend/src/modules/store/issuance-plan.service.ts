@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
+import { farmTodayUtcMidnight } from '../../common/feed/feed-standard.util';
 import { NotificationType, UserRole, BatchStage, Prisma } from '@prisma/client';
 import dayjs from 'dayjs';
 import isoWeek from 'dayjs/plugin/isoWeek';
@@ -20,6 +21,26 @@ dayjs.extend(utc);
 
 const DAY_KEYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] as const;
 type DayKey = (typeof DAY_KEYS)[number];
+
+/**
+ * Parses and checks a plan's week: must be a Monday and no later than next
+ * week (plans are drafted for the coming week at most — a date months ahead
+ * is almost always a mistyped day, e.g. 26 November typed for 26 October).
+ */
+export function resolvePlanMonday(weekStartDate: string, today: Date = farmTodayUtcMidnight()): Date {
+  const parsed = dayjs.utc(weekStartDate);
+  if (!parsed.isValid()) throw new BadRequestException('weekStartDate is not a valid date');
+  const monday = parsed.startOf('day');
+  if (monday.isoWeekday() !== 1) throw new BadRequestException('weekStartDate must be a Monday');
+  const nextMonday = dayjs.utc(today).isoWeekday(1).add(7, 'day');
+  if (monday.isAfter(nextMonday)) {
+    throw new BadRequestException(
+      `A plan can be made for next week (${nextMonday.format('D MMM')}) at the latest — ` +
+      `${monday.format('D MMM YYYY')} is further ahead. Check the week chosen.`,
+    );
+  }
+  return monday.toDate();
+}
 
 function sundayOf(monday: Date): Date {
   return dayjs.utc(monday).add(6, 'day').endOf('day').toDate();
@@ -132,12 +153,8 @@ export class IssuancePlanService {
     },
     userId: string,
   ) {
-    const monday = dayjs.utc(dto.weekStartDate).startOf('day').toDate();
+    const monday = resolvePlanMonday(dto.weekStartDate);
     const sunday = sundayOf(monday);
-
-    if (dayjs.utc(monday).isoWeekday() !== 1) {
-      throw new BadRequestException('weekStartDate must be a Monday');
-    }
 
     // No day-of-week gate on CREATE — Store can draft at any time.
     // No day-of-week gate on SUBMIT either — Store can submit whenever the draft is ready.
@@ -514,6 +531,8 @@ export class IssuancePlanService {
     dto: {
       notes?: string;
       emergencyReason?: string;
+      /** Store only: move the plan to another week (fixing a wrong week). */
+      weekStartDate?: string;
       items?: {
         id?: string;
         storeItemId: string;
@@ -541,7 +560,36 @@ export class IssuancePlanService {
     };
     const allowedStatuses = editableItemStatuses[userRole] ?? [];
 
+    // Moving a plan to another week — for a plan created against the wrong
+    // week. Only while nothing has been issued against it, and only for
+    // Store's own lines: PM requisition / feed-plan lines belong to the week
+    // they were raised for.
+    let newMonday: Date | null = null;
+    if (dto.weekStartDate !== undefined) {
+      newMonday = resolvePlanMonday(dto.weekStartDate);
+      if (dayjs.utc(newMonday).isSame(dayjs.utc(plan.weekStartDate), 'day')) {
+        newMonday = null;
+      } else {
+        if (userRole !== UserRole.STORE) throw new ForbiddenException('Only Store can change the week of an issuance plan.');
+        if (plan.items.some((i) => Number(i.quantityIssued) > 0)) {
+          throw new BadRequestException('Stock has already been issued against this plan, so its week can no longer be changed.');
+        }
+        const linked = (dto.items ?? plan.items).filter((i: any) => (i.source ?? 'MANUAL') !== 'MANUAL');
+        if (linked.length) {
+          throw new BadRequestException(
+            'This plan has lines pulled in from the PM\'s requisition or feed plan for its current week — remove those lines first, then change the week.',
+          );
+        }
+      }
+    }
+
     await this.prisma.$transaction(async (tx) => {
+      if (newMonday) {
+        await tx.issuancePlan.update({
+          where: { id },
+          data: { weekStartDate: newMonday, weekEndDate: sundayOf(newMonday) },
+        });
+      }
       if (dto.items) {
         const existing = plan.items;
         const existingIds = new Set(existing.map((e) => e.id));
@@ -643,6 +691,16 @@ export class IssuancePlanService {
     });
 
     await this.syncPhase(id);
+    // A plan the Director has already seen moved week — tell them.
+    if (newMonday && plan.phase !== ('DRAFT' as any)) {
+      const fmt = (d: Date) => `${dayjs.utc(d).format('D MMM')} – ${dayjs.utc(sundayOf(d)).format('D MMM YYYY')}`;
+      await this.notifications.notifyRole(
+        UserRole.OWNER, NotificationType.SYSTEM,
+        'Issuance plan moved to another week',
+        `Store moved plan ${plan.planRef} from ${fmt(plan.weekStartDate)} to ${fmt(newMonday)} (the week was entered wrongly). Its items and approvals are unchanged.`,
+        { entityId: id, entityType: 'IssuancePlan' },
+      ).catch(() => { /* best-effort */ });
+    }
     return this.getPlan(id);
   }
 

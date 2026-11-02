@@ -21,8 +21,8 @@ import { Type } from 'class-transformer';
 
 dayjs.extend(isoWeek);
 
-// Categories whose items must declare a PhysicalForm (Solid → grams,
-// Liquid → millilitres) — see StoreInventoryService.resolvePhysicalForm.
+// Medication-type categories: their physical form is derived from the unit
+// (grams → Solid, millilitres → Liquid) — see StoreInventoryService.resolvePhysicalForm.
 // Covers legacy MEDICATION too, since not every existing MEDICATION item
 // has been re-tagged into VACCINE/TREATMENT yet.
 const MEDICATION_TYPE_CATEGORIES = new Set(['MEDICATION', 'SUPPLEMENT', 'VACCINE', 'TREATMENT']);
@@ -48,10 +48,8 @@ export class CreateStoreItemDto {
   @IsString() @IsNotEmpty() @MaxLength(30, { message: 'Unit must be 30 characters or fewer' })
   unit: string;
 
-  // Required for MEDICATION/SUPPLEMENT/VACCINE/TREATMENT items — SOLID
-  // items must be stocked in grams (unit 'G'), LIQUID items in millilitres
-  // (unit 'ML'). See resolvePhysicalForm. Ignored (must be omitted/null)
-  // for every other category.
+  // No longer used — physical form is derived from the unit (see
+  // resolvePhysicalForm). Still accepted so older clients don't fail.
   @IsOptional() @IsIn(['SOLID', 'LIQUID'], { message: 'Physical form must be SOLID or LIQUID' })
   physicalForm?: string;
 
@@ -199,39 +197,20 @@ export class StoreInventoryService {
   }
 
   /**
-   * Vaccine/supplement/treatment(/legacy medication) items must declare
-   * Solid (→ grams) or Liquid (→ millilitres) and be stocked in exactly
-   * that unit. This is what keeps the residual ledger (issued − dispensed,
-   * see getIssuableStoreItems/getResidualForItem) unit-consistent once an
-   * attendant's quantityUsed is recorded in grams/millilitres against it —
-   * every quantity on both sides of that subtraction is guaranteed to
-   * share the same base unit.
-   *
-   * Every other category keeps free-text units (as before) and never
-   * carries a physical form — any physicalForm value sent for one of
-   * those categories is silently dropped, not validated, so switching an
-   * item's category away from a medication-type one clears a stale value.
+   * Vaccine / supplement / treatment (and legacy medication) items pick their
+   * unit like every other item. Physical form is no longer asked for — it is
+   * derived from the unit (grams → Solid, millilitres → Liquid, anything else
+   * → none) so older screens that label "Solid (g)" / "Liquid (mL)" keep
+   * working. Other categories never carry one.
    */
   private resolvePhysicalForm(
     category: string,
-    physicalForm: string | null | undefined,
+    _physicalForm: string | null | undefined,
     unit: string | undefined,
   ): 'SOLID' | 'LIQUID' | null {
     if (!MEDICATION_TYPE_CATEGORIES.has(category)) return null;
-    if (physicalForm !== 'SOLID' && physicalForm !== 'LIQUID') {
-      throw new BadRequestException(
-        'Select whether this item is Solid (tracked in grams) or Liquid (tracked in millilitres).',
-      );
-    }
-    const expectedUnit = physicalForm === 'SOLID' ? 'G' : 'ML';
-    if ((unit ?? '').trim().toUpperCase() !== expectedUnit) {
-      throw new BadRequestException(
-        physicalForm === 'SOLID'
-          ? 'Solid items must be stocked in grams (unit = G) so quantity used can be recorded in grams against what Store issues.'
-          : 'Liquid items must be stocked in millilitres (unit = ML) so quantity used can be recorded in millilitres against what Store issues.',
-      );
-    }
-    return physicalForm;
+    const u = (unit ?? '').trim().toUpperCase();
+    return u === 'G' ? 'SOLID' : u === 'ML' ? 'LIQUID' : null;
   }
 
   async createItem(dto: CreateStoreItemDto, user: RequestUser) {
