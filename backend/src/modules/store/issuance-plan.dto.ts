@@ -69,6 +69,11 @@ export class UpdateIssuancePlanDto {
   @IsString()
   notes?: string;
 
+  /** Store only — move the plan to another week (Monday). */
+  @IsOptional()
+  @IsDateString()
+  weekStartDate?: string;
+
   @IsOptional()
   @IsString()
   emergencyReason?: string;

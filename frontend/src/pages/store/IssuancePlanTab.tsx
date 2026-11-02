@@ -71,6 +71,18 @@ function thisMonday() {
   return today.subtract(daysSinceMon, 'day');
 }
 
+/** The 12 weeks before the current one, most recent first — for a plan
+ *  that was missed. Picked from a list (not typed) so a slip like typing
+ *  "26" into a date that defaults to this month can't land on a future week. */
+function pastWeeks(count = 12) {
+  const mon = thisMonday();
+  return Array.from({ length: count }, (_, i) => mon.subtract((i + 1) * 7, 'day'));
+}
+
+function weekLabel(mon: dayjs.Dayjs) {
+  return `${mon.format('D MMM')} – ${mon.add(6, 'day').format('D MMM YYYY')}`;
+}
+
 /** True if today (local) is Saturday. */
 function isTodaySaturday() {
   return dayjs().day() === 6;
@@ -333,6 +345,11 @@ function PlanCard({
       items.some((i: any) => (ROLE_EDIT_ITEM_STATUSES['OWNER'] ?? []).includes(i.status)));
 
   const canPdf = approvedCount > 0 && ['STORE', 'ACCOUNTANT', 'OWNER'].includes(userRole);
+  // A submitted plan raised against the wrong week can still be moved by
+  // Store while nothing has been issued (drafts move through Edit).
+  const canChangeWeek = userRole === 'STORE' && plan.phase !== 'DRAFT'
+    && !items.some((i: any) => Number(i.quantityIssued ?? 0) > 0 || (i.source ?? 'MANUAL') !== 'MANUAL');
+  const [movingWeek, setMovingWeek] = useState(false);
 
   const totalKes = items.reduce((s: number, i: any) => s + Number(i.quantityPlanned) * Number(i.unitPriceKes), 0);
   const approvedItemsList = items.filter((i: any) => i.status === 'APPROVED');
@@ -433,6 +450,16 @@ function PlanCard({
               </button>
             )}
 
+            {canChangeWeek && (
+              <button
+                onClick={() => setMovingWeek(true)}
+                className="flex items-center gap-1.5 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-300 px-4 py-2 rounded-xl text-xs font-semibold hover:bg-gray-50 dark:hover:bg-dark-bg transition-colors"
+              >
+                <Pencil className="w-3.5 h-3.5" /> Change week
+              </button>
+            )}
+            {movingWeek && <ChangeWeekModal plan={plan} onClose={() => setMovingWeek(false)} onSaved={onRefresh} />}
+
             {canSubmit && (
               <button
                 onClick={() => submitMutation.mutate()}
@@ -502,18 +529,68 @@ function PlanCard({
   );
 }
 
+// ─── Change week (submitted plan raised against the wrong week) ─────────────
+
+function ChangeWeekModal({ plan, onClose, onSaved }: { plan: any; onClose: () => void; onSaved: () => void }) {
+  const qc = useQueryClient();
+  const original = dayjs(plan.weekStartDate).format('YYYY-MM-DD');
+  const [week, setWeek] = useState(original);
+  const options = [nextMonday(), thisMonday(), ...pastWeeks()];
+  const save = useMutation({
+    mutationFn: () => api.patch(`/store/issuance-plans/${plan.id}`, { weekStartDate: week }).then(r => r.data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['issuance-plans'] }); onSaved(); onClose(); },
+  });
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-end md:items-center justify-center p-0 md:p-4" onClick={onClose}>
+      <div className="bg-white dark:bg-dark-card w-full md:max-w-md rounded-t-3xl md:rounded-2xl shadow-2xl p-5 space-y-3" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <p className="font-bold text-gray-800 dark:text-gray-100">Change week — {plan.planRef}</p>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-dark-bg"><X className="w-4 h-4 text-gray-500" /></button>
+        </div>
+        <p className="text-xs text-gray-500">
+          Currently {weekLabel(dayjs(original))}. Pick the week this plan is really for — its items and approvals stay
+          as they are, and the Director is told it moved.
+        </p>
+        <select value={week} onChange={e => setWeek(e.target.value)} className={iCls}>
+          {!options.some(w => w.format('YYYY-MM-DD') === original) && (
+            <option value={original}>{weekLabel(dayjs(original))} (current setting)</option>
+          )}
+          {options.map(w => (
+            <option key={w.format('YYYY-MM-DD')} value={w.format('YYYY-MM-DD')}>
+              {weekLabel(w)}{w.isSame(nextMonday(), 'day') ? ' · next week' : w.isSame(thisMonday(), 'day') ? ' · this week' : ''}
+            </option>
+          ))}
+        </select>
+        {save.isError && (
+          <p className="text-xs text-red-500">{(save.error as any)?.response?.data?.message ?? 'Could not change the week.'}</p>
+        )}
+        <div className="flex gap-2">
+          <button onClick={onClose} className="flex-1 border border-gray-200 dark:border-dark-border text-gray-600 dark:text-gray-400 rounded-xl py-2.5 font-semibold text-sm">Cancel</button>
+          <button onClick={() => save.mutate()} disabled={week === original || save.isPending}
+            className="flex-1 bg-brand-green text-white rounded-xl py-2.5 font-semibold text-sm disabled:opacity-60">
+            {save.isPending ? 'Saving…' : 'Move plan'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Create Plan Form ─────────────────────────────────────────────────────────
 
 function CreatePlanForm({
   type,
   editingPlan,
   existingPlans = [],
+  canChangeWeek = false,
   onClose,
   onCreated,
 }: {
   type: 'WEEKLY' | 'EMERGENCY';
   editingPlan?: any;
   existingPlans?: any[];
+  /** Store editing its own plan: may move it to another week (wrong week chosen). */
+  canChangeWeek?: boolean;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -525,12 +602,21 @@ function CreatePlanForm({
   // earlier week that never got a plan created for it at all, not just the
   // two most recent. Editing an existing plan keeps its original week.
   const [weekChoice, setWeekChoice] = useState<'CURRENT' | 'NEXT' | 'OTHER'>('NEXT');
-  const [otherDate, setOtherDate] = useState(() => thisMonday().format('YYYY-MM-DD'));
+  const [otherWeek, setOtherWeek] = useState(() => pastWeeks(1)[0].format('YYYY-MM-DD'));
+  // Editing: the plan keeps its week unless Store moves it (only while
+  // nothing has been issued and every line is Store's own).
+  const originalWeek = editingPlan ? dayjs(editingPlan.weekStartDate).format('YYYY-MM-DD') : '';
+  const [editWeek, setEditWeek] = useState(originalWeek);
+  const weekMovable = !!editingPlan && canChangeWeek
+    && !(editingPlan.items ?? []).some((i: any) => Number(i.quantityIssued ?? 0) > 0 || (i.source ?? 'MANUAL') !== 'MANUAL');
   const mon = editingPlan
-    ? dayjs(editingPlan.weekStartDate)
+    ? dayjs(editWeek || originalWeek)
     : weekChoice === 'CURRENT' ? thisMonday()
     : weekChoice === 'NEXT'    ? nextMonday()
-    : dayjs(otherDate).isoWeekday(1);
+    : dayjs(otherWeek);
+  const weekOptions = [nextMonday(), thisMonday(), ...pastWeeks()];
+  const planExistsFor = (m: dayjs.Dayjs) =>
+    existingPlans.some(p => p.type === type && p.id !== editingPlan?.id && dayjs(p.weekStartDate).isSame(m, 'day'));
 
   // Heads-up (not a hard block — the backend doesn't forbid a second plan
   // for the same week either) when a plan of this same type already exists
@@ -644,6 +730,7 @@ function CreatePlanForm({
       if (isEditing) {
         return api
           .patch(`/store/issuance-plans/${editingPlan.id}`, {
+            weekStartDate: editWeek && editWeek !== originalWeek ? editWeek : undefined,
             notes: notes || undefined,
             emergencyReason: type === 'EMERGENCY' ? emergencyReason : undefined,
             items: builtItems,
@@ -707,6 +794,33 @@ function CreatePlanForm({
           {/* Target week — Store picks current (catch-up), next, or any
               other week (e.g. one that was missed entirely and never got a
               plan created for it) */}
+          {isEditing && (
+            <div>
+              <label className={lCls}>Week</label>
+              {weekMovable ? (
+                <>
+                  <select value={editWeek} onChange={e => setEditWeek(e.target.value)} className={iCls}>
+                    {!weekOptions.some(w => w.format('YYYY-MM-DD') === originalWeek) && (
+                      <option value={originalWeek}>{weekLabel(dayjs(originalWeek))} (current setting)</option>
+                    )}
+                    {weekOptions.map(w => (
+                      <option key={w.format('YYYY-MM-DD')} value={w.format('YYYY-MM-DD')}>
+                        {weekLabel(w)}{w.isSame(nextMonday(), 'day') ? ' · next week' : w.isSame(thisMonday(), 'day') ? ' · this week' : ''}{planExistsFor(w) ? ' · plan exists' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {editWeek !== originalWeek && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-1.5">
+                      Saving moves this plan from {weekLabel(dayjs(originalWeek))} to {weekLabel(mon)}.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-gray-700 dark:text-gray-200">{weekLabel(mon)}</p>
+              )}
+            </div>
+          )}
+
           {!isEditing && (
             <div>
               <label className={lCls}>Target Week</label>
@@ -769,15 +883,15 @@ function CreatePlanForm({
               )}
               {weekChoice === 'OTHER' && (
                 <div className="mt-2">
-                  <input
-                    type="date"
-                    value={otherDate}
-                    onChange={e => setOtherDate(e.target.value)}
-                    className={iCls}
-                  />
+                  <select value={otherWeek} onChange={e => setOtherWeek(e.target.value)} className={iCls}>
+                    {pastWeeks().map(w => (
+                      <option key={w.format('YYYY-MM-DD')} value={w.format('YYYY-MM-DD')}>
+                        {weekLabel(w)}{planExistsFor(w) ? ' · plan exists' : ''}
+                      </option>
+                    ))}
+                  </select>
                   <p className="text-xs text-gray-400 mt-1.5">
-                    Pick any date — the plan is created for that date's full week
-                    (Mon {mon.format('D MMM')} – Sun {mon.add(6, 'day').format('D MMM YYYY')}).
+                    Pick the missed week (Monday – Sunday). Only past weeks are listed.
                   </p>
                 </div>
               )}
@@ -1125,6 +1239,7 @@ export function IssuancePlanTab() {
           type={editingPlan.type}
           editingPlan={editingPlan}
           existingPlans={plans}
+          canChangeWeek={userRole === 'STORE'}
           onClose={() => setEditingPlan(null)}
           onCreated={() => refetch()}
         />
