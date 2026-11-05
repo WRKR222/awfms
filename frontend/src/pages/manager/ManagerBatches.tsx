@@ -950,6 +950,16 @@ function TransferModal({ batch, onClose }: { batch: any; onClose: () => void }) 
   const [count, setCount] = useState(String(birdCount));
   const [rowCodes, setRowCodes] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Day the birds actually moved — today by default, or an earlier day when
+  // the transfer is recorded late. Never before the batch arrived.
+  const today = dayjs().format('YYYY-MM-DD');
+  const arrived = batch.dateReceived ? dayjs(batch.dateReceived).format('YYYY-MM-DD') : undefined;
+  const [transferDate, setTransferDate] = useState(today);
+  // Calendar days from hatch (dates only — the stored hatch date is UTC
+  // midnight), same as the breed-guide transfer-age check on the server.
+  const ageAtTransfer = batch.dateOfHatch && transferDate
+    ? Math.round((dayjs(transferDate).diff(dayjs(String(batch.dateOfHatch).slice(0, 10)), 'day') / 7) * 10) / 10
+    : null;
 
   const open = houses.filter(h => h.isActive);
   const bothFull = !isLoading && open.every(h => h.freeSpaces === 0);
@@ -965,7 +975,7 @@ function TransferModal({ batch, onClose }: { batch: any; onClose: () => void }) 
 
   const transfer = useMutation({
     mutationFn: () => api.post('/production/houses/transfer', {
-      batchId: batch.id, houseCode, birdCount: n, rowCodes: rowCodes.length ? rowCodes : undefined,
+      batchId: batch.id, houseCode, birdCount: n, rowCodes: rowCodes.length ? rowCodes : undefined, transferDate,
     }).then(r => r.data),
     onSuccess: () => {
       [['flock', 'batches'], ['batches'], ['cage-map'], ['production-houses'], ['production-house-map'], ['brooder-cage-map']]
@@ -978,6 +988,9 @@ function TransferModal({ batch, onClose }: { batch: any; onClose: () => void }) 
     setError(null);
     if (!chosen) { setError('Choose Block 1 or Block 2.'); return; }
     if (!(n >= 1) || n > birdCount) { setError(`Enter between 1 and ${birdCount} birds.`); return; }
+    if (!transferDate || !dayjs(transferDate).isValid()) { setError('Enter the date of transfer.'); return; }
+    if (transferDate > today) { setError("The date of transfer can't be in the future."); return; }
+    if (arrived && transferDate < arrived) { setError(`The date of transfer can't be before the batch arrived (${dayjs(arrived).format('D MMM YYYY')}).`); return; }
     if (n > chosen.freeSpaces) {
       setError(`${chosen.name} only has room for ${chosen.freeSpaces.toLocaleString()} more birds — transfer fewer, or use the other house.`);
       return;
@@ -1034,6 +1047,18 @@ function TransferModal({ batch, onClose }: { batch: any; onClose: () => void }) 
                   );
                 })}
               </div>
+            </div>
+
+            <div>
+              <label className={lCls}>Date of transfer</label>
+              <input type="date" value={transferDate} min={arrived} max={today}
+                onChange={e => setTransferDate(e.target.value)} className={iCls} />
+              <p className="text-[11px] text-gray-400 mt-1">
+                {transferDate
+                  ? `${dayjs(transferDate).format('dddd, D MMMM YYYY')}${ageAtTransfer != null ? ` — birds ${ageAtTransfer} weeks old` : ''}.`
+                  : 'Pick the day the birds were moved.'}
+                {' '}Use an earlier date if the transfer happened before today.
+              </p>
             </div>
 
             <div>
