@@ -74,7 +74,10 @@ arrangement only sets capacity — **records are kept per row · level.**
 - A batch that is sold / discarded / closed (Farm Events or stage change) is
   removed from every level and isolation cage (`ProductionCageService.releaseBatch`).
 - Transfer brooder → production: `POST /production/houses/transfer`
-  (`houseCode`, `birdCount`, optional `rowCodes`). All birds = batch moves;
+  (`houseCode`, `birdCount`, optional `rowCodes`, `transferDate` — the day
+  the birds moved, default the farm's today; never in the future or before
+  the batch arrived; drives placement dates, the split batch's received
+  date and the breed-guide transfer-age check). All birds = batch moves;
   some birds = split into a child batch `<code>-B1|B2` (`parentBatchId`).
   Refused when the chosen house has no room; both full = no transfer.
 - Egg collection sessions carry `block` (`BLOCK1`/`BLOCK2`). Each block is

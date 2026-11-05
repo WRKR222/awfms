@@ -23,6 +23,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsService } from '../../common/notifications/notifications.service';
 import { BATCH_TRANSFERRED_EVENT, DASHBOARD_REFRESH_EVENT } from '../../common/events/app-event-bus';
 import { RequestUser } from '../../auth/types/request-user.type';
+import { farmTodayUtcMidnight } from '../../common/feed/feed-standard.util';
 import { CageRef, parseProductionCageText } from './production-cage-text.util';
 
 type Db = Prisma.TransactionClient | PrismaService;
@@ -530,7 +531,9 @@ export class ProductionCageService implements OnApplicationBootstrap {
     const houseCode = String(input?.houseCode ?? input?.blockCode ?? '').toUpperCase();
     const birdCount = Number(input?.birdCount);
     const rowCodes: string[] = Array.isArray(input?.rowCodes) ? input.rowCodes.map((r: any) => String(r).toUpperCase()) : [];
-    const transferDate = toDate(input?.transferDate);
+    // Date the birds actually moved — may be an earlier day (recorded late).
+    // Defaults to the farm's today, not the server's UTC date.
+    const transferDate = input?.transferDate ? toDate(input.transferDate) : farmTodayUtcMidnight();
     if (!HOUSE_CODES.includes(houseCode as HouseCode)) throw new BadRequestException('Choose Production House Block 1 or Block 2');
 
     const batch = await this.prisma.batch.findFirst({ where: { id: batchId, deletedAt: null } });
@@ -541,6 +544,16 @@ export class ProductionCageService implements OnApplicationBootstrap {
     if (!Number.isInteger(birdCount) || birdCount < 1) throw new BadRequestException('Enter how many birds to transfer');
     if (birdCount > batch.currentBirdCount) {
       throw new BadRequestException(`${batch.batchCode} only has ${batch.currentBirdCount} live birds`);
+    }
+    const dayOf = (d: Date) => d.toISOString().slice(0, 10);
+    if (transferDate.getTime() > farmTodayUtcMidnight().getTime()) {
+      throw new BadRequestException(`The transfer date (${dayOf(transferDate)}) can't be in the future.`);
+    }
+    const arrived = toDate(batch.dateReceived.toISOString());
+    if (transferDate.getTime() < arrived.getTime()) {
+      throw new BadRequestException(
+        `The transfer date (${dayOf(transferDate)}) is before ${batch.batchCode} arrived (${dayOf(arrived)}).`,
+      );
     }
 
     const [b1, b2] = await Promise.all([this.capacity('BLK1'), this.capacity('BLK2')]);
@@ -564,7 +577,10 @@ export class ProductionCageService implements OnApplicationBootstrap {
       if (full) {
         await tx.batch.update({
           where: { id: batch.id },
-          data: { stage: BatchStage.PRODUCTION, location: 'PRODUCTION_HOUSE' },
+          data: {
+            stage: BatchStage.PRODUCTION, location: 'PRODUCTION_HOUSE',
+            notes: `${batch.notes ? batch.notes + '\n' : ''}${dayOf(transferDate)}: all ${birdCount} birds transferred from the brooder to ${target.name}.`,
+          },
         });
         await tx.brooderCageAssignment.deleteMany({ where: { batchId: batch.id } });
         await tx.brooderLevelAssignment.deleteMany({ where: { batchId: batch.id } });
